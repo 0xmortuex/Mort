@@ -5,6 +5,8 @@
     python kernel/build.py check     # build, then verify it's a valid multiboot kernel
     python kernel/build.py run       # build, then boot it fullscreen in QEMU
     python kernel/build.py window    # same, but in a normal window
+    python kernel/build.py iso       # build a bootable mort.iso (Limine + xorriso)
+    python kernel/build.py run-iso   # build the ISO, then boot it in QEMU (-cdrom)
 
 The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
 C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
@@ -25,6 +27,20 @@ import mortc  # noqa: E402
 TARGET = "x86-freestanding-none"           # 32-bit x86, bare metal
 BUILD = os.path.join(HERE, "build")
 ELF = os.path.join(BUILD, "kernel.elf")
+
+# Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
+TOOLS = os.path.join(HERE, "tools")
+ISO = os.path.join(BUILD, "mort.iso")
+# Limine boots our multiboot1 kernel unchanged; both tools are portable Windows
+# .exe files, so no WSL/MSYS2 is needed. Pinned to a stable Limine branch.
+LIMINE_ZIP = "https://github.com/limine-bootloader/limine/archive/refs/heads/v8.x-binary.zip"
+XORRISO_ZIP = "https://github.com/PeyTy/xorriso-exe-for-windows/archive/refs/heads/master.zip"
+LIMINE_CONF = """timeout: 3
+
+/MORT OS
+    protocol: multiboot1
+    path: boot():/boot/kernel.elf
+"""
 
 
 def _zig():
@@ -106,6 +122,92 @@ def check():
     print("Boot it with:  python kernel/build.py run")
 
 
+def _fetch_zip(url, dest):
+    import io
+    import urllib.request
+    import zipfile
+    os.makedirs(dest, exist_ok=True)
+    print(f"  downloading {url} ...")
+    req = urllib.request.Request(url, headers={"User-Agent": "mort-build"})
+    with urllib.request.urlopen(req) as r:
+        data = r.read()
+    zipfile.ZipFile(io.BytesIO(data)).extractall(dest)
+
+
+def _find(root, name):
+    for dirpath, _dirs, files in os.walk(root):
+        if name in files:
+            return os.path.join(dirpath, name)
+    return None
+
+
+def _cygpath(p):
+    """Convert a Windows path to the Cygwin form xorriso.exe expects."""
+    p = os.path.abspath(p)
+    drive, rest = os.path.splitdrive(p)
+    return "/cygdrive/" + drive[0].lower() + rest.replace("\\", "/")
+
+
+def iso():
+    """Build a BIOS+UEFI bootable, USB-writable ISO using Limine + xorriso."""
+    build()
+    os.makedirs(TOOLS, exist_ok=True)
+
+    # 1. Ensure the (portable, Windows) tools are present — download + cache once.
+    if not _find(TOOLS, "limine.exe"):
+        _fetch_zip(LIMINE_ZIP, os.path.join(TOOLS, "limine"))
+    if not _find(TOOLS, "xorriso.exe"):
+        _fetch_zip(XORRISO_ZIP, os.path.join(TOOLS, "xorriso"))
+    limine = _find(TOOLS, "limine.exe")
+    xorriso = _find(TOOLS, "xorriso.exe")
+    if not limine or not xorriso:
+        sys.exit("iso: could not locate limine.exe / xorriso.exe after download.")
+    lim_dir = os.path.dirname(limine)
+
+    # 2. Stage the ISO tree: kernel + Limine boot files + config.
+    root = os.path.join(BUILD, "iso_root")
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(os.path.join(root, "boot"), exist_ok=True)
+    os.makedirs(os.path.join(root, "EFI", "BOOT"), exist_ok=True)
+    shutil.copy(ELF, os.path.join(root, "boot", "kernel.elf"))
+    with open(os.path.join(root, "boot", "limine.conf"), "w", encoding="utf-8") as fh:
+        fh.write(LIMINE_CONF)
+    for name in ("limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin"):
+        src = _find(lim_dir, name)
+        if src:
+            shutil.copy(src, os.path.join(root, "boot", name))
+    for name in ("BOOTX64.EFI", "BOOTIA32.EFI"):
+        src = _find(lim_dir, name)
+        if src:
+            shutil.copy(src, os.path.join(root, "EFI", "BOOT", name))
+    if not os.path.exists(os.path.join(root, "boot", "limine-bios-cd.bin")):
+        sys.exit("iso: limine-bios-cd.bin not found in the Limine download — "
+                 "the release layout may have changed.")
+
+    # 3. Master a hybrid El Torito ISO, then make the BIOS path bootable.
+    # xorriso is a Cygwin build, so host paths must be in /cygdrive/... form.
+    subprocess.run([
+        xorriso, "-as", "mkisofs", "-R", "-r", "-J",
+        "-b", "boot/limine-bios-cd.bin",
+        "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
+        "--efi-boot", "boot/limine-uefi-cd.bin",
+        "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
+        _cygpath(root), "-o", _cygpath(ISO),
+    ], check=True)
+    subprocess.run([limine, "bios-install", ISO], check=True)
+    print(f"built {os.path.relpath(ISO, ROOT)}")
+    print(f"boot it with:  python kernel/build.py run-iso   (or -cdrom {os.path.basename(ISO)})")
+
+
+def run_iso():
+    iso()
+    qemu = _find_qemu()
+    if not qemu:
+        sys.exit("qemu-system-i386 not found — install QEMU to boot the ISO.")
+    print("Booting the MORT OS ISO in QEMU...")
+    subprocess.run([qemu, "-cdrom", ISO])
+
+
 def _find_qemu():
     found = shutil.which("qemu-system-i386")
     if found:
@@ -150,7 +252,8 @@ def run_windowed():
     _run(fullscreen=False)
 
 
-COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed}
+COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed,
+            "iso": iso, "run-iso": run_iso}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"

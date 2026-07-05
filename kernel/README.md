@@ -55,8 +55,21 @@ python kernel/build.py run     # build, then boot it in QEMU
 ```
 
 `check` needs no QEMU — it builds `build/kernel.elf` and confirms it's a 32-bit
-x86 multiboot kernel. `run` boots it; you'll see **MORT OS BOOTED** in green,
-then anything you type appears on screen (letters, space, Enter for a new line).
+x86 multiboot kernel. `run` boots it fullscreen; type `help` to see the commands.
+
+### A real bootable ISO
+
+```bash
+python kernel/build.py iso       # -> kernel/build/mort.iso
+python kernel/build.py run-iso   # build the ISO and boot it in QEMU
+```
+
+`iso` produces a genuinely bootable image using the [Limine](https://limine-bootloader.org/)
+bootloader (which loads our multiboot1 kernel unchanged) and `xorriso`. Both are
+portable Windows binaries, downloaded and cached under `kernel/tools/` on first
+run — no WSL or MSYS2 needed. The result, `mort.iso`, is a BIOS **and** UEFI
+hybrid image: boot it in QEMU (`-cdrom`) or VirtualBox, or write it byte-for-byte
+to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
 
 ## Status & roadmap
 
@@ -77,4 +90,6 @@ then anything you type appears on screen (letters, space, Enter for a new line).
       the `crash` command); each stub records its vector before halting.
 - [x] Command history: Up/Down arrows recall previous commands (a ring of 8),
       decoded from the 0xE0 extended-scancode prefix.
-- [ ] More built-ins and a richer language (arrays, `for` loops).
+- [x] A real bootable ISO (Limine + xorriso) — BIOS/UEFI hybrid, USB-writable,
+      boots on real hardware, not just QEMU's `-kernel` shortcut.
+- [ ] More built-ins; a filesystem; loading programs from disk.

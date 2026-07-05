@@ -17,6 +17,7 @@ venv/
 a.out
 /build/
 kernel/build/
+kernel/tools/
 # generated C emitted next to a source when no compiler is found
 /*.c
 examples/*.c
