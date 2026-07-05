@@ -30,6 +30,18 @@ INT_RANGES = {
 }
 
 
+def _c_div(a, b):
+    """Integer division with C semantics: truncate toward zero (pure integer,
+    so no float rounding near i64/u64 limits)."""
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def _c_mod(a, b):
+    """Remainder with C semantics: the result takes the sign of the dividend."""
+    return a - _c_div(a, b) * b
+
+
 def is_ptr(t):
     return isinstance(t, str) and t.startswith("*")
 
@@ -152,8 +164,13 @@ class Checker:
                 return lv - rv
             if op == "*":
                 return lv * rv
-            if op in ("/", "%") and rv != 0:
-                return int(lv / rv) if op == "/" else lv % rv
+            # Fold / and % with C semantics so the checked value matches the
+            # value the generated C actually computes (esp. for negatives and
+            # near the 64-bit limits).
+            if op == "/" and rv != 0:
+                return _c_div(lv, rv)
+            if op == "%" and rv != 0:
+                return _c_mod(lv, rv)
         return None
 
     def _coerce(self, expected, expr):

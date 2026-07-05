@@ -165,6 +165,13 @@ def test_literal_range_check():
     c_of("fn main() -> int { let x: u8 = 200 + 55; print(x); return 0; }")
 
 
+def test_const_fold_matches_c_semantics():
+    # u64 max / 1 must fold with integer math (not float), so it still fits u64
+    c_of("fn main() -> int { let x: u64 = 18446744073709551615 / 1; return 0; }")
+    # C-style division truncates toward zero: -7 / 2 == -3 (fits i8)
+    c_of("fn main() -> int { let x: i8 = (0 - 7) / 2; print(x as i64); return 0; }")
+
+
 @needs_cc
 def test_string_literal_runs():
     # walk a string literal's bytes: cast ptr->int, offset, cast back, deref.
@@ -294,6 +301,8 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { let x: u8 = 300; print(x); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let x: u8 = 200 + 100; print(x); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let x: i8 = 0 - 200; print(x); return 0; }", "does not fit in i8"),
+    # C's % takes the dividend's sign: (0-129) % 256 == -129 in C, not 127
+    ("fn main() -> int { let x: i8 = (0 - 129) % 256; return 0; }", "does not fit in i8"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
