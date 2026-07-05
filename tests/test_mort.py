@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
 import os
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -168,8 +169,12 @@ def test_freestanding_object_builds():
         subprocess.run(cmd, check=True)
         data = open(obj, "rb").read()
     assert len(data) > 0
+    # With the Zig backend we pin the exact bare-metal target, so assert the
+    # object really is a 64-bit x86-64 ELF (not just "some ELF").
     if mortc.is_zig(_CC):
-        assert data[:4] == b"\x7fELF"  # a real x86_64 bare-metal ELF object
+        assert data[:4] == b"\x7fELF"                         # ELF magic
+        assert data[4] == 2                                   # ELFCLASS64
+        assert struct.unpack("<H", data[18:20])[0] == 0x3E    # EM_X86_64
 
 
 # ---------- front-end: errors ----------

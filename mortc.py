@@ -36,8 +36,16 @@ def compile_to_c(src, freestanding=False):
 
 
 def is_zig(cc):
-    """True if the compiler argv is Zig's clang (supports easy cross-compiles)."""
-    return any("zig" in part for part in cc)
+    """True if the compiler argv is Zig's clang (supports easy cross-compiles).
+
+    Matches only a real Zig invocation — the `zig` executable itself or the
+    `ziglang` Python module — not any path that merely contains 'zig'
+    (e.g. C:/tools/zigzag/cc).
+    """
+    if "ziglang" in cc:
+        return True
+    exe = os.path.splitext(os.path.basename(cc[0]))[0].lower() if cc else ""
+    return exe == "zig"
 
 
 def find_c_compiler():
@@ -97,15 +105,18 @@ def main(argv=None):
 
     cc = find_c_compiler()
     if cc is None:
-        default = base + (".o" if args.freestanding else "")
-        out = args.output or (default or base)
+        out = args.output or (base + ".o" if args.freestanding else base)
         fallback = base + ".c"
         with open(fallback, "w", encoding="utf-8") as fh:
             fh.write(c_source)
+        if args.freestanding:
+            hint = f"gcc -ffreestanding -c {fallback} -o {out}"
+        else:
+            hint = f"gcc {fallback} -o {out}"
         print(
             f"mortc: no C compiler (cc/gcc/clang) found on PATH.\n"
             f"       Wrote generated C to {fallback!r} — compile it with e.g. "
-            f"`gcc {fallback} -o {out}`.",
+            f"`{hint}`.",
             file=sys.stderr,
         )
         return 2
