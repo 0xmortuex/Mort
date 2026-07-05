@@ -179,6 +179,47 @@ def test_global_shared_across_functions():
     assert result.stdout == "12\n"
 
 
+def test_array_codegen():
+    c = c_of("fn main() -> int { let a: [i32; 3] = [10, 20, 30]; a[0] = 99; print(a[0] as i64); return 0; }")
+    assert "int32_t m_a[3] = {10, 20, 30};" in c
+    assert "m_a[0] = 99;" in c
+    assert "m_a[0]" in c
+
+
+def test_array_repeat_codegen():
+    c = c_of("fn main() -> int { let a: [u8; 4] = [0; 4]; print(a[0] as i64); return 0; }")
+    assert "uint8_t m_a[4] = {0, 0, 0, 0};" in c
+
+
+def test_array_inferred_type():
+    c = c_of("fn main() -> int { let a = [1, 2, 3]; print(a[1] as i64); return 0; }")
+    assert "int64_t m_a[3] = {1, 2, 3};" in c
+
+
+def test_global_array_codegen():
+    c = c_of("let table: [i32; 3] = [7, 8, 9]; fn main() -> int { print(table[2] as i64); return 0; }")
+    assert "static int32_t m_table[3] = {7, 8, 9};" in c
+
+
+@needs_cc
+def test_array_sum_runs():
+    src = ("fn main() -> int {"
+           "  let a: [i32; 4] = [10, 20, 30, 40];"
+           "  a[1] = 5;"
+           "  let sum: i32 = 0; let i: u32 = 0;"
+           "  while i < 4 { sum = sum + a[i]; i = i + 1; }"
+           "  print(sum as i64); return 0; }")   # 10 + 5 + 30 + 40 = 85
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "a.c")
+        exe = os.path.join(d, "a.exe" if os.name == "nt" else "a")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "85\n"
+
+
 def test_port_io_helpers_only_when_used():
     c = c_free("fn kmain() { let x: u8 = 1; }")
     assert "mort_inb" not in c and "mort_outb" not in c
@@ -342,6 +383,14 @@ def test_kernel_builds_multiboot_elf():
     # a global must be initialised with a constant, not another variable
     ("let a: i64 = 1; let b: i64 = a; fn main() -> int { return 0; }", "must be initialised with a constant"),
     ("let x: i64 = 0; fn x() { } fn main() -> int { return 0; }", "conflicts with another name"),
+    # arrays
+    ("fn main() -> int { let x: i32 = 1; print(x[0] as i64); return 0; }", "not an array"),
+    ("fn main() -> int { let a: [i32; 3] = [1, 2]; return 0; }", "expects 3 elements"),
+    ("fn main() -> int { let a: [i32; 2] = [1, 2]; let b: [i32; 2] = [3, 4]; a = b; return 0; }",
+     "cannot assign to a whole array"),
+    ("fn main() -> int { let a: [u8; 2] = [1, 300]; return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let a: [i32; 2] = [1, 2]; print(a[true] as i64); return 0; }",
+     "index must be an integer"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
@@ -359,6 +408,7 @@ EXPECTED = {
     "types.mx": "255\n1000000\n-300\n255\n",
     "structs.mx": "3\n7\n13\n100\n",
     "asm.mx": "1\n2\n",
+    "arrays.mx": "0\n55\n100\n",
 }
 
 

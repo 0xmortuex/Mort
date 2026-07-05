@@ -32,6 +32,8 @@ class T(Enum):
     ARROW = auto()
     DOT = auto()
     AMP = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
     # operators
     ASSIGN = auto()
     PLUS = auto()

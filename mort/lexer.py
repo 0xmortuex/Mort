@@ -22,6 +22,8 @@ _ONE_CHAR = {
     ":": T.COLON,
     ".": T.DOT,
     "&": T.AMP,
+    "[": T.LBRACKET,
+    "]": T.RBRACKET,
     "=": T.ASSIGN,
     "+": T.PLUS,
     "-": T.MINUS,

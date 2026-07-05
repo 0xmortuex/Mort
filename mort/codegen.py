@@ -16,6 +16,16 @@ _C_BASE = {
 }
 
 
+def _is_array(t):
+    return t.startswith("[")
+
+
+def _array_parts(t):
+    inner = t[1:-1]
+    cut = inner.rfind(";")
+    return inner[:cut], int(inner[cut + 1:])
+
+
 def c_type(t, struct_names=frozenset()):
     """Map a Mort type string to its C spelling.
 
@@ -39,6 +49,16 @@ class CodeGen:
     def _ct(self, t):
         return c_type(t, self.struct_names)
 
+    def _var_decl(self, var_type, cname, init=None):
+        """A C declaration for a variable/field, handling arrays (whose size
+        sits after the name): '[i32;8]' -> 'int32_t cname[8]'."""
+        if _is_array(var_type):
+            elem, n = _array_parts(var_type)
+            decl = f"{self._ct(elem)} {cname}[{n}]"
+        else:
+            decl = f"{self._ct(var_type)} {cname}"
+        return decl if init is None else f"{decl} = {init}"
+
     def _emit(self, s=""):
         self.lines.append(("    " * self.indent + s) if s else "")
 
@@ -52,7 +72,7 @@ class CodeGen:
         # StrLit and port-I/O call registers itself), so the string table and
         # helpers can be emitted ahead of the code that references them.
         global_decls = [
-            f"static {self._ct(g.var_type)} m_{g.name} = {self._gen_expr(g.expr)};"
+            "static " + self._var_decl(g.var_type, "m_" + g.name, self._gen_expr(g.expr)) + ";"
             for g in self.program.globals
         ]
         saved = self.lines
@@ -121,7 +141,7 @@ class CodeGen:
         self._emit(f"struct mort_{s.name} {{")
         self.indent += 1
         for fld in s.fields:
-            self._emit(f"{self._ct(fld.typ)} f_{fld.name};")
+            self._emit(self._var_decl(fld.typ, "f_" + fld.name) + ";")
         self.indent -= 1
         self._emit("};")
 
@@ -143,7 +163,7 @@ class CodeGen:
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
-            self._emit(f"{self._ct(s.var_type)} m_{s.name} = {self._gen_expr(s.expr)};")
+            self._emit(self._var_decl(s.var_type, "m_" + s.name, self._gen_expr(s.expr)) + ";")
         elif isinstance(s, A.Assign):
             self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Asm):
@@ -229,6 +249,13 @@ class CodeGen:
             return f"(struct mort_{e.name}){{ {inits} }}"
         if isinstance(e, A.FieldAccess):
             return f"({self._gen_expr(e.obj)}).f_{e.field}"
+        if isinstance(e, A.Index):
+            return f"{self._gen_expr(e.obj)}[{self._gen_expr(e.index)}]"
+        if isinstance(e, A.ArrayLit):
+            return "{" + ", ".join(self._gen_expr(el) for el in e.elements) + "}"
+        if isinstance(e, A.ArrayRepeat):
+            v = self._gen_expr(e.value)
+            return "{" + ", ".join([v] * e.count) + "}"
         if isinstance(e, A.Unary):
             return f"({e.op}{self._gen_expr(e.operand)})"
         if isinstance(e, A.Binary):

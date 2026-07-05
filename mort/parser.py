@@ -86,6 +86,14 @@ class Parser:
         if self._at(T.STAR):
             self._advance()
             return "*" + self._type_name()
+        # array type: [T; N]
+        if self._at(T.LBRACKET):
+            self._advance()
+            elem = self._type_name()
+            self._expect(T.SEMI, "';'")
+            n = self._expect(T.INT, "an array size").value
+            self._expect(T.RBRACKET, "']'")
+            return f"[{elem};{n}]"
         tok = self._peek()
         if tok.type == T.KW_INT:
             self._advance()
@@ -221,11 +229,12 @@ class Parser:
 
     @staticmethod
     def _is_lvalue(e):
-        # a name, a pointer dereference (*p), or a field (s.x) — all locations
+        # a name, deref (*p), field (s.x), or index (a[i]) — all locations
         return (
             isinstance(e, A.Var)
             or (isinstance(e, A.Unary) and e.op == "*")
             or isinstance(e, A.FieldAccess)
+            or isinstance(e, A.Index)
         )
 
     # ----- expressions -----
@@ -309,6 +318,11 @@ class Parser:
                 dot = self._advance()
                 field = self._expect(T.IDENT, "field name").value
                 expr = A.FieldAccess(expr, field, dot.line)
+            elif self._at(T.LBRACKET):
+                lb = self._advance()
+                index = self._expression()
+                self._expect(T.RBRACKET, "']'")
+                expr = A.Index(expr, index, lb.line)
             else:
                 return expr
 
@@ -326,6 +340,8 @@ class Parser:
         if t.type == T.STRING:
             self._advance()
             return A.StrLit(t.value, t.line)
+        if t.type == T.LBRACKET:
+            return self._array_lit()
         if t.type == T.IDENT:
             # struct literal:  Name { field: expr, ... }
             if self._peek(1).type == T.LBRACE and not self._no_struct_lit:
@@ -359,3 +375,22 @@ class Parser:
                 break
         self._expect(T.RBRACE, "'}'")
         return A.StructLit(name_tok.value, fields, line)
+
+    def _array_lit(self):
+        line = self._advance().line  # '['
+        if self._at(T.RBRACKET):
+            raise MortError("empty array literal is not allowed", line)
+        first = self._expression()
+        if self._at(T.SEMI):                 # repeat form: [value; count]
+            self._advance()
+            count = self._expect(T.INT, "an array repeat count").value
+            self._expect(T.RBRACKET, "']'")
+            return A.ArrayRepeat(first, count, line)
+        elements = [first]                   # list form: [a, b, c]
+        while self._at(T.COMMA):
+            self._advance()
+            if self._at(T.RBRACKET):
+                break                        # tolerate a trailing comma
+            elements.append(self._expression())
+        self._expect(T.RBRACKET, "']'")
+        return A.ArrayLit(elements, line)

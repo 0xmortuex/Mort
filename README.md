@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-76%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -64,13 +64,15 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.5)
+## The language (v0.6)
 
 - **Types:** `bool`, `int` (alias for `i64`), the fixed-width integers
   `i8 i16 i32 i64 u8 u16 u32 u64`, and user **structs**.
 - **Strings:** string literals `"hi"` are `*u8` — a pointer to static,
   NUL-terminated bytes. Walk them by casting the pointer to an integer, adding
   an offset, and casting back (used by the kernel's `print_string`).
+- **Arrays:** fixed-size `[T; N]` with literal (`[1, 2, 3]`) or repeat
+  (`[0; 8]`) initialisers and `a[i]` indexing (read and write).
 - **Structs:** `struct Point { x: i64, y: i64 }`, construct with
   `Point { x: 3, y: 4 }`, read/write fields with `p.x`, pass by value, and
   mutate through a pointer with `(*p).x = 1;`.

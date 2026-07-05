@@ -50,6 +50,17 @@ def pointee(t):
     return t[1:]
 
 
+def is_array(t):
+    return isinstance(t, str) and t.startswith("[")
+
+
+def array_parts(t):
+    """'[i32;8]' -> ('i32', 8). Splits on the last ';' to allow nested arrays."""
+    inner = t[1:-1]
+    cut = inner.rfind(";")
+    return inner[:cut], int(inner[cut + 1:])
+
+
 class Checker:
     def __init__(self, program, freestanding=False):
         self.program = program
@@ -63,14 +74,14 @@ class Checker:
     def _error(self, msg, node):
         raise MortError(msg, getattr(node, "line", None))
 
-    def _base(self, t):
-        while is_ptr(t):
-            t = pointee(t)
-        return t
-
     def _valid_type(self, t):
-        """A type is usable as a value/field/param if its base is known."""
-        return self._base(t) in INT_TYPES or self._base(t) in ("bool",) or self._base(t) in self.structs
+        """A type is usable if its (possibly pointed-to / element) base is known."""
+        if is_ptr(t):
+            return self._valid_type(pointee(t))
+        if is_array(t):
+            elem, n = array_parts(t)
+            return n > 0 and self._valid_type(elem)
+        return t in INT_TYPES or t == "bool" or t in self.structs
 
     def check(self):
         # 1. collect struct names first so fields may reference any struct
@@ -110,6 +121,12 @@ class Checker:
             if (g.name in self.globals or g.name in self.funcs
                     or g.name in self.structs or g.name in BUILTIN_NAMES):
                 self._error(f"global {g.name!r} conflicts with another name", g)
+            if isinstance(g.expr, (A.ArrayLit, A.ArrayRepeat)):
+                g.var_type = self._check_array_expr(g.expr, g.decl_type, g)
+                if not self._is_const_init(g.expr):
+                    self._error(f"global {g.name!r} must be initialised with constants", g)
+                self.globals[g.name] = g.var_type
+                continue
             t = self._check_expr(g.expr)
             if t == "void":
                 self._error("cannot bind a void value to a global", g)
@@ -154,12 +171,54 @@ class Checker:
         """Globals need a compile-time-constant initialiser."""
         if isinstance(expr, (A.BoolLit, A.StrLit)):
             return True
+        if isinstance(expr, A.ArrayRepeat):
+            return self._is_const_init(expr.value)
+        if isinstance(expr, A.ArrayLit):
+            return all(self._is_const_init(el) for el in expr.elements)
         return bool(getattr(expr, "is_lit", False))  # int literal expression
 
     def _declare(self, name, typ, node):
         if name in self.scopes[-1]:
             self._error(f"variable {name!r} already declared in this scope", node)
         self.scopes[-1][name] = typ
+
+    def _check_array_expr(self, expr, decl_type, node):
+        """Check an array literal / repeat against an optional declared type.
+
+        Returns the resolved '[elem;n]' type. Elements are coerced to the
+        element type (with range checks); size must match a declared type.
+        """
+        elem = size = None
+        if decl_type is not None:
+            if not is_array(decl_type):
+                self._error(f"type mismatch: array value assigned to {decl_type}", node)
+            if not self._valid_type(decl_type):
+                self._error(f"unknown type {decl_type}", node)
+            elem, size = array_parts(decl_type)
+
+        if isinstance(expr, A.ArrayRepeat):
+            self._check_expr(expr.value)
+            if elem is None:
+                elem, size = expr.value.type, expr.count
+            else:
+                if expr.count != size:
+                    self._error(f"array size mismatch: declared {size}, literal has {expr.count}", node)
+                if not self._coerce(elem, expr.value):
+                    self._error(f"array element expects {elem}, got {expr.value.type}", node)
+        else:  # ArrayLit
+            for el in expr.elements:
+                self._check_expr(el)
+            if elem is None:
+                elem, size = expr.elements[0].type, len(expr.elements)
+            elif len(expr.elements) != size:
+                self._error(
+                    f"array expects {size} elements, got {len(expr.elements)}", node)
+            for el in expr.elements:
+                if not self._coerce(elem, el):
+                    self._error(f"array element expects {elem}, got {el.type}", node)
+
+        expr.type = f"[{elem};{size}]"
+        return expr.type
 
     def _check_fn(self, f):
         self.current_ret = f.ret
@@ -228,12 +287,19 @@ class Checker:
     # ----- statements -----
     def _check_stmt(self, s):
         if isinstance(s, A.Let):
+            if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
+                s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
+                self._declare(s.name, s.var_type, s)
+                return
             t = self._check_expr(s.expr)
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if s.decl_type:
                 if not self._valid_type(s.decl_type):
                     self._error(f"variable {s.name!r} has unknown type {s.decl_type}", s)
+                if is_array(s.decl_type):
+                    self._error("an array must be initialised with an array literal "
+                                "([..] or [value; n])", s)
                 if not self._coerce(s.decl_type, s.expr):
                     self._error(
                         f"type mismatch: {s.name!r} is annotated {s.decl_type} "
@@ -245,6 +311,8 @@ class Checker:
 
         elif isinstance(s, A.Assign):
             tt = self._check_expr(s.target)
+            if is_array(tt):
+                self._error("cannot assign to a whole array; assign elements via a[i]", s)
             self._check_expr(s.expr)
             if not self._coerce(tt, s.expr):
                 self._error(
@@ -403,6 +471,21 @@ class Checker:
             if e.field not in self.structs[ot]:
                 self._error(f"struct {ot!r} has no field {e.field!r}", e)
             return self.structs[ot][e.field]
+
+        if isinstance(e, A.Index):
+            ot = self._check_expr(e.obj)
+            if not is_array(ot):
+                self._error(f"cannot index a value of type {ot} (not an array)", e)
+            it = self._check_expr(e.index)
+            if it not in INT_TYPES:
+                self._error(f"array index must be an integer, got {it}", e)
+            elem, _ = array_parts(ot)
+            return elem
+
+        if isinstance(e, (A.ArrayLit, A.ArrayRepeat)):
+            self._error(
+                "an array literal is only allowed as a variable's initialiser "
+                "(let x: [T; N] = ...)", e)
 
         if isinstance(e, A.Call):
             return self._infer_call(e)

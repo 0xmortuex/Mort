@@ -1,0 +1,18 @@
+// Fixed-size arrays: literal init, repeat init, and indexing (read + write).
+fn main() -> int {
+    let squares: [i32; 5] = [1, 4, 9, 16, 25];
+    let zeros: [u8; 3] = [0; 3];      // repeat form
+    print(zeros[0] as i64);           // 0
+
+    let sum: i32 = 0;
+    let i: u32 = 0;
+    while i < 5 {
+        sum = sum + squares[i];
+        i = i + 1;
+    }
+    print(sum as i64);                // 55
+
+    squares[0] = 100;                 // index assignment
+    print(squares[0] as i64);         // 100
+    return 0;
+}

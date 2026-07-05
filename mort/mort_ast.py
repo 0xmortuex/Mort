@@ -190,3 +190,26 @@ class FieldAccess(Node):
         self.obj = obj
         self.field = field
         self.line = line
+
+
+class ArrayLit(Node):
+    def __init__(self, elements, line):
+        super().__init__()
+        self.elements = elements  # list of expressions
+        self.line = line
+
+
+class ArrayRepeat(Node):
+    def __init__(self, value, count, line):
+        super().__init__()
+        self.value = value  # expression
+        self.count = count  # int literal count
+        self.line = line
+
+
+class Index(Node):
+    def __init__(self, obj, index, line):
+        super().__init__()
+        self.obj = obj
+        self.index = index
+        self.line = line
