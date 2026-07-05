@@ -3,7 +3,8 @@
 
     python kernel/build.py build     # compile + link -> kernel/build/kernel.elf
     python kernel/build.py check     # build, then verify it's a valid multiboot kernel
-    python kernel/build.py run       # build, then boot it in QEMU
+    python kernel/build.py run       # build, then boot it fullscreen in QEMU
+    python kernel/build.py window    # same, but in a normal window
 
 The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
 C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
@@ -121,20 +122,35 @@ def _find_qemu():
     return None
 
 
-def run():
+def _run(fullscreen):
     build()
     qemu = _find_qemu()
     if not qemu:
         sys.exit("qemu-system-i386 not found — install QEMU (e.g. `winget install "
                  "SoftwareFreedomConservancy.QEMU`) to boot the kernel.")
-    print("Booting MORT OS in QEMU. Maximise the window to scale it up; "
-          "Ctrl+Alt+G releases the mouse; close the window to exit.")
-    # zoom-to-fit scales the little 80x25 console up when you resize the window.
+    # GTK display: hide the menu bar and scale the 80x25 console to the window.
+    display = "gtk,zoom-to-fit=on,show-menubar=off"
+    cmd = [qemu, "-display", display, "-kernel", ELF]
+    if fullscreen:
+        cmd.insert(1, "-full-screen")
+        print("Booting MORT OS fullscreen. Ctrl+Alt+F toggles fullscreen, "
+              "Ctrl+Alt+G releases the mouse, Ctrl+Alt+Q quits.")
+    else:
+        print("Booting MORT OS. Maximise the window to scale it up; "
+              "Ctrl+Alt+G releases the mouse; close the window to exit.")
     # A list argv lets subprocess quote the (space-containing) ELF path for us.
-    subprocess.run([qemu, "-display", "gtk,zoom-to-fit=on", "-kernel", ELF])
+    subprocess.run(cmd)
 
 
-COMMANDS = {"build": build, "check": check, "run": run}
+def run():
+    _run(fullscreen=True)
+
+
+def run_windowed():
+    _run(fullscreen=False)
+
+
+COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"
