@@ -320,6 +320,9 @@ class Parser:
         if t.type == T.FALSE:
             self._advance()
             return A.BoolLit(False, t.line)
+        if t.type == T.STRING:
+            self._advance()
+            return A.StrLit(t.value, t.line)
         if t.type == T.IDENT:
             # struct literal:  Name { field: expr, ... }
             if self._peek(1).type == T.LBRACE and not self._no_struct_lit:

@@ -117,6 +117,35 @@ def test_asm_codegen():
     assert '__asm__ volatile ("nop");' in c
 
 
+def test_string_literal_codegen():
+    c = c_of('fn main() -> int { let s: *u8 = "AB"; print(*s as i64); return 0; }')
+    assert '(uint8_t*)"AB"' in c
+    assert "uint8_t* m_s =" in c
+
+
+@needs_cc
+def test_string_literal_runs():
+    # walk a string literal's bytes: cast ptr->int, offset, cast back, deref.
+    src = (
+        'fn main() -> int {'
+        '  let s: *u8 = "AB";'
+        '  let a: *u8 = (s as u64 + 0) as *u8;'
+        '  let b: *u8 = (s as u64 + 1) as *u8;'
+        '  print(*a as i64);'   # 65
+        '  print(*b as i64);'   # 66
+        '  return 0; }'
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "s.c")
+        exe = os.path.join(d, "s.exe" if os.name == "nt" else "s")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "65\n66\n"
+
+
 def test_struct_pointer_field_write():
     src = (
         "struct P { x: i64 } "

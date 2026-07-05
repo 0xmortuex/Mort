@@ -212,6 +212,8 @@ class Checker:
             return "i64"
         if isinstance(e, A.BoolLit):
             return "bool"
+        if isinstance(e, A.StrLit):
+            return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.Var):
             vt = self._lookup(e.name)
             if vt is None:

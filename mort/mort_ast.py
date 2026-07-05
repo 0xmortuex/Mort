@@ -128,6 +128,13 @@ class BoolLit(Node):
         self.line = line
 
 
+class StrLit(Node):
+    def __init__(self, value, line):
+        super().__init__()
+        self.value = value  # raw inner text; escapes preserved for C emission
+        self.line = line
+
+
 class Var(Node):
     def __init__(self, name, line):
         super().__init__()

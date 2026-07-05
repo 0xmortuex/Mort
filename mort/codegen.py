@@ -151,6 +151,9 @@ class CodeGen:
             return str(e.value)
         if isinstance(e, A.BoolLit):
             return "true" if e.value else "false"
+        if isinstance(e, A.StrLit):
+            # a C string literal (static, NUL-terminated) viewed as bytes
+            return f'(uint8_t*)"{e.value}"'
         if isinstance(e, A.Var):
             return f"m_{e.name}"
         if isinstance(e, A.Cast):

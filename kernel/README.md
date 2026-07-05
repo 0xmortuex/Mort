@@ -54,7 +54,8 @@ x86 multiboot kernel. `run` boots it; you should see **MORT OS BOOTED** in green
 ## Status & roadmap
 
 - [x] Boots in QEMU and prints to VGA text mode.
-- [ ] A `print`/string routine written in Mort (needs arrays or a small
-      built-in) so messages aren't written cell by cell.
+- [x] A `print_string` routine written in Mort using string literals (`*u8`),
+      so messages are real strings, not cell-by-cell writes.
+- [ ] Inline assembly with operands (needed for `inb`/`outb` port I/O).
 - [ ] Keyboard input via interrupts (IDT + PIC).
 - [ ] A minimal interactive shell.

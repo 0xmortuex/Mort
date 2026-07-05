@@ -45,7 +45,8 @@ def build():
         fh.write(c_source)
 
     c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
-               "-fno-pie", "-O2"]
+               "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
+               "-O2"]
     asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
     kmain_o = os.path.join(BUILD, "kmain.o")
     boot_o = os.path.join(BUILD, "boot.o")
@@ -69,17 +70,32 @@ def check():
     build()
     with open(ELF, "rb") as fh:
         data = fh.read()
-    assert data[:4] == b"\x7fELF", "output is not an ELF file"
-    assert data[4] == 1, "expected a 32-bit (ELFCLASS32) kernel"
-    machine = struct.unpack("<H", data[18:20])[0]
-    assert machine == 0x03, f"expected EM_386 (0x03), got {hex(machine)}"
 
-    # The multiboot magic must be 4-byte aligned within the first 8 KiB.
-    magic = (0x1BADB002).to_bytes(4, "little")
+    # Explicit raises (not assert) so `python -O` can't silently skip validation.
+    def require(cond, msg):
+        if not cond:
+            sys.exit(f"kernel check FAILED: {msg}")
+
+    require(data[:4] == b"\x7fELF", "output is not an ELF file")
+    require(data[4] == 1, "expected a 32-bit (ELFCLASS32) kernel")
+    machine = struct.unpack("<H", data[18:20])[0]
+    require(machine == 0x03, f"expected EM_386 (0x03), got {hex(machine)}")
+
+    # Validate the whole multiboot header (magic, flags, checksum), 4-byte
+    # aligned within the first 8 KiB — not just the magic word.
+    MAGIC = 0x1BADB002
     head = data[:8192]
-    offset = next((i for i in range(0, len(head) - 3, 4) if head[i:i + 4] == magic), -1)
-    assert offset >= 0, "multiboot header not found in the first 8 KiB"
-    print(f"OK: 32-bit x86 multiboot ELF; header at file offset {offset}")
+    offset = -1
+    for i in range(0, len(head) - 11, 4):
+        if struct.unpack("<I", head[i:i + 4])[0] == MAGIC:
+            offset = i
+            break
+    require(offset >= 0, "multiboot magic not found in the first 8 KiB")
+    magic, flags, checksum = struct.unpack("<III", head[offset:offset + 12])
+    require((magic + flags + checksum) & 0xFFFFFFFF == 0,
+            "multiboot checksum invalid (magic + flags + checksum != 0)")
+
+    print(f"OK: 32-bit x86 multiboot ELF; valid header at file offset {offset}")
     print("Boot it with:  python kernel/build.py run")
 
 

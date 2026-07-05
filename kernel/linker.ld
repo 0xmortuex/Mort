@@ -12,4 +12,8 @@ SECTIONS
     .rodata    : { *(.rodata*) }
     .data      : { *(.data*) }
     .bss       : { *(.bss*) *(COMMON) }
+
+    /* Freestanding kernels don't unwind exceptions — drop the dead metadata
+     * so it can't precede .text or bloat the boot image. */
+    /DISCARD/  : { *(.eh_frame*) *(.eh_frame_hdr) *(.note*) *(.comment) }
 }

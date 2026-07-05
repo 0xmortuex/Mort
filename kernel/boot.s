@@ -11,7 +11,9 @@
 .set MB_MAGIC, 0x1BADB002
 .set MB_CHECK, -(MB_MAGIC + MB_FLAGS)
 
-.section .multiboot
+/* "a" = allocatable: without it the section is not part of the load image, so
+ * the linker won't actually place the header first (it drifts by file offset). */
+.section .multiboot, "a", @progbits
 .align 4
 .long MB_MAGIC
 .long MB_FLAGS

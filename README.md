@@ -56,10 +56,13 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.3)
+## The language (v0.4)
 
 - **Types:** `bool`, `int` (alias for `i64`), the fixed-width integers
   `i8 i16 i32 i64 u8 u16 u32 u64`, and user **structs**.
+- **Strings:** string literals `"hi"` are `*u8` — a pointer to static,
+  NUL-terminated bytes. Walk them by casting the pointer to an integer, adding
+  an offset, and casting back (used by the kernel's `print_string`).
 - **Structs:** `struct Point { x: i64, y: i64 }`, construct with
   `Point { x: 3, y: 4 }`, read/write fields with `p.x`, pass by value, and
   mutate through a pointer with `(*p).x = 1;`.
@@ -157,7 +160,8 @@ they skip automatically if no C compiler is available.
 - [x] **Phase 2b — Aggregates & asm:** structs (fields, construction, by-value, pointer mutation) and an inline-assembly escape hatch (`asm("...")`).
 - [x] **Phase 3 — Freestanding mode:** `--freestanding` drops libc/`print`/`main` and emits a real x86-64 bare-metal ELF object (via the Zig backend).
 - [x] **Phase 4a — It boots:** a multiboot kernel written in Mort ([`kernel/`](kernel/)) that runs in QEMU and prints to VGA text mode. `python kernel/build.py run`.
-- [ ] **Phase 4b — Interactive:** a string/`print` routine in Mort, keyboard input via interrupts (IDT + PIC), and a minimal shell.
+- [x] **Phase 4b — Strings:** string literals (`*u8`) in the language and a `print_string` VGA routine written in Mort, so the kernel prints real messages.
+- [ ] **Phase 4c — Interactive:** inline asm with operands (for port I/O), keyboard input via interrupts (IDT + PIC), and a minimal shell.
 
 ## License
 
