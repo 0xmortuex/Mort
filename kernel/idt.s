@@ -67,14 +67,22 @@ set_gate:
     ret
 
 load_idt:
-    mov $idt_start, %edi              /* fill every gate with default_isr */
-    mov $256, %ecx
-1:
+    mov $idt_start, %edi              /* vectors 0..31: CPU exceptions       */
+    mov $32, %ecx
+.fill_exc:
+    mov $exception_isr, %eax
+    call set_gate
+    add $8, %edi
+    dec %ecx
+    jnz .fill_exc
+
+    mov $224, %ecx                    /* vectors 32..255: IRQ-style default  */
+.fill_irq:                            /* (edi already points at entry 32)    */
     mov $default_isr, %eax
     call set_gate
     add $8, %edi
     dec %ecx
-    jnz 1b
+    jnz .fill_irq
 
     mov $idt_start, %edi              /* then point the keyboard gate at us  */
     add $(KBD_VECTOR * 8), %edi
@@ -121,3 +129,28 @@ default_isr:
     outb %al, $0x20
     popa
     iret
+
+/* CPU exceptions (vectors 0..31). Some push an error code and none are IRQs, so
+ * we must NOT treat them like default_isr (EOI + iret over a mismatched stack).
+ * With no recovery path, print a message on the last row and halt — a clean,
+ * visible stop instead of a silent triple fault. We never iret, so whether or
+ * not an error code was pushed is irrelevant. */
+exception_isr:
+    cli
+    cld
+    mov $exc_msg, %esi
+    mov $0xB8F00, %edi                /* row 24, column 0 */
+.exc_putc:
+    lodsb
+    testb %al, %al
+    jz .exc_hang
+    movb %al, (%edi)
+    movb $0x4F, 1(%edi)               /* white on red */
+    add $2, %edi
+    jmp .exc_putc
+.exc_hang:
+    hlt
+    jmp .exc_hang
+
+exc_msg:
+    .asciz "*** CPU EXCEPTION -- HALTED ***"

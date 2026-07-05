@@ -105,12 +105,30 @@ def check():
     print("Boot it with:  python kernel/build.py run")
 
 
+def _find_qemu():
+    found = shutil.which("qemu-system-i386")
+    if found:
+        return found
+    # Windows: QEMU installs here but usually isn't added to PATH.
+    import glob
+    for pattern in (
+        r"C:\Program Files\qemu\qemu-system-i386.exe",
+        r"C:\Program Files*\qemu*\qemu-system-i386.exe",
+    ):
+        hits = glob.glob(pattern)
+        if hits:
+            return hits[0]
+    return None
+
+
 def run():
     build()
-    qemu = shutil.which("qemu-system-i386")
+    qemu = _find_qemu()
     if not qemu:
-        sys.exit("qemu-system-i386 not found — install QEMU to boot the kernel.")
+        sys.exit("qemu-system-i386 not found — install QEMU (e.g. `winget install "
+                 "SoftwareFreedomConservancy.QEMU`) to boot the kernel.")
     print("Booting MORT OS in QEMU (close the window to exit)...")
+    # A list argv lets subprocess quote the (space-containing) ELF path for us.
     subprocess.run([qemu, "-kernel", ELF])
 
 
