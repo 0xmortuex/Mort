@@ -59,10 +59,18 @@ def find_c_compiler():
         found = shutil.which(cc)
         if found:
             return [found]
+    return find_zig()
+
+
+def find_zig():
+    """Find a Zig C compiler specifically, or None.
+
+    The kernel build needs Zig (not just any cc) because it cross-compiles to
+    32-bit x86 bare metal, which a stock host gcc usually can't do. Prefers a
+    `zig` on PATH, then the `pip install ziglang` module.
+    """
     if shutil.which("zig"):
         return ["zig", "cc"]
-    # `pip install ziglang` puts a full C compiler behind a Python module —
-    # a zero-fuss option on Windows where no system compiler is present.
     try:
         import ziglang  # noqa: F401
         return [sys.executable, "-m", "ziglang", "cc"]

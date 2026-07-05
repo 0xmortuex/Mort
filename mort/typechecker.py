@@ -15,6 +15,7 @@ from . import mort_ast as A
 INT_TYPES = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
+BUILTIN_NAMES = {"print", "outb", "inb"}
 
 
 def is_ptr(t):
@@ -69,7 +70,7 @@ class Checker:
 
         # 3. collect and validate function signatures
         for f in self.program.funcs:
-            if f.name in self.funcs or f.name == "print":
+            if f.name in self.funcs or f.name in BUILTIN_NAMES:
                 self._error(f"function {f.name!r} is already defined", f)
             for p in f.params:
                 if not self._valid_type(p.typ):
@@ -342,6 +343,25 @@ class Checker:
             if at not in INT_TYPES:
                 self._error(f"print expects an integer, got {at}", e)
             return "void"
+        if e.name == "outb":
+            # outb(port: u16, value: u8) — write a byte to an I/O port
+            if len(e.args) != 2:
+                self._error("outb expects 2 arguments (port, value)", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u16", e.args[0]):
+                self._error(f"outb port must be u16, got {e.args[0].type}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u8", e.args[1]):
+                self._error(f"outb value must be u8, got {e.args[1].type}", e)
+            return "void"
+        if e.name == "inb":
+            # inb(port: u16) -> u8 — read a byte from an I/O port
+            if len(e.args) != 1:
+                self._error("inb expects 1 argument (port)", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u16", e.args[0]):
+                self._error(f"inb port must be u16, got {e.args[0].type}", e)
+            return "u8"
         if e.name not in self.funcs:
             self._error(f"call to undefined function {e.name!r}", e)
         ptypes, ret = self.funcs[e.name]

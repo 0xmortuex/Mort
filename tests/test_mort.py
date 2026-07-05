@@ -31,6 +31,10 @@ def c_of(src):
 _CC = mortc.find_c_compiler()
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
 
+# The kernel build needs Zig specifically (32-bit cross-compile).
+_ZIG = mortc.find_zig()
+needs_zig = pytest.mark.skipif(_ZIG is None, reason="kernel build needs the Zig backend")
+
 
 # ---------- front-end: valid programs ----------
 
@@ -129,6 +133,21 @@ def test_string_literal_is_writable():
     assert "(*m_s) = 67;" in c
 
 
+def test_port_io_builtins_codegen():
+    # inb/outb are privileged (can't run in userspace), so verify codegen only.
+    c = c_free("fn kmain() { outb(0x20, 0x20); let s: u8 = inb(0x60); }")
+    assert "mort_outb(uint16_t port, uint8_t val)" in c
+    assert "mort_inb(uint16_t port)" in c
+    assert '"outb %0, %1"' in c
+    assert "mort_outb(32, 32);" in c
+    assert "uint8_t m_s = mort_inb(96);" in c
+
+
+def test_port_io_helpers_only_when_used():
+    c = c_free("fn kmain() { let x: u8 = 1; }")
+    assert "mort_inb" not in c and "mort_outb" not in c
+
+
 @needs_cc
 def test_string_literal_runs():
     # walk a string literal's bytes: cast ptr->int, offset, cast back, deref.
@@ -214,10 +233,8 @@ def test_freestanding_object_builds():
 
 # ---------- Phase 4: the bootable kernel ----------
 
-@needs_cc
+@needs_zig
 def test_kernel_builds_multiboot_elf():
-    if not mortc.is_zig(_CC):
-        pytest.skip("kernel build needs the Zig backend")
     build_py = os.path.join(ROOT, "kernel", "build.py")
     r = subprocess.run([sys.executable, build_py, "check"],
                        capture_output=True, text=True)
@@ -252,6 +269,9 @@ def test_kernel_builds_multiboot_elf():
     ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1 }; let q: *P = &p; print(q.x); return 0; }",
      "through a pointer"),
     ("fn main() -> int { let a: Nope = 0; return 0; }", "unknown type"),
+    ("fn main() -> int { outb(0x20); return 0; }", "outb expects 2 arguments"),
+    ("fn main() -> int { let x: u8 = inb(1, 2); return 0; }", "inb expects 1 argument"),
+    ("fn outb() { } fn main() -> int { return 0; }", "already defined"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:

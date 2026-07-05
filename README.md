@@ -82,7 +82,8 @@ C `main`, so the output is an ordinary native binary.
 - **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
 - **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
   integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
-- **Builtins:** `print(<any integer>)`.
+- **Builtins:** `print(<any integer>)` (hosted), plus `outb(port: u16, value: u8)`
+  and `inb(port: u16) -> u8` for x86 port I/O (lowered to inline `in`/`out`).
 - **Comments:** `// to end of line`.
 
 Everything is statically type-checked before a single line of C is emitted:
@@ -165,7 +166,7 @@ they skip automatically if no C compiler is available.
 - [x] **Phase 3 — Freestanding mode:** `--freestanding` drops libc/`print`/`main` and emits a real x86-64 bare-metal ELF object (via the Zig backend).
 - [x] **Phase 4a — It boots:** a multiboot kernel written in Mort ([`kernel/`](kernel/)) that runs in QEMU and prints to VGA text mode. `python kernel/build.py run`.
 - [x] **Phase 4b — Strings:** string literals (`*u8`) in the language and a `print_string` VGA routine written in Mort, so the kernel prints real messages.
-- [ ] **Phase 4c — Interactive:** inline asm with operands (for port I/O), keyboard input via interrupts (IDT + PIC), and a minimal shell.
+- [ ] **Phase 4c — Interactive:** port I/O builtins (`inb`/`outb`) ✅, then keyboard input (polling the PS/2 controller) and a minimal shell.
 
 ## License
 

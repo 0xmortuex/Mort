@@ -27,8 +27,10 @@ ELF = os.path.join(BUILD, "kernel.elf")
 
 
 def _zig():
-    cc = mortc.find_c_compiler()
-    if not cc or not mortc.is_zig(cc):
+    # The kernel cross-compiles to 32-bit x86, so it needs Zig specifically —
+    # not whatever host cc find_c_compiler() would prefer.
+    cc = mortc.find_zig()
+    if not cc:
         sys.exit("kernel build needs the Zig backend — run: pip install ziglang")
     return cc
 
