@@ -201,6 +201,15 @@ def test_global_array_codegen():
     assert "static int32_t m_table[3] = {7, 8, 9};" in c
 
 
+def test_struct_array_field():
+    src = ("struct S { xs: [i32; 2] } "
+           "fn main() -> int { let s: S = S { xs: [10, 20] }; print(s.xs[1] as i64); return 0; }")
+    c = c_of(src)
+    assert "int32_t f_xs[2];" in c
+    assert ".f_xs = {10, 20}" in c
+    assert "(m_s).f_xs[1]" in c
+
+
 @needs_cc
 def test_array_sum_runs():
     src = ("fn main() -> int {"
@@ -391,6 +400,9 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { let a: [u8; 2] = [1, 300]; return 0; }", "does not fit in u8"),
     ("fn main() -> int { let a: [i32; 2] = [1, 2]; print(a[true] as i64); return 0; }",
      "index must be an integer"),
+    ("fn f(a: [i32; 2]) { } fn main() -> int { return 0; }", "cannot be an array"),
+    ("fn f() -> [i32; 2] { let a: [i32; 2] = [1, 2]; return a; } fn main() -> int { return 0; }",
+     "cannot return an array"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:

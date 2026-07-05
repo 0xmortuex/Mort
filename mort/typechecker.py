@@ -111,8 +111,15 @@ class Checker:
             for p in f.params:
                 if not self._valid_type(p.typ):
                     self._error(f"parameter {p.name!r} has unknown type {p.typ}", f)
-            if f.ret != "void" and not self._valid_type(f.ret):
-                self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
+                if is_array(p.typ):
+                    self._error(
+                        f"parameter {p.name!r} cannot be an array; pass a pointer "
+                        f"to its elements instead", f)
+            if f.ret != "void":
+                if not self._valid_type(f.ret):
+                    self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
+                if is_array(f.ret):
+                    self._error(f"function {f.name!r} cannot return an array", f)
             self.funcs[f.name] = ([p.typ for p in f.params], f.ret)
 
         # 4. globals — initialised with a compile-time constant, usable anywhere
@@ -449,10 +456,14 @@ class Checker:
                 if fname in seen:
                     self._error(f"field {fname!r} set twice", e)
                 seen.add(fname)
-                self._check_expr(fexpr)
-                if not self._coerce(declared[fname], fexpr):
-                    self._error(
-                        f"field {fname!r} expects {declared[fname]}, got {fexpr.type}", e)
+                ftype = declared[fname]
+                if is_array(ftype) and isinstance(fexpr, (A.ArrayLit, A.ArrayRepeat)):
+                    self._check_array_expr(fexpr, ftype, e)
+                else:
+                    self._check_expr(fexpr)
+                    if not self._coerce(ftype, fexpr):
+                        self._error(
+                            f"field {fname!r} expects {ftype}, got {fexpr.type}", e)
             missing = [f for f in declared if f not in seen]
             if missing:
                 self._error(
