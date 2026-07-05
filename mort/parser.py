@@ -28,6 +28,9 @@ class Parser:
     def __init__(self, tokens):
         self.toks = tokens
         self.i = 0
+        # True while parsing an if/while condition: suppresses struct literals
+        # so `if p {` is a block, not `if (p{...})`. Reset inside parentheses.
+        self._no_struct_lit = False
 
     # ----- token helpers -----
     def _peek(self, offset=0):
@@ -50,9 +53,30 @@ class Parser:
     # ----- entry -----
     def parse(self):
         funcs = []
+        structs = []
         while not self._at(T.EOF):
-            funcs.append(self._fn_decl())
-        return A.Program(funcs)
+            if self._at(T.STRUCT):
+                structs.append(self._struct_decl())
+            else:
+                funcs.append(self._fn_decl())
+        return A.Program(funcs, structs)
+
+    def _struct_decl(self):
+        line = self._peek().line
+        self._expect(T.STRUCT, "'struct'")
+        name = self._expect(T.IDENT, "struct name").value
+        self._expect(T.LBRACE, "'{'")
+        fields = []
+        while not self._at(T.RBRACE) and not self._at(T.EOF):
+            fname = self._expect(T.IDENT, "field name").value
+            self._expect(T.COLON, "':'")
+            fields.append(A.StructField(fname, self._type_name()))
+            if self._at(T.COMMA):
+                self._advance()
+            else:
+                break
+        self._expect(T.RBRACE, "'}'")
+        return A.StructDecl(name, fields, line)
 
     def _type_name(self):
         # pointer type: *T
@@ -67,6 +91,10 @@ class Parser:
             self._advance()
             return "bool"
         if tok.type == T.IDENT and tok.value in FIXED_INT_TYPES:
+            self._advance()
+            return tok.value
+        if tok.type == T.IDENT:
+            # a struct type; the checker validates it exists
             self._advance()
             return tok.value
         raise MortError(f"expected a type, got {tok.value!r}", tok.line)
@@ -115,9 +143,19 @@ class Parser:
             return self._if_stmt()
         if t == T.WHILE:
             return self._while_stmt()
+        if t == T.ASM:
+            return self._asm_stmt()
         if t == T.LBRACE:
             return self._block()
         return self._expr_or_assign()
+
+    def _asm_stmt(self):
+        line = self._advance().line
+        self._expect(T.LPAREN, "'('")
+        text = self._expect(T.STRING, "an assembly string").value
+        self._expect(T.RPAREN, "')'")
+        self._expect(T.SEMI, "';'")
+        return A.Asm(text, line)
 
     def _let_stmt(self):
         line = self._advance().line
@@ -139,9 +177,19 @@ class Parser:
         self._expect(T.SEMI, "';'")
         return A.Return(expr, line)
 
+    def _condition(self):
+        # struct literals are ambiguous with the block that follows, so ban
+        # them at the top level of a condition (parentheses re-enable them).
+        saved = self._no_struct_lit
+        self._no_struct_lit = True
+        try:
+            return self._expression()
+        finally:
+            self._no_struct_lit = saved
+
     def _if_stmt(self):
         line = self._advance().line
-        cond = self._expression()
+        cond = self._condition()
         then = self._block()
         els = None
         if self._at(T.ELSE):
@@ -151,7 +199,7 @@ class Parser:
 
     def _while_stmt(self):
         line = self._advance().line
-        cond = self._expression()
+        cond = self._condition()
         body = self._block()
         return A.While(cond, body, line)
 
@@ -170,8 +218,12 @@ class Parser:
 
     @staticmethod
     def _is_lvalue(e):
-        # a name, or a pointer dereference (*p) — both name storage locations
-        return isinstance(e, A.Var) or (isinstance(e, A.Unary) and e.op == "*")
+        # a name, a pointer dereference (*p), or a field (s.x) — all locations
+        return (
+            isinstance(e, A.Var)
+            or (isinstance(e, A.Unary) and e.op == "*")
+            or isinstance(e, A.FieldAccess)
+        )
 
     # ----- expressions -----
     def _expression(self):
@@ -237,19 +289,25 @@ class Parser:
 
     def _postfix(self):
         expr = self._primary()
-        while self._at(T.LPAREN):
-            if not isinstance(expr, A.Var):
-                raise MortError("only named functions can be called", self._peek().line)
-            lp = self._advance()
-            args = []
-            if not self._at(T.RPAREN):
-                args.append(self._expression())
-                while self._at(T.COMMA):
-                    self._advance()
+        while True:
+            if self._at(T.LPAREN):
+                if not isinstance(expr, A.Var):
+                    raise MortError("only named functions can be called", self._peek().line)
+                lp = self._advance()
+                args = []
+                if not self._at(T.RPAREN):
                     args.append(self._expression())
-            self._expect(T.RPAREN, "')'")
-            expr = A.Call(expr.name, args, lp.line)
-        return expr
+                    while self._at(T.COMMA):
+                        self._advance()
+                        args.append(self._expression())
+                self._expect(T.RPAREN, "')'")
+                expr = A.Call(expr.name, args, lp.line)
+            elif self._at(T.DOT):
+                dot = self._advance()
+                field = self._expect(T.IDENT, "field name").value
+                expr = A.FieldAccess(expr, field, dot.line)
+            else:
+                return expr
 
     def _primary(self):
         t = self._peek()
@@ -263,11 +321,35 @@ class Parser:
             self._advance()
             return A.BoolLit(False, t.line)
         if t.type == T.IDENT:
+            # struct literal:  Name { field: expr, ... }
+            if self._peek(1).type == T.LBRACE and not self._no_struct_lit:
+                return self._struct_lit()
             self._advance()
             return A.Var(t.value, t.line)
         if t.type == T.LPAREN:
             self._advance()
-            e = self._expression()
+            # inside parentheses, struct literals are unambiguous again
+            saved = self._no_struct_lit
+            self._no_struct_lit = False
+            try:
+                e = self._expression()
+            finally:
+                self._no_struct_lit = saved
             self._expect(T.RPAREN, "')'")
             return e
         raise MortError(f"unexpected token {t.value!r}", t.line)
+
+    def _struct_lit(self):
+        name_tok = self._advance()  # IDENT
+        line = self._advance().line  # '{'
+        fields = []
+        while not self._at(T.RBRACE) and not self._at(T.EOF):
+            fname = self._expect(T.IDENT, "field name").value
+            self._expect(T.COLON, "':'")
+            fields.append((fname, self._expression()))
+            if self._at(T.COMMA):
+                self._advance()
+            else:
+                break
+        self._expect(T.RBRACE, "'}'")
+        return A.StructLit(name_tok.value, fields, line)

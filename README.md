@@ -56,14 +56,19 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.2)
+## The language (v0.3)
 
-- **Types:** `bool`, `int` (alias for `i64`), and the fixed-width integers
-  `i8 i16 i32 i64 u8 u16 u32 u64`.
+- **Types:** `bool`, `int` (alias for `i64`), the fixed-width integers
+  `i8 i16 i32 i64 u8 u16 u32 u64`, and user **structs**.
+- **Structs:** `struct Point { x: i64, y: i64 }`, construct with
+  `Point { x: 3, y: 4 }`, read/write fields with `p.x`, pass by value, and
+  mutate through a pointer with `(*p).x = 1;`.
 - **Pointers:** `*T` types, address-of `&x`, dereference `*p`, and writing
   through a pointer with `*p = value;`.
 - **Casts:** `expr as T` between integer types and pointers — e.g.
   `0xB8000 as *u8` to point at raw memory.
+- **Inline assembly:** `asm("hlt");` — an escape hatch to real instructions,
+  lowered to the C compiler's `__asm__ volatile`.
 - **Functions:** `fn name(a: int, b: int) -> int { ... }`, with recursion and any call order.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
 - **Control flow:** `if` / `else if` / `else`, `while`.
@@ -118,7 +123,7 @@ they skip automatically if no C compiler is available.
 
 - [x] **Phase 1 — Language core:** lexer, parser, type checker, C codegen, CLI.
 - [x] **Phase 2a — Memory core:** fixed-width int types, `as` casts, pointers (`&`, `*`, deref-assignment), hex literals, raw address casts.
-- [ ] **Phase 2b — Aggregates & asm:** structs (fields, construction), and an inline-assembly escape hatch for `hlt`/port I/O.
+- [x] **Phase 2b — Aggregates & asm:** structs (fields, construction, by-value, pointer mutation) and an inline-assembly escape hatch (`asm("...")`).
 - [ ] **Phase 3 — Freestanding mode:** compile with no libc into a bare-metal object file.
 - [ ] **Phase 4 — The kernel:** a boot stub plus a kernel written in Mort that prints to the screen in QEMU, then keyboard input, then a shell.
 

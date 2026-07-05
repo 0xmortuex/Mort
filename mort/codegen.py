@@ -16,18 +16,27 @@ _C_BASE = {
 }
 
 
-def c_type(t):
-    """Map a Mort type string to its C spelling ('*i32' -> 'int32_t*')."""
+def c_type(t, struct_names=frozenset()):
+    """Map a Mort type string to its C spelling.
+
+    '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
+    """
     if t.startswith("*"):
-        return c_type(t[1:]) + "*"
+        return c_type(t[1:], struct_names) + "*"
+    if t in struct_names:
+        return "struct mort_" + t
     return _C_BASE[t]
 
 
 class CodeGen:
     def __init__(self, program):
         self.program = program
+        self.struct_names = {s.name for s in program.structs}
         self.lines = []
         self.indent = 0
+
+    def _ct(self, t):
+        return c_type(t, self.struct_names)
 
     def _emit(self, s=""):
         self.lines.append(("    " * self.indent + s) if s else "")
@@ -38,6 +47,15 @@ class CodeGen:
         self._emit("#include <stdint.h>")
         self._emit("#include <stdbool.h>")
         self._emit()
+        # struct forward declarations (so pointers can cross-reference), then
+        # full definitions in declared order.
+        if self.program.structs:
+            for s in self.program.structs:
+                self._emit(f"struct mort_{s.name};")
+            self._emit()
+            for s in self.program.structs:
+                self._gen_struct(s)
+                self._emit()
         self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
         self._emit()
         # prototypes first, so any call order works
@@ -50,10 +68,18 @@ class CodeGen:
         self._emit("int main(void) { return (int)mort_main(); }")
         return "\n".join(self.lines) + "\n"
 
+    def _gen_struct(self, s):
+        self._emit(f"struct mort_{s.name} {{")
+        self.indent += 1
+        for fld in s.fields:
+            self._emit(f"{self._ct(fld.typ)} f_{fld.name};")
+        self.indent -= 1
+        self._emit("};")
+
     def _signature(self, f):
-        ret = c_type(f.ret)
+        ret = self._ct(f.ret)
         if f.params:
-            params = ", ".join(f"{c_type(p.typ)} m_{p.name}" for p in f.params)
+            params = ", ".join(f"{self._ct(p.typ)} m_{p.name}" for p in f.params)
         else:
             params = "void"
         return f"{ret} mort_{f.name}({params})"
@@ -68,9 +94,11 @@ class CodeGen:
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
-            self._emit(f"{c_type(s.var_type)} m_{s.name} = {self._gen_expr(s.expr)};")
+            self._emit(f"{self._ct(s.var_type)} m_{s.name} = {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Assign):
             self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
+        elif isinstance(s, A.Asm):
+            self._emit(f'__asm__ volatile ("{s.text}");')
         elif isinstance(s, A.Return):
             if s.expr is None:
                 self._emit("return;")
@@ -119,7 +147,13 @@ class CodeGen:
         if isinstance(e, A.Var):
             return f"m_{e.name}"
         if isinstance(e, A.Cast):
-            return f"(({c_type(e.target_type)}){self._gen_expr(e.expr)})"
+            return f"(({self._ct(e.target_type)}){self._gen_expr(e.expr)})"
+        if isinstance(e, A.StructLit):
+            inits = ", ".join(
+                f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
+            return f"(struct mort_{e.name}){{ {inits} }}"
+        if isinstance(e, A.FieldAccess):
+            return f"({self._gen_expr(e.obj)}).f_{e.field}"
         if isinstance(e, A.Unary):
             return f"({e.op}{self._gen_expr(e.operand)})"
         if isinstance(e, A.Binary):

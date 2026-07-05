@@ -13,15 +13,30 @@ class Node:
 
 # ----- top level -----
 class Program(Node):
-    def __init__(self, funcs):
+    def __init__(self, funcs, structs):
         super().__init__()
         self.funcs = funcs
+        self.structs = structs
 
 
 class Param:
     def __init__(self, name, typ):
         self.name = name
         self.typ = typ
+
+
+class StructField:
+    def __init__(self, name, typ):
+        self.name = name
+        self.typ = typ
+
+
+class StructDecl(Node):
+    def __init__(self, name, fields, line):
+        super().__init__()
+        self.name = name
+        self.fields = fields  # list of StructField, in declared order
+        self.line = line
 
 
 class FnDecl(Node):
@@ -91,6 +106,13 @@ class ExprStmt(Node):
         self.line = line
 
 
+class Asm(Node):
+    def __init__(self, text, line):
+        super().__init__()
+        self.text = text  # raw string body, emitted verbatim into __asm__
+        self.line = line
+
+
 # ----- expressions -----
 class IntLit(Node):
     def __init__(self, value, line):
@@ -143,4 +165,20 @@ class Cast(Node):
         super().__init__()
         self.expr = expr
         self.target_type = target_type
+        self.line = line
+
+
+class StructLit(Node):
+    def __init__(self, name, fields, line):
+        super().__init__()
+        self.name = name
+        self.fields = fields  # list of (field_name, expr) in source order
+        self.line = line
+
+
+class FieldAccess(Node):
+    def __init__(self, obj, field, line):
+        super().__init__()
+        self.obj = obj
+        self.field = field
         self.line = line

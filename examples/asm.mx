@@ -1,0 +1,9 @@
+// Inline assembly escape hatch. `nop` is a harmless no-op that proves the
+// asm() statement lowers to real inline assembly the C compiler accepts.
+// On the kernel this is how we'll reach instructions like `hlt` and `cli`.
+fn main() -> int {
+    print(1);
+    asm("nop");
+    print(2);
+    return 0;
+}

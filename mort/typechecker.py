@@ -29,16 +29,52 @@ class Checker:
     def __init__(self, program):
         self.program = program
         self.funcs = {}       # name -> (param_types, ret)
+        self.structs = {}     # name -> {field: type}  (insertion-ordered)
         self.scopes = []
         self.current_ret = None
 
     def _error(self, msg, node):
         raise MortError(msg, getattr(node, "line", None))
 
+    def _base(self, t):
+        while is_ptr(t):
+            t = pointee(t)
+        return t
+
+    def _valid_type(self, t):
+        """A type is usable as a value/field/param if its base is known."""
+        return self._base(t) in INT_TYPES or self._base(t) in ("bool",) or self._base(t) in self.structs
+
     def check(self):
+        # 1. collect struct names first so fields may reference any struct
+        #    (including recursively through pointers, e.g. `next: *Node`).
+        for sd in self.program.structs:
+            if sd.name in self.structs:
+                self._error(f"struct {sd.name!r} is already defined", sd)
+            self.structs[sd.name] = None  # placeholder until fields validated
+
+        # 2. validate each struct's fields
+        for sd in self.program.structs:
+            fields = {}
+            for fld in sd.fields:
+                if fld.name in fields:
+                    self._error(
+                        f"field {fld.name!r} declared twice in struct {sd.name!r}", sd)
+                if not self._valid_type(fld.typ):
+                    self._error(
+                        f"field {fld.name!r} of {sd.name!r} has unknown type {fld.typ}", sd)
+                fields[fld.name] = fld.typ
+            self.structs[sd.name] = fields
+
+        # 3. collect and validate function signatures
         for f in self.program.funcs:
             if f.name in self.funcs or f.name == "print":
                 self._error(f"function {f.name!r} is already defined", f)
+            for p in f.params:
+                if not self._valid_type(p.typ):
+                    self._error(f"parameter {p.name!r} has unknown type {p.typ}", f)
+            if f.ret != "void" and not self._valid_type(f.ret):
+                self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
             self.funcs[f.name] = ([p.typ for p in f.params], f.ret)
 
         if "main" not in self.funcs:
@@ -96,6 +132,8 @@ class Checker:
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if s.decl_type:
+                if not self._valid_type(s.decl_type):
+                    self._error(f"variable {s.name!r} has unknown type {s.decl_type}", s)
                 if not self._coerce(s.decl_type, s.expr):
                     self._error(
                         f"type mismatch: {s.name!r} is annotated {s.decl_type} "
@@ -143,6 +181,9 @@ class Checker:
         elif isinstance(s, A.ExprStmt):
             self._check_expr(s.expr)
 
+        elif isinstance(s, A.Asm):
+            pass  # an opaque escape hatch; nothing to type-check
+
         else:  # pragma: no cover
             self._error("unknown statement kind", s)
 
@@ -155,7 +196,11 @@ class Checker:
 
     @staticmethod
     def _is_lvalue(e):
-        return isinstance(e, A.Var) or (isinstance(e, A.Unary) and e.op == "*")
+        return (
+            isinstance(e, A.Var)
+            or (isinstance(e, A.Unary) and e.op == "*")
+            or isinstance(e, A.FieldAccess)
+        )
 
     def _infer(self, e):
         if isinstance(e, A.IntLit):
@@ -215,11 +260,47 @@ class Checker:
                     self._unify_ints(e, lt, rt, op)
                 elif lt != rt:
                     self._error(f"operator '{op}' needs operands of the same type", e)
+                elif lt in self.structs:
+                    self._error(f"cannot compare structs with '{op}'", e)
                 return "bool"
             if op in ("&&", "||"):
                 if lt != "bool" or rt != "bool":
                     self._error(f"operator '{op}' requires bool operands", e)
                 return "bool"
+
+        if isinstance(e, A.StructLit):
+            if e.name not in self.structs:
+                self._error(f"unknown struct {e.name!r}", e)
+            declared = self.structs[e.name]
+            seen = set()
+            for fname, fexpr in e.fields:
+                if fname not in declared:
+                    self._error(f"struct {e.name!r} has no field {fname!r}", e)
+                if fname in seen:
+                    self._error(f"field {fname!r} set twice", e)
+                seen.add(fname)
+                self._check_expr(fexpr)
+                if not self._coerce(declared[fname], fexpr):
+                    self._error(
+                        f"field {fname!r} expects {declared[fname]}, got {fexpr.type}", e)
+            missing = [f for f in declared if f not in seen]
+            if missing:
+                self._error(
+                    f"struct {e.name!r} literal is missing field(s): "
+                    f"{', '.join(missing)}", e)
+            return e.name
+
+        if isinstance(e, A.FieldAccess):
+            ot = self._check_expr(e.obj)
+            if is_ptr(ot):
+                self._error(
+                    f"cannot access a field through a pointer; "
+                    f"write (*expr).{e.field} to dereference first", e)
+            if ot not in self.structs:
+                self._error(f"type {ot} has no fields", e)
+            if e.field not in self.structs[ot]:
+                self._error(f"struct {ot!r} has no field {e.field!r}", e)
+            return self.structs[ot][e.field]
 
         if isinstance(e, A.Call):
             return self._infer_call(e)

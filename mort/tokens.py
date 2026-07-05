@@ -5,6 +5,7 @@ from enum import Enum, auto
 class T(Enum):
     # literals & identifiers
     INT = auto()
+    STRING = auto()
     IDENT = auto()
     # keywords
     LET = auto()
@@ -19,6 +20,7 @@ class T(Enum):
     KW_BOOL = auto()
     AS = auto()
     STRUCT = auto()
+    ASM = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -62,6 +64,7 @@ KEYWORDS = {
     "bool": T.KW_BOOL,
     "as": T.AS,
     "struct": T.STRUCT,
+    "asm": T.ASM,
 }
 
 

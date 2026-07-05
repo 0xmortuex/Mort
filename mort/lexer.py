@@ -71,7 +71,9 @@ class Lexer:
                     self._advance()
                 continue
             line, col = self.line, self.col
-            if c.isdigit():
+            if c == '"':
+                self._string(line, col)
+            elif c.isdigit():
                 self._number(line, col)
             elif c.isalpha() or c == "_":
                 self._ident(line, col)
@@ -101,6 +103,25 @@ class Lexer:
         if self._peek().isalpha() or self._peek() == "_":
             raise MortError(f"invalid number literal near {s + self._peek()!r}", line, col)
         self._add(T.INT, int(s), line, col)
+
+    def _string(self, line, col):
+        # Capture the raw inner text (escape sequences kept verbatim) so it can
+        # be re-emitted straight into a C string literal — handy for asm().
+        self._advance()  # opening quote
+        raw = ""
+        while True:
+            c = self._peek()
+            if c == "\0" or c == "\n":
+                raise MortError("unterminated string literal", line, col)
+            if c == "\\":  # keep the escape pair as-is (e.g. \n, \", \\)
+                raw += self._advance()
+                raw += self._advance()
+                continue
+            if c == '"':
+                self._advance()
+                break
+            raw += self._advance()
+        self._add(T.STRING, raw, line, col)
 
     def _ident(self, line, col):
         s = ""

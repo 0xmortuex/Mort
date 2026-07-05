@@ -89,6 +89,37 @@ def test_literal_coercion_in_arithmetic():
     assert "uint8_t m_b = (m_a + 5);" in c
 
 
+# ---------- Phase 2b: structs and inline asm ----------
+
+STRUCT_SRC = (
+    "struct Point { x: i64, y: i64 } "
+    "fn main() -> int { let p: Point = Point { x: 3, y: 4 }; p.y = 5; print(p.x); return 0; }"
+)
+
+
+def test_struct_codegen():
+    c = c_of(STRUCT_SRC)
+    assert "struct mort_Point {" in c
+    assert "int64_t f_x;" in c
+    assert "(struct mort_Point){ .f_x = 3, .f_y = 4 }" in c
+    assert "(m_p).f_y = 5;" in c          # field assignment
+    assert "(m_p).f_x" in c               # field read
+
+
+def test_asm_codegen():
+    c = c_of('fn main() -> int { asm("nop"); return 0; }')
+    assert '__asm__ volatile ("nop");' in c
+
+
+def test_struct_pointer_field_write():
+    src = (
+        "struct P { x: i64 } "
+        "fn main() -> int { let p: P = P { x: 1 }; let q: *P = &p; (*q).x = 9; print(p.x); return 0; }"
+    )
+    c = c_of(src)
+    assert "((*m_q)).f_x = 9;" in c
+
+
 # ---------- front-end: errors ----------
 
 @pytest.mark.parametrize("src, needle", [
@@ -107,6 +138,15 @@ def test_literal_coercion_in_arithmetic():
     ("fn main() -> int { let b = true; let x = b as i32; return 0; }", "cannot cast"),
     ("fn main() -> int { let p: *i32 = 0 as *i32; print(p); return 0; }",
      "print expects an integer"),
+    ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1, y: 2 }; return 0; }",
+     "no field 'y'"),
+    ("struct P { x: i64, y: i64 } fn main() -> int { let p: P = P { x: 1 }; return 0; }",
+     "missing field"),
+    ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1 }; print(p.z); return 0; }",
+     "no field 'z'"),
+    ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1 }; let q: *P = &p; print(q.x); return 0; }",
+     "through a pointer"),
+    ("fn main() -> int { let a: Nope = 0; return 0; }", "unknown type"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
@@ -125,6 +165,8 @@ EXPECTED = {
     "factorial.mx": "120\n",
     "pointers.mx": "99\n99\n",
     "types.mx": "255\n1000000\n-300\n255\n",
+    "structs.mx": "3\n7\n13\n100\n",
+    "asm.mx": "1\n2\n",
 }
 
 
