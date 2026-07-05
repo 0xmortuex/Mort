@@ -1,14 +1,21 @@
-// MORT OS — a kernel written in Mort. Now it prints real strings.
+// MORT OS — an interactive kernel written in Mort.
 //
-// The bootloader (boot.s) calls mort_kmain in 32-bit protected mode. VGA text
-// mode is an 80x25 grid at 0xB8000 where each cell is two bytes: an ASCII code
-// followed by a colour attribute (foreground | background << 4).
+// It boots, prints a banner, then polls the PS/2 keyboard and echoes what you
+// type to the screen. No interrupts: the multiboot spec hands us the CPU with
+// interrupts disabled, so we poll the keyboard controller directly. That keeps
+// the whole OS — VGA output and keyboard input — written in Mort.
 
-// Print a NUL-terminated string at a given row. String literals are *u8, so we
-// walk the bytes by casting the pointer to an integer, adding an offset, and
-// casting back — no pointer-arithmetic feature needed.
+// ----- VGA text output (80x25 at 0xB8000; each cell is [ascii, attribute]) -----
+
+fn put_cell_at(row: u32, col: u32, ch: u8, color: u8) {
+    let addr: u32 = 0xB8000 + (row * 80 + col) * 2;
+    let cell: *u8 = addr as *u8;
+    *cell = ch;
+    let attr: *u8 = (addr + 1) as *u8;
+    *attr = color;
+}
+
 fn print_string(s: *u8, row: u32, color: u8) {
-    let base: u32 = 0xB8000 + row * 160;   // 80 cols * 2 bytes per row
     let i: u32 = 0;
     while true {
         let src: *u8 = (s as u32 + i) as *u8;
@@ -16,21 +23,70 @@ fn print_string(s: *u8, row: u32, color: u8) {
         if ch == 0 {
             return;
         }
-        let cell: *u8 = (base + i * 2) as *u8;
-        *cell = ch;
-        let attr: *u8 = (base + i * 2 + 1) as *u8;
-        *attr = color;
+        put_cell_at(row, i, ch, color);
         i = i + 1;
     }
 }
 
-fn kmain() {
-    print_string("MORT OS BOOTED", 0, 10);            // light green
-    print_string("a kernel written in Mort", 1, 7);   // light grey
+// ----- PS/2 keyboard (polled) -----
 
-    // Halt forever (interrupts off so nothing wakes us).
-    asm("cli");
+// Block until the controller has a byte, then return one scancode. Bit 0 of
+// the status port (0x64) means "output buffer full"; we test it with % 2
+// instead of a bitwise AND. Scancodes arrive on the data port (0x60).
+fn read_scancode() -> u8 {
     while true {
-        asm("hlt");
+        let status: u8 = inb(0x64);
+        if status % 2 == 1 {
+            return inb(0x60);
+        }
+    }
+    return 0;   // unreachable; keeps the C backend happy
+}
+
+// Translate a scancode-set-1 code to ASCII, or 0 if we don't handle it. Each
+// QWERTY row is a contiguous scancode range, so we index a small string.
+fn scancode_to_ascii(sc: u8) -> u8 {
+    if sc >= 16 && sc <= 25 {              // 0x10..0x19  q w e r t y u i o p
+        let row: *u8 = "qwertyuiop";
+        let p: *u8 = (row as u32 + (sc - 16) as u32) as *u8;
+        return *p;
+    }
+    if sc >= 30 && sc <= 38 {              // 0x1E..0x26  a s d f g h j k l
+        let row: *u8 = "asdfghjkl";
+        let p: *u8 = (row as u32 + (sc - 30) as u32) as *u8;
+        return *p;
+    }
+    if sc >= 44 && sc <= 50 {              // 0x2C..0x32  z x c v b n m
+        let row: *u8 = "zxcvbnm";
+        let p: *u8 = (row as u32 + (sc - 44) as u32) as *u8;
+        return *p;
+    }
+    if sc == 57 {                          // 0x39  space
+        return 32;
+    }
+    return 0;
+}
+
+// ----- entry -----
+
+fn kmain() {
+    print_string("MORT OS BOOTED", 0, 10);              // light green
+    print_string("type on your keyboard:", 1, 7);       // light grey
+
+    let row: u32 = 3;
+    let col: u32 = 0;
+    while true {
+        let sc: u8 = read_scancode();
+        if sc < 128 {                        // key press (high bit clear)
+            if sc == 28 {                    // 0x1C  Enter -> next line
+                row = row + 1;
+                col = 0;
+            }
+            let ch: u8 = scancode_to_ascii(sc);
+            if ch != 0 {
+                put_cell_at(row, col, ch, 15);   // bright white
+                col = col + 1;
+            }
+        }
     }
 }
