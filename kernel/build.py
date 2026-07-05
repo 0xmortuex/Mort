@@ -41,10 +41,12 @@ LIMINE_CONF = """timeout: 3
     protocol: multiboot1
     path: boot():/boot/kernel.elf
     module_path: boot():/boot/welcome.txt
+    module_path: boot():/boot/startup.txt
 """
 
-# A file staged onto the ISO and loaded as a multiboot module — the kernel's
-# `readme` command reads it straight out of memory (loaded from disk by Limine).
+# Files staged onto the ISO and loaded as multiboot modules. Module 0
+# (welcome.txt) is shown by `readme`; module 1 (startup.txt) is a script of
+# shell commands the kernel runs at boot, like an /etc/rc.
 WELCOME_TXT = """Welcome to MORT OS.
 
 You are looking at a file that lived on the ISO, was loaded from disk by the
@@ -52,6 +54,10 @@ Limine bootloader as a multiboot module, and is now being read by the kernel.
 
 Everything here -- the kernel, its shell, and the Mort language it is written
 in -- was built from scratch. Type 'help' for commands.
+"""
+
+STARTUP_TXT = """echo running startup script loaded from disk...
+about
 """
 
 
@@ -186,6 +192,8 @@ def iso():
         fh.write(LIMINE_CONF)
     with open(os.path.join(root, "boot", "welcome.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(WELCOME_TXT)
+    with open(os.path.join(root, "boot", "startup.txt"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(STARTUP_TXT)
     for name in ("limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin"):
         src = _find(lim_dir, name)
         if src:

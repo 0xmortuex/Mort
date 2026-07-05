@@ -284,21 +284,69 @@ fn print_range(start: u32, end: u32, color: u8) {
     }
 }
 
-// Show the first multiboot module — a file the bootloader loaded from disk.
-// The multiboot info struct has mods_count at offset 20 and mods_addr at 24;
-// each module entry is [mod_start, mod_end, string, reserved].
-fn show_module() {
+// Start address of multiboot module `index`, or 0 if there aren't that many.
+// The info struct has mods_count at offset 20 and mods_addr at 24; each module
+// entry is [mod_start, mod_end, string, reserved] (16 bytes).
+fn module_start(index: u32) -> u32 {
     let count: u32 = *((g_mbinfo + 20) as *u32);
-    if count == 0 {
+    if count <= index {
+        return 0;
+    }
+    let mods_addr: u32 = *((g_mbinfo + 24) as *u32);
+    return *((mods_addr + index * 16) as *u32);
+}
+
+fn module_end(index: u32) -> u32 {
+    let mods_addr: u32 = *((g_mbinfo + 24) as *u32);
+    return *((mods_addr + index * 16 + 4) as *u32);
+}
+
+// Show module 0 — the readme file loaded from disk.
+fn show_module() {
+    let start: u32 = module_start(0);
+    if start == 0 {
         feed();
         print_string("no file loaded (boot the ISO to load one)", g_row, 12);
         return;
     }
-    let mods_addr: u32 = *((g_mbinfo + 24) as *u32);
-    let mod_start: u32 = *(mods_addr as *u32);
-    let mod_end: u32 = *((mods_addr + 4) as *u32);
     feed();
-    print_range(mod_start, mod_end, 7);
+    print_range(start, module_end(0), 7);
+}
+
+// Run a script module: execute each line as a shell command, echoing it at a
+// prompt first. This is how MORT OS runs a program loaded from disk at boot.
+fn run_script(index: u32) {
+    let start: u32 = module_start(index);
+    if start == 0 {
+        return;
+    }
+    let end: u32 = module_end(index);
+    let p: u32 = start;
+    let len: u32 = 0;
+    while p <= end {
+        let ch: u8 = 10;                 // treat one-past-end as a final newline
+        if p < end {
+            ch = *(p as *u8);
+        }
+        if ch == 10 {                    // end of line -> run it
+            if len > 0 {
+                *((g_buf as u32 + len) as *u8) = 0;
+                feed();
+                draw_prompt(g_row);
+                print_at(g_buf, g_row, 2, 15);   // echo the command
+                run_command(g_buf);
+            }
+            len = 0;
+        } else {
+            if ch != 13 {
+                if len < 30 {
+                    *((g_buf as u32 + len) as *u8) = ch;
+                    len = len + 1;
+                }
+            }
+        }
+        p = p + 1;
+    }
 }
 
 // Run a command, printing any output on new (scrolling) lines. Returns true if
@@ -443,10 +491,16 @@ fn on_key() {
 }
 
 fn kmain(mbinfo: u32) {
-    g_mbinfo = mbinfo;               // saved by boot.s; lets `readme` find the module
+    g_mbinfo = mbinfo;               // saved by boot.s; lets us find the modules
     clear_screen();
     enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
+
+    run_script(1);                   // run the startup script loaded from disk
+
+    feed();
+    g_col = 2;
+    g_len = 0;
     draw_prompt(g_row);
     move_cursor(g_row, g_col);
 
