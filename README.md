@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-59%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -60,7 +60,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.4)
+## The language (v0.5)
 
 - **Types:** `bool`, `int` (alias for `i64`), the fixed-width integers
   `i8 i16 i32 i64 u8 u16 u32 u64`, and user **structs**.
@@ -82,6 +82,8 @@ C `main`, so the output is an ordinary native binary.
 - **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
 - **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
   integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
+- **Globals:** top-level `let name: type = <constant>;` — file-scope state shared
+  across functions (used by the kernel's interrupt handler).
 - **Builtins:** `print(<any integer>)` (hosted), plus `outb(port: u16, value: u8)`
   and `inb(port: u16) -> u8` for x86 port I/O (lowered to inline `in`/`out`).
 - **Comments:** `// to end of line`.
@@ -166,7 +168,8 @@ they skip automatically if no C compiler is available.
 - [x] **Phase 3 — Freestanding mode:** `--freestanding` drops libc/`print`/`main` and emits a real x86-64 bare-metal ELF object (via the Zig backend).
 - [x] **Phase 4a — It boots:** a multiboot kernel written in Mort ([`kernel/`](kernel/)) that runs in QEMU and prints to VGA text mode. `python kernel/build.py run`.
 - [x] **Phase 4b — Strings:** string literals (`*u8`) in the language and a `print_string` VGA routine written in Mort, so the kernel prints real messages.
-- [x] **Phase 4c — A shell:** `inb`/`outb` builtins, a polled PS/2 keyboard, Backspace line editing, and a command parser — MORT OS runs `help` and `clear`. (Next: Shift/digits, scrolling, interrupt-driven input.)
+- [x] **Phase 4c — A shell:** `inb`/`outb` builtins, PS/2 keyboard, Shift/digits, Backspace, and a command parser (`help`, `clear`).
+- [x] **Phase 4d — Interrupts:** global variables in the language, plus a GDT/IDT and remapped PICs so the keyboard is **interrupt-driven** (IRQ1) rather than polled.
 
 ## License
 

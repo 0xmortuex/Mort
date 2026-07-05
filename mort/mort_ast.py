@@ -13,10 +13,11 @@ class Node:
 
 # ----- top level -----
 class Program(Node):
-    def __init__(self, funcs, structs):
+    def __init__(self, funcs, structs, globals=None):
         super().__init__()
         self.funcs = funcs
         self.structs = structs
+        self.globals = globals or []  # top-level Let nodes
 
 
 class Param:

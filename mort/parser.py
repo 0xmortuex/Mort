@@ -54,12 +54,15 @@ class Parser:
     def parse(self):
         funcs = []
         structs = []
+        globals_ = []
         while not self._at(T.EOF):
             if self._at(T.STRUCT):
                 structs.append(self._struct_decl())
+            elif self._at(T.LET):
+                globals_.append(self._let_stmt())  # top-level let = global var
             else:
                 funcs.append(self._fn_decl())
-        return A.Program(funcs, structs)
+        return A.Program(funcs, structs, globals_)
 
     def _struct_decl(self):
         line = self._peek().line

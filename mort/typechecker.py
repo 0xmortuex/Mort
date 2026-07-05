@@ -56,6 +56,7 @@ class Checker:
         self.freestanding = freestanding
         self.funcs = {}       # name -> (param_types, ret)
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
+        self.globals = {}     # name -> type
         self.scopes = []
         self.current_ret = None
 
@@ -103,6 +104,30 @@ class Checker:
                 self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
             self.funcs[f.name] = ([p.typ for p in f.params], f.ret)
 
+        # 4. globals — initialised with a compile-time constant, usable anywhere
+        self.scopes = []
+        for g in self.program.globals:
+            if (g.name in self.globals or g.name in self.funcs
+                    or g.name in self.structs or g.name in BUILTIN_NAMES):
+                self._error(f"global {g.name!r} conflicts with another name", g)
+            t = self._check_expr(g.expr)
+            if t == "void":
+                self._error("cannot bind a void value to a global", g)
+            if g.decl_type:
+                if not self._valid_type(g.decl_type):
+                    self._error(f"global {g.name!r} has unknown type {g.decl_type}", g)
+                if not self._coerce(g.decl_type, g.expr):
+                    self._error(
+                        f"global {g.name!r} is {g.decl_type} but its value is {t}", g)
+                g.var_type = g.decl_type
+            else:
+                g.var_type = t
+            if not self._is_const_init(g.expr):
+                self._error(
+                    f"global {g.name!r} must be initialised with a constant "
+                    f"(a literal or literal expression)", g)
+            self.globals[g.name] = g.var_type
+
         # Hosted programs are launched through a C main; freestanding ones are
         # entered by a bootloader, so they have no 'main' requirement.
         if not self.freestanding:
@@ -123,7 +148,13 @@ class Checker:
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
-        return None
+        return self.globals.get(name)  # fall back to globals (locals shadow them)
+
+    def _is_const_init(self, expr):
+        """Globals need a compile-time-constant initialiser."""
+        if isinstance(expr, (A.BoolLit, A.StrLit)):
+            return True
+        return bool(getattr(expr, "is_lit", False))  # int literal expression
 
     def _declare(self, name, typ, node):
         if name in self.scopes[-1]:

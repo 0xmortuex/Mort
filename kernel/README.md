@@ -31,11 +31,12 @@ linker.ld   places it at 1 MB           ─┘  linked ->  build/kernel.elf
 qemu-system-i386 -kernel build/kernel.elf
 ```
 
-- **`kmain.mx`** — the whole OS, written in Mort: VGA output, a polled PS/2
-  keyboard driver (`inb` from ports `0x64`/`0x60`), scancode→ASCII, a `streq`
-  for parsing, and a shell loop with Backspace editing and `help`/`clear`
-  commands. The typed line is buffered in a mutable string literal used as
-  scratch memory.
+- **`kmain.mx`** — the OS in Mort: VGA output, scancode→ASCII (Shift-aware), a
+  `streq` for parsing, and an `on_key` interrupt handler that drives the shell
+  (`help`/`clear`, Backspace editing). Shell state lives in Mort globals so it
+  survives between interrupts. `kmain` sets up, enables interrupts, and idles.
+- **`idt.s`** — a flat GDT, a PIC remap (IRQs → vectors 0x20+), and an IDT whose
+  keyboard gate (IRQ1) calls `mort_on_key`. `kernel_setup` wires it all up.
 - **`boot.s`** — a multiboot1 header so QEMU recognises the file, plus a `_start`
   stub that sets up a stack and calls `mort_kmain`.
 - **`linker.ld`** — loads the kernel at the 1 MB mark with the multiboot header
@@ -64,6 +65,8 @@ then anything you type appears on screen (letters, space, Enter for a new line).
 - [x] `inb`/`outb` port-I/O builtins.
 - [x] Polled PS/2 keyboard input, echoing keystrokes to the screen.
 - [x] A shell: Backspace line editing, a command parser, and `help`/`clear`.
-- [ ] Shift/caps for uppercase and symbols; digits and punctuation.
+- [x] Shift for uppercase, digits, and punctuation.
+- [x] Interrupt-driven input: a GDT/IDT and remapped PICs; the keyboard fires
+      IRQ1 into a Mort handler instead of being polled.
 - [ ] Screen scrolling instead of wipe-on-overflow.
-- [ ] Interrupt-driven input (IDT + PIC) instead of polling.
+- [ ] CPU exception handlers (currently a default stub that just sends EOI).

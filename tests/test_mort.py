@@ -151,6 +151,34 @@ def test_port_io_builtins_codegen():
     assert "uint8_t m_s = mort_inb(96);" in c
 
 
+def test_global_variable_codegen():
+    c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
+    assert "static int64_t m_counter = 0;" in c
+    assert "m_counter = (m_counter + 5);" in c
+
+
+def test_global_string_codegen():
+    c = c_of('let msg: *u8 = "hi"; fn main() -> int { print(*msg as i64); return 0; }')
+    assert 'static uint8_t m_str_0[] = "hi";' in c or 'mort_str_0[] = "hi";' in c
+    assert "static uint8_t* m_msg = mort_str_0;" in c
+
+
+@needs_cc
+def test_global_shared_across_functions():
+    src = ("let n: i64 = 10; "
+           "fn bump() { n = n + 1; } "
+           "fn main() -> int { bump(); bump(); print(n); return 0; }")
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "g.c")
+        exe = os.path.join(d, "g.exe" if os.name == "nt" else "g")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "12\n"
+
+
 def test_port_io_helpers_only_when_used():
     c = c_free("fn kmain() { let x: u8 = 1; }")
     assert "mort_inb" not in c and "mort_outb" not in c
@@ -311,6 +339,9 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { let x: i8 = 0 - 200; print(x); return 0; }", "does not fit in i8"),
     # C's % takes the dividend's sign: (0-129) % 256 == -129 in C, not 127
     ("fn main() -> int { let x: i8 = (0 - 129) % 256; return 0; }", "does not fit in i8"),
+    # a global must be initialised with a constant, not another variable
+    ("let a: i64 = 1; let b: i64 = a; fn main() -> int { return 0; }", "must be initialised with a constant"),
+    ("let x: i64 = 0; fn x() { } fn main() -> int { return 0; }", "conflicts with another name"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:

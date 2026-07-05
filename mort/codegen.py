@@ -47,10 +47,14 @@ class CodeGen:
         self.used_inb = False   # set if inb()/outb() is generated, per helper
         self.used_outb = False
 
-        # Generate function bodies first, into a side buffer. This populates
-        # self.strings / self.used_portio (each StrLit and port-I/O call
-        # registers itself), so the string table and helpers can be emitted
-        # ahead of the code that references them.
+        # Generate global initialisers and function bodies first, into side
+        # buffers. This populates self.strings / used_inb / used_outb (each
+        # StrLit and port-I/O call registers itself), so the string table and
+        # helpers can be emitted ahead of the code that references them.
+        global_decls = [
+            f"static {self._ct(g.var_type)} m_{g.name} = {self._gen_expr(g.expr)};"
+            for g in self.program.globals
+        ]
         saved = self.lines
         self.lines = []
         for f in self.program.funcs:
@@ -93,6 +97,11 @@ class CodeGen:
             self._emit("    return ret;")
             self._emit("}")
         if self.used_inb or self.used_outb:
+            self._emit()
+        # global variables (file-scope statics)
+        if global_decls:
+            for decl in global_decls:
+                self._emit(decl)
             self._emit()
         if not self.freestanding:
             self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')

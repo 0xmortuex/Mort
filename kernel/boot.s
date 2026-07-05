@@ -30,9 +30,10 @@ stack_top:
 .global _start
 .type _start, @function
 _start:
-    mov $stack_top, %esp          /* set up the stack           */
-    call mort_kmain               /* enter the Mort kernel      */
-    cli                           /* if it returns, hang safely */
+    mov $stack_top, %esp          /* set up the stack               */
+    call kernel_setup             /* GDT + PIC remap + IDT (idt.s)  */
+    call mort_kmain               /* enter the Mort kernel          */
+    cli                           /* if it returns, hang safely     */
 .Lhang:
     hlt
     jmp .Lhang

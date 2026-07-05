@@ -52,10 +52,13 @@ def build():
     asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
     kmain_o = os.path.join(BUILD, "kmain.o")
     boot_o = os.path.join(BUILD, "boot.o")
+    idt_o = os.path.join(BUILD, "idt.o")
 
-    # 2. Compile the kernel C and assemble the boot stub.
+    # 2. Compile the kernel C and assemble the boot + interrupt stubs.
     subprocess.run([*cc, *c_flags, "-c", kmain_c, "-o", kmain_o], check=True)
     subprocess.run([*cc, *asm_flags, "-c", os.path.join(HERE, "boot.s"), "-o", boot_o],
+                   check=True)
+    subprocess.run([*cc, *asm_flags, "-c", os.path.join(HERE, "idt.s"), "-o", idt_o],
                    check=True)
 
     # 3. Link into a static, non-PIE multiboot ELF using our linker script.
@@ -63,7 +66,7 @@ def build():
         *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(HERE, "linker.ld"),
         "-Wl,--build-id=none",
-        "-o", ELF, boot_o, kmain_o,
+        "-o", ELF, boot_o, kmain_o, idt_o,
     ], check=True)
     print(f"built {os.path.relpath(ELF, ROOT)}")
 
