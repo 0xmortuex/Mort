@@ -6,6 +6,7 @@
  * the Mort handler mort_on_key, then sends the PIC an end-of-interrupt.
  */
 
+.set TIMER_VECTOR, 0x20
 .set KBD_VECTOR, 0x21
 
 .section .data
@@ -84,9 +85,14 @@ load_idt:
     dec %ecx
     jnz .fill_irq
 
-    mov $idt_start, %edi              /* then point the keyboard gate at us  */
+    mov $idt_start, %edi              /* keyboard gate (IRQ1, vector 0x21)   */
     add $(KBD_VECTOR * 8), %edi
     mov $keyboard_isr, %eax
+    call set_gate
+
+    mov $idt_start, %edi              /* timer gate (IRQ0, vector 0x20)      */
+    add $(TIMER_VECTOR * 8), %edi
+    mov $timer_isr, %eax
     call set_gate
 
     lidt idt_ptr
@@ -107,7 +113,7 @@ remap_pic:
     movb $0x01, %al                   /* ICW4: 8086 mode                     */
     outb %al, $0x21
     outb %al, $0xA1
-    movb $0xFD, %al                   /* mask all master IRQs except IRQ1    */
+    movb $0xFC, %al                   /* master: enable IRQ0 (timer) + IRQ1  */
     outb %al, $0x21
     movb $0xFF, %al                   /* mask all slave IRQs                 */
     outb %al, $0xA1
@@ -119,6 +125,16 @@ keyboard_isr:
     pusha
     call mort_on_key                  /* the Mort handler reads the scancode */
     movb $0x20, %al                   /* end-of-interrupt to the master PIC  */
+    outb %al, $0x20
+    popa
+    iret
+
+.global timer_isr
+.type timer_isr, @function
+timer_isr:
+    pusha
+    call mort_on_tick                 /* the Mort handler bumps the tick count */
+    movb $0x20, %al                   /* end-of-interrupt to the master PIC    */
     outb %al, $0x20
     popa
     iret

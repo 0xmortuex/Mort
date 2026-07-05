@@ -71,5 +71,7 @@ then anything you type appears on screen (letters, space, Enter for a new line).
 - [x] A blinking hardware cursor that tracks the input, and more commands
       (`about`, `echo <text>`).
 - [x] Terminal-style screen scrolling when output reaches the bottom row.
-- [ ] A PIT timer (IRQ0) for `uptime`/delays — a second interrupt source.
+- [x] A PIT timer on IRQ0 (~100 Hz) — a second interrupt source, with an
+      `uptime` command and decimal number printing.
 - [ ] CPU exception handlers that report the fault (a stub halts cleanly today).
+- [ ] Command history (up-arrow) and more built-ins.

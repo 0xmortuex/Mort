@@ -12,6 +12,9 @@ let g_col: u32 = 2;
 let g_len: u32 = 0;
 let g_shift: bool = false;
 let g_buf: *u8 = "                                        ";   // 40-byte scratch
+let g_ticks: u32 = 0;                                          // PIT ticks (100/s)
+let g_numlen: u32 = 0;                                         // digits written by num_to_str
+let g_numbuf: *u8 = "            ";                            // 12-byte number scratch
 
 // ----- VGA text output -----
 
@@ -25,16 +28,36 @@ fn put_cell_at(row: u32, col: u32, ch: u8, color: u8) {
     put_index(row * 80 + col, ch, color);
 }
 
-fn print_string(s: *u8, row: u32, color: u8) {
+fn print_at(s: *u8, row: u32, col: u32, color: u8) {
     let i: u32 = 0;
     while true {
         let ch: u8 = *((s as u32 + i) as *u8);
         if ch == 0 {
             return;
         }
-        put_cell_at(row, i, ch, color);
+        put_cell_at(row, col + i, ch, color);
         i = i + 1;
     }
+}
+
+fn print_string(s: *u8, row: u32, color: u8) {
+    print_at(s, row, 0, color);
+}
+
+// Write n's decimal digits into buf (NUL-terminated); g_numlen = digit count.
+fn write_num(n: u32, buf: *u8) {
+    if n >= 10 {
+        write_num(n / 10, buf);
+    }
+    let d: u8 = (n % 10) as u8;
+    *((buf as u32 + g_numlen) as *u8) = 48 + d;   // '0' + d
+    g_numlen = g_numlen + 1;
+}
+
+fn num_to_str(n: u32, buf: *u8) {
+    g_numlen = 0;
+    write_num(n, buf);
+    *((buf as u32 + g_numlen) as *u8) = 0;
 }
 
 fn clear_screen() {
@@ -170,7 +193,15 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("commands: help, clear, about, echo <text>", g_row, 7);
+        print_string("commands: help, clear, about, echo <text>, uptime", g_row, 7);
+        return false;
+    }
+    if streq(cmd, "uptime") {
+        feed();
+        print_at("uptime: ", g_row, 0, 7);
+        num_to_str(g_ticks / 100, g_numbuf);        // 100 ticks per second
+        print_at(g_numbuf, g_row, 8, 7);
+        print_at(" s", g_row, 8 + g_numlen, 7);
         return false;
     }
     if streq(cmd, "clear") {
@@ -191,6 +222,19 @@ fn run_command(cmd: *u8) -> bool {
     feed();
     print_string("unknown command", g_row, 12);
     return false;
+}
+
+// Program the PIT channel 0 to raise IRQ0 at ~100 Hz (divisor 1193182/100).
+fn init_pit() {
+    let divisor: u32 = 11932;
+    outb(0x43, 0x36);                    // channel 0, lo/hi byte, mode 3
+    outb(0x40, (divisor % 256) as u8);   // low byte
+    outb(0x40, (divisor / 256) as u8);   // high byte
+}
+
+// Timer interrupt handler (IRQ0) — called ~100x/second from timer_isr.
+fn on_tick() {
+    g_ticks = g_ticks + 1;
 }
 
 // The keyboard interrupt handler. Called by keyboard_isr (idt.s) on each IRQ1.
@@ -250,7 +294,8 @@ fn kmain() {
     draw_prompt(g_row);
     move_cursor(g_row, g_col);
 
-    asm("sti");                      // enable interrupts; keys now arrive via IRQ1
+    init_pit();                      // start the ~100 Hz timer (IRQ0)
+    asm("sti");                      // enable interrupts (keyboard IRQ1 + timer IRQ0)
     while true {
         asm("hlt");                  // sleep until the next interrupt
     }
