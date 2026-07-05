@@ -1,0 +1,43 @@
+// MORT OS — a tiny kernel written in Mort.
+//
+// The bootloader (boot.s) calls mort_kmain in 32-bit protected mode. We write
+// directly to VGA text memory at 0xB8000, where each character cell is two
+// bytes: an ASCII code followed by a colour attribute. Then we halt.
+//
+// No strings or arrays in the language yet, so the message is written cell by
+// cell — a fair trade for a kernel with zero runtime underneath it.
+
+// Write one VGA cell: `index` is the cell number, `ch` the ASCII byte,
+// `color` the attribute (foreground | background << 4).
+fn put_cell(index: u32, ch: u8, color: u8) {
+    let addr: u32 = 0xB8000 + index * 2;
+    let cell: *u8 = addr as *u8;
+    *cell = ch;
+    let attr: *u8 = (addr + 1) as *u8;
+    *attr = color;
+}
+
+fn kmain() {
+    let green: u8 = 10;   // light green on black
+
+    put_cell(0, 77, green);    // M
+    put_cell(1, 79, green);    // O
+    put_cell(2, 82, green);    // R
+    put_cell(3, 84, green);    // T
+    put_cell(4, 32, green);    // space
+    put_cell(5, 79, green);    // O
+    put_cell(6, 83, green);    // S
+    put_cell(7, 32, green);    // space
+    put_cell(8, 66, green);    // B
+    put_cell(9, 79, green);    // O
+    put_cell(10, 79, green);   // O
+    put_cell(11, 84, green);   // T
+    put_cell(12, 69, green);   // E
+    put_cell(13, 68, green);   // D
+
+    // Halt the CPU forever (interrupts off so nothing wakes us).
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+}

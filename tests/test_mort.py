@@ -177,6 +177,19 @@ def test_freestanding_object_builds():
         assert struct.unpack("<H", data[18:20])[0] == 0x3E    # EM_X86_64
 
 
+# ---------- Phase 4: the bootable kernel ----------
+
+@needs_cc
+def test_kernel_builds_multiboot_elf():
+    if not mortc.is_zig(_CC):
+        pytest.skip("kernel build needs the Zig backend")
+    build_py = os.path.join(ROOT, "kernel", "build.py")
+    r = subprocess.run([sys.executable, build_py, "check"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "multiboot ELF" in r.stdout
+
+
 # ---------- front-end: errors ----------
 
 @pytest.mark.parametrize("src, needle", [

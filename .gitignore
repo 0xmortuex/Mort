@@ -16,6 +16,7 @@ venv/
 *.obj
 a.out
 /build/
+kernel/build/
 # generated C emitted next to a source when no compiler is found
 /*.c
 examples/*.c

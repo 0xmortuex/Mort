@@ -2,7 +2,7 @@
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
 
-Mort is step one of a bigger goal: **build a language, then write an operating system kernel in it.** That's why it compiles to freestanding-friendly C instead of running on an interpreter — the same toolchain that runs `hello.mx` today will compile a kernel tomorrow.
+Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU. That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
 
 ```rust
 // examples/fib.mx
@@ -156,7 +156,8 @@ they skip automatically if no C compiler is available.
 - [x] **Phase 2a — Memory core:** fixed-width int types, `as` casts, pointers (`&`, `*`, deref-assignment), hex literals, raw address casts.
 - [x] **Phase 2b — Aggregates & asm:** structs (fields, construction, by-value, pointer mutation) and an inline-assembly escape hatch (`asm("...")`).
 - [x] **Phase 3 — Freestanding mode:** `--freestanding` drops libc/`print`/`main` and emits a real x86-64 bare-metal ELF object (via the Zig backend).
-- [ ] **Phase 4 — The kernel:** a boot stub plus a kernel written in Mort that prints to the screen in QEMU, then keyboard input, then a shell.
+- [x] **Phase 4a — It boots:** a multiboot kernel written in Mort ([`kernel/`](kernel/)) that runs in QEMU and prints to VGA text mode. `python kernel/build.py run`.
+- [ ] **Phase 4b — Interactive:** a string/`print` routine in Mort, keyboard input via interrupts (IDT + PIC), and a minimal shell.
 
 ## License
 

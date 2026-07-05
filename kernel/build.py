@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Build (and optionally boot) the MORT OS kernel.
+
+    python kernel/build.py build     # compile + link -> kernel/build/kernel.elf
+    python kernel/build.py check     # build, then verify it's a valid multiboot kernel
+    python kernel/build.py run       # build, then boot it in QEMU
+
+The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
+C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
+with the Zig backend, and links them with linker.ld into a multiboot ELF.
+"""
+import os
+import shutil
+import struct
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+
+import mortc  # noqa: E402
+
+TARGET = "x86-freestanding-none"           # 32-bit x86, bare metal
+BUILD = os.path.join(HERE, "build")
+ELF = os.path.join(BUILD, "kernel.elf")
+
+
+def _zig():
+    cc = mortc.find_c_compiler()
+    if not cc or not mortc.is_zig(cc):
+        sys.exit("kernel build needs the Zig backend — run: pip install ziglang")
+    return cc
+
+
+def build():
+    os.makedirs(BUILD, exist_ok=True)
+    cc = _zig()
+
+    # 1. Mort kernel -> freestanding C.
+    with open(os.path.join(HERE, "kmain.mx"), encoding="utf-8") as fh:
+        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+    kmain_c = os.path.join(BUILD, "kmain.c")
+    with open(kmain_c, "w", encoding="utf-8") as fh:
+        fh.write(c_source)
+
+    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
+               "-fno-pie", "-O2"]
+    asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
+    kmain_o = os.path.join(BUILD, "kmain.o")
+    boot_o = os.path.join(BUILD, "boot.o")
+
+    # 2. Compile the kernel C and assemble the boot stub.
+    subprocess.run([*cc, *c_flags, "-c", kmain_c, "-o", kmain_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c", os.path.join(HERE, "boot.s"), "-o", boot_o],
+                   check=True)
+
+    # 3. Link into a static, non-PIE multiboot ELF using our linker script.
+    subprocess.run([
+        *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(HERE, "linker.ld"),
+        "-Wl,--build-id=none",
+        "-o", ELF, boot_o, kmain_o,
+    ], check=True)
+    print(f"built {os.path.relpath(ELF, ROOT)}")
+
+
+def check():
+    build()
+    with open(ELF, "rb") as fh:
+        data = fh.read()
+    assert data[:4] == b"\x7fELF", "output is not an ELF file"
+    assert data[4] == 1, "expected a 32-bit (ELFCLASS32) kernel"
+    machine = struct.unpack("<H", data[18:20])[0]
+    assert machine == 0x03, f"expected EM_386 (0x03), got {hex(machine)}"
+
+    # The multiboot magic must be 4-byte aligned within the first 8 KiB.
+    magic = (0x1BADB002).to_bytes(4, "little")
+    head = data[:8192]
+    offset = next((i for i in range(0, len(head) - 3, 4) if head[i:i + 4] == magic), -1)
+    assert offset >= 0, "multiboot header not found in the first 8 KiB"
+    print(f"OK: 32-bit x86 multiboot ELF; header at file offset {offset}")
+    print("Boot it with:  python kernel/build.py run")
+
+
+def run():
+    build()
+    qemu = shutil.which("qemu-system-i386")
+    if not qemu:
+        sys.exit("qemu-system-i386 not found — install QEMU to boot the kernel.")
+    print("Booting MORT OS in QEMU (close the window to exit)...")
+    subprocess.run([qemu, "-kernel", ELF])
+
+
+COMMANDS = {"build": build, "check": check, "run": run}
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "build"
+    if cmd not in COMMANDS:
+        sys.exit(f"unknown command {cmd!r}; use one of: {', '.join(COMMANDS)}")
+    COMMANDS[cmd]()
