@@ -87,10 +87,41 @@ numbers.
 ## Usage
 
 ```bash
-python mortc.py program.mx            # compile to a native executable
-python mortc.py program.mx --run      # compile, then run it
-python mortc.py program.mx --emit-c   # print the generated C and stop
-python mortc.py program.mx -o myprog  # choose the output name
+python mortc.py program.mx              # compile to a native executable
+python mortc.py program.mx --run        # compile, then run it
+python mortc.py program.mx --emit-c     # print the generated C and stop
+python mortc.py program.mx -o myprog    # choose the output name
+python mortc.py kernel.mx --freestanding  # bare-metal object (no libc, no main)
+```
+
+### Freestanding / bare metal
+
+`--freestanding` is the bridge to the kernel. It drops everything that needs an
+operating system underneath — no `<stdio.h>`, no `print`, no C `main` wrapper —
+and emits an object file compiled with `-ffreestanding`. With the Zig backend it
+cross-compiles to a real **x86-64 bare-metal ELF object** regardless of your host
+OS. Addresses are computed as integers and cast to pointers, so hardware like the
+VGA text buffer is reachable with no pointer-arithmetic feature:
+
+```rust
+// examples/kernel.mx — writes "Hi" to VGA memory, then halts.
+fn put_cell(index: u64, ch: u8, color: u8) {
+    let addr: u64 = 0xB8000 + index * 2;
+    let cell: *u8 = addr as *u8;
+    *cell = ch;
+    let attr: *u8 = (addr + 1) as *u8;
+    *attr = color;
+}
+
+fn kmain() {
+    put_cell(0, 72, 15);   // 'H'
+    put_cell(1, 105, 15);  // 'i'
+    asm("hlt");
+}
+```
+```
+$ python mortc.py examples/kernel.mx --freestanding
+mortc: wrote kernel.o          # a 64-bit x86-64 ELF object, no libc
 ```
 
 ### Requirements
@@ -124,7 +155,7 @@ they skip automatically if no C compiler is available.
 - [x] **Phase 1 — Language core:** lexer, parser, type checker, C codegen, CLI.
 - [x] **Phase 2a — Memory core:** fixed-width int types, `as` casts, pointers (`&`, `*`, deref-assignment), hex literals, raw address casts.
 - [x] **Phase 2b — Aggregates & asm:** structs (fields, construction, by-value, pointer mutation) and an inline-assembly escape hatch (`asm("...")`).
-- [ ] **Phase 3 — Freestanding mode:** compile with no libc into a bare-metal object file.
+- [x] **Phase 3 — Freestanding mode:** `--freestanding` drops libc/`print`/`main` and emits a real x86-64 bare-metal ELF object (via the Zig backend).
 - [ ] **Phase 4 — The kernel:** a boot stub plus a kernel written in Mort that prints to the screen in QEMU, then keyboard input, then a shell.
 
 ## License

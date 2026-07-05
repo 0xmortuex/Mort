@@ -26,8 +26,9 @@ def pointee(t):
 
 
 class Checker:
-    def __init__(self, program):
+    def __init__(self, program, freestanding=False):
         self.program = program
+        self.freestanding = freestanding
         self.funcs = {}       # name -> (param_types, ret)
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
         self.scopes = []
@@ -77,13 +78,16 @@ class Checker:
                 self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
             self.funcs[f.name] = ([p.typ for p in f.params], f.ret)
 
-        if "main" not in self.funcs:
-            raise MortError("no 'main' function defined")
-        params, ret = self.funcs["main"]
-        if params:
-            raise MortError("'main' must take no parameters")
-        if ret != "i64":
-            raise MortError("'main' must return int")
+        # Hosted programs are launched through a C main; freestanding ones are
+        # entered by a bootloader, so they have no 'main' requirement.
+        if not self.freestanding:
+            if "main" not in self.funcs:
+                raise MortError("no 'main' function defined")
+            params, ret = self.funcs["main"]
+            if params:
+                raise MortError("'main' must take no parameters")
+            if ret != "i64":
+                raise MortError("'main' must return int")
 
         for f in self.program.funcs:
             self._check_fn(f)
@@ -326,6 +330,10 @@ class Checker:
 
     def _infer_call(self, e):
         if e.name == "print":
+            if self.freestanding:
+                self._error(
+                    "print is not available in freestanding mode; "
+                    "write to hardware directly (e.g. the VGA buffer)", e)
             if len(e.args) != 1:
                 self._error("print expects exactly 1 argument", e)
             at = self._check_expr(e.args[0])

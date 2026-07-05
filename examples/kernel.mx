@@ -1,0 +1,24 @@
+// A freestanding fragment — no OS, no libc. It writes straight to VGA text
+// memory at 0xB8000, exactly what a kernel does to put characters on screen.
+//
+// Build it as a bare-metal object:
+//     python mortc.py examples/kernel.mx --freestanding
+//
+// It intentionally can't be --run: writing to 0xB8000 only means something on
+// real hardware (or QEMU). This is the bridge to Phase 4.
+
+// Write one character cell: VGA text memory is [char, attribute] pairs.
+fn put_cell(index: u64, ch: u8, color: u8) {
+    let addr: u64 = 0xB8000 + index * 2;
+    let cell: *u8 = addr as *u8;
+    *cell = ch;
+    let attr: *u8 = (addr + 1) as *u8;
+    *attr = color;
+}
+
+// The bootloader will jump here in Phase 4.
+fn kmain() {
+    put_cell(0, 72, 15);    // 'H', bright white on black
+    put_cell(1, 105, 15);   // 'i'
+    asm("hlt");             // halt the CPU
+}

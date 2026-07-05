@@ -26,6 +26,11 @@ def c_of(src):
     return mortc.compile_to_c(src)
 
 
+# End-to-end tests need a C compiler; skip them cleanly when none is present.
+_CC = mortc.find_c_compiler()
+needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
+
+
 # ---------- front-end: valid programs ----------
 
 def test_hello_generates_c():
@@ -120,6 +125,53 @@ def test_struct_pointer_field_write():
     assert "((*m_q)).f_x = 9;" in c
 
 
+# ---------- Phase 3: freestanding mode ----------
+
+def c_free(src):
+    return mortc.compile_to_c(src, freestanding=True)
+
+
+def test_freestanding_omits_libc_and_main():
+    c = c_free("fn kmain() { let p: *u8 = 0xB8000 as *u8; *p = 65; }")
+    assert "#include <stdio.h>" not in c
+    assert "#include <stdint.h>" in c        # stdint is freestanding-safe
+    assert "mort_print" not in c
+    assert "int main(void)" not in c
+    assert "void mort_kmain(void)" in c
+
+
+def test_freestanding_needs_no_main():
+    # would be a "no 'main'" error in hosted mode — fine when freestanding
+    c_free("fn kmain() { return; }")
+
+
+def test_print_banned_in_freestanding():
+    with pytest.raises(MortError) as exc:
+        c_free("fn kmain() { print(1); }")
+    assert "freestanding" in exc.value.msg
+
+
+@needs_cc
+def test_freestanding_object_builds():
+    src_path = os.path.join(ROOT, "examples", "kernel.mx")
+    with open(src_path, encoding="utf-8") as fh:
+        c_source = c_free(fh.read())
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "k.c")
+        obj = os.path.join(d, "k.o")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        cmd = list(_CC)
+        if mortc.is_zig(_CC):
+            cmd += ["-target", "x86_64-freestanding-none"]
+        cmd += ["-ffreestanding", "-O2", "-std=c11", "-c", cfile, "-o", obj]
+        subprocess.run(cmd, check=True)
+        data = open(obj, "rb").read()
+    assert len(data) > 0
+    if mortc.is_zig(_CC):
+        assert data[:4] == b"\x7fELF"  # a real x86_64 bare-metal ELF object
+
+
 # ---------- front-end: errors ----------
 
 @pytest.mark.parametrize("src, needle", [
@@ -155,9 +207,6 @@ def test_type_errors(src, needle):
 
 
 # ---------- end-to-end (needs a C compiler) ----------
-
-_CC = mortc.find_c_compiler()
-needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
 
 EXPECTED = {
     "hello.mx": "42\n",

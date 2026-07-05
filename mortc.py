@@ -27,12 +27,17 @@ from mort.codegen import CodeGen      # noqa: E402
 from mort.errors import MortError     # noqa: E402
 
 
-def compile_to_c(src):
+def compile_to_c(src, freestanding=False):
     """Run the full front-end and return generated C source (or raise MortError)."""
     tokens = Lexer(src).tokenize()
     program = Parser(tokens).parse()
-    Checker(program).check()
-    return CodeGen(program).generate()
+    Checker(program, freestanding=freestanding).check()
+    return CodeGen(program, freestanding=freestanding).generate()
+
+
+def is_zig(cc):
+    """True if the compiler argv is Zig's clang (supports easy cross-compiles)."""
+    return any("zig" in part for part in cc)
 
 
 def find_c_compiler():
@@ -60,20 +65,26 @@ def find_c_compiler():
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mortc", description="The Mort compiler.")
     ap.add_argument("file", help="path to a .mx source file")
-    ap.add_argument("-o", "--output", help="output executable name")
+    ap.add_argument("-o", "--output", help="output file name")
     ap.add_argument("--emit-c", action="store_true", help="print generated C and exit")
     ap.add_argument("--run", action="store_true", help="run the program after building")
+    ap.add_argument("--freestanding", action="store_true",
+                    help="compile to a bare-metal object file (no libc, no main)")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.file):
         print(f"mortc: cannot find file {args.file!r}", file=sys.stderr)
+        return 1
+    if args.freestanding and args.run:
+        print("mortc: --run cannot be used with --freestanding (nothing to run yet)",
+              file=sys.stderr)
         return 1
 
     with open(args.file, "r", encoding="utf-8") as fh:
         src = fh.read()
 
     try:
-        c_source = compile_to_c(src)
+        c_source = compile_to_c(src, freestanding=args.freestanding)
     except MortError as e:
         print(f"mortc: {e.format()}", file=sys.stderr)
         return 1
@@ -83,10 +94,11 @@ def main(argv=None):
         return 0
 
     base = os.path.splitext(os.path.basename(args.file))[0]
-    out = args.output or (base + (".exe" if os.name == "nt" else ""))
 
     cc = find_c_compiler()
     if cc is None:
+        default = base + (".o" if args.freestanding else "")
+        out = args.output or (default or base)
         fallback = base + ".c"
         with open(fallback, "w", encoding="utf-8") as fh:
             fh.write(c_source)
@@ -98,12 +110,24 @@ def main(argv=None):
         )
         return 2
 
+    if args.freestanding:
+        out = args.output or (base + ".o")
+        # Cross-compile a real x86_64 bare-metal object when Zig is the backend;
+        # otherwise just build a freestanding object for the host.
+        cmd = list(cc)
+        if is_zig(cc):
+            cmd += ["-target", "x86_64-freestanding-none"]
+        cmd += ["-ffreestanding", "-O2", "-std=c11", "-c"]
+    else:
+        out = args.output or (base + (".exe" if os.name == "nt" else ""))
+        cmd = [*cc, "-O2", "-std=c11"]
+
     tmp = tempfile.NamedTemporaryFile("w", suffix=".c", delete=False, encoding="utf-8")
     try:
         tmp.write(c_source)
         tmp.close()
         try:
-            subprocess.run([*cc, tmp.name, "-o", out, "-O2", "-std=c11"], check=True)
+            subprocess.run([*cmd, tmp.name, "-o", out], check=True)
         except subprocess.CalledProcessError:
             print("mortc: the C backend failed to compile the generated code", file=sys.stderr)
             return 1
