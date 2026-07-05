@@ -7,7 +7,8 @@ Every expression node grows a ``.type`` attribute during type checking.
 
 class Node:
     def __init__(self):
-        self.type = None  # resolved by the checker for expressions
+        self.type = None    # resolved by the checker for expressions
+        self.is_lit = False  # True for untyped integer-literal expressions
 
 
 # ----- top level -----
@@ -45,9 +46,9 @@ class Let(Node):
 
 
 class Assign(Node):
-    def __init__(self, name, expr, line):
+    def __init__(self, target, expr, line):
         super().__init__()
-        self.name = name
+        self.target = target  # an lvalue expression (Var or unary '*' deref)
         self.expr = expr
         self.line = line
 
@@ -134,4 +135,12 @@ class Call(Node):
         super().__init__()
         self.name = name
         self.args = args
+        self.line = line
+
+
+class Cast(Node):
+    def __init__(self, expr, target_type, line):
+        super().__init__()
+        self.expr = expr
+        self.target_type = target_type
         self.line = line

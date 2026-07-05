@@ -21,6 +21,8 @@ from .tokens import T
 from .errors import MortError
 from . import mort_ast as A
 
+FIXED_INT_TYPES = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
+
 
 class Parser:
     def __init__(self, tokens):
@@ -53,13 +55,20 @@ class Parser:
         return A.Program(funcs)
 
     def _type_name(self):
+        # pointer type: *T
+        if self._at(T.STAR):
+            self._advance()
+            return "*" + self._type_name()
         tok = self._peek()
         if tok.type == T.KW_INT:
             self._advance()
-            return "int"
+            return "i64"  # 'int' is a friendly alias for i64
         if tok.type == T.KW_BOOL:
             self._advance()
             return "bool"
+        if tok.type == T.IDENT and tok.value in FIXED_INT_TYPES:
+            self._advance()
+            return tok.value
         raise MortError(f"expected a type, got {tok.value!r}", tok.line)
 
     def _fn_decl(self):
@@ -151,13 +160,18 @@ class Parser:
         expr = self._expression()
         if self._at(T.ASSIGN):
             self._advance()
-            if not isinstance(expr, A.Var):
+            if not self._is_lvalue(expr):
                 raise MortError("invalid assignment target", line)
             value = self._expression()
             self._expect(T.SEMI, "';'")
-            return A.Assign(expr.name, value, line)
+            return A.Assign(expr, value, line)
         self._expect(T.SEMI, "';'")
         return A.ExprStmt(expr, line)
+
+    @staticmethod
+    def _is_lvalue(e):
+        # a name, or a pointer dereference (*p) — both name storage locations
+        return isinstance(e, A.Var) or (isinstance(e, A.Unary) and e.op == "*")
 
     # ----- expressions -----
     def _expression(self):
@@ -199,19 +213,29 @@ class Parser:
         return left
 
     def _factor(self):
-        left = self._unary()
+        left = self._cast()
         while self._peek().type in (T.STAR, T.SLASH, T.PERCENT):
             op = self._advance()
-            left = A.Binary(op.value, left, self._unary(), op.line)
+            left = A.Binary(op.value, left, self._cast(), op.line)
         return left
 
-    def _unary(self):
-        if self._peek().type in (T.BANG, T.MINUS):
-            op = self._advance()
-            return A.Unary(op.value, self._unary(), op.line)
-        return self._call()
+    def _cast(self):
+        expr = self._unary()
+        while self._at(T.AS):
+            line = self._advance().line
+            expr = A.Cast(expr, self._type_name(), line)
+        return expr
 
-    def _call(self):
+    def _unary(self):
+        # '&' address-of and '*' dereference join '!' and '-' as prefix ops
+        if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR):
+            op = self._advance()
+            # normalise '&' to op string '&'
+            op_str = "&" if op.type == T.AMP else op.value
+            return A.Unary(op_str, self._unary(), op.line)
+        return self._postfix()
+
+    def _postfix(self):
         expr = self._primary()
         while self._at(T.LPAREN):
             if not isinstance(expr, A.Var):

@@ -55,17 +55,58 @@ def test_recursion_prototype_emitted():
     assert "int64_t mort_f(int64_t m_n);" in c  # prototype allows any call order
 
 
+# ---------- Phase 2: fixed-width ints, casts, pointers ----------
+
+def test_fixed_width_int_types():
+    c = c_of("fn main() -> int { let a: u8 = 5; let b: i32 = 0 - 1; print(b); return 0; }")
+    assert "uint8_t m_a = 5;" in c
+    assert "int32_t m_b = (0 - 1);" in c
+
+
+def test_hex_literal():
+    c = c_of("fn main() -> int { let m: u16 = 0xFF; print(m); return 0; }")
+    assert "uint16_t m_m = 255;" in c
+
+
+def test_pointer_ops_codegen():
+    c = c_of(
+        "fn main() -> int { let x: i32 = 5; let p: *i32 = &x; *p = 9; print(x); return 0; }"
+    )
+    assert "int32_t* m_p = (&m_x);" in c
+    assert "(*m_p) = 9;" in c
+
+
+def test_cast_codegen():
+    c = c_of(
+        "fn main() -> int { let x: i32 = 1; let p: *i32 = &x; let a: u64 = p as u64; print(x); return 0; }"
+    )
+    assert "((uint64_t)m_p)" in c
+
+
+def test_literal_coercion_in_arithmetic():
+    # the untyped literal 5 must adopt u8, so no cast is needed
+    c = c_of("fn main() -> int { let a: u8 = 250; let b: u8 = a + 5; print(b); return 0; }")
+    assert "uint8_t m_b = (m_a + 5);" in c
+
+
 # ---------- front-end: errors ----------
 
 @pytest.mark.parametrize("src, needle", [
     ("fn main() -> int { return true; }", "return type mismatch"),
     ("fn main() -> int { let x = 1; if x { return 0; } return 0; }", "must be a bool"),
-    ("fn main() -> int { print(true); return 0; }", "argument 1 of 'print'"),
+    ("fn main() -> int { print(true); return 0; }", "print expects an integer"),
     ("fn main() -> int { return y; }", "undefined variable"),
     ("fn main() -> int { let x = 1; let x = 2; return 0; }", "already declared"),
     ("fn f() -> int { return 0; }", "no 'main'"),
     ("fn main() -> bool { return true; }", "'main' must return int"),
     ("fn main() -> int { return 1 + true; }", "requires int operands"),
+    ("fn main() -> int { let x = 1; let y = *x; return 0; }", "dereference"),
+    ("fn main() -> int { let p = &5; return 0; }", "address of"),
+    ("fn main() -> int { let a: u8 = 1; let b: i32 = 2; let c = a + b; return 0; }",
+     "mismatched integer types"),
+    ("fn main() -> int { let b = true; let x = b as i32; return 0; }", "cannot cast"),
+    ("fn main() -> int { let p: *i32 = 0 as *i32; print(p); return 0; }",
+     "print expects an integer"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
@@ -82,6 +123,8 @@ EXPECTED = {
     "hello.mx": "42\n",
     "fib.mx": "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n",
     "factorial.mx": "120\n",
+    "pointers.mx": "99\n99\n",
+    "types.mx": "255\n1000000\n-300\n255\n",
 }
 
 

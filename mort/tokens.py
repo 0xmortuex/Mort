@@ -17,6 +17,8 @@ class T(Enum):
     FALSE = auto()
     KW_INT = auto()
     KW_BOOL = auto()
+    AS = auto()
+    STRUCT = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -26,6 +28,8 @@ class T(Enum):
     SEMI = auto()
     COLON = auto()
     ARROW = auto()
+    DOT = auto()
+    AMP = auto()
     # operators
     ASSIGN = auto()
     PLUS = auto()
@@ -56,6 +60,8 @@ KEYWORDS = {
     "false": T.FALSE,
     "int": T.KW_INT,
     "bool": T.KW_BOOL,
+    "as": T.AS,
+    "struct": T.STRUCT,
 }
 
 

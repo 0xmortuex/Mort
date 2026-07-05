@@ -1,0 +1,16 @@
+// Fixed-width integer types, literal coercion, and hex literals.
+fn main() -> int {
+    let a: u8 = 250;
+    let b: u8 = a + 5;       // 255 — literal 5 adopts u8
+    print(b);                // 255
+
+    let big: u32 = 1000000;
+    print(big);              // 1000000
+
+    let neg: i32 = 0 - 300;
+    print(neg);              // -300
+
+    let mask: u16 = 0xFF;    // hex literal
+    print(mask);             // 255
+    return 0;
+}

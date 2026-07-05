@@ -56,19 +56,28 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.1)
+## The language (v0.2)
 
-- **Types:** `int` (64-bit) and `bool`.
+- **Types:** `bool`, `int` (alias for `i64`), and the fixed-width integers
+  `i8 i16 i32 i64 u8 u16 u32 u64`.
+- **Pointers:** `*T` types, address-of `&x`, dereference `*p`, and writing
+  through a pointer with `*p = value;`.
+- **Casts:** `expr as T` between integer types and pointers — e.g.
+  `0xB8000 as *u8` to point at raw memory.
 - **Functions:** `fn name(a: int, b: int) -> int { ... }`, with recursion and any call order.
-- **Variables:** `let x = 5;` (inferred) or `let x: int = 5;` (annotated).
+- **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
 - **Control flow:** `if` / `else if` / `else`, `while`.
 - **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
-- **Builtins:** `print(int)`.
+- **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
+  integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
+- **Builtins:** `print(<any integer>)`.
 - **Comments:** `// to end of line`.
 
 Everything is statically type-checked before a single line of C is emitted:
-mismatched types, undefined names, wrong argument counts, and a non-`bool`
-`if` condition are all compile-time errors with line numbers.
+mismatched types, mixing integer widths without a cast, dereferencing a
+non-pointer, taking the address of a non-lvalue, undefined names, wrong argument
+counts, and a non-`bool` `if` condition are all compile-time errors with line
+numbers.
 
 ## Usage
 
@@ -108,7 +117,8 @@ they skip automatically if no C compiler is available.
 ## Roadmap
 
 - [x] **Phase 1 — Language core:** lexer, parser, type checker, C codegen, CLI.
-- [ ] **Phase 2 — Systems features:** pointers, structs, fixed-width int types (`u8`, `u32`…), raw memory access, an inline-assembly escape hatch.
+- [x] **Phase 2a — Memory core:** fixed-width int types, `as` casts, pointers (`&`, `*`, deref-assignment), hex literals, raw address casts.
+- [ ] **Phase 2b — Aggregates & asm:** structs (fields, construction), and an inline-assembly escape hatch for `hlt`/port I/O.
 - [ ] **Phase 3 — Freestanding mode:** compile with no libc into a bare-metal object file.
 - [ ] **Phase 4 — The kernel:** a boot stub plus a kernel written in Mort that prints to the screen in QEMU, then keyboard input, then a shell.
 

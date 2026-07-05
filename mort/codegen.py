@@ -9,7 +9,18 @@ Design choices:
 """
 from . import mort_ast as A
 
-C_TYPE = {"int": "int64_t", "bool": "bool", "void": "void"}
+_C_BASE = {
+    "i8": "int8_t", "i16": "int16_t", "i32": "int32_t", "i64": "int64_t",
+    "u8": "uint8_t", "u16": "uint16_t", "u32": "uint32_t", "u64": "uint64_t",
+    "bool": "bool", "void": "void",
+}
+
+
+def c_type(t):
+    """Map a Mort type string to its C spelling ('*i32' -> 'int32_t*')."""
+    if t.startswith("*"):
+        return c_type(t[1:]) + "*"
+    return _C_BASE[t]
 
 
 class CodeGen:
@@ -40,9 +51,9 @@ class CodeGen:
         return "\n".join(self.lines) + "\n"
 
     def _signature(self, f):
-        ret = C_TYPE[f.ret]
+        ret = c_type(f.ret)
         if f.params:
-            params = ", ".join(f"{C_TYPE[p.typ]} m_{p.name}" for p in f.params)
+            params = ", ".join(f"{c_type(p.typ)} m_{p.name}" for p in f.params)
         else:
             params = "void"
         return f"{ret} mort_{f.name}({params})"
@@ -57,9 +68,9 @@ class CodeGen:
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
-            self._emit(f"{C_TYPE[s.var_type]} m_{s.name} = {self._gen_expr(s.expr)};")
+            self._emit(f"{c_type(s.var_type)} m_{s.name} = {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Assign):
-            self._emit(f"m_{s.name} = {self._gen_expr(s.expr)};")
+            self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Return):
             if s.expr is None:
                 self._emit("return;")
@@ -107,6 +118,8 @@ class CodeGen:
             return "true" if e.value else "false"
         if isinstance(e, A.Var):
             return f"m_{e.name}"
+        if isinstance(e, A.Cast):
+            return f"(({c_type(e.target_type)}){self._gen_expr(e.expr)})"
         if isinstance(e, A.Unary):
             return f"({e.op}{self._gen_expr(e.operand)})"
         if isinstance(e, A.Binary):

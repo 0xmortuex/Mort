@@ -20,6 +20,8 @@ _ONE_CHAR = {
     ",": T.COMMA,
     ";": T.SEMI,
     ":": T.COLON,
+    ".": T.DOT,
+    "&": T.AMP,
     "=": T.ASSIGN,
     "+": T.PLUS,
     "-": T.MINUS,
@@ -79,6 +81,19 @@ class Lexer:
         return self.tokens
 
     def _number(self, line, col):
+        # hex literal, e.g. 0xB8000
+        if self._peek() == "0" and self._peek(1) in "xX":
+            self._advance()
+            self._advance()
+            s = ""
+            while self._peek() in "0123456789abcdefABCDEF":
+                s += self._advance()
+            if not s:
+                raise MortError("invalid hex literal '0x'", line, col)
+            if self._peek().isalnum() or self._peek() == "_":
+                raise MortError("invalid hex literal", line, col)
+            self._add(T.INT, int(s, 16), line, col)
+            return
         s = ""
         while self._peek().isdigit():
             s += self._advance()

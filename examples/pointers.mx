@@ -1,0 +1,13 @@
+// Pointers: address-of (&), dereference (*), and writing through a pointer.
+fn main() -> int {
+    let x: i32 = 5;
+    let p: *i32 = &x;
+    *p = 99;
+    print(x);            // 99 — changed through the pointer
+
+    // Round-trip a pointer through a raw integer address, then read it back.
+    let addr: u64 = p as u64;
+    let q: *i32 = addr as *i32;
+    print(*q);           // 99
+    return 0;
+}
