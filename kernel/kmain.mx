@@ -353,7 +353,7 @@ fn run_script(index: u32) {
 // (enough for the RAM sizes we run on).
 fn mem() {
     let flags: u32 = *(g_mbinfo as *u32);
-    if (flags / 64) % 2 == 0 {
+    if (flags & 64) == 0 {           // multiboot flags bit 6 = memory map present
         feed();
         print_string("memory map unavailable", g_row, 12);
         return;

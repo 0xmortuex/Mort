@@ -450,6 +450,12 @@ class Checker:
                 if self._check_expr(e.operand) != "bool":
                     self._error("unary '!' requires a bool", e)
                 return "bool"
+            if e.op == "~":
+                ot = self._check_expr(e.operand)
+                if ot not in INT_TYPES:
+                    self._error("unary '~' requires an integer", e)
+                e.is_lit = e.operand.is_lit
+                return ot
 
         if isinstance(e, A.Binary):
             lt = self._check_expr(e.left)
@@ -461,6 +467,17 @@ class Checker:
                     e.is_lit = e.left.is_lit and e.right.is_lit
                     return res
                 return "bool"
+            if op in ("&", "|", "^"):
+                res = self._unify_ints(e, lt, rt, op)
+                e.is_lit = e.left.is_lit and e.right.is_lit
+                return res
+            if op in ("<<", ">>"):
+                # the shift count needn't match the value's type; result is the
+                # left operand's integer type.
+                if lt not in INT_TYPES or rt not in INT_TYPES:
+                    self._error(f"operator '{op}' requires int operands", e)
+                e.is_lit = e.left.is_lit and e.right.is_lit
+                return lt
             if op in ("==", "!="):
                 if lt in INT_TYPES and rt in INT_TYPES:
                     self._unify_ints(e, lt, rt, op)

@@ -271,10 +271,31 @@ class Parser:
         return left
 
     def _logic_and(self):
-        left = self._equality()
+        left = self._bitor()
         while self._at(T.AND):
             op = self._advance()
-            left = A.Binary("&&", left, self._equality(), op.line)
+            left = A.Binary("&&", left, self._bitor(), op.line)
+        return left
+
+    def _bitor(self):
+        left = self._bitxor()
+        while self._at(T.PIPE):
+            op = self._advance()
+            left = A.Binary("|", left, self._bitxor(), op.line)
+        return left
+
+    def _bitxor(self):
+        left = self._bitand()
+        while self._at(T.CARET):
+            op = self._advance()
+            left = A.Binary("^", left, self._bitand(), op.line)
+        return left
+
+    def _bitand(self):
+        left = self._equality()
+        while self._at(T.AMP):
+            op = self._advance()
+            left = A.Binary("&", left, self._equality(), op.line)
         return left
 
     def _equality(self):
@@ -285,8 +306,15 @@ class Parser:
         return left
 
     def _comparison(self):
-        left = self._term()
+        left = self._shift()
         while self._peek().type in (T.LT, T.GT, T.LE, T.GE):
+            op = self._advance()
+            left = A.Binary(op.value, left, self._shift(), op.line)
+        return left
+
+    def _shift(self):
+        left = self._term()
+        while self._peek().type in (T.SHL, T.SHR):
             op = self._advance()
             left = A.Binary(op.value, left, self._term(), op.line)
         return left
@@ -313,10 +341,9 @@ class Parser:
         return expr
 
     def _unary(self):
-        # '&' address-of and '*' dereference join '!' and '-' as prefix ops
-        if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR):
+        # '&' address-of, '*' deref, '~' bitwise-not join '!' and '-' as prefixes
+        if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR, T.TILDE):
             op = self._advance()
-            # normalise '&' to op string '&'
             op_str = "&" if op.type == T.AMP else op.value
             return A.Unary(op_str, self._unary(), op.line)
         return self._postfix()

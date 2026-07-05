@@ -11,6 +11,8 @@ _TWO_CHAR = {
     ">=": T.GE,
     "&&": T.AND,
     "||": T.OR,
+    "<<": T.SHL,
+    ">>": T.SHR,
 }
 
 _ONE_CHAR = {
@@ -34,6 +36,9 @@ _ONE_CHAR = {
     "<": T.LT,
     ">": T.GT,
     "!": T.BANG,
+    "|": T.PIPE,
+    "^": T.CARET,
+    "~": T.TILDE,
 }
 
 

@@ -53,6 +53,11 @@ class T(Enum):
     AND = auto()
     OR = auto()
     BANG = auto()
+    PIPE = auto()
+    CARET = auto()
+    TILDE = auto()
+    SHL = auto()
+    SHR = auto()
     EOF = auto()
 
 

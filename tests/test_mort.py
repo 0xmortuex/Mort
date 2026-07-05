@@ -201,6 +201,40 @@ def test_global_array_codegen():
     assert "static int32_t m_table[3] = {7, 8, 9};" in c
 
 
+def test_bitwise_codegen():
+    c = c_of("fn main() -> int { let a: u32 = 6; let b: u32 = 3; "
+             "print((a & b) as i64); print((a | b) as i64); print((a ^ b) as i64); return 0; }")
+    assert "(m_a & m_b)" in c
+    assert "(m_a | m_b)" in c
+    assert "(m_a ^ m_b)" in c
+
+
+def test_shift_and_not_codegen():
+    c = c_of("fn main() -> int { let a: u32 = 1; print((a << 4) as i64); print((~a) as i64); return 0; }")
+    assert "(m_a << 4)" in c
+    assert "(~m_a)" in c
+
+
+@needs_cc
+def test_bitwise_runs():
+    src = ("fn main() -> int {"
+           "  let a: u32 = 0xF0; let b: u32 = 0x0F;"
+           "  print((a | b) as i64);"     # 255
+           "  print((a & 0x30) as i64);"  # 48
+           "  print((1 << 5) as i64);"    # 32
+           "  print((a >> 4) as i64);"    # 15
+           "  return 0; }")
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "b.c")
+        exe = os.path.join(d, "b.exe" if os.name == "nt" else "b")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "255\n48\n32\n15\n"
+
+
 def test_for_loop_codegen():
     # both bounds are literals -> i is i64 (Mort's default integer)
     c = c_of("fn main() -> int { let s: i64 = 0; for i in 0..5 { s = s + i; } print(s); return 0; }")
@@ -446,6 +480,7 @@ def test_kernel_builds_multiboot_elf():
     ("fn f(a: [i32; 2]) { } fn main() -> int { return 0; }", "cannot be an array"),
     ("fn f() -> [i32; 2] { let a: [i32; 2] = [1, 2]; return a; } fn main() -> int { return 0; }",
      "cannot return an array"),
+    ("fn main() -> int { let x = true & false; return 0; }", "requires int operands"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
