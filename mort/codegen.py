@@ -44,7 +44,8 @@ class CodeGen:
 
     def generate(self):
         self.strings = []       # raw string-literal values, index = id
-        self.used_portio = False  # set if any inb/outb call is generated
+        self.used_inb = False   # set if inb()/outb() is generated, per helper
+        self.used_outb = False
 
         # Generate function bodies first, into a side buffer. This populates
         # self.strings / self.used_portio (each StrLit and port-I/O call
@@ -80,16 +81,18 @@ class CodeGen:
             for i, val in enumerate(self.strings):
                 self._emit(f'static uint8_t mort_str_{i}[] = "{val}";')
             self._emit()
-        # x86 port I/O helpers, emitted only when used.
-        if self.used_portio:
+        # x86 port I/O helpers, each emitted only when its builtin is used.
+        if self.used_outb:
             self._emit("static inline void mort_outb(uint16_t port, uint8_t val) {")
             self._emit('    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));')
             self._emit("}")
+        if self.used_inb:
             self._emit("static inline uint8_t mort_inb(uint16_t port) {")
             self._emit("    uint8_t ret;")
             self._emit('    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));')
             self._emit("    return ret;")
             self._emit("}")
+        if self.used_inb or self.used_outb:
             self._emit()
         if not self.freestanding:
             self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
@@ -201,8 +204,10 @@ class CodeGen:
         if isinstance(e, A.Binary):
             return f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
         if isinstance(e, A.Call):
-            if e.name in ("inb", "outb"):
-                self.used_portio = True
+            if e.name == "inb":
+                self.used_inb = True
+            elif e.name == "outb":
+                self.used_outb = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             name = "mort_print" if e.name == "print" else f"mort_{e.name}"
             return f"{name}({args})"

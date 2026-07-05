@@ -17,6 +17,18 @@ ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {"print", "outb", "inb"}
 
+# Inclusive value range each integer type can hold.
+INT_RANGES = {
+    "i8": (-128, 127),
+    "i16": (-32768, 32767),
+    "i32": (-(2 ** 31), 2 ** 31 - 1),
+    "i64": (-(2 ** 63), 2 ** 63 - 1),
+    "u8": (0, 255),
+    "u16": (0, 65535),
+    "u32": (0, 2 ** 32 - 1),
+    "u64": (0, 2 ** 64 - 1),
+}
+
 
 def is_ptr(t):
     return isinstance(t, str) and t.startswith("*")
@@ -121,11 +133,46 @@ class Checker:
         self.scopes.pop()
 
     # ----- coercion -----
+    def _const_value(self, e):
+        """Evaluate a constant integer-literal expression, or None if not one."""
+        if isinstance(e, A.IntLit):
+            return e.value
+        if isinstance(e, A.Unary) and e.op == "-":
+            v = self._const_value(e.operand)
+            return None if v is None else -v
+        if isinstance(e, A.Binary):
+            lv = self._const_value(e.left)
+            rv = self._const_value(e.right)
+            if lv is None or rv is None:
+                return None
+            op = e.op
+            if op == "+":
+                return lv + rv
+            if op == "-":
+                return lv - rv
+            if op == "*":
+                return lv * rv
+            if op in ("/", "%") and rv != 0:
+                return int(lv / rv) if op == "/" else lv % rv
+        return None
+
     def _coerce(self, expected, expr):
-        """Return True if expr fits `expected`, retagging an untyped int literal."""
+        """Return True if expr fits `expected`, retagging an untyped int literal.
+
+        An untyped integer literal adopts the expected integer type — but its
+        value must actually fit, so hardware writes like outb(0x12345, ...) or a
+        `let x: u8 = 300;` are compile errors, not silent truncation.
+        """
         if expr.type == expected:
             return True
         if expected in INT_TYPES and expr.is_lit:
+            value = self._const_value(expr)
+            if value is not None:
+                lo, hi = INT_RANGES[expected]
+                if not (lo <= value <= hi):
+                    self._error(
+                        f"integer literal {value} does not fit in {expected} "
+                        f"(range {lo}..{hi})", expr)
             expr.type = expected  # untyped literal adopts the expected int type
             return True
         return False

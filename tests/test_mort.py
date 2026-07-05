@@ -148,6 +148,23 @@ def test_port_io_helpers_only_when_used():
     assert "mort_inb" not in c and "mort_outb" not in c
 
 
+def test_port_io_helpers_emitted_per_builtin():
+    only_in = c_free("fn kmain() { let s: u8 = inb(0x60); }")
+    assert "mort_inb(uint16_t" in only_in
+    assert "mort_outb(uint16_t" not in only_in   # not dragged in by inb alone
+
+    only_out = c_free("fn kmain() { outb(0x20, 0x20); }")
+    assert "mort_outb(uint16_t" in only_out
+    assert "mort_inb(uint16_t" not in only_out
+
+
+def test_literal_range_check():
+    # value fits: fine
+    c_of("fn main() -> int { let x: u8 = 255; print(x); return 0; }")
+    # constant-folded literal that fits
+    c_of("fn main() -> int { let x: u8 = 200 + 55; print(x); return 0; }")
+
+
 @needs_cc
 def test_string_literal_runs():
     # walk a string literal's bytes: cast ptr->int, offset, cast back, deref.
@@ -272,6 +289,11 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { outb(0x20); return 0; }", "outb expects 2 arguments"),
     ("fn main() -> int { let x: u8 = inb(1, 2); return 0; }", "inb expects 1 argument"),
     ("fn outb() { } fn main() -> int { return 0; }", "already defined"),
+    ("fn main() -> int { outb(0x12345, 0x20); return 0; }", "does not fit in u16"),
+    ("fn main() -> int { outb(0x20, 0x123); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let x: u8 = 300; print(x); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let x: u8 = 200 + 100; print(x); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let x: i8 = 0 - 200; print(x); return 0; }", "does not fit in i8"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
