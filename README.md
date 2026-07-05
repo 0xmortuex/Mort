@@ -6,7 +6,11 @@
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
 
-Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU and gives you an **interactive shell** (`help`, `clear`) driven by a polled keyboard. That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
+Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU, sets up an IDT, remaps the PICs, and takes **interrupt-driven keyboard input** into an interactive shell. That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
+
+![MORT OS running in QEMU](docs/mortos.png)
+
+<sub>MORT OS booted in QEMU — the shell, keyboard driver, and command parser are all written in Mort.</sub>
 
 ```rust
 // examples/fib.mx
