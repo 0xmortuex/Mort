@@ -86,7 +86,7 @@ C `main`, so the output is an ordinary native binary.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
 - **Control flow:** `if` / `else if` / `else`, `while`, and range `for`
   (`for i in 0..n { ... }`, or `for i: u32 in 0..n` to fix the counter's type).
-- **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
+- **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, bitwise `& | ^ << >> ~`, unary `-`.
 - **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
   integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
 - **Globals:** top-level `let name: type = <constant>;` — file-scope state shared
