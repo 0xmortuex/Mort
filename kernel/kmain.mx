@@ -15,6 +15,10 @@ let g_buf: *u8 = "                                        ";   // 40-byte scratc
 let g_ticks: u32 = 0;                                          // PIT ticks (100/s)
 let g_numlen: u32 = 0;                                         // digits written by num_to_str
 let g_numbuf: *u8 = "            ";                            // 12-byte number scratch
+let g_ext: bool = false;                                      // saw the 0xE0 extended-scancode prefix
+let g_hist_n: u32 = 0;                                         // total commands entered
+let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
+let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 40 bytes (command history ring)
 
 // ----- VGA text output -----
 
@@ -185,6 +189,81 @@ fn draw_prompt(row: u32) {
     put_cell_at(row, 1, 32, 7);
 }
 
+// ----- command history (ring of 8 x 40-byte slots) -----
+
+fn str_len(s: *u8) -> u32 {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        i = i + 1;
+    }
+    return i;
+}
+
+fn str_copy(dst: *u8, src: *u8) {
+    let i: u32 = 0;
+    while true {
+        let c: u8 = *((src as u32 + i) as *u8);
+        *((dst as u32 + i) as *u8) = c;
+        if c == 0 {
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+// Address of the k-th most recent command (k >= 1).
+fn hist_slot(k: u32) -> *u8 {
+    let idx: u32 = (g_hist_n - k) % 8;
+    return (g_history as u32 + idx * 40) as *u8;
+}
+
+fn hist_store(cmd: *u8) {
+    let slot: *u8 = (g_history as u32 + (g_hist_n % 8) * 40) as *u8;
+    str_copy(slot, cmd);
+    g_hist_n = g_hist_n + 1;
+}
+
+// Replace the current input line (on screen and in g_buf) with `s`.
+fn set_input(s: *u8) {
+    let i: u32 = 0;
+    while i < g_len {                          // erase what's typed now
+        put_cell_at(g_row, 2 + i, 32, 7);
+        i = i + 1;
+    }
+    str_copy(g_buf, s);
+    g_len = str_len(g_buf);
+    if g_len > 30 {                            // respect the 40-byte buffer guard
+        g_len = 30;
+        *((g_buf as u32 + 30) as *u8) = 0;
+    }
+    let j: u32 = 0;
+    while j < g_len {
+        put_cell_at(g_row, 2 + j, *((g_buf as u32 + j) as *u8), 15);
+        j = j + 1;
+    }
+    g_col = 2 + g_len;
+    move_cursor(g_row, g_col);
+}
+
+fn history_up() {
+    let max: u32 = g_hist_n;
+    if max > 8 { max = 8; }
+    if g_hist_nav < max {
+        g_hist_nav = g_hist_nav + 1;
+        set_input(hist_slot(g_hist_nav));
+    }
+}
+
+fn history_down() {
+    if g_hist_nav > 1 {
+        g_hist_nav = g_hist_nav - 1;
+        set_input(hist_slot(g_hist_nav));
+    } else {
+        g_hist_nav = 0;
+        set_input("");
+    }
+}
+
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
 fn run_command(cmd: *u8) -> bool {
@@ -256,6 +335,21 @@ fn on_exception(vec: u32) {
 fn on_key() {
     let sc: u8 = inb(0x60);
 
+    if sc == 224 {                   // 0xE0: extended-scancode prefix
+        g_ext = true;
+        return;
+    }
+    if g_ext {                       // second byte of an extended key
+        g_ext = false;
+        if sc == 72 {                // Up arrow -> older command
+            history_up();
+        }
+        if sc == 80 {                // Down arrow -> newer command
+            history_down();
+        }
+        return;
+    }
+
     if sc == 42 || sc == 54 {        // Shift pressed
         g_shift = true;
         return;
@@ -270,6 +364,10 @@ fn on_key() {
 
     if sc == 28 {                    // Enter: run the line
         *((g_buf as u32 + g_len) as *u8) = 0;
+        if g_len > 0 {               // remember non-empty commands
+            hist_store(g_buf);
+        }
+        g_hist_nav = 0;
         let cleared: bool = run_command(g_buf);
         if !cleared {                // move to a fresh prompt line (scrolls)
             feed();
@@ -293,6 +391,7 @@ fn on_key() {
     let ch: u8 = scancode_to_ascii(sc, g_shift);
     if ch != 0 {
         if g_len < 30 {
+            g_hist_nav = 0;          // typing starts a fresh line
             *((g_buf as u32 + g_len) as *u8) = ch;
             g_len = g_len + 1;
             put_cell_at(g_row, g_col, ch, 15);

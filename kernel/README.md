@@ -75,4 +75,6 @@ then anything you type appears on screen (letters, space, Enter for a new line).
       `uptime` command and decimal number printing.
 - [x] Per-vector CPU exception handlers that report which fault occurred (try
       the `crash` command); each stub records its vector before halting.
-- [ ] Command history (up-arrow) and more built-ins.
+- [x] Command history: Up/Down arrows recall previous commands (a ring of 8),
+      decoded from the 0xE0 extended-scancode prefix.
+- [ ] More built-ins and a richer language (arrays, `for` loops).
