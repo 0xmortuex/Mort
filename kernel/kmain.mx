@@ -45,6 +45,34 @@ fn clear_screen() {
     }
 }
 
+// Scroll the whole screen up by one line: copy rows 1..24 into 0..23, then
+// blank the last row. Lets output flow like a real terminal.
+fn scroll_up() {
+    let dst: u32 = 0xB8000;
+    let src: u32 = 0xB8000 + 160;      // one row = 80 cells * 2 bytes
+    let i: u32 = 0;
+    while i < 3840 {                    // 24 rows * 160 bytes
+        *((dst + i) as *u8) = *((src + i) as *u8);
+        i = i + 1;
+    }
+    let base: u32 = 0xB8000 + 24 * 160; // clear row 24
+    let j: u32 = 0;
+    while j < 80 {
+        *((base + j * 2) as *u8) = 32;
+        *((base + j * 2 + 1) as *u8) = 7;
+        j = j + 1;
+    }
+}
+
+// Move to the next line, scrolling when we're already at the bottom row.
+fn feed() {
+    if g_row >= 24 {
+        scroll_up();
+    } else {
+        g_row = g_row + 1;
+    }
+}
+
 // ----- scancode -> ASCII (Shift-aware) -----
 
 fn scancode_to_ascii(sc: u8, shift: bool) -> u8 {
@@ -134,28 +162,35 @@ fn draw_prompt(row: u32) {
     put_cell_at(row, 1, 32, 7);
 }
 
-fn run_command(cmd: *u8, row: u32) -> u32 {
+// Run a command, printing any output on new (scrolling) lines. Returns true if
+// it cleared the screen (so the caller knows not to add another blank line).
+fn run_command(cmd: *u8) -> bool {
     if streq(cmd, "") {
-        return row;
+        return false;
     }
     if streq(cmd, "help") {
-        print_string("commands: help, clear, about, echo <text>", row, 7);
-        return row + 1;
+        feed();
+        print_string("commands: help, clear, about, echo <text>", g_row, 7);
+        return false;
     }
     if streq(cmd, "clear") {
         clear_screen();
-        return 0;
+        g_row = 0;
+        return true;
     }
     if streq(cmd, "about") {
-        print_string("MORT OS -- written in Mort, a language built from scratch", row, 7);
-        return row + 1;
+        feed();
+        print_string("MORT OS -- written in Mort, a language built from scratch", g_row, 7);
+        return false;
     }
     if starts_with(cmd, "echo ") {
-        print_string((cmd as u32 + 5) as *u8, row, 15);   // print past "echo "
-        return row + 1;
+        feed();
+        print_string((cmd as u32 + 5) as *u8, g_row, 15);   // print past "echo "
+        return false;
     }
-    print_string("unknown command", row, 12);
-    return row + 1;
+    feed();
+    print_string("unknown command", g_row, 12);
+    return false;
 }
 
 // The keyboard interrupt handler. Called by keyboard_isr (idt.s) on each IRQ1.
@@ -176,12 +211,10 @@ fn on_key() {
 
     if sc == 28 {                    // Enter: run the line
         *((g_buf as u32 + g_len) as *u8) = 0;
-        let next: u32 = run_command(g_buf, g_row + 1);
-        if next >= 23 {
-            clear_screen();
-            next = 0;
+        let cleared: bool = run_command(g_buf);
+        if !cleared {                // move to a fresh prompt line (scrolls)
+            feed();
         }
-        g_row = next;
         g_col = 2;
         g_len = 0;
         draw_prompt(g_row);

@@ -68,5 +68,8 @@ then anything you type appears on screen (letters, space, Enter for a new line).
 - [x] Shift for uppercase, digits, and punctuation.
 - [x] Interrupt-driven input: a GDT/IDT and remapped PICs; the keyboard fires
       IRQ1 into a Mort handler instead of being polled.
-- [ ] Screen scrolling instead of wipe-on-overflow.
-- [ ] CPU exception handlers (currently a default stub that just sends EOI).
+- [x] A blinking hardware cursor that tracks the input, and more commands
+      (`about`, `echo <text>`).
+- [x] Terminal-style screen scrolling when output reaches the bottom row.
+- [ ] A PIT timer (IRQ0) for `uptime`/delays — a second interrupt source.
+- [ ] CPU exception handlers that report the fault (a stub halts cleanly today).
