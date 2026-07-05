@@ -95,6 +95,40 @@ fn streq(a: *u8, b: *u8) -> bool {
     return false;
 }
 
+// Move the blinking VGA hardware cursor to (row, col) via the CRTC registers.
+fn move_cursor(row: u32, col: u32) {
+    let pos: u32 = row * 80 + col;
+    outb(0x3D4, 14);                    // cursor location high register
+    outb(0x3D5, (pos / 256) as u8);
+    outb(0x3D4, 15);                    // cursor location low register
+    outb(0x3D5, (pos % 256) as u8);
+}
+
+// Make the cursor a visible underline (scanlines 14-15, enable bit clear).
+fn enable_cursor() {
+    outb(0x3D4, 10);
+    outb(0x3D5, 14);
+    outb(0x3D4, 11);
+    outb(0x3D5, 15);
+}
+
+// Does `s` begin with `prefix`? (used for commands that take an argument)
+fn starts_with(s: *u8, prefix: *u8) -> bool {
+    let i: u32 = 0;
+    while true {
+        let pc: u8 = *((prefix as u32 + i) as *u8);
+        if pc == 0 {
+            return true;
+        }
+        let sc: u8 = *((s as u32 + i) as *u8);
+        if sc != pc {
+            return false;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 fn draw_prompt(row: u32) {
     put_cell_at(row, 0, 62, 10);   // '>'
     put_cell_at(row, 1, 32, 7);
@@ -105,12 +139,20 @@ fn run_command(cmd: *u8, row: u32) -> u32 {
         return row;
     }
     if streq(cmd, "help") {
-        print_string("commands: help, clear", row, 7);
+        print_string("commands: help, clear, about, echo <text>", row, 7);
         return row + 1;
     }
     if streq(cmd, "clear") {
         clear_screen();
         return 0;
+    }
+    if streq(cmd, "about") {
+        print_string("MORT OS -- written in Mort, a language built from scratch", row, 7);
+        return row + 1;
+    }
+    if starts_with(cmd, "echo ") {
+        print_string((cmd as u32 + 5) as *u8, row, 15);   // print past "echo "
+        return row + 1;
     }
     print_string("unknown command", row, 12);
     return row + 1;
@@ -143,6 +185,7 @@ fn on_key() {
         g_col = 2;
         g_len = 0;
         draw_prompt(g_row);
+        move_cursor(g_row, g_col);
         return;
     }
     if sc == 14 {                    // Backspace
@@ -150,6 +193,7 @@ fn on_key() {
             g_len = g_len - 1;
             g_col = g_col - 1;
             put_cell_at(g_row, g_col, 32, 7);
+            move_cursor(g_row, g_col);
         }
         return;
     }
@@ -161,14 +205,17 @@ fn on_key() {
             g_len = g_len + 1;
             put_cell_at(g_row, g_col, ch, 15);
             g_col = g_col + 1;
+            move_cursor(g_row, g_col);
         }
     }
 }
 
 fn kmain() {
     clear_screen();
+    enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
     draw_prompt(g_row);
+    move_cursor(g_row, g_col);
 
     asm("sti");                      // enable interrupts; keys now arrive via IRQ1
     while true {

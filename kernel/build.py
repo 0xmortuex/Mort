@@ -127,9 +127,11 @@ def run():
     if not qemu:
         sys.exit("qemu-system-i386 not found — install QEMU (e.g. `winget install "
                  "SoftwareFreedomConservancy.QEMU`) to boot the kernel.")
-    print("Booting MORT OS in QEMU (close the window to exit)...")
+    print("Booting MORT OS in QEMU. Maximise the window to scale it up; "
+          "Ctrl+Alt+G releases the mouse; close the window to exit.")
+    # zoom-to-fit scales the little 80x25 console up when you resize the window.
     # A list argv lets subprocess quote the (space-containing) ELF path for us.
-    subprocess.run([qemu, "-kernel", ELF])
+    subprocess.run([qemu, "-display", "gtk,zoom-to-fit=on", "-kernel", ELF])
 
 
 COMMANDS = {"build": build, "check": check, "run": run}
