@@ -145,7 +145,7 @@ class CodeGen:
             else:
                 self._emit(f"return {self._gen_expr(s.expr)};")
         elif isinstance(s, A.If):
-            self._emit(f"if ({self._gen_expr(s.cond)}) {{")
+            self._emit(f"if ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
             for st in s.then.stmts:
                 self._gen_stmt(st)
@@ -163,7 +163,7 @@ class CodeGen:
                 self.indent -= 1
                 self._emit("}")
         elif isinstance(s, A.While):
-            self._emit(f"while ({self._gen_expr(s.cond)}) {{")
+            self._emit(f"while ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
             for st in s.body.stmts:
                 self._gen_stmt(st)
@@ -178,6 +178,27 @@ class CodeGen:
             self._emit("}")
         elif isinstance(s, A.ExprStmt):
             self._emit(self._gen_expr(s.expr) + ";")
+
+    def _gen_cond(self, e):
+        """Generate a condition for if/while.
+
+        Every Binary/Unary/Cast already parenthesises itself, and the enclosing
+        `if (...)` / `while (...)` adds another pair — which clang flags as
+        -Wparentheses-equality on `x == y`. Strip one matched outer pair so the
+        result reads `if (a == b)`, not `if ((a == b))`.
+        """
+        s = self._gen_expr(e)
+        if s.startswith("(") and s.endswith(")"):
+            depth = 0
+            for i, ch in enumerate(s):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        # the first '(' closes only at the very end => one outer pair
+                        return s[1:-1] if i == len(s) - 1 else s
+        return s
 
     def _gen_expr(self, e):
         if isinstance(e, A.IntLit):

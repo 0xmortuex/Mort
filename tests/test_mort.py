@@ -51,12 +51,20 @@ def test_types_and_inference():
     assert "int64_t m_y = (m_x + 1);" in c
 
 
+def test_condition_has_no_double_parens():
+    # if/while conditions must not double-wrap (avoids -Wparentheses-equality)
+    c = c_of("fn main() -> int { let x = 1; if x == 0 { print(1); } while x == 2 { print(2); } return 0; }")
+    assert "if (m_x == 0)" in c
+    assert "while (m_x == 2)" in c
+    assert "((m_x == 0))" not in c
+
+
 def test_bool_and_control_flow():
     c = c_of(
         "fn main() -> int { let b = true; if b && (1 < 2) { print(1); } else { print(0); } return 0; }"
     )
     assert "bool m_b = true;" in c
-    assert "if ((m_b && (1 < 2)))" in c
+    assert "if (m_b && (1 < 2))" in c   # one outer paren pair, no clang warning
 
 
 def test_recursion_prototype_emitted():

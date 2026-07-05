@@ -49,21 +49,36 @@ fn read_scancode() -> u8 {
     return 0;   // unreachable; keeps the C backend happy
 }
 
-// Map a scancode-set-1 code to ASCII, or 0 if unhandled. Each QWERTY row is a
-// contiguous scancode range, so we index a small string.
-fn scancode_to_ascii(sc: u8) -> u8 {
+// Map a scancode-set-1 code to ASCII (honouring Shift), or 0 if unhandled. Each
+// QWERTY row is a contiguous scancode range, so we index a small string; Shift
+// upper-cases a letter by subtracting 32.
+fn scancode_to_ascii(sc: u8, shift: bool) -> u8 {
     if sc >= 16 && sc <= 25 {
-        return *(("qwertyuiop" as u32 + (sc - 16) as u32) as *u8);
+        let c: u8 = *(("qwertyuiop" as u32 + (sc - 16) as u32) as *u8);
+        if shift { return c - 32; }
+        return c;
     }
     if sc >= 30 && sc <= 38 {
-        return *(("asdfghjkl" as u32 + (sc - 30) as u32) as *u8);
+        let c: u8 = *(("asdfghjkl" as u32 + (sc - 30) as u32) as *u8);
+        if shift { return c - 32; }
+        return c;
     }
     if sc >= 44 && sc <= 50 {
-        return *(("zxcvbnm" as u32 + (sc - 44) as u32) as *u8);
+        let c: u8 = *(("zxcvbnm" as u32 + (sc - 44) as u32) as *u8);
+        if shift { return c - 32; }
+        return c;
     }
-    if sc == 57 {
-        return 32;   // space
+    if sc >= 2 && sc <= 11 {          // number row: 1234567890 / !@#$%^&*()
+        if shift {
+            return *(("!@#$%^&*()" as u32 + (sc - 2) as u32) as *u8);
+        }
+        return *(("1234567890" as u32 + (sc - 2) as u32) as *u8);
     }
+    if sc == 57 { return 32; }                        // space
+    if sc == 12 { if shift { return 95; } return 45; }   // -  _
+    if sc == 51 { if shift { return 60; } return 44; }   // ,  <
+    if sc == 52 { if shift { return 62; } return 46; }   // .  >
+    if sc == 53 { if shift { return 63; } return 47; }   // /  ?
     return 0;
 }
 
@@ -111,17 +126,22 @@ fn run_command(cmd: *u8, row: u32) -> u32 {
 
 fn kmain() {
     clear_screen();
-    print_string("MORT OS -- type 'help', then Enter", 0, 10);
+    print_string("MORT OS -- type 'help' (Shift & digits work), Enter", 0, 10);
 
     let buf: *u8 = "                                        ";  // 40-byte scratch
     let row: u32 = 2;
     let col: u32 = 2;
     let len: u32 = 0;
+    let shift: bool = false;
     draw_prompt(row);
 
     while true {
         let sc: u8 = read_scancode();
-        if sc < 128 {                          // key press (high bit clear)
+        if sc == 42 || sc == 54 {              // Shift pressed (left / right)
+            shift = true;
+        } else if sc == 170 || sc == 182 {     // Shift released (0x2A|0x80 etc.)
+            shift = false;
+        } else if sc < 128 {                   // any other key press
             if sc == 28 {                      // Enter: terminate + run
                 *((buf as u32 + len) as *u8) = 0;
                 let next: u32 = run_command(buf, row + 1);
@@ -140,7 +160,7 @@ fn kmain() {
                     put_cell_at(row, col, 32, 7);
                 }
             } else {
-                let ch: u8 = scancode_to_ascii(sc);
+                let ch: u8 = scancode_to_ascii(sc, shift);
                 if ch != 0 {
                     if len < 30 {              // leave room for the terminator
                         *((buf as u32 + len) as *u8) = ch;
