@@ -15,6 +15,7 @@ let g_buf: *u8 = "                                        ";   // 40-byte scratc
 let g_ticks: u32 = 0;                                          // PIT ticks (100/s)
 let g_numlen: u32 = 0;                                         // digits written by num_to_str
 let g_numbuf: *u8 = "            ";                            // 12-byte number scratch
+let g_mbinfo: u32 = 0;                                        // multiboot info pointer (from boot.s)
 let g_ext: bool = false;                                      // saw the 0xE0 extended-scancode prefix
 let g_hist_n: u32 = 0;                                         // total commands entered
 let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
@@ -264,6 +265,42 @@ fn history_down() {
     }
 }
 
+// Print a byte range as text, handling newlines and scrolling.
+fn print_range(start: u32, end: u32, color: u8) {
+    let col: u32 = 0;
+    let p: u32 = start;
+    while p < end {
+        let ch: u8 = *(p as *u8);
+        if ch == 10 {                 // newline
+            feed();
+            col = 0;
+        } else {
+            if ch != 13 {             // ignore carriage returns
+                put_cell_at(g_row, col, ch, color);
+                col = col + 1;
+            }
+        }
+        p = p + 1;
+    }
+}
+
+// Show the first multiboot module — a file the bootloader loaded from disk.
+// The multiboot info struct has mods_count at offset 20 and mods_addr at 24;
+// each module entry is [mod_start, mod_end, string, reserved].
+fn show_module() {
+    let count: u32 = *((g_mbinfo + 20) as *u32);
+    if count == 0 {
+        feed();
+        print_string("no file loaded (boot the ISO to load one)", g_row, 12);
+        return;
+    }
+    let mods_addr: u32 = *((g_mbinfo + 24) as *u32);
+    let mod_start: u32 = *(mods_addr as *u32);
+    let mod_end: u32 = *((mods_addr + 4) as *u32);
+    feed();
+    print_range(mod_start, mod_end, 7);
+}
+
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
 fn run_command(cmd: *u8) -> bool {
@@ -272,7 +309,11 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("commands: help, clear, about, echo <text>, uptime, crash", g_row, 7);
+        print_string("commands: help, clear, about, echo, uptime, crash, readme", g_row, 7);
+        return false;
+    }
+    if streq(cmd, "readme") {
+        show_module();
         return false;
     }
     if streq(cmd, "crash") {
@@ -401,7 +442,8 @@ fn on_key() {
     }
 }
 
-fn kmain() {
+fn kmain(mbinfo: u32) {
+    g_mbinfo = mbinfo;               // saved by boot.s; lets `readme` find the module
     clear_screen();
     enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);

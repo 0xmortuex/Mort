@@ -40,6 +40,18 @@ LIMINE_CONF = """timeout: 3
 /MORT OS
     protocol: multiboot1
     path: boot():/boot/kernel.elf
+    module_path: boot():/boot/welcome.txt
+"""
+
+# A file staged onto the ISO and loaded as a multiboot module — the kernel's
+# `readme` command reads it straight out of memory (loaded from disk by Limine).
+WELCOME_TXT = """Welcome to MORT OS.
+
+You are looking at a file that lived on the ISO, was loaded from disk by the
+Limine bootloader as a multiboot module, and is now being read by the kernel.
+
+Everything here -- the kernel, its shell, and the Mort language it is written
+in -- was built from scratch. Type 'help' for commands.
 """
 
 
@@ -172,6 +184,8 @@ def iso():
     shutil.copy(ELF, os.path.join(root, "boot", "kernel.elf"))
     with open(os.path.join(root, "boot", "limine.conf"), "w", encoding="utf-8") as fh:
         fh.write(LIMINE_CONF)
+    with open(os.path.join(root, "boot", "welcome.txt"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(WELCOME_TXT)
     for name in ("limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin"):
         src = _find(lim_dir, name)
         if src:

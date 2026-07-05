@@ -32,6 +32,7 @@ stack_top:
 _start:
     mov $stack_top, %esp          /* set up the stack               */
     call kernel_setup             /* GDT + PIC remap + IDT (idt.s)  */
+    push %ebx                     /* multiboot info ptr -> kmain arg */
     call mort_kmain               /* enter the Mort kernel          */
     cli                           /* if it returns, hang safely     */
 .Lhang:

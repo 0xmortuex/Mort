@@ -92,4 +92,7 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
       decoded from the 0xE0 extended-scancode prefix.
 - [x] A real bootable ISO (Limine + xorriso) — BIOS/UEFI hybrid, USB-writable,
       boots on real hardware, not just QEMU's `-kernel` shortcut.
-- [ ] More built-ins; a filesystem; loading programs from disk.
+- [x] Loading a file from disk: the bootloader loads a file off the ISO as a
+      multiboot module; the kernel reads the multiboot info (passed in EBX) and
+      the `readme` command prints the file's contents.
+- [ ] A disk driver + real filesystem; executing loaded programs.
