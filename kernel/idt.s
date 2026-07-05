@@ -35,6 +35,13 @@ idt_ptr:
     .word idt_end - idt_start - 1
     .long idt_start
 
+/* addresses of the 32 exception stubs, so load_idt can install them in a loop */
+isr_table:
+    .long isr0,  isr1,  isr2,  isr3,  isr4,  isr5,  isr6,  isr7
+    .long isr8,  isr9,  isr10, isr11, isr12, isr13, isr14, isr15
+    .long isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23
+    .long isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
+
 .section .text
 
 .global kernel_setup
@@ -69,11 +76,13 @@ set_gate:
 
 load_idt:
     mov $idt_start, %edi              /* vectors 0..31: CPU exceptions       */
+    mov $isr_table, %esi             /* each gets its own stub (records vec) */
     mov $32, %ecx
 .fill_exc:
-    mov $exception_isr, %eax
+    mov (%esi), %eax
     call set_gate
     add $8, %edi
+    add $4, %esi
     dec %ecx
     jnz .fill_exc
 
@@ -146,27 +155,54 @@ default_isr:
     popa
     iret
 
-/* CPU exceptions (vectors 0..31). Some push an error code and none are IRQs, so
- * we must NOT treat them like default_isr (EOI + iret over a mismatched stack).
- * With no recovery path, print a message on the last row and halt — a clean,
- * visible stop instead of a silent triple fault. We never iret, so whether or
- * not an error code was pushed is irrelevant. */
-exception_isr:
-    cli
-    cld
-    mov $exc_msg, %esi
-    mov $0xB8F00, %edi                /* row 24, column 0 */
-.exc_putc:
-    lodsb
-    testb %al, %al
-    jz .exc_hang
-    movb %al, (%edi)
-    movb $0x4F, 1(%edi)               /* white on red */
-    add $2, %edi
-    jmp .exc_putc
-.exc_hang:
-    hlt
-    jmp .exc_hang
+/* CPU exceptions (vectors 0..31). Each vector has its own stub that pushes its
+ * number, so the common handler knows which fault occurred. None are IRQs and
+ * several push an error code, but we never iret (we report and halt), so the
+ * exact frame layout doesn't matter — the vector we pushed is always on top. */
+.macro ISR_STUB num
+isr\num:
+    push $\num
+    jmp isr_common
+.endm
 
-exc_msg:
-    .asciz "*** CPU EXCEPTION -- HALTED ***"
+ISR_STUB 0
+ISR_STUB 1
+ISR_STUB 2
+ISR_STUB 3
+ISR_STUB 4
+ISR_STUB 5
+ISR_STUB 6
+ISR_STUB 7
+ISR_STUB 8
+ISR_STUB 9
+ISR_STUB 10
+ISR_STUB 11
+ISR_STUB 12
+ISR_STUB 13
+ISR_STUB 14
+ISR_STUB 15
+ISR_STUB 16
+ISR_STUB 17
+ISR_STUB 18
+ISR_STUB 19
+ISR_STUB 20
+ISR_STUB 21
+ISR_STUB 22
+ISR_STUB 23
+ISR_STUB 24
+ISR_STUB 25
+ISR_STUB 26
+ISR_STUB 27
+ISR_STUB 28
+ISR_STUB 29
+ISR_STUB 30
+ISR_STUB 31
+
+isr_common:
+    cli
+    mov (%esp), %eax                 /* the vector number our stub pushed   */
+    push %eax                        /* cdecl arg for mort_on_exception     */
+    call mort_on_exception           /* Mort prints which fault it was      */
+.hang:
+    hlt                              /* no recovery: halt forever           */
+    jmp .hang

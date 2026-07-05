@@ -73,5 +73,6 @@ then anything you type appears on screen (letters, space, Enter for a new line).
 - [x] Terminal-style screen scrolling when output reaches the bottom row.
 - [x] A PIT timer on IRQ0 (~100 Hz) — a second interrupt source, with an
       `uptime` command and decimal number printing.
-- [ ] CPU exception handlers that report the fault (a stub halts cleanly today).
+- [x] Per-vector CPU exception handlers that report which fault occurred (try
+      the `crash` command); each stub records its vector before halting.
 - [ ] Command history (up-arrow) and more built-ins.

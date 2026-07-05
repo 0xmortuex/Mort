@@ -193,8 +193,12 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("commands: help, clear, about, echo <text>, uptime", g_row, 7);
+        print_string("commands: help, clear, about, echo <text>, uptime, crash", g_row, 7);
         return false;
+    }
+    if streq(cmd, "crash") {
+        asm("ud2");           // raise #UD (vector 6) to demo exception reporting
+        return false;         // not reached
     }
     if streq(cmd, "uptime") {
         feed();
@@ -235,6 +239,17 @@ fn init_pit() {
 // Timer interrupt handler (IRQ0) — called ~100x/second from timer_isr.
 fn on_tick() {
     g_ticks = g_ticks + 1;
+}
+
+// CPU exception handler — called by isr_common (idt.s) with the faulting vector.
+// We have no recovery path, so report which fault it was on the last row; the
+// assembly stub halts afterwards.
+fn on_exception(vec: u32) {
+    let row: u32 = 24;
+    print_at("*** CPU EXCEPTION #", row, 0, 79);   // white on red
+    num_to_str(vec, g_numbuf);
+    print_at(g_numbuf, row, 19, 79);
+    print_at(" -- HALTED ***", row, 19 + g_numlen, 79);
 }
 
 // The keyboard interrupt handler. Called by keyboard_isr (idt.s) on each IRQ1.
