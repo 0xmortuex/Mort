@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Mort build artifacts
+*.exe
+*.pdb
+*.ilk
+*.obj
+a.out
+/build/
+# generated C emitted next to a source when no compiler is found
+/*.c
+examples/*.c

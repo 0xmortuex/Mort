@@ -1,0 +1,117 @@
+# Mort
+
+**A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
+
+Mort is step one of a bigger goal: **build a language, then write an operating system kernel in it.** That's why it compiles to freestanding-friendly C instead of running on an interpreter — the same toolchain that runs `hello.mx` today will compile a kernel tomorrow.
+
+```rust
+// examples/fib.mx
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() -> int {
+    let i = 0;
+    while i < 10 {
+        print(fib(i));
+        i = i + 1;
+    }
+    return 0;
+}
+```
+
+```
+$ python mortc.py examples/fib.mx --run
+0
+1
+1
+2
+3
+5
+8
+13
+21
+34
+```
+
+## How it works
+
+Mort is a classic multi-pass compiler. Source text flows through five stages:
+
+```
+ .mx source
+     │  Lexer          mort/lexer.py        text  → tokens
+     │  Parser         mort/parser.py       tokens → AST   (recursive descent)
+     │  Checker        mort/typechecker.py  static type checking + inference
+     │  CodeGen        mort/codegen.py      AST   → C11 source
+     ▼  C compiler     (cc / gcc / clang / zig)   C → native executable
+ a.out
+```
+
+The type checker annotates every expression with its resolved type, and codegen
+lowers each Mort function to a `mort_<name>` C function (so a Mort program can
+never clash with a C standard-library symbol). Your `main` is wrapped by a real
+C `main`, so the output is an ordinary native binary.
+
+## The language (v0.1)
+
+- **Types:** `int` (64-bit) and `bool`.
+- **Functions:** `fn name(a: int, b: int) -> int { ... }`, with recursion and any call order.
+- **Variables:** `let x = 5;` (inferred) or `let x: int = 5;` (annotated).
+- **Control flow:** `if` / `else if` / `else`, `while`.
+- **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
+- **Builtins:** `print(int)`.
+- **Comments:** `// to end of line`.
+
+Everything is statically type-checked before a single line of C is emitted:
+mismatched types, undefined names, wrong argument counts, and a non-`bool`
+`if` condition are all compile-time errors with line numbers.
+
+## Usage
+
+```bash
+python mortc.py program.mx            # compile to a native executable
+python mortc.py program.mx --run      # compile, then run it
+python mortc.py program.mx --emit-c   # print the generated C and stop
+python mortc.py program.mx -o myprog  # choose the output name
+```
+
+### Requirements
+
+- **Python 3.8+** — runs the compiler itself.
+- **A C compiler** for the final native-build step. Mort looks for `cc`, `gcc`,
+  or `clang` on your `PATH`, then falls back to Zig if it's installed.
+
+No system compiler on Windows? The easiest option is a one-line install of Zig,
+which ships a complete C compiler:
+
+```bash
+pip install ziglang        # Mort auto-detects and uses `python -m ziglang cc`
+```
+
+`--emit-c` needs no C compiler at all — it just prints the generated C.
+
+## Tests
+
+```bash
+pip install pytest
+python -m pytest tests/ -v
+```
+
+Front-end tests (type checking, error messages, codegen) always run. The
+end-to-end tests compile each example to a real binary and check its output;
+they skip automatically if no C compiler is available.
+
+## Roadmap
+
+- [x] **Phase 1 — Language core:** lexer, parser, type checker, C codegen, CLI.
+- [ ] **Phase 2 — Systems features:** pointers, structs, fixed-width int types (`u8`, `u32`…), raw memory access, an inline-assembly escape hatch.
+- [ ] **Phase 3 — Freestanding mode:** compile with no libc into a bare-metal object file.
+- [ ] **Phase 4 — The kernel:** a boot stub plus a kernel written in Mort that prints to the screen in QEMU, then keyboard input, then a shell.
+
+## License
+
+MIT

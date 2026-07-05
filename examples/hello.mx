@@ -1,0 +1,5 @@
+// The classic first program, in Mort.
+fn main() -> int {
+    print(42);
+    return 0;
+}
