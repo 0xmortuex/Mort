@@ -119,8 +119,14 @@ def test_asm_codegen():
 
 def test_string_literal_codegen():
     c = c_of('fn main() -> int { let s: *u8 = "AB"; print(*s as i64); return 0; }')
-    assert '(uint8_t*)"AB"' in c
-    assert "uint8_t* m_s =" in c
+    assert 'static uint8_t mort_str_0[] = "AB";' in c   # mutable static storage
+    assert "uint8_t* m_s = mort_str_0;" in c
+
+
+def test_string_literal_is_writable():
+    # backing storage is mutable, so writing through the *u8 is defined
+    c = c_of('fn main() -> int { let s: *u8 = "AB"; *s = 67; print(*s as i64); return 0; }')
+    assert "(*m_s) = 67;" in c
 
 
 @needs_cc
