@@ -1,25 +1,26 @@
-// MORT OS — an interactive kernel written in Mort.
+// MORT OS — an interactive shell written in Mort.
 //
-// It boots, prints a banner, then polls the PS/2 keyboard and echoes what you
-// type to the screen. No interrupts: the multiboot spec hands us the CPU with
-// interrupts disabled, so we poll the keyboard controller directly. That keeps
-// the whole OS — VGA output and keyboard input — written in Mort.
+// Boots via multiboot (see boot.s), writes to VGA text memory at 0xB8000, and
+// polls the PS/2 keyboard (no interrupts — multiboot starts with them off). You
+// get a prompt: type a command, edit with Backspace, press Enter to run it.
+// Commands: `help`, `clear`.
 
-// ----- VGA text output (80x25 at 0xB8000; each cell is [ascii, attribute]) -----
+// ----- VGA text output (80x25; each cell is [ascii, attribute]) -----
+
+fn put_index(index: u32, ch: u8, color: u8) {
+    let addr: u32 = 0xB8000 + index * 2;
+    *(addr as *u8) = ch;
+    *((addr + 1) as *u8) = color;
+}
 
 fn put_cell_at(row: u32, col: u32, ch: u8, color: u8) {
-    let addr: u32 = 0xB8000 + (row * 80 + col) * 2;
-    let cell: *u8 = addr as *u8;
-    *cell = ch;
-    let attr: *u8 = (addr + 1) as *u8;
-    *attr = color;
+    put_index(row * 80 + col, ch, color);
 }
 
 fn print_string(s: *u8, row: u32, color: u8) {
     let i: u32 = 0;
     while true {
-        let src: *u8 = (s as u32 + i) as *u8;
-        let ch: u8 = *src;
+        let ch: u8 = *((s as u32 + i) as *u8);
         if ch == 0 {
             return;
         }
@@ -28,64 +29,126 @@ fn print_string(s: *u8, row: u32, color: u8) {
     }
 }
 
+fn clear_screen() {
+    let i: u32 = 0;
+    while i < 2000 {          // 80 * 25 cells
+        put_index(i, 32, 7);  // space, light grey
+        i = i + 1;
+    }
+}
+
 // ----- PS/2 keyboard (polled) -----
 
-// Block until the controller has a byte, then return one scancode. Bit 0 of
-// the status port (0x64) means "output buffer full"; we test it with % 2
-// instead of a bitwise AND. Scancodes arrive on the data port (0x60).
 fn read_scancode() -> u8 {
     while true {
         let status: u8 = inb(0x64);
-        if status % 2 == 1 {
+        if status % 2 == 1 {      // output buffer full (bit 0), tested via % 2
             return inb(0x60);
         }
     }
     return 0;   // unreachable; keeps the C backend happy
 }
 
-// Translate a scancode-set-1 code to ASCII, or 0 if we don't handle it. Each
-// QWERTY row is a contiguous scancode range, so we index a small string.
+// Map a scancode-set-1 code to ASCII, or 0 if unhandled. Each QWERTY row is a
+// contiguous scancode range, so we index a small string.
 fn scancode_to_ascii(sc: u8) -> u8 {
-    if sc >= 16 && sc <= 25 {              // 0x10..0x19  q w e r t y u i o p
-        let row: *u8 = "qwertyuiop";
-        let p: *u8 = (row as u32 + (sc - 16) as u32) as *u8;
-        return *p;
+    if sc >= 16 && sc <= 25 {
+        return *(("qwertyuiop" as u32 + (sc - 16) as u32) as *u8);
     }
-    if sc >= 30 && sc <= 38 {              // 0x1E..0x26  a s d f g h j k l
-        let row: *u8 = "asdfghjkl";
-        let p: *u8 = (row as u32 + (sc - 30) as u32) as *u8;
-        return *p;
+    if sc >= 30 && sc <= 38 {
+        return *(("asdfghjkl" as u32 + (sc - 30) as u32) as *u8);
     }
-    if sc >= 44 && sc <= 50 {              // 0x2C..0x32  z x c v b n m
-        let row: *u8 = "zxcvbnm";
-        let p: *u8 = (row as u32 + (sc - 44) as u32) as *u8;
-        return *p;
+    if sc >= 44 && sc <= 50 {
+        return *(("zxcvbnm" as u32 + (sc - 44) as u32) as *u8);
     }
-    if sc == 57 {                          // 0x39  space
-        return 32;
+    if sc == 57 {
+        return 32;   // space
     }
     return 0;
 }
 
-// ----- entry -----
+// ----- string compare (for command parsing) -----
+
+fn streq(a: *u8, b: *u8) -> bool {
+    let i: u32 = 0;
+    while true {
+        let ca: u8 = *((a as u32 + i) as *u8);
+        let cb: u8 = *((b as u32 + i) as *u8);
+        if ca != cb {
+            return false;
+        }
+        if ca == 0 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// ----- the shell -----
+
+fn draw_prompt(row: u32) {
+    put_cell_at(row, 0, 62, 10);   // '>' in green
+    put_cell_at(row, 1, 32, 7);
+}
+
+// Run a command; return the next free row for the following prompt.
+fn run_command(cmd: *u8, row: u32) -> u32 {
+    if streq(cmd, "") {
+        return row;
+    }
+    if streq(cmd, "help") {
+        print_string("commands: help, clear", row, 7);
+        return row + 1;
+    }
+    if streq(cmd, "clear") {
+        clear_screen();
+        return 0;
+    }
+    print_string("unknown command", row, 12);   // light red
+    return row + 1;
+}
 
 fn kmain() {
-    print_string("MORT OS BOOTED", 0, 10);              // light green
-    print_string("type on your keyboard:", 1, 7);       // light grey
+    clear_screen();
+    print_string("MORT OS -- type 'help', then Enter", 0, 10);
 
-    let row: u32 = 3;
-    let col: u32 = 0;
+    let buf: *u8 = "                                        ";  // 40-byte scratch
+    let row: u32 = 2;
+    let col: u32 = 2;
+    let len: u32 = 0;
+    draw_prompt(row);
+
     while true {
         let sc: u8 = read_scancode();
-        if sc < 128 {                        // key press (high bit clear)
-            if sc == 28 {                    // 0x1C  Enter -> next line
-                row = row + 1;
-                col = 0;
-            }
-            let ch: u8 = scancode_to_ascii(sc);
-            if ch != 0 {
-                put_cell_at(row, col, ch, 15);   // bright white
-                col = col + 1;
+        if sc < 128 {                          // key press (high bit clear)
+            if sc == 28 {                      // Enter: terminate + run
+                *((buf as u32 + len) as *u8) = 0;
+                let next: u32 = run_command(buf, row + 1);
+                if next >= 23 {                // out of room -> wipe and restart
+                    clear_screen();
+                    next = 0;
+                }
+                row = next;
+                col = 2;
+                len = 0;
+                draw_prompt(row);
+            } else if sc == 14 {               // Backspace
+                if len > 0 {
+                    len = len - 1;
+                    col = col - 1;
+                    put_cell_at(row, col, 32, 7);
+                }
+            } else {
+                let ch: u8 = scancode_to_ascii(sc);
+                if ch != 0 {
+                    if len < 30 {              // leave room for the terminator
+                        *((buf as u32 + len) as *u8) = ch;
+                        len = len + 1;
+                        put_cell_at(row, col, ch, 15);   // bright white
+                        col = col + 1;
+                    }
+                }
             }
         }
     }

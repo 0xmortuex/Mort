@@ -1,15 +1,17 @@
 # MORT OS
 
 A tiny operating-system kernel **written in Mort** — it boots on QEMU, runs in
-32-bit protected mode, prints to the screen, and **echoes what you type**. Both
-halves — VGA output and PS/2 keyboard input — are written in Mort.
+32-bit protected mode, and gives you an **interactive shell**: type a command,
+edit it with Backspace, press Enter to run it (`help`, `clear`). Everything —
+VGA output, PS/2 keyboard input, and command parsing — is written in Mort.
 
 ```
 ┌─────────────────────────────────────────┐
-│  MORT OS BOOTED                         │
-│  type on your keyboard:                 │
+│  MORT OS -- type 'help', then Enter     │
 │                                         │
-│  hello from mort_                       │
+│  > help                                 │
+│  commands: help, clear                  │
+│  > _                                    │
 │                                         │
 └─────────────────────────────────────────┘
         QEMU, booted from kernel.elf
@@ -29,10 +31,11 @@ linker.ld   places it at 1 MB           ─┘  linked ->  build/kernel.elf
 qemu-system-i386 -kernel build/kernel.elf
 ```
 
-- **`kmain.mx`** — the kernel, written in Mort. It writes to VGA text memory at
-  `0xB8000`, then polls the PS/2 keyboard (`inb` from ports `0x64`/`0x60`) and
-  echoes each key. Scancodes map to ASCII by indexing small strings, since each
-  QWERTY row is a contiguous scancode range.
+- **`kmain.mx`** — the whole OS, written in Mort: VGA output, a polled PS/2
+  keyboard driver (`inb` from ports `0x64`/`0x60`), scancode→ASCII, a `streq`
+  for parsing, and a shell loop with Backspace editing and `help`/`clear`
+  commands. The typed line is buffered in a mutable string literal used as
+  scratch memory.
 - **`boot.s`** — a multiboot1 header so QEMU recognises the file, plus a `_start`
   stub that sets up a stack and calls `mort_kmain`.
 - **`linker.ld`** — loads the kernel at the 1 MB mark with the multiboot header
@@ -60,5 +63,7 @@ then anything you type appears on screen (letters, space, Enter for a new line).
 - [x] A `print_string` routine written in Mort using string literals (`*u8`).
 - [x] `inb`/`outb` port-I/O builtins.
 - [x] Polled PS/2 keyboard input, echoing keystrokes to the screen.
-- [ ] Line editing (backspace), Shift/caps, and a command parser for a real shell.
+- [x] A shell: Backspace line editing, a command parser, and `help`/`clear`.
+- [ ] Shift/caps for uppercase and symbols; digits and punctuation.
+- [ ] Screen scrolling instead of wipe-on-overflow.
 - [ ] Interrupt-driven input (IDT + PIC) instead of polling.
