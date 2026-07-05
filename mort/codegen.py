@@ -198,6 +198,17 @@ class CodeGen:
                 self._gen_stmt(st)
             self.indent -= 1
             self._emit("}")
+        elif isinstance(s, A.For):
+            v = "m_" + s.var
+            ct = self._ct(s.var_type)
+            start = self._gen_expr(s.start)
+            end = self._gen_expr(s.end)
+            self._emit(f"for ({ct} {v} = {start}; {v} < {end}; {v} = {v} + 1) {{")
+            self.indent += 1
+            for st in s.body.stmts:
+                self._gen_stmt(st)
+            self.indent -= 1
+            self._emit("}")
         elif isinstance(s, A.Block):
             self._emit("{")
             self.indent += 1

@@ -14,6 +14,8 @@ class T(Enum):
     IF = auto()
     ELSE = auto()
     WHILE = auto()
+    FOR = auto()
+    IN = auto()
     TRUE = auto()
     FALSE = auto()
     KW_INT = auto()
@@ -31,6 +33,7 @@ class T(Enum):
     COLON = auto()
     ARROW = auto()
     DOT = auto()
+    DOTDOT = auto()
     AMP = auto()
     LBRACKET = auto()
     RBRACKET = auto()
@@ -60,6 +63,8 @@ KEYWORDS = {
     "if": T.IF,
     "else": T.ELSE,
     "while": T.WHILE,
+    "for": T.FOR,
+    "in": T.IN,
     "true": T.TRUE,
     "false": T.FALSE,
     "int": T.KW_INT,

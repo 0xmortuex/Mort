@@ -350,6 +350,35 @@ class Checker:
                 self._error("while condition must be a bool", s)
             self._check_block(s.body)
 
+        elif isinstance(s, A.For):
+            st = self._check_expr(s.start)
+            et = self._check_expr(s.end)
+            if st not in INT_TYPES or et not in INT_TYPES:
+                self._error("'for' range bounds must be integers", s)
+            if s.decl_type is not None:
+                # explicit `for i: T in ...` — both bounds coerce to T
+                if s.decl_type not in INT_TYPES:
+                    self._error(f"'for' variable type must be an integer, got {s.decl_type}", s)
+                if not self._coerce(s.decl_type, s.start) or not self._coerce(s.decl_type, s.end):
+                    self._error(
+                        f"range bounds must fit {s.decl_type}", s)
+                s.var_type = s.decl_type
+            elif st == et:
+                s.var_type = st
+            elif s.start.is_lit and not s.end.is_lit:
+                s.start.type, s.var_type = et, et
+            elif s.end.is_lit and not s.start.is_lit:
+                s.end.type, s.var_type = st, st
+            elif s.start.is_lit and s.end.is_lit:
+                s.var_type = "i64"
+            else:
+                self._error(f"mismatched range types {st} and {et}; add an 'as' cast", s)
+            # the loop variable is scoped to the loop (with the body)
+            self.scopes.append({s.var: s.var_type})
+            for st2 in s.body.stmts:
+                self._check_stmt(st2)
+            self.scopes.pop()
+
         elif isinstance(s, A.Block):
             self._check_block(s)
 

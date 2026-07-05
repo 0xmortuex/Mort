@@ -93,6 +93,18 @@ class While(Node):
         self.line = line
 
 
+class For(Node):
+    def __init__(self, var, decl_type, start, end, body, line):
+        super().__init__()
+        self.var = var
+        self.decl_type = decl_type  # optional explicit loop-variable type
+        self.start = start
+        self.end = end        # exclusive upper bound
+        self.body = body
+        self.line = line
+        self.var_type = None  # resolved by the checker
+
+
 class Block(Node):
     def __init__(self, stmts, line):
         super().__init__()

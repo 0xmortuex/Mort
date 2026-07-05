@@ -154,6 +154,8 @@ class Parser:
             return self._if_stmt()
         if t == T.WHILE:
             return self._while_stmt()
+        if t == T.FOR:
+            return self._for_stmt()
         if t == T.ASM:
             return self._asm_stmt()
         if t == T.LBRACE:
@@ -213,6 +215,26 @@ class Parser:
         cond = self._condition()
         body = self._block()
         return A.While(cond, body, line)
+
+    def _for_stmt(self):
+        line = self._advance().line               # 'for'
+        var = self._expect(T.IDENT, "a loop variable").value
+        decl_type = None
+        if self._at(T.COLON):
+            self._advance()
+            decl_type = self._type_name()
+        self._expect(T.IN, "'in'")
+        # struct literals are banned here (the range end is followed by '{')
+        saved = self._no_struct_lit
+        self._no_struct_lit = True
+        try:
+            start = self._expression()
+            self._expect(T.DOTDOT, "'..'")
+            end = self._expression()
+        finally:
+            self._no_struct_lit = saved
+        body = self._block()
+        return A.For(var, decl_type, start, end, body, line)
 
     def _expr_or_assign(self):
         line = self._peek().line

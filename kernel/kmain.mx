@@ -66,10 +66,8 @@ fn num_to_str(n: u32, buf: *u8) {
 }
 
 fn clear_screen() {
-    let i: u32 = 0;
-    while i < 2000 {
+    for i: u32 in 0..2000 {
         put_index(i, 32, 7);
-        i = i + 1;
     }
 }
 

@@ -5,10 +5,8 @@ fn main() -> int {
     print(zeros[0] as i64);           // 0
 
     let sum: i32 = 0;
-    let i: u32 = 0;
-    while i < 5 {
+    for i: u32 in 0..5 {              // range-based for loop
         sum = sum + squares[i];
-        i = i + 1;
     }
     print(sum as i64);                // 55
 

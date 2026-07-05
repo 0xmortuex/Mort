@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-79%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -64,7 +64,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.6)
+## The language (v0.7)
 
 - **Types:** `bool`, `int` (alias for `i64`), the fixed-width integers
   `i8 i16 i32 i64 u8 u16 u32 u64`, and user **structs**.
@@ -84,7 +84,8 @@ C `main`, so the output is an ordinary native binary.
   lowered to the C compiler's `__asm__ volatile`.
 - **Functions:** `fn name(a: int, b: int) -> int { ... }`, with recursion and any call order.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
-- **Control flow:** `if` / `else if` / `else`, `while`.
+- **Control flow:** `if` / `else if` / `else`, `while`, and range `for`
+  (`for i in 0..n { ... }`, or `for i: u32 in 0..n` to fix the counter's type).
 - **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, unary `-`.
 - **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
   integer type they're used with, so `let b: u8 = a + 5;` needs no cast.

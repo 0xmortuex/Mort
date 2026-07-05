@@ -201,6 +201,49 @@ def test_global_array_codegen():
     assert "static int32_t m_table[3] = {7, 8, 9};" in c
 
 
+def test_for_loop_codegen():
+    # both bounds are literals -> i is i64 (Mort's default integer)
+    c = c_of("fn main() -> int { let s: i64 = 0; for i in 0..5 { s = s + i; } print(s); return 0; }")
+    assert "for (int64_t m_i = 0; m_i < 5; m_i = m_i + 1)" in c
+
+
+def test_for_loop_var_type_from_bound():
+    # a typed (non-literal) bound gives the loop variable that type -> usable
+    # with same-typed data (e.g. a u32 counter), no cast needed
+    c = c_of("fn main() -> int { let n: u32 = 3; let s: u32 = 0; for i in 0..n { s = s + i; } print(s as i64); return 0; }")
+    assert "for (uint32_t m_i = 0; m_i < m_n; m_i = m_i + 1)" in c
+
+
+def test_for_loop_annotated_type():
+    c = c_of("fn main() -> int { let s: u32 = 0; for i: u32 in 0..2000 { s = s + i; } print(s as i64); return 0; }")
+    assert "for (uint32_t m_i = 0; m_i < 2000; m_i = m_i + 1)" in c
+
+
+@needs_cc
+def test_for_loop_runs():
+    src = ("fn main() -> int {"
+           "  let a: [i32; 5] = [2, 4, 6, 8, 10];"
+           "  let s: i32 = 0;"
+           "  for i in 0..5 { s = s + a[i]; }"
+           "  print(s as i64); return 0; }")   # 30
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "f.c")
+        exe = os.path.join(d, "f.exe" if os.name == "nt" else "f")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "30\n"
+
+
+def test_for_loop_var_scoped():
+    # the loop variable is not visible after the loop
+    with pytest.raises(MortError) as exc:
+        c_of("fn main() -> int { for i in 0..3 { print(i); } print(i); return 0; }")
+    assert "undefined variable" in exc.value.msg
+
+
 def test_struct_array_field():
     src = ("struct S { xs: [i32; 2] } "
            "fn main() -> int { let s: S = S { xs: [10, 20] }; print(s.xs[1] as i64); return 0; }")
