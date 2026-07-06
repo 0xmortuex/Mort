@@ -102,9 +102,31 @@ def test_cast_codegen():
 
 
 def test_literal_coercion_in_arithmetic():
-    # the untyped literal 5 must adopt u8, so no cast is needed
+    # the untyped literal 5 adopts u8; the u8 result is narrowed back so C's
+    # promotion to int doesn't leak (250 + 5 wraps to 255 in u8)
     c = c_of("fn main() -> int { let a: u8 = 250; let b: u8 = a + 5; print(b); return 0; }")
-    assert "uint8_t m_b = (m_a + 5);" in c
+    assert "uint8_t m_b = ((uint8_t)(m_a + 5));" in c
+
+
+@needs_cc
+def test_narrow_width_semantics():
+    # ~u8 and u8 << 8 must observe the u8 width, not C's promoted int
+    src = ("fn main() -> int {"
+           "  let a: u8 = 1;"
+           "  print((~a) as i64);"        # 254 (not -2)
+           "  print((a << 8) as i64);"    # 0   (not 256)
+           "  let b: u8 = 200;"
+           "  print((b + 100) as i64);"   # 44  (300 wraps in u8)
+           "  return 0; }")
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "n.c")
+        exe = os.path.join(d, "n.exe" if os.name == "nt" else "n")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "254\n0\n44\n"
 
 
 # ---------- Phase 2b: structs and inline asm ----------
@@ -481,6 +503,9 @@ def test_kernel_builds_multiboot_elf():
     ("fn f() -> [i32; 2] { let a: [i32; 2] = [1, 2]; return a; } fn main() -> int { return 0; }",
      "cannot return an array"),
     ("fn main() -> int { let x = true & false; return 0; }", "requires int operands"),
+    # a literal operand unified to a narrow type must still fit it
+    ("fn main() -> int { let a: u8 = 1; print((a | 300) as i64); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let a: u8 = 1; let b = a + 300; return 0; }", "does not fit in u8"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:

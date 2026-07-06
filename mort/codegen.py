@@ -49,6 +49,14 @@ class CodeGen:
     def _ct(self, t):
         return c_type(t, self.struct_names)
 
+    def _narrow(self, e, code):
+        """Cast an arithmetic result back to a sub-int width (i8/u8/i16/u16), so
+        Mort's fixed-width semantics survive C's promotion of narrow types to int.
+        Wider types (i32/u32/i64/u64) already keep their width in C."""
+        if getattr(e, "type", None) in ("i8", "u8", "i16", "u16"):
+            return f"(({self._ct(e.type)}){code})"
+        return code
+
     def _var_decl(self, var_type, cname, init=None):
         """A C declaration for a variable/field, handling arrays (whose size
         sits after the name): '[i32;8]' -> 'int32_t cname[8]'."""
@@ -268,9 +276,15 @@ class CodeGen:
             v = self._gen_expr(e.value)
             return "{" + ", ".join([v] * e.count) + "}"
         if isinstance(e, A.Unary):
-            return f"({e.op}{self._gen_expr(e.operand)})"
+            code = f"({e.op}{self._gen_expr(e.operand)})"
+            # '-' and '~' can produce a value wider than the Mort type (C promotes
+            # to int); narrow it back. '*'/'&' are lvalue/pointer — never wrap.
+            if e.op in ("-", "~"):
+                return self._narrow(e, code)
+            return code
         if isinstance(e, A.Binary):
-            return f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
+            code = f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
+            return self._narrow(e, code)
         if isinstance(e, A.Call):
             if e.name == "inb":
                 self.used_inb = True

@@ -549,6 +549,17 @@ class Checker:
 
         self._error("cannot type this expression", e)  # pragma: no cover
 
+    def _retag_literal(self, node, target):
+        """Adopt `target` for an int-literal operand, range-checking its value."""
+        value = self._const_value(node)
+        if value is not None:
+            lo, hi = INT_RANGES[target]
+            if not (lo <= value <= hi):
+                self._error(
+                    f"integer literal {value} does not fit in {target} "
+                    f"(range {lo}..{hi})", node)
+        node.type = target
+
     def _unify_ints(self, e, lt, rt, op):
         """Both operands must end up the same integer type; literals adapt."""
         if lt not in INT_TYPES or rt not in INT_TYPES:
@@ -556,10 +567,10 @@ class Checker:
         if lt == rt:
             return lt
         if e.left.is_lit and not e.right.is_lit:
-            e.left.type = rt
+            self._retag_literal(e.left, rt)
             return rt
         if e.right.is_lit and not e.left.is_lit:
-            e.right.type = lt
+            self._retag_literal(e.right, lt)
             return lt
         if e.left.is_lit and e.right.is_lit:
             return "i64"
