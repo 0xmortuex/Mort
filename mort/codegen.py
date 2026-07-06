@@ -49,6 +49,17 @@ class CodeGen:
     def _ct(self, t):
         return c_type(t, self.struct_names)
 
+    def _c_int_literal(self, v, t):
+        """A C integer literal of value v, cast to Mort type t, with a suffix so
+        large values aren't misparsed as a narrower C type."""
+        if v > 0x7FFFFFFFFFFFFFFF:
+            lit = f"{v}ULL"
+        elif v > 0x7FFFFFFF or v < -0x80000000:
+            lit = f"{v}LL"
+        else:
+            lit = str(v)
+        return f"(({self._ct(t)}){lit})"
+
     def _narrow(self, e, code):
         """Cast an arithmetic result back to a sub-int width (i8/u8/i16/u16), so
         Mort's fixed-width semantics survive C's promotion of narrow types to int.
@@ -283,6 +294,16 @@ class CodeGen:
                 return self._narrow(e, code)
             return code
         if isinstance(e, A.Binary):
+            if e.op in ("<<", ">>"):
+                # A constant shift is emitted as its folded value — a C `1 << 63`
+                # is undefined (1 is a 32-bit int). A runtime shift casts its left
+                # operand to the result type so it executes at the right width.
+                if e.const_val is not None:
+                    code = self._c_int_literal(e.const_val, e.type)
+                else:
+                    code = (f"(({self._ct(e.type)})({self._gen_expr(e.left)}) "
+                            f"{e.op} {self._gen_expr(e.right)})")
+                return self._narrow(e, code)
             code = f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
             return self._narrow(e, code)
         if isinstance(e, A.Call):

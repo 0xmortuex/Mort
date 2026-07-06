@@ -239,9 +239,39 @@ def test_const_fold_bitwise_in_range():
 
 
 def test_shift_and_not_codegen():
+    # a runtime shift casts its left operand to the result type (right width)
     c = c_of("fn main() -> int { let a: u32 = 1; print((a << 4) as i64); print((~a) as i64); return 0; }")
-    assert "(m_a << 4)" in c
+    assert "((uint32_t)(m_a) << 4)" in c
     assert "(~m_a)" in c
+
+
+def test_constant_shift_folded():
+    # a constant shift is emitted as its folded value, not a C shift (avoids UB)
+    c = c_of("fn main() -> int { let x: u64 = 1 << 63; print(x as i64); return 0; }")
+    assert "(1 << 63)" not in c
+    assert "9223372036854775808ULL" in c
+
+
+@needs_cc
+def test_shift_width_semantics():
+    # 1 << 63 must be the real 2^63 in u64 (not UB), and 0 << huge is 0
+    src = ("fn main() -> int {"
+           "  let x: u64 = 1 << 63;"
+           "  print((x >> 60) as i64);"    # 8
+           "  let z: u8 = 0 << 1000000;"
+           "  print(z as i64);"            # 0
+           "  let a: u32 = 1;"
+           "  print((a << 20) as i64);"    # 1048576
+           "  return 0; }")
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "s.c")
+        exe = os.path.join(d, "s.exe" if os.name == "nt" else "s")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "8\n0\n1048576\n"
 
 
 @needs_cc

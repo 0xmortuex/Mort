@@ -418,6 +418,10 @@ class Checker:
         e.is_lit = False
         t = self._infer(e)
         e.type = t
+        # Record the folded value of a constant integer expression so codegen can
+        # emit it directly (needed for shifts, whose C form is otherwise UB).
+        if t in INT_TYPES and e.is_lit:
+            e.const_val = self._const_value(e)
         return t
 
     @staticmethod

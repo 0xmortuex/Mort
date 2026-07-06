@@ -7,8 +7,9 @@ Every expression node grows a ``.type`` attribute during type checking.
 
 class Node:
     def __init__(self):
-        self.type = None    # resolved by the checker for expressions
-        self.is_lit = False  # True for untyped integer-literal expressions
+        self.type = None      # resolved by the checker for expressions
+        self.is_lit = False   # True for untyped integer-literal expressions
+        self.const_val = None  # folded value for a constant integer expression
 
 
 # ----- top level -----
