@@ -231,6 +231,13 @@ def test_bitwise_codegen():
     assert "(m_a ^ m_b)" in c
 
 
+def test_const_fold_bitwise_in_range():
+    # a folded bitwise literal that DOES fit is accepted (retagged to u8, so the
+    # result is narrow-wrapped)
+    c = c_of("fn main() -> int { let x: u8 = 200 | 100; print(x); return 0; }")  # 236
+    assert "uint8_t m_x = ((uint8_t)(200 | 100));" in c
+
+
 def test_shift_and_not_codegen():
     c = c_of("fn main() -> int { let a: u32 = 1; print((a << 4) as i64); print((~a) as i64); return 0; }")
     assert "(m_a << 4)" in c
@@ -506,6 +513,9 @@ def test_kernel_builds_multiboot_elf():
     # a literal operand unified to a narrow type must still fit it
     ("fn main() -> int { let a: u8 = 1; print((a | 300) as i64); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let a: u8 = 1; let b = a + 300; return 0; }", "does not fit in u8"),
+    # composed literal expressions are folded, so overflow can't sneak through
+    ("fn main() -> int { let x: u8 = 1 << 8; print(x); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let a: u8 = 1; print((a | (200 << 4)) as i64); return 0; }", "does not fit in u8"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:

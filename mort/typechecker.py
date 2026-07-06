@@ -243,12 +243,20 @@ class Checker:
 
     # ----- coercion -----
     def _const_value(self, e):
-        """Evaluate a constant integer-literal expression, or None if not one."""
+        """Evaluate a constant integer-literal expression, or None if not one.
+
+        Values are arbitrary-precision, so an all-literal expression is range-
+        checked against its target type — `1 << 8`, `200 << 4`, `~0` etc. are
+        caught exactly like a bare out-of-range literal. (Runtime expressions
+        wrap instead; see codegen's _narrow.)"""
         if isinstance(e, A.IntLit):
             return e.value
         if isinstance(e, A.Unary) and e.op == "-":
             v = self._const_value(e.operand)
             return None if v is None else -v
+        if isinstance(e, A.Unary) and e.op == "~":
+            v = self._const_value(e.operand)
+            return None if v is None else ~v
         if isinstance(e, A.Binary):
             lv = self._const_value(e.left)
             rv = self._const_value(e.right)
@@ -268,6 +276,16 @@ class Checker:
                 return _c_div(lv, rv)
             if op == "%" and rv != 0:
                 return _c_mod(lv, rv)
+            if op == "&":
+                return lv & rv
+            if op == "|":
+                return lv | rv
+            if op == "^":
+                return lv ^ rv
+            if op == "<<" and rv >= 0:
+                return lv << rv
+            if op == ">>" and rv >= 0:
+                return lv >> rv
         return None
 
     def _coerce(self, expected, expr):
