@@ -49,12 +49,25 @@ class CodeGen:
     def _ct(self, t):
         return c_type(t, self.struct_names)
 
+    _U64_MAX = (1 << 64) - 1
+    _I64_MAX = (1 << 63) - 1
+    _I32_MAX = (1 << 31) - 1
+
     def _c_int_literal(self, v, t):
-        """A C integer literal of value v, cast to Mort type t, with a suffix so
-        large values aren't misparsed as a narrower C type."""
-        if v > 0x7FFFFFFFFFFFFFFF:
-            lit = f"{v}ULL"
-        elif v > 0x7FFFFFFF or v < -0x80000000:
+        """A C integer literal of value v, cast to Mort type t. Chooses a suffix
+        so the magnitude is representable, and spells a value whose magnitude
+        exceeds the signed max (e.g. INT64_MIN) via its unsigned bit pattern, so
+        the result is clean under -Wall (no implicit-unsigned/overflow warnings)."""
+        if v >= 0:
+            if v > self._I64_MAX:
+                lit = f"{v}ULL"       # needs unsigned long long
+            elif v > self._I32_MAX:
+                lit = f"{v}LL"
+            else:
+                lit = str(v)
+        elif -v > self._I64_MAX:      # only INT64_MIN: -v isn't a signed literal
+            lit = f"{v + (1 << 64)}ULL"   # its two's-complement pattern, as unsigned
+        elif -v > self._I32_MAX:
             lit = f"{v}LL"
         else:
             lit = str(v)
@@ -287,6 +300,10 @@ class CodeGen:
             v = self._gen_expr(e.value)
             return "{" + ", ".join([v] * e.count) + "}"
         if isinstance(e, A.Unary):
+            # A constant '-'/'~' folds to its value (const_val is set only for
+            # those two int unaries; '*'/'&'/'!' leave it None).
+            if e.const_val is not None:
+                return self._c_int_literal(e.const_val, e.type)
             code = f"({e.op}{self._gen_expr(e.operand)})"
             # '-' and '~' can produce a value wider than the Mort type (C promotes
             # to int); narrow it back. '*'/'&' are lvalue/pointer — never wrap.
@@ -294,15 +311,17 @@ class CodeGen:
                 return self._narrow(e, code)
             return code
         if isinstance(e, A.Binary):
+            # A fully-constant integer expression is emitted as its single folded
+            # value. This is required for shifts (a C `1 << 63` is undefined — 1 is
+            # a 32-bit int) and also keeps a nested inner shift like `(1 << 64) - 1`
+            # from emitting an intermediate literal too large for any C type.
+            if e.const_val is not None:
+                return self._c_int_literal(e.const_val, e.type)
             if e.op in ("<<", ">>"):
-                # A constant shift is emitted as its folded value — a C `1 << 63`
-                # is undefined (1 is a 32-bit int). A runtime shift casts its left
-                # operand to the result type so it executes at the right width.
-                if e.const_val is not None:
-                    code = self._c_int_literal(e.const_val, e.type)
-                else:
-                    code = (f"(({self._ct(e.type)})({self._gen_expr(e.left)}) "
-                            f"{e.op} {self._gen_expr(e.right)})")
+                # Runtime shift: cast the left operand to the result type so it
+                # executes at the right width (not C's promoted 32-bit int).
+                code = (f"(({self._ct(e.type)})({self._gen_expr(e.left)}) "
+                        f"{e.op} {self._gen_expr(e.right)})")
                 return self._narrow(e, code)
             code = f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
             return self._narrow(e, code)

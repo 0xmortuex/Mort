@@ -78,7 +78,8 @@ def test_recursion_prototype_emitted():
 def test_fixed_width_int_types():
     c = c_of("fn main() -> int { let a: u8 = 5; let b: i32 = 0 - 1; print(b); return 0; }")
     assert "uint8_t m_a = 5;" in c
-    assert "int32_t m_b = (0 - 1);" in c
+    # a fully-constant expression folds to its value
+    assert "int32_t m_b = ((int32_t)-1);" in c
 
 
 def test_hex_literal():
@@ -232,10 +233,9 @@ def test_bitwise_codegen():
 
 
 def test_const_fold_bitwise_in_range():
-    # a folded bitwise literal that DOES fit is accepted (retagged to u8, so the
-    # result is narrow-wrapped)
+    # a folded bitwise literal that DOES fit is accepted and emitted as its value
     c = c_of("fn main() -> int { let x: u8 = 200 | 100; print(x); return 0; }")  # 236
-    assert "uint8_t m_x = ((uint8_t)(200 | 100));" in c
+    assert "uint8_t m_x = ((uint8_t)236);" in c
 
 
 def test_shift_and_not_codegen():
@@ -250,6 +250,22 @@ def test_constant_shift_folded():
     c = c_of("fn main() -> int { let x: u64 = 1 << 63; print(x as i64); return 0; }")
     assert "(1 << 63)" not in c
     assert "9223372036854775808ULL" in c
+
+
+def test_nested_constant_shift_no_giant_literal():
+    # (1 << 64) - 1 folds to u64::MAX; the inner 2^64 must never be emitted as a
+    # literal (it exceeds every C integer type)
+    c = c_of("fn main() -> int { let x: u64 = (1 << 64) - 1; print(x as i64); return 0; }")
+    assert "18446744073709551616" not in c          # 2^64 — invalid C literal
+    assert "((uint64_t)18446744073709551615ULL)" in c  # u64::MAX
+
+
+def test_int64_min_literal_is_clean():
+    # INT64_MIN must not be spelled -9223372036854775808LL (that magnitude isn't a
+    # signed literal); use the unsigned bit pattern instead
+    c = c_of("fn main() -> int { let x: i64 = (0 - 1) << 63; print(x); return 0; }")
+    assert "-9223372036854775808LL" not in c
+    assert "((int64_t)9223372036854775808ULL)" in c
 
 
 @needs_cc
@@ -272,6 +288,28 @@ def test_shift_width_semantics():
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.stdout == "8\n0\n1048576\n"
+
+
+@needs_cc
+def test_extreme_shift_literals_run_and_are_clean():
+    # nested/overflowing constant shifts must compile clean under -Wall -Werror
+    # and evaluate correctly
+    src = ("fn main() -> int {"
+           "  let a: u64 = (1 << 64) - 1;"    # u64::MAX
+           "  print((a >> 32) as i64);"       # 4294967295
+           "  let b: i64 = (0 - 1) << 63;"    # INT64_MIN
+           "  print(b);"                       # -9223372036854775808
+           "  return 0; }")
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "e.c")
+        exe = os.path.join(d, "e.exe" if os.name == "nt" else "e")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11",
+                        "-Wall", "-Werror"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "4294967295\n-9223372036854775808\n"
 
 
 @needs_cc
