@@ -283,6 +283,10 @@ class Checker:
             if op == "^":
                 return lv ^ rv
             if op == "<<" and rv >= 0:
+                if lv == 0:
+                    return 0
+                if rv > 64:
+                    return 1 << 65   # cap: already out of range for any Mort int
                 return lv << rv
             if op == ">>" and rv >= 0:
                 return lv >> rv
@@ -303,8 +307,8 @@ class Checker:
                 lo, hi = INT_RANGES[expected]
                 if not (lo <= value <= hi):
                     self._error(
-                        f"integer literal {value} does not fit in {expected} "
-                        f"(range {lo}..{hi})", expr)
+                        f"integer literal {self._value_str(value)} does not fit in "
+                        f"{expected} (range {lo}..{hi})", expr)
             expr.type = expected  # untyped literal adopts the expected int type
             return True
         return False
@@ -494,6 +498,9 @@ class Checker:
                 # left operand's integer type.
                 if lt not in INT_TYPES or rt not in INT_TYPES:
                     self._error(f"operator '{op}' requires int operands", e)
+                count = self._const_value(e.right)
+                if count is not None and count < 0:
+                    self._error(f"shift count cannot be negative ({count})", e)
                 e.is_lit = e.left.is_lit and e.right.is_lit
                 return lt
             if op in ("==", "!="):
@@ -567,6 +574,11 @@ class Checker:
 
         self._error("cannot type this expression", e)  # pragma: no cover
 
+    @staticmethod
+    def _value_str(v):
+        # Avoid str() on astronomically large ints (Python's 4300-digit cap).
+        return str(v) if v.bit_length() < 128 else f"~2^{v.bit_length()}"
+
     def _retag_literal(self, node, target):
         """Adopt `target` for an int-literal operand, range-checking its value."""
         value = self._const_value(node)
@@ -574,8 +586,8 @@ class Checker:
             lo, hi = INT_RANGES[target]
             if not (lo <= value <= hi):
                 self._error(
-                    f"integer literal {value} does not fit in {target} "
-                    f"(range {lo}..{hi})", node)
+                    f"integer literal {self._value_str(value)} does not fit in "
+                    f"{target} (range {lo}..{hi})", node)
         node.type = target
 
     def _unify_ints(self, e, lt, rt, op):

@@ -516,6 +516,8 @@ def test_kernel_builds_multiboot_elf():
     # composed literal expressions are folded, so overflow can't sneak through
     ("fn main() -> int { let x: u8 = 1 << 8; print(x); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let a: u8 = 1; print((a | (200 << 4)) as i64); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { let x: u8 = 1 << (0 - 1); print(x); return 0; }", "shift count cannot be negative"),
+    ("fn main() -> int { let x: u8 = 1 << 1000000; print(x); return 0; }", "does not fit in u8"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
