@@ -174,6 +174,17 @@ def test_port_io_builtins_codegen():
     assert "uint8_t m_s = mort_inb(96);" in c
 
 
+def test_port_io_word_builtins_codegen():
+    # inw/outw are privileged (can't run in userspace), so verify codegen only.
+    c = c_free("fn kmain() { outw(0x1F0, 0xABCD); let s: u16 = inw(0x1F0); }")
+    assert "mort_outw(uint16_t port, uint16_t val)" in c
+    assert "mort_inw(uint16_t port)" in c
+    assert '"outw %0, %1"' in c
+    assert '"inw %1, %0"' in c
+    assert "mort_outw(496, 43981);" in c
+    assert "uint16_t m_s = mort_inw(496);" in c
+
+
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
@@ -406,6 +417,7 @@ def test_array_sum_runs():
 def test_port_io_helpers_only_when_used():
     c = c_free("fn kmain() { let x: u8 = 1; }")
     assert "mort_inb" not in c and "mort_outb" not in c
+    assert "mort_inw" not in c and "mort_outw" not in c
 
 
 def test_port_io_helpers_emitted_per_builtin():
@@ -416,6 +428,18 @@ def test_port_io_helpers_emitted_per_builtin():
     only_out = c_free("fn kmain() { outb(0x20, 0x20); }")
     assert "mort_outb(uint16_t" in only_out
     assert "mort_inb(uint16_t" not in only_out
+
+
+def test_port_io_word_helpers_emitted_per_builtin():
+    only_in = c_free("fn kmain() { let s: u16 = inw(0x1F0); }")
+    assert "mort_inw(uint16_t" in only_in
+    assert "mort_outw(uint16_t" not in only_in   # not dragged in by inw alone
+    assert "mort_inb(uint16_t" not in only_in    # 8-bit helpers stay out too
+
+    only_out = c_free("fn kmain() { outw(0x1F0, 0xABCD); }")
+    assert "mort_outw(uint16_t" in only_out
+    assert "mort_inw(uint16_t" not in only_out
+    assert "mort_outb(uint16_t" not in only_out
 
 
 def test_literal_range_check():
@@ -558,6 +582,11 @@ def test_kernel_builds_multiboot_elf():
     ("fn outb() { } fn main() -> int { return 0; }", "already defined"),
     ("fn main() -> int { outb(0x12345, 0x20); return 0; }", "does not fit in u16"),
     ("fn main() -> int { outb(0x20, 0x123); return 0; }", "does not fit in u8"),
+    ("fn main() -> int { outw(0x1F0); return 0; }", "outw expects 2 arguments"),
+    ("fn main() -> int { let x: u16 = inw(1, 2); return 0; }", "inw expects 1 argument"),
+    ("fn inw() { } fn main() -> int { return 0; }", "already defined"),
+    ("fn main() -> int { outw(0x12345, 0x20); return 0; }", "does not fit in u16"),
+    ("fn main() -> int { outw(0x1F0, 0x12345); return 0; }", "does not fit in u16"),
     ("fn main() -> int { let x: u8 = 300; print(x); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let x: u8 = 200 + 100; print(x); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let x: i8 = 0 - 200; print(x); return 0; }", "does not fit in i8"),

@@ -1,9 +1,10 @@
 # MORT OS
 
 A tiny operating-system kernel **written in Mort** — it boots on QEMU, runs in
-32-bit protected mode, and gives you an **interactive shell**: type a command,
-edit it with Backspace, press Enter to run it (`help`, `clear`). Everything —
-VGA output, PS/2 keyboard input, and command parsing — is written in Mort.
+32-bit protected mode, and gives you an **interactive shell with a real
+filesystem**: write files, `cat` them, delete them, run them as scripts — and
+they **survive a reboot**. Everything — VGA output, PS/2 keyboard input, the
+ATA disk driver, the filesystem, and command parsing — is written in Mort.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -51,11 +52,31 @@ Requirements: `pip install ziglang` (the C cross-compiler) and
 
 ```bash
 python kernel/build.py check   # build and verify it's a valid multiboot ELF
-python kernel/build.py run     # build, then boot it in QEMU
+python kernel/build.py run     # build, then boot it in QEMU (with the disk)
 ```
 
 `check` needs no QEMU — it builds `build/kernel.elf` and confirms it's a 32-bit
 x86 multiboot kernel. `run` boots it fullscreen; type `help` to see the commands.
+
+### The disk
+
+`run` auto-creates `kernel/build/disk.img` (16 MiB, MortFS) on first boot and
+attaches it with `-hda`, so files you `write` in the OS persist across reboots.
+`python kernel/mkfs.py kernel/build/disk.img` wipes it clean (add
+`--add host.txt:name.txt` to seed files from the host). Try:
+
+```
+> write notes.txt hello from mort os
+> cat notes.txt
+> write job.txt echo hi
+> write job.txt uptime
+> run job.txt
+```
+
+Automated tests: `python kernel/test.py smoke` (boot + shell basics) and
+`python kernel/test_fs.py` (the whole disk stack, including
+write-reboot-cat persistence) — both drive the real kernel headless in QEMU
+by injecting keys through the monitor and reading VGA memory back.
 
 ### A real bootable ISO
 
@@ -97,4 +118,14 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
       the `readme` command prints the file's contents.
 - [x] Running a program from disk: a second module is a script of shell
       commands that the kernel executes at boot, like an /etc/rc.
-- [ ] A disk driver + real filesystem; executing loaded machine code.
+- [x] **An ATA PIO disk driver** (LBA28, polling, graceful no-disk fallback)
+      — the first Mort code to drive a block device.
+- [x] **MortFS, a real filesystem**: superblock + file table + 64 KiB extents,
+      with `ls`, `cat <f>`, `write <f> <text>` (append), `rm <f>` — and files
+      **persist across reboots**. Host-side `mkfs.py` creates/seeds images.
+- [x] `run <f>`: execute a file of shell commands — author a script inside
+      the OS with `write`, then run it.
+- [x] An automated QEMU test harness (`test.py`, `test_fs.py`): boots the
+      kernel headless, types via the monitor, asserts on VGA memory.
+- [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact).
+- [ ] Executing loaded machine code (real programs, not shell scripts).

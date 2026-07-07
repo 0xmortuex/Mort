@@ -7,6 +7,7 @@
     python kernel/build.py window    # same, but in a normal window
     python kernel/build.py iso       # build a bootable mort.iso (Limine + xorriso)
     python kernel/build.py run-iso   # build the ISO, then boot it in QEMU (-cdrom)
+    python kernel/build.py disk      # create build/disk.img (MortFS) iff missing
 
 The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
 C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
@@ -27,6 +28,7 @@ import mortc  # noqa: E402
 TARGET = "x86-freestanding-none"           # 32-bit x86, bare metal
 BUILD = os.path.join(HERE, "build")
 ELF = os.path.join(BUILD, "kernel.elf")
+DISK = os.path.join(BUILD, "disk.img")
 
 # Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
 TOOLS = os.path.join(HERE, "tools")
@@ -59,6 +61,9 @@ in -- was built from scratch. Type 'help' for commands.
 STARTUP_TXT = """echo running startup script loaded from disk...
 about
 """
+
+# Seeded onto a fresh MortFS disk image so first boot's `ls` shows something.
+HELLO_TXT = "this file lives on the MortFS disk\n"
 
 
 def _zig():
@@ -138,6 +143,32 @@ def check():
 
     print(f"OK: 32-bit x86 multiboot ELF; valid header at file offset {offset}")
     print("Boot it with:  python kernel/build.py run")
+
+
+def ensure_disk():
+    """Create the MortFS disk image iff it is missing.
+
+    Files written from inside the OS must survive rebuilds, so an existing
+    image is never touched; `python kernel/mkfs.py kernel/build/disk.img` is
+    the explicit wipe-and-reseed path.
+    """
+    if os.path.exists(DISK):
+        return
+    os.makedirs(BUILD, exist_ok=True)
+    import mkfs  # lives next to this script; sys.path[0] is kernel/ either way
+    seed = os.path.join(BUILD, "hello.txt")
+    with open(seed, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(HELLO_TXT)
+    mkfs.make(DISK, adds=[(seed, "hello.txt")])
+
+
+def disk():
+    if os.path.exists(DISK):
+        print(f"{os.path.relpath(DISK, ROOT)} already exists — leaving it alone "
+              "(in-OS writes survive). Wipe and reseed with: "
+              "python kernel/mkfs.py kernel/build/disk.img")
+        return
+    ensure_disk()
 
 
 def _fetch_zip(url, dest):
@@ -223,11 +254,12 @@ def iso():
 
 def run_iso():
     iso()
+    ensure_disk()
     qemu = _find_qemu()
     if not qemu:
         sys.exit("qemu-system-i386 not found — install QEMU to boot the ISO.")
     print("Booting the MORT OS ISO in QEMU...")
-    subprocess.run([qemu, "-cdrom", ISO])
+    subprocess.run([qemu, "-cdrom", ISO, "-hda", DISK])
 
 
 def _find_qemu():
@@ -248,13 +280,14 @@ def _find_qemu():
 
 def _run(fullscreen):
     build()
+    ensure_disk()
     qemu = _find_qemu()
     if not qemu:
         sys.exit("qemu-system-i386 not found — install QEMU (e.g. `winget install "
                  "SoftwareFreedomConservancy.QEMU`) to boot the kernel.")
     # GTK display: hide the menu bar and scale the 80x25 console to the window.
     display = "gtk,zoom-to-fit=on,show-menubar=off"
-    cmd = [qemu, "-display", display, "-kernel", ELF]
+    cmd = [qemu, "-display", display, "-kernel", ELF, "-hda", DISK]
     if fullscreen:
         cmd.insert(1, "-full-screen")
         print("Booting MORT OS fullscreen. Ctrl+Alt+F toggles fullscreen, "
@@ -275,7 +308,7 @@ def run_windowed():
 
 
 COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed,
-            "iso": iso, "run-iso": run_iso}
+            "iso": iso, "run-iso": run_iso, "disk": disk}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"

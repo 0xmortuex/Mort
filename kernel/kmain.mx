@@ -11,7 +11,7 @@ let g_row: u32 = 2;
 let g_col: u32 = 2;
 let g_len: u32 = 0;
 let g_shift: bool = false;
-let g_buf: *u8 = "                                        ";   // 40-byte scratch
+let g_buf: *u8 = "                                                                                ";   // 80-byte scratch (76 chars + NUL + slack), MAXLINE = 76
 let g_ticks: u32 = 0;                                          // PIT ticks (100/s)
 let g_numlen: u32 = 0;                                         // digits written by num_to_str
 let g_numbuf: *u8 = "            ";                            // 12-byte number scratch
@@ -19,7 +19,10 @@ let g_mbinfo: u32 = 0;                                        // multiboot info 
 let g_ext: bool = false;                                      // saw the 0xE0 extended-scancode prefix
 let g_hist_n: u32 = 0;                                         // total commands entered
 let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
-let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 40 bytes (command history ring)
+let g_disk_ok: bool = false;                                   // ata_init() found a drive
+let g_fs_ok: bool = false;                                     // fs_init() verified the MortFS magic
+let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
+let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 80 bytes (command history ring)
 
 // ----- VGA text output -----
 
@@ -213,11 +216,11 @@ fn str_copy(dst: *u8, src: *u8) {
 // Address of the k-th most recent command (k >= 1).
 fn hist_slot(k: u32) -> *u8 {
     let idx: u32 = (g_hist_n - k) % 8;
-    return (g_history as u32 + idx * 40) as *u8;
+    return (g_history as u32 + idx * 80) as *u8;
 }
 
 fn hist_store(cmd: *u8) {
-    let slot: *u8 = (g_history as u32 + (g_hist_n % 8) * 40) as *u8;
+    let slot: *u8 = (g_history as u32 + (g_hist_n % 8) * 80) as *u8;
     str_copy(slot, cmd);
     g_hist_n = g_hist_n + 1;
 }
@@ -231,9 +234,9 @@ fn set_input(s: *u8) {
     }
     str_copy(g_buf, s);
     g_len = str_len(g_buf);
-    if g_len > 30 {                            // respect the 40-byte buffer guard
-        g_len = 30;
-        *((g_buf as u32 + 30) as *u8) = 0;
+    if g_len > 76 {                            // MAXLINE = 76 (one VGA row of input)
+        g_len = 76;
+        *((g_buf as u32 + 76) as *u8) = 0;
     }
     let j: u32 = 0;
     while j < g_len {
@@ -311,14 +314,9 @@ fn show_module() {
     print_range(start, module_end(0), 7);
 }
 
-// Run a script module: execute each line as a shell command, echoing it at a
-// prompt first. This is how MORT OS runs a program loaded from disk at boot.
-fn run_script(index: u32) {
-    let start: u32 = module_start(index);
-    if start == 0 {
-        return;
-    }
-    let end: u32 = module_end(index);
+// Execute each line of [start, end) as a shell command, echoing it at a
+// prompt first. Shared by boot-time script modules and `run <file>`.
+fn run_range_lines(start: u32, end: u32) {
     let p: u32 = start;
     let len: u32 = 0;
     while p <= end {
@@ -337,7 +335,7 @@ fn run_script(index: u32) {
             len = 0;
         } else {
             if ch != 13 {
-                if len < 30 {
+                if len < 76 {                // MAXLINE = 76
                     *((g_buf as u32 + len) as *u8) = ch;
                     len = len + 1;
                 }
@@ -345,6 +343,36 @@ fn run_script(index: u32) {
         }
         p = p + 1;
     }
+}
+
+// Run a script module: this is how MORT OS runs its startup script at boot.
+fn run_script(index: u32) {
+    let start: u32 = module_start(index);
+    if start == 0 {
+        return;
+    }
+    run_range_lines(start, module_end(index));
+}
+
+// `run <name>`: execute a MortFS file as shell commands. The name points into
+// g_buf, so the whole file must land in FILEBUF before lines reuse g_buf.
+fn run_file(name: *u8) {
+    if g_run_depth > 0 {                 // a script's `run` would clobber FILEBUF
+        feed();
+        print_string("run: nested run not allowed", g_row, 12);
+        return;
+    }
+    let i: u32 = fs_find(name);
+    if i == 64 {
+        feed();
+        print_at("not found: ", g_row, 0, 12);
+        print_at(name, g_row, 11, 12);
+        return;
+    }
+    let size: u32 = fs_read_file(i);
+    g_run_depth = g_run_depth + 1;
+    run_range_lines(0x00810000, 0x00810000 + size);    // FILEBUF
+    g_run_depth = g_run_depth - 1;
 }
 
 // Total available RAM, from the multiboot memory map (flags bit 6). Each mmap
@@ -378,8 +406,8 @@ fn mem() {
     print_at(" MB", g_row, 5 + g_numlen, 7);
 }
 
-// List the multiboot modules loaded from disk, with their sizes.
-fn ls() {
+// List the multiboot modules loaded at boot, with their sizes.
+fn mods() {
     let count: u32 = *((g_mbinfo + 20) as *u32);
     feed();
     print_at("modules: ", g_row, 0, 7);
@@ -410,6 +438,348 @@ fn reboot() {
     }
 }
 
+// ----- ATA PIO disk driver (primary bus, master drive, LBA28, polling) -----
+//
+// No IRQs: the PIC leaves IRQ14 masked and we set nIEN too. All ops poll the
+// status register with a bounded counter so a missing/broken drive fails
+// cleanly instead of hanging the keyboard ISR forever.
+
+// After selecting a drive, its status needs ~400ns to become valid: four reads
+// of the alternate-status port (0x3F6, same bits as 0x1F7, no side effects).
+fn ata_delay() {
+    inb(0x3F6);
+    inb(0x3F6);
+    inb(0x3F6);
+    inb(0x3F6);
+}
+
+// Poll until BSY (0x80) clears; false on timeout (~1s on real hardware).
+fn ata_wait_bsy() -> bool {
+    let i: u32 = 0;
+    while i < 1000000 {
+        let st: u8 = inb(0x1F7);
+        if (st & 0x80) == 0 { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Poll until DRQ (0x08) sets; fail fast on ERR (0x01) or DF (0x20).
+fn ata_wait_drq() -> bool {
+    let i: u32 = 0;
+    while i < 1000000 {
+        let st: u8 = inb(0x1F7);
+        if (st & 0x80) == 0 {                       // BSY clear -> bits valid
+            if (st & 0x21) != 0 { return false; }   // ERR or DF
+            if (st & 0x08) != 0 { return true; }    // DRQ
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Detect the drive once at boot. A floating bus reads 0xFF = no drive.
+fn ata_init() -> bool {
+    outb(0x1F6, 0xE0);                  // select master, LBA mode
+    ata_delay();
+    let st: u8 = inb(0x1F7);
+    if st == 0xFF {                     // floating bus: nothing attached
+        g_disk_ok = false;
+        return false;
+    }
+    if !ata_wait_bsy() {
+        g_disk_ok = false;
+        return false;
+    }
+    st = inb(0x1F7);
+    if (st & 0x40) == 0 {               // RDY clear: absent or broken
+        g_disk_ok = false;
+        return false;
+    }
+    outb(0x3F6, 2);                     // nIEN: no ATA interrupts
+    g_disk_ok = true;
+    return true;
+}
+
+// Read one 512-byte sector at `lba` into buf. Data port is 16-bit, LE.
+fn ata_read(lba: u32, buf: *u8) -> bool {
+    if !g_disk_ok { return false; }
+    if !ata_wait_bsy() { return false; }
+    outb(0x1F6, (0xE0 | ((lba >> 24) & 0x0F)) as u8);
+    ata_delay();
+    outb(0x1F2, 1);                     // sector count = 1
+    outb(0x1F3, (lba & 0xFF) as u8);
+    outb(0x1F4, ((lba >> 8) & 0xFF) as u8);
+    outb(0x1F5, ((lba >> 16) & 0xFF) as u8);
+    outb(0x1F7, 0x20);                  // READ SECTORS
+    if !ata_wait_drq() { return false; }
+    let i: u32 = 0;
+    while i < 256 {
+        let w: u32 = inw(0x1F0) as u32;
+        *((buf as u32 + i * 2) as *u8) = (w & 0xFF) as u8;
+        *((buf as u32 + i * 2 + 1) as *u8) = ((w >> 8) & 0xFF) as u8;
+        i = i + 1;
+    }
+    return true;
+}
+
+// Write one 512-byte sector from buf to `lba`, then flush the drive cache.
+fn ata_write(lba: u32, buf: *u8) -> bool {
+    if !g_disk_ok { return false; }
+    if !ata_wait_bsy() { return false; }
+    outb(0x1F6, (0xE0 | ((lba >> 24) & 0x0F)) as u8);
+    ata_delay();
+    outb(0x1F2, 1);
+    outb(0x1F3, (lba & 0xFF) as u8);
+    outb(0x1F4, ((lba >> 8) & 0xFF) as u8);
+    outb(0x1F5, ((lba >> 16) & 0xFF) as u8);
+    outb(0x1F7, 0x30);                  // WRITE SECTORS
+    if !ata_wait_drq() { return false; }
+    let i: u32 = 0;
+    while i < 256 {
+        let lo: u32 = *((buf as u32 + i * 2) as *u8) as u32;
+        let hi: u32 = *((buf as u32 + i * 2 + 1) as *u8) as u32;
+        outw(0x1F0, (lo | (hi << 8)) as u16);
+        i = i + 1;
+    }
+    if !ata_wait_bsy() { return false; }
+    outb(0x1F7, 0xE7);                  // CACHE FLUSH
+    if !ata_wait_bsy() { return false; }
+    return true;
+}
+
+// ----- MortFS v1 -----
+//
+// Sector 0: superblock (magic "MFS1", version, file_count, next_free_sector,
+// total_sectors). Sectors 1..8: 64 entries x 64 bytes (name[24], used u32,
+// size u32, start_sector u32, capacity_sectors u32). Data from sector 16;
+// every file gets a fixed 128-sector (64 KiB) extent from a bump allocator.
+// All metadata lives in a RAM cache at TABCACHE and is parsed with raw offset
+// arithmetic, same idiom as the multiboot code above. Buffers (fixed, no heap):
+//   0x00800000  SECBUF    512 B    sector scratch
+//   0x00801000  TABCACHE  4608 B   superblock + file table cache
+//   0x00810000  FILEBUF   64 KiB   whole-file reads (cat/run)
+
+// Byte address of entry i's first field inside the table cache.
+fn fs_entry_addr(i: u32) -> u32 {
+    return 0x00801000 + 512 + i * 64;   // TABCACHE
+}
+
+// Detect the disk, cache sectors 0..8, verify the superblock. Sets g_fs_ok.
+fn fs_init() -> bool {
+    if !ata_init() {
+        return false;
+    }
+    let s: u32 = 0;
+    while s < 9 {
+        if !ata_read(s, (0x00801000 + s * 512) as *u8) {    // TABCACHE
+            return false;
+        }
+        s = s + 1;
+    }
+    if *(0x00801000 as *u32) != 0x3153464D {   // "MFS1" little-endian
+        return false;
+    }
+    if *((0x00801000 + 4) as *u32) != 1 {      // version
+        return false;
+    }
+    g_fs_ok = true;
+    return true;
+}
+
+// Write the metadata cache back to sectors 0..8.
+fn fs_sync() -> bool {
+    let s: u32 = 0;
+    while s < 9 {
+        if !ata_write(s, (0x00801000 + s * 512) as *u8) {   // TABCACHE
+            return false;
+        }
+        s = s + 1;
+    }
+    return true;
+}
+
+// Index of the used entry named `name`, else 64 (the "no entry" sentinel).
+fn fs_find(name: *u8) -> u32 {
+    let i: u32 = 0;
+    while i < 64 {
+        let base: u32 = fs_entry_addr(i);
+        if *((base + 24) as *u32) == 1 {           // used
+            if streq(name, base as *u8) {
+                return i;
+            }
+        }
+        i = i + 1;
+    }
+    return 64;
+}
+
+// Index of the first free table slot, else 64.
+fn fs_free_slot() -> u32 {
+    let i: u32 = 0;
+    while i < 64 {
+        if *((fs_entry_addr(i) + 24) as *u32) == 0 {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 64;
+}
+
+// Claim a slot and a fresh 128-sector extent for `name`. Prints its own
+// error (color 12) and returns 64 on failure.
+fn fs_create(name: *u8) -> u32 {
+    let n: u32 = str_len(name);
+    if n == 0 || n > 23 {
+        feed();
+        print_string("name too long (max 23 chars)", g_row, 12);
+        return 64;
+    }
+    let slot: u32 = fs_free_slot();
+    if slot == 64 {
+        feed();
+        print_string("file table full (max 64 files)", g_row, 12);
+        return 64;
+    }
+    let next: u32 = *((0x00801000 + 12) as *u32);      // next_free_sector
+    let total: u32 = *((0x00801000 + 16) as *u32);     // total_sectors
+    if next + 128 > total {
+        feed();
+        print_string("disk full (rm does not reclaim; re-run mkfs)", g_row, 12);
+        return 64;
+    }
+    let base: u32 = fs_entry_addr(slot);
+    let k: u32 = 0;
+    while k < 24 {                                     // NUL-pad the name field
+        *((base + k) as *u8) = 0;
+        k = k + 1;
+    }
+    str_copy(base as *u8, name);
+    *((base + 24) as *u32) = 1;                        // used
+    *((base + 28) as *u32) = 0;                        // size_bytes
+    *((base + 32) as *u32) = next;                     // start_sector
+    *((base + 36) as *u32) = 128;                      // capacity_sectors
+    *((0x00801000 + 12) as *u32) = next + 128;         // bump the allocator
+    *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // file_count++
+    if !fs_sync() {
+        return 64;
+    }
+    return slot;
+}
+
+// Read entry i's live sectors into FILEBUF; returns size_bytes (0 on error
+// or empty file).
+fn fs_read_file(i: u32) -> u32 {
+    let base: u32 = fs_entry_addr(i);
+    let size: u32 = *((base + 28) as *u32);
+    if size == 0 {
+        return 0;
+    }
+    let start: u32 = *((base + 32) as *u32);
+    let nsec: u32 = (size + 511) / 512;
+    let s: u32 = 0;
+    while s < nsec {
+        if !ata_read(start + s, (0x00810000 + s * 512) as *u8) {   // FILEBUF
+            return 0;
+        }
+        s = s + 1;
+    }
+    return size;
+}
+
+// Append text + '\n' to entry i, sector-at-a-time through SECBUF so a partial
+// last sector is read-modify-written correctly.
+fn fs_append_line(i: u32, text: *u8) -> bool {
+    let base: u32 = fs_entry_addr(i);
+    let size: u32 = *((base + 28) as *u32);
+    let cap: u32 = *((base + 36) as *u32) * 512;
+    let n: u32 = str_len(text);
+    if size + n + 1 > cap {
+        return false;
+    }
+    let start: u32 = *((base + 32) as *u32);
+    let sec: u32 = start + size / 512;      // sector being filled
+    let off: u32 = size % 512;              // write position within it
+    if off != 0 {                           // partial sector: fetch it first
+        if !ata_read(sec, 0x00800000 as *u8) {          // SECBUF
+            return false;
+        }
+    } else {
+        for k: u32 in 0..512 {
+            *((0x00800000 + k) as *u8) = 0;
+        }
+    }
+    let j: u32 = 0;
+    while j <= n {                          // n text bytes, then one '\n'
+        let b: u8 = 10;
+        if j < n {
+            b = *((text as u32 + j) as *u8);
+        }
+        *((0x00800000 + off) as *u8) = b;   // SECBUF
+        off = off + 1;
+        j = j + 1;
+        if off == 512 {                     // sector filled: flush, move on
+            if !ata_write(sec, 0x00800000 as *u8) {
+                return false;
+            }
+            sec = sec + 1;
+            off = 0;
+            for k: u32 in 0..512 {
+                *((0x00800000 + k) as *u8) = 0;
+            }
+        }
+    }
+    if off != 0 {                           // flush the trailing partial sector
+        if !ata_write(sec, 0x00800000 as *u8) {
+            return false;
+        }
+    }
+    *((base + 28) as *u32) = size + n + 1;
+    return fs_sync();
+}
+
+// Mark `name` unused. The extent is NOT reclaimed (v1 limitation).
+fn fs_remove(name: *u8) -> bool {
+    let i: u32 = fs_find(name);
+    if i == 64 {
+        return false;
+    }
+    *((fs_entry_addr(i) + 24) as *u32) = 0;            // used = 0
+    *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) - 1;   // file_count--
+    return fs_sync();
+}
+
+// Shared preamble for every FS command: explain what's missing, in order.
+fn fs_guard() -> bool {
+    if !g_disk_ok {
+        feed();
+        print_string("no disk (boot with -hda disk.img)", g_row, 12);
+        return false;
+    }
+    if !g_fs_ok {
+        feed();
+        print_string("bad filesystem (host: python kernel/mkfs.py disk.img)", g_row, 12);
+        return false;
+    }
+    return true;
+}
+
+// Offset of the first `ch` in s, or of the trailing NUL if absent.
+fn find_char(s: *u8, ch: u8) -> u32 {
+    let i: u32 = 0;
+    while true {
+        let c: u8 = *((s as u32 + i) as *u8);
+        if c == ch {
+            return i;
+        }
+        if c == 0 {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
 fn run_command(cmd: *u8) -> bool {
@@ -418,7 +788,7 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("help clear about echo uptime crash readme mem ls reboot", g_row, 7);
+        print_string("help clear about echo uptime crash readme mem ls cat write rm run mods reboot", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -429,8 +799,82 @@ fn run_command(cmd: *u8) -> bool {
         mem();
         return false;
     }
+    if streq(cmd, "mods") {
+        mods();
+        return false;
+    }
     if streq(cmd, "ls") {
-        ls();
+        if !fs_guard() { return false; }
+        let shown: u32 = 0;
+        let i: u32 = 0;
+        while i < 64 {
+            let base: u32 = fs_entry_addr(i);
+            if *((base + 24) as *u32) == 1 {           // used
+                feed();
+                print_at(base as *u8, g_row, 2, 15);   // name (24-byte field)
+                num_to_str(*((base + 28) as *u32), g_numbuf);
+                print_at(g_numbuf, g_row, 27, 7);
+                print_at(" bytes", g_row, 27 + g_numlen, 7);
+                shown = shown + 1;
+            }
+            i = i + 1;
+        }
+        if shown == 0 {
+            feed();
+            print_string("(no files)", g_row, 7);
+        }
+        return false;
+    }
+    if starts_with(cmd, "cat ") {
+        if !fs_guard() { return false; }
+        let name: *u8 = (cmd as u32 + 4) as *u8;
+        let i: u32 = fs_find(name);
+        if i == 64 {
+            feed();
+            print_at("not found: ", g_row, 0, 12);
+            print_at(name, g_row, 11, 12);
+            return false;
+        }
+        let size: u32 = fs_read_file(i);
+        feed();
+        print_range(0x00810000, 0x00810000 + size, 7);   // FILEBUF
+        return false;
+    }
+    if starts_with(cmd, "write ") {
+        if !fs_guard() { return false; }
+        let name: *u8 = (cmd as u32 + 6) as *u8;
+        let sp: u32 = find_char(name, 32);               // name/text separator
+        if sp == 0 || *((name as u32 + sp) as *u8) == 0 {
+            feed();
+            print_string("usage: write <name> <text>", g_row, 12);
+            return false;
+        }
+        *((name as u32 + sp) as *u8) = 0;                // terminate the name in place
+        let text: *u8 = (name as u32 + sp + 1) as *u8;
+        let i: u32 = fs_find(name);
+        if i == 64 {
+            i = fs_create(name);                         // prints its own error
+            if i == 64 { return false; }
+        }
+        if !fs_append_line(i, text) {
+            feed();
+            print_string("file full (max 64 KB)", g_row, 12);
+        }
+        return false;                                    // success is Unix-quiet
+    }
+    if starts_with(cmd, "rm ") {
+        if !fs_guard() { return false; }
+        let name: *u8 = (cmd as u32 + 3) as *u8;
+        if !fs_remove(name) {
+            feed();
+            print_at("not found: ", g_row, 0, 12);
+            print_at(name, g_row, 11, 12);
+        }
+        return false;
+    }
+    if starts_with(cmd, "run ") {
+        if !fs_guard() { return false; }
+        run_file((cmd as u32 + 4) as *u8);
         return false;
     }
     if streq(cmd, "reboot") {
@@ -552,7 +996,7 @@ fn on_key() {
 
     let ch: u8 = scancode_to_ascii(sc, g_shift);
     if ch != 0 {
-        if g_len < 30 {
+        if g_len < 76 {                // MAXLINE = 76
             g_hist_nav = 0;          // typing starts a fresh line
             *((g_buf as u32 + g_len) as *u8) = ch;
             g_len = g_len + 1;
@@ -568,6 +1012,7 @@ fn kmain(mbinfo: u32) {
     clear_screen();
     enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
+    fs_init();                       // detect the disk + mount MortFS (safe without either)
 
     run_script(1);                   // run the startup script loaded from disk
 

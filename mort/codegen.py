@@ -96,11 +96,13 @@ class CodeGen:
 
     def generate(self):
         self.strings = []       # raw string-literal values, index = id
-        self.used_inb = False   # set if inb()/outb() is generated, per helper
+        self.used_inb = False   # set if a port-I/O builtin is generated, per helper
         self.used_outb = False
+        self.used_inw = False
+        self.used_outw = False
 
         # Generate global initialisers and function bodies first, into side
-        # buffers. This populates self.strings / used_inb / used_outb (each
+        # buffers. This populates self.strings / used_* port-I/O flags (each
         # StrLit and port-I/O call registers itself), so the string table and
         # helpers can be emitted ahead of the code that references them.
         global_decls = [
@@ -148,7 +150,17 @@ class CodeGen:
             self._emit('    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));')
             self._emit("    return ret;")
             self._emit("}")
-        if self.used_inb or self.used_outb:
+        if self.used_outw:
+            self._emit("static inline void mort_outw(uint16_t port, uint16_t val) {")
+            self._emit('    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));')
+            self._emit("}")
+        if self.used_inw:
+            self._emit("static inline uint16_t mort_inw(uint16_t port) {")
+            self._emit("    uint16_t ret;")
+            self._emit('    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));')
+            self._emit("    return ret;")
+            self._emit("}")
+        if self.used_inb or self.used_outb or self.used_inw or self.used_outw:
             self._emit()
         # global variables (file-scope statics)
         if global_decls:
@@ -330,6 +342,10 @@ class CodeGen:
                 self.used_inb = True
             elif e.name == "outb":
                 self.used_outb = True
+            elif e.name == "inw":
+                self.used_inw = True
+            elif e.name == "outw":
+                self.used_outw = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             name = "mort_print" if e.name == "print" else f"mort_{e.name}"
             return f"{name}({args})"

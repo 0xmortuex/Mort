@@ -15,7 +15,7 @@ from . import mort_ast as A
 INT_TYPES = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
-BUILTIN_NAMES = {"print", "outb", "inb"}
+BUILTIN_NAMES = {"print", "outb", "inb", "outw", "inw"}
 
 # Inclusive value range each integer type can hold.
 INT_RANGES = {
@@ -642,6 +642,25 @@ class Checker:
             if not self._coerce("u16", e.args[0]):
                 self._error(f"inb port must be u16, got {e.args[0].type}", e)
             return "u8"
+        if e.name == "outw":
+            # outw(port: u16, value: u16) — write a 16-bit word to an I/O port
+            if len(e.args) != 2:
+                self._error("outw expects 2 arguments (port, value)", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u16", e.args[0]):
+                self._error(f"outw port must be u16, got {e.args[0].type}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u16", e.args[1]):
+                self._error(f"outw value must be u16, got {e.args[1].type}", e)
+            return "void"
+        if e.name == "inw":
+            # inw(port: u16) -> u16 — read a 16-bit word from an I/O port
+            if len(e.args) != 1:
+                self._error("inw expects 1 argument (port)", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u16", e.args[0]):
+                self._error(f"inw port must be u16, got {e.args[0].type}", e)
+            return "u16"
         if e.name not in self.funcs:
             self._error(f"call to undefined function {e.name!r}", e)
         ptypes, ret = self.funcs[e.name]

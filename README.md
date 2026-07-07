@@ -1,12 +1,12 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-101%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-108%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
 
-Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU **and on real hardware** (BIOS/UEFI bootable ISO), sets up an IDT, remaps the PICs, and takes **interrupt-driven keyboard input** into an interactive shell. That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
+Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU **and on real hardware** (BIOS/UEFI bootable ISO), sets up an IDT, remaps the PICs, and takes **interrupt-driven keyboard input** into an interactive shell — with an ATA disk driver and **a real filesystem (MortFS)**: files you `write` in the OS survive reboots. That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
 
 > 🖥️ The kernel also has its own showcase repo: [**0xmortuex/MortOS**](https://github.com/0xmortuex/MortOS) — buildable standalone (it fetches this compiler automatically).
 
