@@ -82,7 +82,10 @@ MORT OS runs real compiled programs, not just shell scripts. A program is a
 Mort source file compiled to a **flat 32-bit binary** loaded at `0x00A00000`;
 it shares no symbols with the kernel and talks to it only through **`int 0x80`
 syscalls** (arguments passed via a fixed mailbox at `0x009F0000`, since Mort's
-`asm()` takes no operands). Sample programs live in `kernel/programs/`.
+`asm()` takes no operands). Programs can even be **interactive** — a read-line
+syscall polls the keyboard directly, so a program can prompt for input and
+respond (see `programs/ask.mx`). Syscalls so far: print line, print inline,
+uptime, read line. Sample programs live in `kernel/programs/`.
 
 ```bash
 python kernel/build.py prog      # compile programs/*.mx -> build/*.bin
@@ -93,6 +96,7 @@ python kernel/build.py prog      # compile programs/*.mx -> build/*.bin
 ```
 > ls
 > exec hello.bin      # a real Mort program prints via syscall, then returns
+> exec ask.bin        # an interactive program: it asks your name and greets you
 ```
 
 Automated tests (all drive the real kernel headless in QEMU — inject keys
@@ -154,7 +158,10 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
 - [x] **Executing real compiled programs**: a Mort program built to a flat
       binary, loaded off the disk to `0x00A00000`, entered with a `call`, and
       served through `int 0x80` syscalls — `exec <file>`. See `programs/`.
+- [x] **Interactive programs**: a read-line syscall polls the keyboard directly
+      (we're inside int 0x80 with IRQs off), so a program can prompt for input
+      and respond — `exec ask.bin` asks your name and greets you.
 - [x] An automated QEMU test harness (`test.py`, `test_fs.py`, `test_exec.py`):
       boots the kernel headless, types via the monitor, asserts on VGA memory.
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact).
-- [ ] More syscalls (input, file I/O from programs) and a richer program ABI.
+- [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI.

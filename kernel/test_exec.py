@@ -67,9 +67,21 @@ def main():
         check("exec count: prints 'one'", T.wait_for(h, "one", timeout_s=15), h)
         check("exec count: prints 'three'", T.wait_for(h, "three", timeout_s=15), h)
 
+        # interactive program: it prompts, reads a line via syscall, greets
+        T.type_line(h, "exec ask.bin")
+        check("interactive program prompts",
+              T.wait_for(h, "what is your name?", timeout_s=15), h)
+        T.type_line(h, "fadi")
+        check("interactive program reads input + greets",
+              T.wait_for(h, "hello, fadi", timeout_s=15), h)
+
         T.type_line(h, "exec nope.bin")
         check("exec missing program errors",
               T.wait_for(h, "not found: nope.bin", timeout_s=15), h)
+        # the shell must survive an interactive program cleanly
+        T.type_line(h, "echo shell-still-ok")
+        check("shell alive after interactive program",
+              T.wait_for(h, "shell-still-ok", timeout_s=15), h)
     finally:
         T.shutdown(h)
 

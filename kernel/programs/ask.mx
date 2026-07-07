@@ -1,0 +1,31 @@
+// An interactive MORT OS program: it asks for your name, reads a line of
+// keyboard input through a syscall, and greets you. Proves programs can take
+// input, not just print. Syscalls (mailbox at 0x009F0000 + int 0x80):
+//   1 = print string + newline   2 = print inline   4 = read line (-> pointer)
+
+fn sys_print(s: *u8) {                    // print a line
+    *((0x009F0000) as *u32) = 1;
+    *((0x009F0004) as *u32) = s as u32;
+    asm("int $0x80");
+}
+
+fn sys_write(s: *u8) {                    // print without a trailing newline
+    *((0x009F0000) as *u32) = 2;
+    *((0x009F0004) as *u32) = s as u32;
+    asm("int $0x80");
+}
+
+fn sys_readline() -> *u8 {                // read a line; returns the input buffer
+    *((0x009F0000) as *u32) = 4;
+    asm("int $0x80");
+    return (*((0x009F000C) as *u32)) as *u8;
+}
+
+fn main() -> int {
+    sys_write("what is your name? ");
+    let name: *u8 = sys_readline();
+    sys_write("hello, ");
+    sys_write(name);
+    sys_print("! welcome to a program running on mort os.");
+    return 0;
+}

@@ -22,6 +22,7 @@ let g_hist_nav: u32 = 0;                                       // 0 = live line,
 let g_disk_ok: bool = false;                                   // ata_init() found a drive
 let g_fs_ok: bool = false;                                     // fs_init() verified the MortFS magic
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
+let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 80 bytes (command history ring)
 
 // ----- VGA text output -----
@@ -788,17 +789,104 @@ fn find_char(s: *u8, ch: u8) -> u32 {
 //   0x009F0000  syscall number     0x009F0004  arg0
 //   0x009F000C  return value        0x009F0010  entry addr (kernel-internal)
 
+// Print a string inline at (g_row, g_pcol), advancing the program cursor and
+// wrapping to a fresh line at the screen edge. Program output uses this cursor
+// so prompts and typed input can share a line.
+fn print_inline(s: *u8) {
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s as u32 + i) as *u8);
+        if ch == 0 {
+            return;
+        }
+        if g_pcol >= 80 {
+            feed();
+            g_pcol = 0;
+        }
+        put_cell_at(g_row, g_pcol, ch, 7);
+        g_pcol = g_pcol + 1;
+        i = i + 1;
+    }
+}
+
+// Read a line of input by polling the PS/2 controller directly. We run inside
+// int 0x80 with interrupts off, so the IRQ-driven keyboard path is unavailable
+// — we read status port 0x64 (bit 0 = output buffer full) and data port 0x60
+// ourselves. Echoes inline, handles Shift and Backspace, stops at Enter. The
+// line is written NUL-terminated to 0x009F0100 (the syscall input buffer).
+fn read_line() {
+    let buf: u32 = 0x009F0100;
+    let len: u32 = 0;
+    let shift: bool = false;
+    move_cursor(g_row, g_pcol);
+    while true {
+        while (inb(0x64) & 1) == 0 {                // wait for a byte
+        }
+        let sc: u8 = inb(0x60);
+        if sc == 42 || sc == 54 {                   // Shift down
+            shift = true;
+        } else {
+            if sc == 170 || sc == 182 {             // Shift up
+                shift = false;
+            } else {
+                if sc == 28 {                       // Enter: finish the line
+                    *((buf + len) as *u8) = 0;
+                    feed();
+                    g_pcol = 0;
+                    return;
+                } else {
+                    if sc == 14 {                   // Backspace
+                        if len > 0 {
+                            len = len - 1;
+                            if g_pcol > 0 {
+                                g_pcol = g_pcol - 1;
+                            }
+                            put_cell_at(g_row, g_pcol, 32, 7);
+                            move_cursor(g_row, g_pcol);
+                        }
+                    } else {
+                        if sc < 128 {               // a key press (ignore releases)
+                            let ch: u8 = scancode_to_ascii(sc, shift);
+                            if ch != 0 {
+                                if len < 120 {
+                                    *((buf + len) as *u8) = ch;
+                                    len = len + 1;
+                                    put_cell_at(g_row, g_pcol, ch, 15);
+                                    g_pcol = g_pcol + 1;
+                                    move_cursor(g_row, g_pcol);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // The int 0x80 handler (called from syscall_isr in idt.s). Runs synchronously
 // while the program is on the stack, so it can use the shell's VGA state.
+//   1 = print string + newline   2 = print string inline (no newline)
+//   3 = uptime seconds -> return  4 = read a line -> return pointer (0x009F0100)
 fn on_syscall() {
     let num: u32 = *(0x009F0000 as *u32);
-    if num == 1 {                                  // print a NUL-terminated string
+    if num == 1 {                                  // print a string, then newline
+        print_inline((*(0x009F0004 as *u32)) as *u8);
         feed();
-        print_string((*(0x009F0004 as *u32)) as *u8, g_row, 7);
+        g_pcol = 0;
+        return;
+    }
+    if num == 2 {                                  // print a string inline
+        print_inline((*(0x009F0004 as *u32)) as *u8);
         return;
     }
     if num == 3 {                                  // uptime seconds -> return slot
         *(0x009F000C as *u32) = g_ticks / 100;
+        return;
+    }
+    if num == 4 {                                  // read a line -> return its address
+        read_line();
+        *(0x009F000C as *u32) = 0x009F0100;
         return;
     }
 }
@@ -837,6 +925,8 @@ fn exec_file(name: *u8) {
         j = j + 1;
     }
     *(0x009F0010 as *u32) = 0x00A00000;            // entry for the trampoline
+    feed();                                        // program output starts on a fresh line
+    g_pcol = 0;
     exec_enter();
 }
 
