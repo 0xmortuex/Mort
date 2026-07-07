@@ -30,6 +30,12 @@ let g_fb_w: u32 = 0;                                           // width in pixel
 let g_fb_h: u32 = 0;                                           // height in pixels
 let g_cur_r: u32 = 0;                                          // last drawn cursor cell (graphics)
 let g_cur_c: u32 = 0;
+let g_app: u32 = 0;                                            // active app: 0 terminal, 1 files, 2 vex
+let g_files_sel: u32 = 0;                                      // Files: selected row
+let g_files_view: u32 = 0;                                     // Files: 0 = list, 1 = file contents
+let g_files_entry: u32 = 0;                                    // Files: entry index being viewed
+let g_files_count: u32 = 0;                                    // Files: number of listed files
+let g_vex_page: u32 = 0;                                       // Vex: current local page
 let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 80 bytes (command history ring)
 
 // ----- 8x16 bitmap font (Consolas-rasterized; MSB-left, row-major, 16 rows) -----
@@ -411,16 +417,48 @@ fn draw_text_abs(s: *u8, px: u32, py: u32, fg: u32, bg: u32) {
     }
 }
 
-// Paint the desktop: gradient wallpaper, a top bar, and a terminal window whose
-// interior is the console. Called once at boot when a framebuffer is present.
+// One clickable-looking app tab in the top bar; the active app is highlighted.
+fn draw_tab(label: *u8, x: u32, id: u32) {
+    let w: u32 = str_len(label) * 8 + 12;
+    let bg: u32 = 0x0d141c;
+    let fg: u32 = 0x7a8b93;
+    if g_app == id {
+        bg = 0x2c5364;
+        fg = 0xffffff;
+    }
+    fill_rect(x - 6, 2, w, 20, bg);
+    draw_text_abs(label, x, 4, fg, bg);
+}
+
+// The top bar: the OS name and the app switcher tabs (F1/F2/F3).
+fn draw_topbar() {
+    fill_rect(0, 0, g_fb_w, 24, 0x0d141c);
+    draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
+    draw_tab("F1 terminal", 300, 0);
+    draw_tab("F2 files", 470, 1);
+    draw_tab("F3 vex", 600, 2);
+}
+
+// Set the window title bar text (each app names its own window).
+fn window_title(s: *u8) {
+    fill_rect(182, 162, 660, 24, 0x2c5364);
+    draw_text_abs(s, 192, 166, 0xdfeef2, 0x2c5364);
+}
+
+// Clear the window interior (shared by every app).
+fn clear_window() {
+    fill_rect(184, 188, 656, 424, 0x0b0f14);
+}
+
+// Paint the whole desktop: gradient wallpaper, top bar, and the window frame.
+// Called once at boot when a framebuffer is present; the active app fills the
+// interior. Defaults to the terminal.
 fn draw_desktop() {
     fill_gradient(0x0a1830, 0x2c5364);
-    fill_rect(0, 0, g_fb_w, 24, 0x0d141c);                     // top bar
-    draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
+    draw_topbar();
     fill_rect(180, 160, 664, 456, 0x1b2733);                   // window frame
-    fill_rect(182, 162, 660, 24, 0x2c5364);                    // window title bar
-    draw_text_abs("terminal", 192, 166, 0xdfeef2, 0x2c5364);
-    fill_rect(184, 188, 656, 424, 0x0b0f14);                   // console interior
+    window_title("terminal");
+    clear_window();
 }
 
 // ----- text output (framebuffer glyphs when g_gfx, else VGA text memory) -----
@@ -1534,8 +1572,239 @@ fn on_exception(vec: u32) {
 }
 
 // The keyboard interrupt handler. Called by keyboard_isr (idt.s) on each IRQ1.
+// ----- desktop apps (graphics mode): Terminal, Files, Vex -----
+
+// Render bytes [start, end) as text inside the window, wrapping at the right
+// edge and honoring newlines; stops at the window bottom.
+fn draw_page_text(start: u32, end: u32, x0: u32, y0: u32) {
+    let x: u32 = x0;
+    let y: u32 = y0;
+    let p: u32 = start;
+    while p < end {
+        let ch: u8 = *(p as *u8);
+        if ch == 10 {
+            x = x0;
+            y = y + 18;
+        } else {
+            if ch != 13 {
+                draw_glyph(ch, x, y, 0xc8d0d4, 0x0b0f14);
+                x = x + 8;
+                if x > 824 {
+                    x = x0;
+                    y = y + 18;
+                }
+            }
+        }
+        if y > 578 {
+            return;
+        }
+        p = p + 1;
+    }
+}
+
+// The actual table index of the g_files_sel-th used file, or 64 if none.
+fn files_selected_entry() -> u32 {
+    let seen: u32 = 0;
+    let i: u32 = 0;
+    while i < 64 {
+        if *((fs_entry_addr(i) + 24) as *u32) == 1 {
+            if seen == g_files_sel {
+                return i;
+            }
+            seen = seen + 1;
+        }
+        i = i + 1;
+    }
+    return 64;
+}
+
+// Files: show the selected file's contents (read into FILEBUF, then rendered).
+fn files_draw_content() {
+    let base: u32 = fs_entry_addr(g_files_entry);
+    draw_text_abs("file:", 200, 200, 0x9fd0d8, 0x0b0f14);
+    draw_text_abs(base as *u8, 248, 200, 0xffffff, 0x0b0f14);
+    let size: u32 = fs_read_file(g_files_entry);
+    draw_page_text(0x00810000, 0x00810000 + size, 200, 232);   // FILEBUF
+    draw_text_abs("Esc: back   F1: terminal", 200, 580, 0x7a8b93, 0x0b0f14);
+}
+
+// Files: the graphical MortFS browser (list of files, or a file's contents).
+fn files_draw() {
+    window_title("files");
+    clear_window();
+    if !g_fs_ok {
+        draw_text_abs("no disk / no MortFS -- boot with a disk attached", 200, 220, 0xff6b6b, 0x0b0f14);
+        draw_text_abs("F1: terminal", 200, 580, 0x7a8b93, 0x0b0f14);
+        return;
+    }
+    if g_files_view == 1 {
+        files_draw_content();
+        return;
+    }
+    draw_text_abs("Files on MortFS", 200, 200, 0x9fd0d8, 0x0b0f14);
+    let shown: u32 = 0;
+    let i: u32 = 0;
+    while i < 64 {
+        let base: u32 = fs_entry_addr(i);
+        if *((base + 24) as *u32) == 1 {
+            let y: u32 = 234 + shown * 20;
+            let bg: u32 = 0x0b0f14;
+            let fg: u32 = 0xc8d0d4;
+            if shown == g_files_sel {
+                bg = 0x243642;
+                fg = 0xffffff;
+                fill_rect(196, y - 2, 632, 20, bg);
+            }
+            draw_text_abs(base as *u8, 210, y, fg, bg);
+            num_to_str(*((base + 28) as *u32), g_numbuf);
+            draw_text_abs(g_numbuf, 640, y, fg, bg);
+            draw_text_abs("bytes", 640 + g_numlen * 8 + 6, y, fg, bg);
+            shown = shown + 1;
+        }
+        i = i + 1;
+    }
+    g_files_count = shown;
+    if shown == 0 {
+        draw_text_abs("(no files)", 210, 234, 0xc8d0d4, 0x0b0f14);
+    }
+    draw_text_abs("Up/Down: select   Enter: open   F1: terminal", 200, 580, 0x7a8b93, 0x0b0f14);
+}
+
+fn files_up() {
+    if g_files_sel > 0 {
+        g_files_sel = g_files_sel - 1;
+        files_draw();
+    }
+}
+
+fn files_down() {
+    if g_files_sel + 1 < g_files_count {
+        g_files_sel = g_files_sel + 1;
+        files_draw();
+    }
+}
+
+fn files_open() {
+    let e: u32 = files_selected_entry();
+    if e == 64 {
+        return;
+    }
+    g_files_entry = e;
+    g_files_view = 1;
+    files_draw();
+}
+
+fn files_back() {
+    g_files_view = 0;
+    files_draw();
+}
+
+fn files_on_key(sc: u8) {
+    if sc == 224 {
+        g_ext = true;
+        return;
+    }
+    if g_ext {
+        g_ext = false;
+        if sc == 72 { files_up(); }        // Up
+        if sc == 80 { files_down(); }      // Down
+        return;
+    }
+    if sc == 28 { files_open(); return; }  // Enter
+    if sc == 1  { files_back(); return; }  // Esc
+}
+
+// Vex: a browser-styled app. NOT a real web browser — MORT OS has no network
+// stack; these are local pages paying homage to the real Vex (0xmortuex/Vex).
+fn vex_page_home() {
+    draw_text_abs("Vex", 200, 262, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("A browser built just for you.", 232, 262, 0xffffff, 0x0b0f14);
+    draw_text_abs("The real Vex is a desktop browser (Electron): vertical tabs, a", 200, 300, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("built-in AI agent, ad & tracker blocking, workspaces, a command", 200, 322, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("bar that does everything.", 200, 344, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Get it: 0xmortuex.github.io/vex-website", 200, 380, 0x66e0ff, 0x0b0f14);
+    draw_text_abs("This page is a local tribute rendered by MORT OS -- there is no", 200, 420, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("network stack here yet, so it can't load real websites.", 200, 442, 0x7a8b93, 0x0b0f14);
+}
+
+fn vex_page_about() {
+    draw_text_abs("About", 200, 262, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("MORT OS -- an operating system written in Mort, a language", 200, 300, 0xffffff, 0x0b0f14);
+    draw_text_abs("built from scratch. This browser is one of its apps: a", 200, 322, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("framebuffer desktop with a terminal, a file manager, and this", 200, 344, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Vex-styled page viewer -- all written in Mort.", 200, 366, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Switch apps any time with F1 / F2 / F3.", 200, 402, 0x9fd0d8, 0x0b0f14);
+}
+
+fn vex_draw() {
+    window_title("vex");
+    clear_window();
+    fill_rect(184, 188, 656, 26, 0x161b22);            // tab strip
+    fill_rect(196, 192, 96, 18, 0x0b0f14);             // one tab
+    draw_text_abs("home", 206, 193, 0x4fd1c5, 0x0b0f14);
+    fill_rect(184, 216, 656, 26, 0x11161d);            // address bar row
+    fill_rect(196, 219, 620, 18, 0x0b0f14);            // url box
+    if g_vex_page == 0 {
+        draw_text_abs("vex://home", 204, 220, 0x9fd0d8, 0x0b0f14);
+        vex_page_home();
+    } else {
+        draw_text_abs("vex://about", 204, 220, 0x9fd0d8, 0x0b0f14);
+        vex_page_about();
+    }
+    draw_text_abs("1: home   2: about   F1: terminal", 200, 580, 0x7a8b93, 0x0b0f14);
+}
+
+fn vex_on_key(sc: u8) {
+    if sc == 224 { return; }
+    if sc >= 128 { return; }
+    if sc == 2 { g_vex_page = 0; vex_draw(); return; }   // '1'
+    if sc == 3 { g_vex_page = 1; vex_draw(); return; }   // '2'
+}
+
+// Terminal: redraw a fresh window and prompt (its scrollback isn't preserved
+// across app switches, but command history is).
+fn terminal_activate() {
+    window_title("terminal");
+    clear_window();
+    g_row = 0;
+    print_string("MORT OS terminal -- type 'help', Enter", 0, 10);
+    g_row = 2;
+    g_col = 2;
+    g_len = 0;
+    g_pcol = 0;
+    draw_prompt(g_row);
+    move_cursor(g_row, g_col);
+}
+
+// Switch the active app: highlight its tab and redraw its window.
+fn switch_app(app: u32) {
+    g_app = app;
+    draw_topbar();
+    if app == 0 { terminal_activate(); }
+    if app == 1 {
+        g_files_view = 0;
+        g_files_sel = 0;
+        files_draw();
+    }
+    if app == 2 { vex_draw(); }
+}
+
 fn on_key() {
     let sc: u8 = inb(0x60);
+
+    if g_gfx {                       // F1/F2/F3 switch apps (graphics desktop only)
+        if sc == 59 { switch_app(0); return; }
+        if sc == 60 { switch_app(1); return; }
+        if sc == 61 { switch_app(2); return; }
+    }
+    if g_app == 1 {                  // route to the active app
+        files_on_key(sc);
+        return;
+    }
+    if g_app == 2 {
+        vex_on_key(sc);
+        return;
+    }
 
     if sc == 224 {                   // 0xE0: extended-scancode prefix
         g_ext = true;

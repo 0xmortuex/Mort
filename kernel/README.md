@@ -1,16 +1,23 @@
 # MORT OS
 
 A tiny operating-system kernel **written in Mort** — it boots on QEMU, runs in
-32-bit protected mode, and paints a **graphical desktop**: a linear-framebuffer
-window with the interactive shell rendered in a bitmap font. It has a **real
-filesystem** — write files, `cat` them, run them as scripts, and they **survive
-a reboot** — and it **runs real, interactive compiled programs**: a `.mx`
-program compiled to a flat binary, loaded off the disk, talking to the kernel
-through `int 0x80` syscalls. Everything — the framebuffer renderer, PS/2
-keyboard input, the ATA disk driver, the filesystem, the syscall layer, and
-command parsing — is written in Mort.
+32-bit protected mode, and paints a **graphical desktop with multiple apps**:
+a **Terminal**, a **Files** manager, and a **Vex-styled browser**, switched with
+`F1`/`F2`/`F3`. It has a **real filesystem** — write files, `cat` them, run them
+as scripts, and they **survive a reboot** — and it **runs real, interactive
+compiled programs**: a `.mx` program compiled to a flat binary, loaded off the
+disk, talking to the kernel through `int 0x80` syscalls. Everything — the
+framebuffer renderer and window manager, PS/2 keyboard input, the ATA disk
+driver, the filesystem, the syscall layer, and command parsing — is written in
+Mort.
 
 ![MORT OS graphical desktop](docs/desktop.png)
+
+The desktop has three apps, switched with the function keys:
+
+| | | |
+|---|---|---|
+| ![Files app](docs/app-files.png) | ![Vex app](docs/app-vex.png) | **F1 Terminal** — the shell.<br>**F2 Files** — a graphical MortFS browser: arrow keys to select, Enter to open a file, Esc to go back.<br>**F3 Vex** — a browser-styled app with the look of [Vex](https://github.com/0xmortuex/Vex) rendering local pages. It is *not* a real web browser — MORT OS has no network stack — it's a tribute to the real thing. |
 
 Graphics come up on the bootable-ISO path (Limine provides the framebuffer via
 the multiboot request in `boot.s`). On the bare `-kernel` path — which has no
@@ -174,6 +181,10 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
       font renderer, and a windowed console. The whole shell renders to the
       framebuffer because only `put_cell_at` changed — everything else is
       unchanged. Falls back to VGA text mode when there's no framebuffer.
+- [x] **A multi-app window manager**: a top bar with tabs and `F1`/`F2`/`F3`
+      app switching — a **Terminal**, a **Files** manager (browse MortFS, open
+      files), and a **Vex-styled browser** app (local pages, a tribute to
+      [Vex](https://github.com/0xmortuex/Vex)).
 - [x] An automated QEMU test harness (`test.py`, `test_fs.py`, `test_exec.py`):
       boots the kernel headless, types via the monitor, asserts on VGA memory.
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact).
