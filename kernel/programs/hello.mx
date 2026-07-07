@@ -1,0 +1,17 @@
+// A MORT OS user program. Talks to the kernel only through the syscall
+// mailbox at 0x009F0000 + int 0x80 — it shares no symbols with the kernel.
+//   mailbox[0] = syscall number, mailbox[1] = arg0
+// Syscall 1 = print a NUL-terminated string (arg0 = pointer).
+
+fn sys_print(s: *u8) {
+    *((0x009F0000) as *u32) = 1;          // syscall #1 = print string
+    *((0x009F0004) as *u32) = s as u32;   // arg0 = string pointer
+    asm("int $0x80");
+}
+
+fn main() -> int {
+    sys_print("hello from a real mort program!");
+    sys_print("i was compiled from hello.mx and loaded off the MortFS disk.");
+    sys_print("goodbye.");
+    return 0;
+}

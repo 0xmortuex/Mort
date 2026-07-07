@@ -8,6 +8,7 @@
     python kernel/build.py iso       # build a bootable mort.iso (Limine + xorriso)
     python kernel/build.py run-iso   # build the ISO, then boot it in QEMU (-cdrom)
     python kernel/build.py disk      # create build/disk.img (MortFS) iff missing
+    python kernel/build.py prog      # compile every programs/*.mx -> build/<name>.bin
 
 The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
 C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
@@ -29,6 +30,10 @@ TARGET = "x86-freestanding-none"           # 32-bit x86, bare metal
 BUILD = os.path.join(HERE, "build")
 ELF = os.path.join(BUILD, "kernel.elf")
 DISK = os.path.join(BUILD, "disk.img")
+
+# User programs: compiled from programs/*.mx into flat binaries the kernel
+# loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld / pstart.s).
+PROGRAMS = os.path.join(HERE, "programs")
 
 # Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
 TOOLS = os.path.join(HERE, "tools")
@@ -145,12 +150,78 @@ def check():
     print("Boot it with:  python kernel/build.py run")
 
 
+def build_program(mx_path, out_bin):
+    """Compile one Mort program (programs/*.mx) into a flat binary at out_bin.
+
+    Same proven 4-step recipe as the kernel, but linked with programs/prog.ld
+    so the whole image sits at the fixed load base 0x00A00000 with the entry
+    stub (pstart.s) first, then objcopy'd to a raw flat binary (no ELF headers).
+    Intermediate .c/.o/.elf land in BUILD, never the repo.
+    """
+    os.makedirs(BUILD, exist_ok=True)
+    cc = _zig()
+    name = os.path.splitext(os.path.basename(mx_path))[0]
+
+    # 1. Mort program -> freestanding C (main becomes mort_main, which pstart calls).
+    with open(mx_path, encoding="utf-8") as fh:
+        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+    prog_c = os.path.join(BUILD, name + ".c")
+    with open(prog_c, "w", encoding="utf-8") as fh:
+        fh.write(c_source)
+
+    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
+               "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
+               "-O2"]
+    asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
+    prog_o = os.path.join(BUILD, name + ".o")
+    pstart_o = os.path.join(BUILD, name + ".pstart.o")
+    prog_elf = os.path.join(BUILD, name + ".elf")
+
+    # 2. Compile the program C and assemble the entry stub.
+    subprocess.run([*cc, *c_flags, "-c", prog_c, "-o", prog_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c", os.path.join(PROGRAMS, "pstart.s"),
+                    "-o", pstart_o], check=True)
+
+    # 3. Link at the fixed load base with the flat-image linker script.
+    subprocess.run([
+        *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(PROGRAMS, "prog.ld"),
+        "-Wl,--build-id=none", "-Wl,-e,_pstart",   # entry stub, silences _start warning
+        "-o", prog_elf, pstart_o, prog_o,
+    ], check=True)
+
+    # 4. Strip ELF headers down to a raw flat binary the kernel loads verbatim.
+    objcopy = cc[:-1] + ["objcopy"]  # find_zig() ends in "cc"; swap for "objcopy"
+    subprocess.run([*objcopy, "-O", "binary", prog_elf, out_bin], check=True)
+    print(f"built {os.path.relpath(out_bin, ROOT)}")
+
+
+def _program_sources():
+    """Return sorted absolute paths of every programs/*.mx source."""
+    if not os.path.isdir(PROGRAMS):
+        return []
+    return [os.path.join(PROGRAMS, n) for n in sorted(os.listdir(PROGRAMS))
+            if n.endswith(".mx")]
+
+
+def prog():
+    """Build every kernel/programs/*.mx into BUILD/<name>.bin."""
+    sources = _program_sources()
+    if not sources:
+        sys.exit(f"prog: no *.mx programs found in {os.path.relpath(PROGRAMS, ROOT)}")
+    for mx in sources:
+        name = os.path.splitext(os.path.basename(mx))[0]
+        build_program(mx, os.path.join(BUILD, name + ".bin"))
+
+
 def ensure_disk():
     """Create the MortFS disk image iff it is missing.
 
     Files written from inside the OS must survive rebuilds, so an existing
     image is never touched; `python kernel/mkfs.py kernel/build/disk.img` is
-    the explicit wipe-and-reseed path.
+    the explicit wipe-and-reseed path. A fresh image is seeded with the text
+    file plus the compiled program binaries (added raw, no CRLF normalization),
+    so first boot can `exec hello.bin`.
     """
     if os.path.exists(DISK):
         return
@@ -159,7 +230,16 @@ def ensure_disk():
     seed = os.path.join(BUILD, "hello.txt")
     with open(seed, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(HELLO_TXT)
-    mkfs.make(DISK, adds=[(seed, "hello.txt")])
+
+    # Compile the programs and seed only the ones that build successfully.
+    bins = []
+    for mx in _program_sources():
+        name = os.path.splitext(os.path.basename(mx))[0]
+        out_bin = os.path.join(BUILD, name + ".bin")
+        build_program(mx, out_bin)
+        bins.append((out_bin, name + ".bin"))
+
+    mkfs.make(DISK, adds=[(seed, "hello.txt")], bins=bins)
 
 
 def disk():
@@ -308,7 +388,7 @@ def run_windowed():
 
 
 COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed,
-            "iso": iso, "run-iso": run_iso, "disk": disk}
+            "iso": iso, "run-iso": run_iso, "disk": disk, "prog": prog}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"

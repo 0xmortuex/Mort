@@ -5,6 +5,12 @@
     python kernel/mkfs.py disk.img --size 32                # size in MiB (default 16)
     python kernel/mkfs.py disk.img --add notes.txt          # seed a host file
     python kernel/mkfs.py disk.img --add host.txt:name.txt  # seed under another name
+    python kernel/mkfs.py disk.img --add-bin prog.bin       # seed raw bytes (no CRLF fix)
+    python kernel/mkfs.py disk.img --add-bin p.bin:app.bin  # ...under another name
+
+Text files added with --add are CRLF->LF normalized (the kernel's `cat`/`run`
+want plain LF); binaries must use --add-bin, which stores the exact bytes so
+compiled program images are never corrupted.
 
 WARNING: the image at the given path is created OR OVERWRITTEN — running this
 against an existing image wipes everything on it. `python kernel/build.py disk`
@@ -48,21 +54,25 @@ def _parse_add(spec):
     return host, name
 
 
-def make(path, size_mib=16, adds=()):
+def make(path, size_mib=16, adds=(), bins=()):
     """Create (or overwrite) a MortFS v1 image at `path`.
 
-    `adds` is an iterable of "HOST[:NAME]" specs (or (host, name) tuples);
-    each seeds one file. Any validation failure exits with a message —
+    `adds` and `bins` are each an iterable of "HOST[:NAME]" specs (or
+    (host, name) tuples); each seeds one file. `adds` files are CRLF->LF
+    normalized (the kernel's `cat`/`run` want plain LF); `bins` files are
+    stored byte-for-byte with no normalization, so compiled program binaries
+    are never corrupted. Any validation failure exits with a message —
     nothing is ever truncated silently.
     """
     if size_mib < 1:
         sys.exit(f"mkfs: --size must be at least 1 MiB (got {size_mib})")
     total_sectors = size_mib * 1024 * 1024 // SECTOR
 
-    # 1. Read and validate every seed file before touching the image.
-    files = []  # (name, content) with content already CRLF-normalized
+    # 1. Read and validate every seed file before touching the image. Text
+    # adds come first, then raw bins; both share one name space and table.
+    files = []  # (name, content) ready to write verbatim
     seen = set()
-    for spec in adds:
+    for spec, normalize in [(s, True) for s in adds] + [(s, False) for s in bins]:
         host, name = spec if isinstance(spec, tuple) else _parse_add(spec)
         if not name or len(name) > MAX_NAME or not name.isascii() \
                 or not name.isprintable():
@@ -76,11 +86,15 @@ def make(path, size_mib=16, adds=()):
                 content = fh.read()
         except OSError as e:
             sys.exit(f"mkfs: cannot read {host}: {e}")
-        # The kernel's `run`/`cat` want plain LF lines; normalize host CRLFs.
-        content = content.replace(b"\r\n", b"\n")
-        if len(content) > MAX_SIZE:
-            sys.exit(f"mkfs: {host} is {len(content)} bytes after CRLF->LF "
-                     f"normalization; the max file size is {MAX_SIZE}")
+        if normalize:
+            # The kernel's `run`/`cat` want plain LF lines; normalize host CRLFs.
+            content = content.replace(b"\r\n", b"\n")
+            if len(content) > MAX_SIZE:
+                sys.exit(f"mkfs: {host} is {len(content)} bytes after CRLF->LF "
+                         f"normalization; the max file size is {MAX_SIZE}")
+        elif len(content) > MAX_SIZE:
+            sys.exit(f"mkfs: {host} is {len(content)} bytes; the max file "
+                     f"size is {MAX_SIZE}")
         files.append((name, content))
     if len(files) > MAX_FILES:
         sys.exit(f"mkfs: {len(files)} files added; the table holds {MAX_FILES}")
@@ -154,9 +168,13 @@ def main(argv=None):
                     help="image size in MiB (default 16)")
     ap.add_argument("--add", action="append", default=[], metavar="HOST[:NAME]",
                     help="seed host file HOST into the image as NAME (default: "
-                         "basename of HOST); repeatable, max 64 files")
+                         "basename of HOST), CRLF->LF normalized; repeatable")
+    ap.add_argument("--add-bin", action="append", default=[], metavar="HOST[:NAME]",
+                    help="seed host file HOST as NAME with NO normalization "
+                         "(exact bytes, for binaries); repeatable. --add and "
+                         "--add-bin together hold at most 64 files")
     args = ap.parse_args(argv)
-    make(args.image, size_mib=args.size, adds=args.add)
+    make(args.image, size_mib=args.size, adds=args.add, bins=args.add_bin)
 
 
 if __name__ == "__main__":

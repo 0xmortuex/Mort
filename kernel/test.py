@@ -322,7 +322,7 @@ def smoke(disk_img=None):
 
         type_line(handle, "help")
         check("'help' lists the commands",
-              wait_for(handle, "help clear about echo uptime crash readme mem ls cat write rm run mods reboot",
+              wait_for(handle, "files: ls cat write rm run exec mods",
                        timeout_s=10), handle)
 
         type_line(handle, "echo hi-there")

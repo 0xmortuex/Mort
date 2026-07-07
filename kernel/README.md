@@ -3,8 +3,11 @@
 A tiny operating-system kernel **written in Mort** — it boots on QEMU, runs in
 32-bit protected mode, and gives you an **interactive shell with a real
 filesystem**: write files, `cat` them, delete them, run them as scripts — and
-they **survive a reboot**. Everything — VGA output, PS/2 keyboard input, the
-ATA disk driver, the filesystem, and command parsing — is written in Mort.
+they **survive a reboot**. It even **runs real compiled programs**: a `.mx`
+program compiled to a flat binary, loaded off the disk, and talking to the
+kernel through `int 0x80` syscalls. Everything — VGA output, PS/2 keyboard
+input, the ATA disk driver, the filesystem, the syscall layer, and command
+parsing — is written in Mort.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -73,10 +76,33 @@ attaches it with `-hda`, so files you `write` in the OS persist across reboots.
 > run job.txt
 ```
 
-Automated tests: `python kernel/test.py smoke` (boot + shell basics) and
-`python kernel/test_fs.py` (the whole disk stack, including
-write-reboot-cat persistence) — both drive the real kernel headless in QEMU
-by injecting keys through the monitor and reading VGA memory back.
+### Running programs
+
+MORT OS runs real compiled programs, not just shell scripts. A program is a
+Mort source file compiled to a **flat 32-bit binary** loaded at `0x00A00000`;
+it shares no symbols with the kernel and talks to it only through **`int 0x80`
+syscalls** (arguments passed via a fixed mailbox at `0x009F0000`, since Mort's
+`asm()` takes no operands). Sample programs live in `kernel/programs/`.
+
+```bash
+python kernel/build.py prog      # compile programs/*.mx -> build/*.bin
+```
+
+`build.py disk` seeds the compiled programs onto the image, so from the shell:
+
+```
+> ls
+> exec hello.bin      # a real Mort program prints via syscall, then returns
+```
+
+Automated tests (all drive the real kernel headless in QEMU — inject keys
+through the monitor, read VGA memory back):
+
+```bash
+python kernel/test.py smoke      # boot + shell basics
+python kernel/test_fs.py         # the disk stack, incl. write-reboot-cat persistence
+python kernel/test_exec.py       # build programs, seed, boot, exec, check syscall output
+```
 
 ### A real bootable ISO
 
@@ -125,7 +151,10 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
       **persist across reboots**. Host-side `mkfs.py` creates/seeds images.
 - [x] `run <f>`: execute a file of shell commands — author a script inside
       the OS with `write`, then run it.
-- [x] An automated QEMU test harness (`test.py`, `test_fs.py`): boots the
-      kernel headless, types via the monitor, asserts on VGA memory.
+- [x] **Executing real compiled programs**: a Mort program built to a flat
+      binary, loaded off the disk to `0x00A00000`, entered with a `call`, and
+      served through `int 0x80` syscalls — `exec <file>`. See `programs/`.
+- [x] An automated QEMU test harness (`test.py`, `test_fs.py`, `test_exec.py`):
+      boots the kernel headless, types via the monitor, asserts on VGA memory.
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact).
-- [ ] Executing loaded machine code (real programs, not shell scripts).
+- [ ] More syscalls (input, file I/O from programs) and a richer program ABI.

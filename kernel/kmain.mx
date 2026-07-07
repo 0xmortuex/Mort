@@ -780,6 +780,66 @@ fn find_char(s: *u8, ch: u8) -> u32 {
     return 0;
 }
 
+// ----- programs: exec + the syscall interface -----
+//
+// A program is a flat 32-bit binary compiled from Mort, loaded at 0x00A00000
+// and entered with a call. It shares no symbols with the kernel; it asks the
+// kernel to do things through a mailbox + `int 0x80`:
+//   0x009F0000  syscall number     0x009F0004  arg0
+//   0x009F000C  return value        0x009F0010  entry addr (kernel-internal)
+
+// The int 0x80 handler (called from syscall_isr in idt.s). Runs synchronously
+// while the program is on the stack, so it can use the shell's VGA state.
+fn on_syscall() {
+    let num: u32 = *(0x009F0000 as *u32);
+    if num == 1 {                                  // print a NUL-terminated string
+        feed();
+        print_string((*(0x009F0004 as *u32)) as *u8, g_row, 7);
+        return;
+    }
+    if num == 3 {                                  // uptime seconds -> return slot
+        *(0x009F000C as *u32) = g_ticks / 100;
+        return;
+    }
+}
+
+// Enter the loaded program via an indirect call through the entry slot.
+// Isolated in its own function so the call's register clobber can't reach
+// live kernel state.
+fn exec_enter() {
+    asm("call *0x009F0010");
+}
+
+// `exec <name>`: load a flat program image off the disk to 0x00A00000 and run
+// it. It talks back only through on_syscall above.
+fn exec_file(name: *u8) {
+    let i: u32 = fs_find(name);
+    if i == 64 {
+        feed();
+        print_at("not found: ", g_row, 0, 12);
+        print_at(name, g_row, 11, 12);
+        return;
+    }
+    let size: u32 = fs_read_file(i);               // file bytes -> FILEBUF
+    if size == 0 {
+        feed();
+        print_string("empty program", g_row, 12);
+        return;
+    }
+    let k: u32 = 0;                                // zero the 64 KiB program region
+    while k < 65536 {
+        *((0x00A00000 + k) as *u8) = 0;
+        k = k + 1;
+    }
+    let j: u32 = 0;                                // copy the image into place
+    while j < size {
+        *((0x00A00000 + j) as *u8) = *((0x00810000 + j) as *u8);   // FILEBUF -> base
+        j = j + 1;
+    }
+    *(0x009F0010 as *u32) = 0x00A00000;            // entry for the trampoline
+    exec_enter();
+}
+
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
 fn run_command(cmd: *u8) -> bool {
@@ -788,7 +848,9 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("help clear about echo uptime crash readme mem ls cat write rm run mods reboot", g_row, 7);
+        print_string("help clear about echo uptime crash readme mem reboot", g_row, 7);
+        feed();
+        print_string("files: ls cat write rm run exec mods", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -875,6 +937,11 @@ fn run_command(cmd: *u8) -> bool {
     if starts_with(cmd, "run ") {
         if !fs_guard() { return false; }
         run_file((cmd as u32 + 4) as *u8);
+        return false;
+    }
+    if starts_with(cmd, "exec ") {
+        if !fs_guard() { return false; }
+        exec_file((cmd as u32 + 5) as *u8);
         return false;
     }
     if streq(cmd, "reboot") {

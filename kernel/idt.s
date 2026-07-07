@@ -8,6 +8,7 @@
 
 .set TIMER_VECTOR, 0x20
 .set KBD_VECTOR, 0x21
+.set SYSCALL_VECTOR, 0x80
 
 .section .data
 .align 8
@@ -104,6 +105,11 @@ load_idt:
     mov $timer_isr, %eax
     call set_gate
 
+    mov $idt_start, %edi              /* syscall gate (int 0x80)             */
+    add $(SYSCALL_VECTOR * 8), %edi
+    mov $syscall_isr, %eax
+    call set_gate
+
     lidt idt_ptr
     ret
 
@@ -152,6 +158,18 @@ default_isr:
     pusha
     movb $0x20, %al
     outb %al, $0x20
+    popa
+    iret
+
+/* Syscall gate (int 0x80). A user program raises this after filling the
+ * mailbox at 0x009F0000; the Mort handler reads it and services the request.
+ * Not a PIC IRQ, so no end-of-interrupt. pusha/popa preserve the program's
+ * registers across the call. */
+.global syscall_isr
+.type syscall_isr, @function
+syscall_isr:
+    pusha
+    call mort_on_syscall
     popa
     iret
 

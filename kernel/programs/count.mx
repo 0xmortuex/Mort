@@ -1,0 +1,18 @@
+// A second MORT OS user program, proving more than one program builds and
+// runs. Same syscall ABI as hello.mx: mailbox at 0x009F0000 + int 0x80.
+//   mailbox[0] = syscall number, mailbox[1] = arg0
+// Syscall 1 = print a NUL-terminated string (arg0 = pointer).
+
+fn sys_print(s: *u8) {
+    *((0x009F0000) as *u32) = 1;          // syscall #1 = print string
+    *((0x009F0004) as *u32) = s as u32;   // arg0 = string pointer
+    asm("int $0x80");
+}
+
+fn main() -> int {
+    sys_print("counting to three:");
+    sys_print("one");
+    sys_print("two");
+    sys_print("three");
+    return 0;
+}
