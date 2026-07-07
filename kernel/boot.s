@@ -7,7 +7,8 @@
 
 .set ALIGN,    1 << 0             /* align loaded modules on page boundaries */
 .set MEMINFO,  1 << 1             /* provide a memory map                    */
-.set MB_FLAGS, ALIGN | MEMINFO
+.set GRAPHICS, 1 << 2             /* request a linear framebuffer            */
+.set MB_FLAGS, ALIGN | MEMINFO | GRAPHICS
 .set MB_MAGIC, 0x1BADB002
 .set MB_CHECK, -(MB_MAGIC + MB_FLAGS)
 
@@ -18,6 +19,15 @@
 .long MB_MAGIC
 .long MB_FLAGS
 .long MB_CHECK
+.long 0, 0, 0, 0, 0               /* header offsets 12..28: a.out fields, unused */
+/* Graphics request (flag bit 2). mode 0 = linear framebuffer; 1024x768x32.
+ * A bootloader that honors it (Limine) sets up the mode and fills the
+ * framebuffer fields of the multiboot info struct. QEMU's -kernel loader
+ * ignores this and boots text mode, which the kernel detects and falls back. */
+.long 0                           /* offset 32: mode_type (0 = linear)          */
+.long 1024                        /* offset 36: width                           */
+.long 768                         /* offset 40: height                          */
+.long 32                          /* offset 44: depth (bits per pixel)          */
 
 /* A small stack. The System V ABI wants it 16-byte aligned. */
 .section .bss

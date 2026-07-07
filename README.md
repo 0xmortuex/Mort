@@ -6,11 +6,13 @@
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
 
-Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU **and on real hardware** (BIOS/UEFI bootable ISO), sets up an IDT, remaps the PICs, and takes **interrupt-driven keyboard input** into an interactive shell — with an ATA disk driver, **a real filesystem (MortFS)** whose files survive reboots, and it **runs real, interactive compiled programs** through `int 0x80` syscalls (a program can ask your name and greet you). That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
+Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU **and on real hardware** (BIOS/UEFI bootable ISO), sets up an IDT, remaps the PICs, and runs a **graphical desktop**: a linear-framebuffer window manager rendering an interactive shell in a bitmap font — with an ATA disk driver, **a real filesystem (MortFS)** whose files survive reboots, and it **runs real, interactive compiled programs** through `int 0x80` syscalls (a program can ask your name and greet you). That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
 
 > 🖥️ The kernel also has its own showcase repo: [**0xmortuex/MortOS**](https://github.com/0xmortuex/MortOS) — buildable standalone (it fetches this compiler automatically).
 
-![MORT OS running in QEMU](docs/mortos.png)
+![MORT OS graphical desktop](kernel/docs/desktop.png)
+
+<sub>MORT OS in graphics mode — a framebuffer desktop with the shell rendered in an 8×16 bitmap font, all written in Mort.</sub>
 
 <sub>MORT OS booted in QEMU — the shell, keyboard driver, and command parser are all written in Mort.</sub>
 

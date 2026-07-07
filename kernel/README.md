@@ -1,13 +1,21 @@
 # MORT OS
 
 A tiny operating-system kernel **written in Mort** — it boots on QEMU, runs in
-32-bit protected mode, and gives you an **interactive shell with a real
-filesystem**: write files, `cat` them, delete them, run them as scripts — and
-they **survive a reboot**. It even **runs real compiled programs**: a `.mx`
-program compiled to a flat binary, loaded off the disk, and talking to the
-kernel through `int 0x80` syscalls. Everything — VGA output, PS/2 keyboard
-input, the ATA disk driver, the filesystem, the syscall layer, and command
-parsing — is written in Mort.
+32-bit protected mode, and paints a **graphical desktop**: a linear-framebuffer
+window with the interactive shell rendered in a bitmap font. It has a **real
+filesystem** — write files, `cat` them, run them as scripts, and they **survive
+a reboot** — and it **runs real, interactive compiled programs**: a `.mx`
+program compiled to a flat binary, loaded off the disk, talking to the kernel
+through `int 0x80` syscalls. Everything — the framebuffer renderer, PS/2
+keyboard input, the ATA disk driver, the filesystem, the syscall layer, and
+command parsing — is written in Mort.
+
+![MORT OS graphical desktop](docs/desktop.png)
+
+Graphics come up on the bootable-ISO path (Limine provides the framebuffer via
+the multiboot request in `boot.s`). On the bare `-kernel` path — which has no
+framebuffer — the kernel detects that and falls back to VGA text mode, so both
+work.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -103,9 +111,10 @@ Automated tests (all drive the real kernel headless in QEMU — inject keys
 through the monitor, read VGA memory back):
 
 ```bash
-python kernel/test.py smoke      # boot + shell basics
+python kernel/test.py smoke      # boot + shell basics (text-mode -kernel path)
 python kernel/test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python kernel/test_exec.py       # build programs, seed, boot, exec, check syscall output
+python kernel/test_gfx.py        # boot the ISO, screendump, assert the desktop + console rendered
 ```
 
 ### A real bootable ISO
@@ -161,7 +170,12 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
 - [x] **Interactive programs**: a read-line syscall polls the keyboard directly
       (we're inside int 0x80 with IRQs off), so a program can prompt for input
       and respond — `exec ask.bin` asks your name and greets you.
+- [x] **A graphical desktop**: a multiboot framebuffer request, an 8×16 bitmap
+      font renderer, and a windowed console. The whole shell renders to the
+      framebuffer because only `put_cell_at` changed — everything else is
+      unchanged. Falls back to VGA text mode when there's no framebuffer.
 - [x] An automated QEMU test harness (`test.py`, `test_fs.py`, `test_exec.py`):
       boots the kernel headless, types via the monitor, asserts on VGA memory.
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact).
 - [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI.
+- [ ] A mouse (PS/2 IRQ12) and clickable window chrome — a real GUI.

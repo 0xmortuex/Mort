@@ -142,7 +142,8 @@ def check():
             break
     require(offset >= 0, "multiboot magic not found in the first 8 KiB")
     magic, flags, checksum = struct.unpack("<III", head[offset:offset + 12])
-    require(flags == 0x3, f"unexpected multiboot flags {hex(flags)} (want ALIGN|MEMINFO = 0x3)")
+    require(flags == 0x7,
+            f"unexpected multiboot flags {hex(flags)} (want ALIGN|MEMINFO|GRAPHICS = 0x7)")
     require((magic + flags + checksum) & 0xFFFFFFFF == 0,
             "multiboot checksum invalid (magic + flags + checksum != 0)")
 
