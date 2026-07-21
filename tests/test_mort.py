@@ -185,6 +185,28 @@ def test_port_io_word_builtins_codegen():
     assert "uint16_t m_s = mort_inw(496);" in c
 
 
+def test_port_io_long_builtins_codegen():
+    # inl/outl are 32-bit port I/O (PCI config space lives on 0xCF8/0xCFC).
+    # Privileged, so verify codegen only.
+    c = c_free("fn kmain() { outl(0xCF8, 0x80000000); let d: u32 = inl(0xCFC); }")
+    assert "mort_outl(uint16_t port, uint32_t val)" in c
+    assert "mort_inl(uint16_t port)" in c
+    assert '"outl %0, %1"' in c
+    assert '"inl %1, %0"' in c
+    assert "mort_outl(3320, 2147483648);" in c
+    assert "uint32_t m_d = mort_inl(3324);" in c
+
+
+def test_port_io_long_helpers_emitted_per_builtin():
+    only_in = c_free("fn kmain() { let d: u32 = inl(0xCFC); }")
+    assert "mort_inl(uint16_t" in only_in
+    assert "mort_outl(uint16_t" not in only_in   # not dragged in by inl alone
+
+    only_out = c_free("fn kmain() { outl(0xCF8, 0x1); }")
+    assert "mort_outl(uint16_t" in only_out
+    assert "mort_inl(uint16_t" not in only_out
+
+
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
@@ -584,6 +606,9 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { outb(0x20, 0x123); return 0; }", "does not fit in u8"),
     ("fn main() -> int { outw(0x1F0); return 0; }", "outw expects 2 arguments"),
     ("fn main() -> int { let x: u16 = inw(1, 2); return 0; }", "inw expects 1 argument"),
+    ("fn main() -> int { outl(0xCF8); return 0; }", "outl expects 2 arguments"),
+    ("fn main() -> int { let x: u32 = inl(1, 2); return 0; }", "inl expects 1 argument"),
+    ("fn main() -> int { outl(0x12345, 0x20); return 0; }", "does not fit in u16"),
     ("fn inw() { } fn main() -> int { return 0; }", "already defined"),
     ("fn main() -> int { outw(0x12345, 0x20); return 0; }", "does not fit in u16"),
     ("fn main() -> int { outw(0x1F0, 0x12345); return 0; }", "does not fit in u16"),

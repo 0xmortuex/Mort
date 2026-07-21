@@ -95,8 +95,9 @@ C `main`, so the output is an ordinary native binary.
   integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
 - **Globals:** top-level `let name: type = <constant>;` — file-scope state shared
   across functions (used by the kernel's interrupt handler).
-- **Builtins:** `print(<any integer>)` (hosted), plus `outb(port: u16, value: u8)`
-  and `inb(port: u16) -> u8` for x86 port I/O (lowered to inline `in`/`out`).
+- **Builtins:** `print(<any integer>)` (hosted), plus the x86 port-I/O family
+  (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
+  and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).
 - **Comments:** `// to end of line`.
 
 Everything is statically type-checked before a single line of C is emitted:

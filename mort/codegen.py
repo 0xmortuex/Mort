@@ -100,6 +100,8 @@ class CodeGen:
         self.used_outb = False
         self.used_inw = False
         self.used_outw = False
+        self.used_inl = False
+        self.used_outl = False
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -160,7 +162,18 @@ class CodeGen:
             self._emit('    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));')
             self._emit("    return ret;")
             self._emit("}")
-        if self.used_inb or self.used_outb or self.used_inw or self.used_outw:
+        if self.used_outl:
+            self._emit("static inline void mort_outl(uint16_t port, uint32_t val) {")
+            self._emit('    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));')
+            self._emit("}")
+        if self.used_inl:
+            self._emit("static inline uint32_t mort_inl(uint16_t port) {")
+            self._emit("    uint32_t ret;")
+            self._emit('    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));')
+            self._emit("    return ret;")
+            self._emit("}")
+        if (self.used_inb or self.used_outb or self.used_inw or self.used_outw
+                or self.used_inl or self.used_outl):
             self._emit()
         # global variables (file-scope statics)
         if global_decls:
@@ -346,6 +359,10 @@ class CodeGen:
                 self.used_inw = True
             elif e.name == "outw":
                 self.used_outw = True
+            elif e.name == "inl":
+                self.used_inl = True
+            elif e.name == "outl":
+                self.used_outl = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             name = "mort_print" if e.name == "print" else f"mort_{e.name}"
             return f"{name}({args})"
