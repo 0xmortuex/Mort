@@ -9,6 +9,7 @@ Two layers:
 Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
 import os
+import json
 import subprocess
 import struct
 import sys
@@ -902,6 +903,31 @@ def test_diagnostic_render_includes_source_excerpt():
         rendered = exc.value.render()
     assert "return nope;" in rendered
     assert "| ^" in rendered
+
+
+def test_json_diagnostics_and_frontend_only_check(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        valid = os.path.join(d, "valid.mx")
+        invalid = os.path.join(d, "invalid.mx")
+        with open(valid, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        with open(invalid, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int {\n    return missing;\n}\n")
+        assert mortc.main([valid, "--check"]) == 0
+        assert "check passed" in capsys.readouterr().out
+        assert mortc.main([
+            invalid,
+            "--check",
+            "--diagnostic-format",
+            "json",
+        ]) == 1
+        diagnostic = json.loads(capsys.readouterr().err)
+    assert diagnostic["severity"] == "error"
+    assert diagnostic["file"] == invalid
+    assert diagnostic["line"] == 2
+    assert diagnostic["range"]["start"] == {"line": 2, "column": 1}
+    assert diagnostic["source"] == "    return missing;"
+    assert "undefined variable" in diagnostic["message"]
 
 
 @needs_cc

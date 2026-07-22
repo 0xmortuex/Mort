@@ -41,3 +41,28 @@ class MortError(Exception):
             f" {self.line:>{width}} | {source}\n"
             f" {' ' * width} | {' ' * (column - 1)}^"
         )
+
+    def to_diagnostic(self):
+        """Return a stable, editor-friendly diagnostic object."""
+        diagnostic = {
+            "severity": "error",
+            "message": self.msg,
+            "file": self.filename,
+            "line": self.line,
+            "column": self.col,
+        }
+        if self.line is not None:
+            column = max(1, self.col or 1)
+            diagnostic["range"] = {
+                "start": {"line": self.line, "column": column},
+                "end": {"line": self.line, "column": column + 1},
+            }
+        if self.filename and self.line is not None:
+            try:
+                with open(self.filename, "r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+                if 1 <= self.line <= len(lines):
+                    diagnostic["source"] = lines[self.line - 1].rstrip("\r\n")
+            except OSError:
+                pass
+        return diagnostic

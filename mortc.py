@@ -13,6 +13,7 @@ binary via a system C compiler (cc/gcc/clang). If no C compiler is found, the
 generated C is written next to your source so you can build it yourself.
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -264,6 +265,14 @@ def _compile_main(argv=None, test_mode=False):
                     help="one or more .mx source files")
     ap.add_argument("-o", "--output", help="output file name")
     ap.add_argument("--emit-c", action="store_true", help="print generated C and exit")
+    ap.add_argument("--check", action="store_true",
+                    help="type-check successfully without invoking the C backend")
+    ap.add_argument(
+        "--diagnostic-format",
+        choices=("human", "json"),
+        default="human",
+        help="compiler diagnostic output format (default: human)",
+    )
     ap.add_argument("--run", action="store_true", help="run the program after building")
     ap.add_argument("--freestanding", action="store_true",
                     help="compile to a bare-metal object file (no libc, no main)")
@@ -316,6 +325,9 @@ def _compile_main(argv=None, test_mode=False):
         print("mortc: --run cannot be used with --freestanding (nothing to run yet)",
               file=sys.stderr)
         return 1
+    if args.check and (args.run or args.emit_c):
+        print("mortc: --check cannot be combined with --run or --emit-c", file=sys.stderr)
+        return 1
     if args.freestanding and (args.link or args.library):
         print("mortc: --link/-l cannot be used with --freestanding object compilation",
               file=sys.stderr)
@@ -326,8 +338,15 @@ def _compile_main(argv=None, test_mode=False):
             source_files, freestanding=args.freestanding, test_mode=test_mode,
             packages=packages)
     except MortError as e:
-        print(f"mortc: {e.render()}", file=sys.stderr)
+        if args.diagnostic_format == "json":
+            print(json.dumps(e.to_diagnostic(), ensure_ascii=False), file=sys.stderr)
+        else:
+            print(f"mortc: {e.render()}", file=sys.stderr)
         return 1
+
+    if args.check:
+        print("mortc: check passed")
+        return 0
 
     if args.emit_c:
         sys.stdout.write(c_source)

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.16.0 — 2026-07-22
+
+Mort's machine-diagnostics release.
+
+### Added
+
+- `--check` for a fast front-end-only compiler pass without a C backend.
+- `--diagnostic-format json` for stable editor and CI integration.
+- Structured severity, location, range, source-line, and message fields.
+- Source-aware JSON diagnostics for lexer, parser, and type-checker failures.
+
+### Validation
+
+- 187 compiler, diagnostics, cleanup, collections, native execution, and kernel
+  tests pass.
+
 ## 0.15.0 — 2026-07-22
 
 Mort's lexical-cleanup release.
