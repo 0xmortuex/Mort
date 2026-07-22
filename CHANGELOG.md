@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.17.0 — 2026-07-22
+
+Mort's editor, incremental-build, and portable-stdlib release.
+
+### Added
+
+- Opt-in unused-binding warnings with underscore suppression.
+- `--deny-warnings` and human/JSON warning diagnostics.
+- Dependency-free `mortc lsp` with unsaved-buffer and import-aware diagnostics.
+- Content-addressed project build caching with deterministic invalidation.
+- Seeded grammar and mutation fuzzing through `mortc fuzz`.
+- Portable `std.env`, `std.process`, and generic `std.math` modules.
+
+### Validation
+
+- 193 compiler, warning, LSP, cache, fuzz, standard-library, native execution,
+  and kernel tests pass.
+
 ## 0.16.0 — 2026-07-22
 
 Mort's machine-diagnostics release.

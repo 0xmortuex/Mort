@@ -10,10 +10,12 @@ Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
 import os
 import json
+import io
 import subprocess
 import struct
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,8 @@ from mort.errors import MortError            # noqa: E402
 import mortc                                 # noqa: E402
 from mort.project import load_manifest, resolve_project  # noqa: E402
 from mort.formatter import format_source                 # noqa: E402
+from mort.lsp import Server, diagnostics_for_document   # noqa: E402
+from mort.fuzz import run_fuzz                          # noqa: E402
 
 
 def c_of(src):
@@ -853,6 +857,33 @@ def test_project_new_build_run_and_test_commands(capsys):
 
 
 @needs_cc
+def test_project_build_cache_hits_and_invalidates(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        project_dir = os.path.join(d, "cached_project")
+        assert mortc.main(["new", project_dir]) == 0
+        capsys.readouterr()
+        assert mortc.main(["build", project_dir]) == 0
+        first = capsys.readouterr().out
+        cache_path = os.path.join(project_dir, ".mort", "build-cache.json")
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            first_cache = json.load(fh)
+        assert "wrote" in first
+        assert mortc.main(["build", project_dir]) == 0
+        second = capsys.readouterr().out
+        assert "build cache hit" in second
+        source = os.path.join(project_dir, "src", "main.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { print(7); return 0; }\n")
+        assert mortc.main(["build", project_dir]) == 0
+        third = capsys.readouterr().out
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            second_cache = json.load(fh)
+    assert "build cache hit" not in third
+    assert "wrote" in third
+    assert first_cache["fingerprint"] != second_cache["fingerprint"]
+
+
+@needs_cc
 def test_first_class_test_blocks_run_with_project_code():
     with tempfile.TemporaryDirectory() as d:
         library = os.path.join(d, "math.mx")
@@ -928,6 +959,90 @@ def test_json_diagnostics_and_frontend_only_check(capsys):
     assert diagnostic["range"]["start"] == {"line": 2, "column": 1}
     assert diagnostic["source"] == "    return missing;"
     assert "undefined variable" in diagnostic["message"]
+
+
+def test_unused_binding_warnings_are_structured_and_deniable(capsys):
+    source = (
+        "fn helper(value: i64, _ignored: i64) -> i64 { "
+        "let never = 1; return value; } "
+        "fn main() -> int { let answer = helper(1, 2); return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "warnings.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        assert mortc.main([
+            path,
+            "--check",
+            "--warn-unused",
+            "--diagnostic-format",
+            "json",
+        ]) == 0
+        captured = capsys.readouterr()
+        warnings = [json.loads(line) for line in captured.err.splitlines()]
+        assert mortc.main([path, "--check", "--deny-warnings"]) == 1
+        denied = capsys.readouterr()
+    assert {item["code"] for item in warnings} == {"unused-binding"}
+    assert {item["message"] for item in warnings} == {
+        "unused variable 'never'",
+        "unused variable 'answer'",
+    }
+    assert all(item["severity"] == "warning" for item in warnings)
+    assert "warning[unused-binding]" in denied.err
+
+
+def test_lsp_checks_unsaved_documents_with_imports():
+    with tempfile.TemporaryDirectory() as d:
+        helper = os.path.join(d, "helper.mx")
+        main = os.path.join(d, "main.mx")
+        with open(helper, "w", encoding="utf-8") as fh:
+            fh.write(
+                "module helper; pub fn answer() -> i64 { return 42; }"
+            )
+        with open(main, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        uri = Path(main).as_uri()
+        diagnostics = diagnostics_for_document(
+            uri,
+            "import helper;\nfn main() -> int { return missing; }\n",
+        )
+        warnings = diagnostics_for_document(
+            uri,
+            "import helper;\nfn main() -> int { let unused = helper.answer(); return 0; }\n",
+        )
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["severity"] == 1
+    assert diagnostics[0]["range"]["start"]["line"] == 1
+    assert "undefined variable" in diagnostics[0]["message"]
+    assert len(warnings) == 1
+    assert warnings[0]["severity"] == 2
+    assert warnings[0]["code"] == "unused-binding"
+
+
+def test_lsp_stdio_initialize_shutdown_cycle():
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}},
+        {"jsonrpc": "2.0", "method": "exit", "params": {}},
+    ]
+    framed = b""
+    for message in messages:
+        payload = json.dumps(message).encode("utf-8")
+        framed += f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload
+    output = io.BytesIO()
+    assert Server(io.BytesIO(framed), output).run() == 0
+    protocol_output = output.getvalue().decode("utf-8")
+    assert '"name":"mort-lsp"' in protocol_output
+    assert '"id":2,"result":null' in protocol_output
+
+
+def test_deterministic_frontend_fuzzer_and_cli(capsys):
+    result = run_fuzz(cases=100, seed=42)
+    assert result["cases"] == 100
+    assert result["accepted"] + result["rejected"] == 100
+    assert result["accepted"] >= 50
+    assert mortc.main(["fuzz", "--cases", "20", "--seed", "7"]) == 0
+    assert "fuzzed 20 case(s)" in capsys.readouterr().out
 
 
 @needs_cc
@@ -1218,6 +1333,32 @@ def test_generic_map_grows_updates_and_looks_up():
         assert "mort_std__map__insert_i64_i64" in c_source
         cfile = os.path.join(d, "map.c")
         exe = os.path.join(d, "map.exe" if os.name == "nt" else "map")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
+@needs_cc
+def test_portable_env_process_and_generic_math_modules():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "portable_std.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.env; import std.math; import std.process; "
+                "fn main() -> int { if env.exists(\"PATH\") { "
+                "let value = math.gcd(84, 30) + math.pow(2, 3) + "
+                "math.abs(0 - 4) + math.clamp(10, 0, 2) + math.max(1, 22); "
+                "print(value); } else { print(0); } return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "getenv(const char*)" in c_source
+        assert "system(const char*)" in c_source
+        assert "mort_std__math__gcd_i64" in c_source
+        cfile = os.path.join(d, "portable_std.c")
+        exe = os.path.join(d, "portable_std.exe" if os.name == "nt" else "portable_std")
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)

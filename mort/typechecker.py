@@ -11,7 +11,7 @@ the other operand of a binary op). Everything else needs an explicit ``as`` cast
 """
 import copy
 
-from .errors import MortError
+from .errors import MortError, MortWarning
 from . import mort_ast as A
 
 INT_TYPES = {
@@ -160,6 +160,8 @@ class Checker:
         self.enum_templates = {}
         self.globals = {}     # name -> type
         self.scopes = []
+        self.binding_scopes = []
+        self.warnings = []
         self.current_ret = None
         self.extern_names = set()
         self.loop_depth = 0
@@ -481,6 +483,7 @@ class Checker:
 
         # 4. globals — initialised with a compile-time constant, usable anywhere
         self.scopes = []
+        self.binding_scopes = []
         for g in self.program.globals:
             if (g.name in self.globals or g.name in self.funcs
                     or g.name in self.func_templates
@@ -538,15 +541,20 @@ class Checker:
             self.current_module = test.module
             self.current_import_aliases = test.import_aliases
             self.scopes = [{}]
+            self.binding_scopes = [{}]
             self.loop_depth = 0
             for statement in test.body.stmts:
                 self._check_stmt(statement)
+            self._finish_binding_scope()
         return self.program
 
     # ----- scopes -----
     def _lookup(self, name):
-        for scope in reversed(self.scopes):
+        for scope, bindings in zip(
+                reversed(self.scopes), reversed(self.binding_scopes)):
             if name in scope:
+                if name in bindings:
+                    bindings[name]["used"] = True
                 return scope[name]
         return self.globals.get(name)  # fall back to globals (locals shadow them)
 
@@ -563,10 +571,27 @@ class Checker:
             return all(self._is_const_init(el) for el in expr.elements)
         return bool(getattr(expr, "is_lit", False))  # int literal expression
 
-    def _declare(self, name, typ, node):
+    def _declare(self, name, typ, node, kind="variable"):
         if name in self.scopes[-1]:
             self._error(f"variable {name!r} already declared in this scope", node)
         self.scopes[-1][name] = typ
+        self.binding_scopes[-1][name] = {
+            "node": node,
+            "used": False,
+            "kind": kind,
+        }
+
+    def _finish_binding_scope(self):
+        bindings = self.binding_scopes[-1]
+        for name, binding in bindings.items():
+            if not binding["used"] and not name.startswith("_"):
+                node = binding["node"]
+                self.warnings.append(MortWarning(
+                    f"unused {binding['kind']} {name!r}",
+                    getattr(node, "line", None),
+                    filename=getattr(node, "filename", None),
+                    code="unused-binding",
+                ))
 
     def _check_array_expr(self, expr, decl_type, node):
         """Check an array literal / repeat against an optional declared type.
@@ -611,14 +636,16 @@ class Checker:
         self.current_module = f.module
         self.current_import_aliases = f.import_aliases
         self.scopes = [{}]
+        self.binding_scopes = [{}]
         self.loop_depth = 0
         self.block_depth = 0
         for p in f.params:
-            self._declare(p.name, p.typ, f)
+            self._declare(p.name, p.typ, f, kind="parameter")
         for s in f.body.stmts:
             self._check_stmt(s)
         if f.ret != "void" and not self._block_always_returns(f.body):
             self._error(f"function {f.name!r} may finish without returning {f.ret}", f)
+        self._finish_binding_scope()
 
     def _block_always_returns(self, block):
         """Conservative control-flow check for non-void function returns."""
@@ -649,13 +676,16 @@ class Checker:
 
     def _check_block(self, block):
         self.scopes.append({})
+        self.binding_scopes.append({})
         self.block_depth += 1
         try:
             for s in block.stmts:
                 self._check_stmt(s)
         finally:
             self.block_depth -= 1
+            self._finish_binding_scope()
             self.scopes.pop()
+            self.binding_scopes.pop()
 
     # ----- coercion -----
     def _const_value(self, e):
@@ -833,13 +863,18 @@ class Checker:
                 self._error(f"mismatched range types {st} and {et}; add an 'as' cast", s)
             # the loop variable is scoped to the loop (with the body)
             self.scopes.append({s.var: s.var_type})
+            self.binding_scopes.append({
+                s.var: {"node": s, "used": False, "kind": "loop variable"}
+            })
             self.loop_depth += 1
             try:
                 for st2 in s.body.stmts:
                     self._check_stmt(st2)
             finally:
                 self.loop_depth -= 1
+                self._finish_binding_scope()
                 self.scopes.pop()
+                self.binding_scopes.pop()
 
         elif isinstance(s, A.Match):
             subject_type = self._check_expr(s.expr)
@@ -889,11 +924,22 @@ class Checker:
                         enum_variants.add(arm.pattern.field)
                         arm.variant_name = arm.pattern.field
                 self.scopes.append({} if binding_name is None else {binding_name: binding_type})
+                self.binding_scopes.append(
+                    {} if binding_name is None else {
+                        binding_name: {
+                            "node": arm,
+                            "used": False,
+                            "kind": "match binding",
+                        }
+                    }
+                )
                 try:
                     for statement in arm.body.stmts:
                         self._check_stmt(statement)
                 finally:
+                    self._finish_binding_scope()
                     self.scopes.pop()
+                    self.binding_scopes.pop()
             if subject_type in self.enums:
                 missing = set(self.enums[subject_type]) - enum_variants
                 if missing and not wildcard_seen:

@@ -13,6 +13,7 @@ binary via a system C compiler (cc/gcc/clang). If no C compiler is found, the
 generated C is written next to your source so you can build it yourself.
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -82,7 +83,7 @@ def _tag_source(node, filename, seen=None):
                             _tag_source(part, filename, seen)
 
 
-def compile_sources_to_c(sources, freestanding=False, filenames=None):
+def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=None):
     """Compile one or more Mort source strings as a single program.
 
     Top-level declarations from every source participate in the same namespace,
@@ -105,10 +106,10 @@ def compile_sources_to_c(sources, freestanding=False, filenames=None):
                 node.line,
                 filename=getattr(node, "filename", None),
             )
-    return _compile_programs(programs, freestanding)
+    return _compile_programs(programs, freestanding, warnings=warnings)
 
 
-def _compile_programs(programs, freestanding=False, test_mode=False):
+def _compile_programs(programs, freestanding=False, test_mode=False, warnings=None):
     for source_program in programs:
         for function in source_program.funcs:
             if source_program.module_name and function.module is None:
@@ -127,16 +128,25 @@ def _compile_programs(programs, freestanding=False, test_mode=False):
         enums=[e for p in programs for e in p.enums],
         tests=[t for p in programs for t in p.tests],
     )
-    Checker(program, freestanding=freestanding, test_mode=test_mode).check()
+    checker = Checker(program, freestanding=freestanding, test_mode=test_mode)
+    checker.check()
+    if warnings is not None:
+        warnings.extend(checker.warnings)
     return CodeGen(program, freestanding=freestanding, test_mode=test_mode).generate()
 
 
-def compile_files_to_c(paths, freestanding=False, test_mode=False, packages=None):
+def compile_files_to_c(
+        paths, freestanding=False, test_mode=False, packages=None, warnings=None,
+        source_overrides=None):
     """Resolve imports recursively and compile a set of root source files."""
     programs = []
     loaded = set()
     program_by_path = {}
     packages = packages or {}
+    source_overrides = {
+        os.path.normcase(os.path.realpath(path)): source
+        for path, source in (source_overrides or {}).items()
+    }
 
     def load(path):
         path = os.path.abspath(path)
@@ -144,11 +154,14 @@ def compile_files_to_c(paths, freestanding=False, test_mode=False, packages=None
         if key in loaded:
             return
         loaded.add(key)
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                source = handle.read()
-        except OSError as error:
-            raise MortError(f"cannot read imported source: {error}", filename=path)
+        if key in source_overrides:
+            source = source_overrides[key]
+        else:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    source = handle.read()
+            except OSError as error:
+                raise MortError(f"cannot read imported source: {error}", filename=path)
         program = _parse_source(source, path)
         programs.append(program)
         program_by_path[key] = program
@@ -212,7 +225,8 @@ def compile_files_to_c(paths, freestanding=False, test_mode=False, packages=None
         for test in program.tests:
             test.module = program.module_name
             test.import_aliases = dict(aliases)
-    return _compile_programs(programs, freestanding, test_mode=test_mode)
+    return _compile_programs(
+        programs, freestanding, test_mode=test_mode, warnings=warnings)
 
 
 def is_zig(cc):
@@ -273,6 +287,10 @@ def _compile_main(argv=None, test_mode=False):
         default="human",
         help="compiler diagnostic output format (default: human)",
     )
+    ap.add_argument("--warn-unused", action="store_true",
+                    help="warn about unused local bindings and parameters")
+    ap.add_argument("--deny-warnings", action="store_true",
+                    help="report enabled warnings and fail the check/build")
     ap.add_argument("--run", action="store_true", help="run the program after building")
     ap.add_argument("--freestanding", action="store_true",
                     help="compile to a bare-metal object file (no libc, no main)")
@@ -333,16 +351,26 @@ def _compile_main(argv=None, test_mode=False):
               file=sys.stderr)
         return 1
 
+    compiler_warnings = []
     try:
         c_source = compile_files_to_c(
             source_files, freestanding=args.freestanding, test_mode=test_mode,
-            packages=packages)
+            packages=packages, warnings=compiler_warnings)
     except MortError as e:
         if args.diagnostic_format == "json":
             print(json.dumps(e.to_diagnostic(), ensure_ascii=False), file=sys.stderr)
         else:
             print(f"mortc: {e.render()}", file=sys.stderr)
         return 1
+
+    if args.warn_unused or args.deny_warnings:
+        for warning in compiler_warnings:
+            if args.diagnostic_format == "json":
+                print(json.dumps(warning.to_diagnostic(), ensure_ascii=False), file=sys.stderr)
+            else:
+                print(f"mortc: {warning.render()}", file=sys.stderr)
+        if args.deny_warnings and compiler_warnings:
+            return 1
 
     if args.check:
         print("mortc: check passed")
@@ -436,8 +464,86 @@ def _project_build(start, run=False):
         return 1
     os.makedirs(os.path.dirname(project["output"]), exist_ok=True)
     write_lockfile(project)
-    return _compile_main(_project_args(
-        project, project["sources"], project["output"], run=run))
+    fingerprint = _project_fingerprint(project)
+    cache_path = os.path.join(project["root"], ".mort", "build-cache.json")
+    cache = {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as handle:
+            cache = json.load(handle)
+    except (OSError, ValueError):
+        pass
+    if (cache.get("fingerprint") == fingerprint
+            and cache.get("output") == project["output"]
+            and os.path.isfile(project["output"])):
+        print(f"mortc: build cache hit ({project['output']})")
+        if run:
+            return subprocess.run([project["output"]]).returncode
+        return 0
+    result = _compile_main(_project_args(
+        project, project["sources"], project["output"], run=False))
+    if result != 0:
+        return result
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump({
+            "fingerprint": fingerprint,
+            "output": project["output"],
+            "version": __version__,
+        }, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    if run:
+        return subprocess.run([project["output"]]).returncode
+    return 0
+
+
+def _project_fingerprint(project):
+    digest = hashlib.sha256()
+    digest.update(f"mort:{__version__}\0".encode("utf-8"))
+    configuration = {
+        key: project[key]
+        for key in ("name", "output", "std", "links", "libraries", "packages")
+    }
+    digest.update(json.dumps(
+        configuration, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+    files = set(project["sources"])
+    files.update(project["links"])
+    files.update(project["packages"].values())
+    files.update(project["dependency_manifests"])
+    files.update(
+        os.path.join(STDLIB_DIR, name)
+        for name in os.listdir(STDLIB_DIR) if name.endswith(".mx")
+    )
+    for filename in ("mort.toml", "mort.lock"):
+        path = os.path.join(project["root"], filename)
+        if os.path.isfile(path):
+            files.add(path)
+    roots = {project["root"]}
+    roots.update(os.path.dirname(path) for path in project["dependency_manifests"])
+    for root in roots:
+        for directory, names, filenames in os.walk(root):
+            names[:] = [
+                name for name in names
+                if name not in (".git", ".mort", "build", "__pycache__")
+            ]
+            files.update(
+                os.path.join(directory, name)
+                for name in filenames if name.endswith(".mx")
+            )
+    for path in sorted(os.path.abspath(item) for item in files):
+        digest.update(path.encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+        try:
+            with open(path, "rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError as error:
+            digest.update(f"missing:{error}".encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _project_test(start):
@@ -505,6 +611,25 @@ def _format_command(paths, check=False):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "fuzz":
+        from mort.fuzz import run_fuzz
+        ap = argparse.ArgumentParser(
+            prog="mortc fuzz", description="Fuzz the Mort compiler front end.")
+        ap.add_argument("--cases", type=int, default=1000, help="number of cases")
+        ap.add_argument("--seed", type=int, default=0, help="deterministic random seed")
+        args = ap.parse_args(argv[1:])
+        if args.cases <= 0:
+            print("mortc: --cases must be positive", file=sys.stderr)
+            return 1
+        result = run_fuzz(args.cases, args.seed)
+        print(
+            f"mortc: fuzzed {result['cases']} case(s) with seed {result['seed']} "
+            f"({result['accepted']} accepted, {result['rejected']} rejected)"
+        )
+        return 0
+    if argv and argv[0] == "lsp":
+        from mort.lsp import run as run_lsp
+        return run_lsp()
     if argv and argv[0] == "new":
         ap = argparse.ArgumentParser(prog="mortc new", description="Create a Mort project.")
         ap.add_argument("path", help="new project directory")

@@ -1,0 +1,12 @@
+module std.process;
+
+extern fn system(command: *const c_char) -> c_int;
+extern fn exit(status: c_int) -> void;
+
+pub fn run(command: *u8) -> c_int {
+    return system(command as *const c_char);
+}
+
+pub fn terminate(status: c_int) -> void {
+    exit(status);
+}

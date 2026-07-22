@@ -66,3 +66,26 @@ class MortError(Exception):
             except OSError:
                 pass
         return diagnostic
+
+
+class MortWarning(MortError):
+    def __init__(self, msg, line=None, col=None, filename=None, code="warning"):
+        self.code = code
+        super().__init__(msg, line, col, filename)
+
+    def format(self):
+        if self.filename:
+            location = self.filename
+            if self.line is not None:
+                location += f":{self.line}"
+                if self.col is not None:
+                    location += f":{self.col}"
+            return f"{location}: warning[{self.code}]: {self.msg}"
+        loc = f" (line {self.line})" if self.line is not None else ""
+        return f"warning[{self.code}]{loc}: {self.msg}"
+
+    def to_diagnostic(self):
+        diagnostic = super().to_diagnostic()
+        diagnostic["severity"] = "warning"
+        diagnostic["code"] = self.code
+        return diagnostic

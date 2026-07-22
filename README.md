@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-193%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.16)
+## The language (v0.17)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -98,6 +98,8 @@ C `main`, so the output is an ordinary native binary.
   calls such as `vec.new<i64>()`, each monomorphized to checked native code.
 - **Typed collections:** allocation-backed `Vec<T>` and `Map<Key, Value>` in
   `std.vec` and `std.map`, with deterministic `destroy` functions.
+- **Portable standard modules:** environment access, process control, and
+  generic integer math through `std.env`, `std.process`, and `std.math`.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `let value = try operation();` unwraps `Result.Ok` or
@@ -134,6 +136,9 @@ python mortc.py program.mx --run        # compile, then run it
 python mortc.py program.mx --emit-c     # print the generated C and stop
 python mortc.py program.mx --check      # parse and type-check without a C backend
 python mortc.py bad.mx --check --diagnostic-format json  # editor/CI diagnostics
+python mortc.py app.mx --check --warn-unused --deny-warnings
+python mortc.py lsp                     # start the stdio language server
+python mortc.py fuzz --cases 1000 --seed 0  # deterministic front-end fuzzing
 python mortc.py program.mx -o myprog    # choose the output name
 python mortc.py main.mx math.mx --run   # one program split across source files
 python mortc.py app.mx --std string     # include a bundled standard module
@@ -156,6 +161,10 @@ mortc add util --path ../util  # add a local package and update mort.lock
 mortc add json --git URL --ref v1.0.0  # fetch and pin a Git package
 mortc fetch            # resolve dependencies and refresh the lockfile
 ```
+
+Project builds are content-addressed: unchanged sources, dependencies,
+configuration, standard modules, and compiler versions reuse the existing
+native output without invoking the C backend.
 
 Imports are resolved recursively relative to the importing file. Bundled modules
 use the `std` prefix:

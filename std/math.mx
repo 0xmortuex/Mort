@@ -1,0 +1,57 @@
+module std.math;
+
+pub fn min<T>(left: T, right: T) -> T {
+    if left < right {
+        return left;
+    }
+    return right;
+}
+
+pub fn max<T>(left: T, right: T) -> T {
+    if left > right {
+        return left;
+    }
+    return right;
+}
+
+pub fn clamp<T>(value: T, minimum: T, maximum: T) -> T {
+    if value < minimum {
+        return minimum;
+    }
+    if value > maximum {
+        return maximum;
+    }
+    return value;
+}
+
+pub fn abs<T>(value: T) -> T {
+    if value < 0 {
+        return 0 - value;
+    }
+    return value;
+}
+
+pub fn gcd<T>(left: T, right: T) -> T {
+    let a = left;
+    let b = right;
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    return a;
+}
+
+pub fn pow<T>(base: T, exponent: u64) -> T {
+    let result: T = 1;
+    let factor = base;
+    let power = exponent;
+    while power > 0 {
+        if (power & 1) == 1 {
+            result = result * factor;
+        }
+        factor = factor * factor;
+        power = power >> 1;
+    }
+    return result;
+}
