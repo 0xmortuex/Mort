@@ -1065,6 +1065,142 @@ def test_generic_struct_monomorphization_run():
 
 
 @needs_cc
+def test_generic_function_inference_and_monomorphization_run():
+    src = (
+        "struct Box<T> { value: T } "
+        "fn identity<T>(value: T) -> T { return value; } "
+        "fn choose<Left, Right>(first: Left, ignored: Right) -> Left { "
+        "return first; } "
+        "fn boxed<T>(value: T) -> Box<T> { return Box<T> { value: value }; } "
+        "fn unbox<T>(value: Box<T>) -> T { return value.value; } "
+        "fn null<T>() -> *T { return 0 as *T; } "
+        "fn sum_to<T>(value: T) -> T { if value == 0 { return 0; } "
+        "return value + sum_to(value - 1); } "
+        "fn main() -> int { let enabled = identity(true); "
+        "let pointer: *i64 = null<i64>(); let small: u8 = identity<u8>(1); "
+        "print(small); "
+        "if enabled { let value = identity(20); let wrapped = boxed(21); "
+        "print(value + unbox(wrapped) + choose(1, false)); } "
+        "print(sum_to(6)); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "mort_identity_i64" in c_source
+    assert "mort_identity_bool" in c_source
+    assert "mort_boxed_i64" in c_source
+    assert "mort_null_i64" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "generic_functions.c")
+        exe = os.path.join(d, "generic_functions.exe" if os.name == "nt" else "generic_functions")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "1\n42\n21\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "fn same<T>(left: T, right: T) -> T { return left; } "
+            "fn main() -> int { let value = same(1, true); return 0; }",
+            "cannot consistently infer generic type",
+        ),
+        (
+            "fn make<T>() -> T { return 1; } "
+            "fn main() -> int { let value = make(); return 0; }",
+            "cannot infer generic parameter(s) T",
+        ),
+        (
+            "fn bad<T, T>(value: T) -> T { return value; } "
+            "fn main() -> int { return 0; }",
+            "has a duplicate generic parameter",
+        ),
+        (
+            "fn id<T>(value: T) -> T { return value; } "
+            "fn main() -> int { let value = id<i64, u8>(1); return 0; }",
+            "expects 1 type argument(s), got 2",
+        ),
+        (
+            "fn id(value: i64) -> i64 { return value; } "
+            "fn main() -> int { return id<i64>(1); }",
+            "is not generic and cannot take type arguments",
+        ),
+    ],
+)
+def test_generic_function_rejects_invalid_inference(source, message):
+    with pytest.raises(MortError) as exc:
+        c_of(source)
+    assert message in str(exc.value)
+
+
+@needs_cc
+def test_generic_vec_grows_indexes_and_cleans_up():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "vec.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.vec; "
+                "fn unwrap(value: Option<i64>) -> i64 { match value { "
+                "Option<i64>.Some(item) => { return item; }, "
+                "Option<i64>.None => { return 0; } } } "
+                "fn main() -> int { let values: Vec<i64> = vec.new<i64>(); "
+                "defer vec.destroy(&values); "
+                "for index: u64 in 0..10 { vec.push(&values, (index as i64) + 1); } "
+                "let changed = vec.set(&values, 1, 32); assert(changed); "
+                "let selected = unwrap(vec.get(&values, 1)); "
+                "let popped = unwrap(vec.pop(&values)); "
+                "let view: []const i64 = vec.as_const_slice(&values); "
+                "assert(view.len == 9); print(selected + popped); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "sizeof(int64_t)" in c_source
+        assert "mort_std__vec__push_i64" in c_source
+        cfile = os.path.join(d, "vec.c")
+        exe = os.path.join(d, "vec.exe" if os.name == "nt" else "vec")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
+@needs_cc
+def test_generic_map_grows_updates_and_looks_up():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "map.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.map; "
+                "fn unwrap(value: Option<i64>) -> i64 { match value { "
+                "Option<i64>.Some(item) => { return item; }, "
+                "Option<i64>.None => { return 0; } } } "
+                "fn main() -> int { let values: Map<i64, i64> = map.new<i64, i64>(); "
+                "defer map.destroy(&values); "
+                "for index: i64 in 0..10 { "
+                "map.insert(&values, index, index * 2); } "
+                "let created = map.insert(&values, 2, 40); assert(!created); "
+                "assert(map.contains(&values, 2)); "
+                "assert(!map.contains(&values, 99)); "
+                "print(unwrap(map.get(&values, 1)) + unwrap(map.get(&values, 2))); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_Map_i64_i64" in c_source
+        assert "mort_std__map__insert_i64_i64" in c_source
+        cfile = os.path.join(d, "map.c")
+        exe = os.path.join(d, "map.exe" if os.name == "nt" else "map")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")
@@ -1357,6 +1493,7 @@ EXPECTED = {
     "result.mx": "42\ninvalid input\n",
     "generics.mx": "42\n",
     "defer.mx": "cleanup\n42\n",
+    "collections.mx": "42\n42\n",
 }
 
 

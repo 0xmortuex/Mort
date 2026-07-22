@@ -253,6 +253,14 @@ class Parser:
         line = self._peek().line
         self._expect(T.FN, "'fn'")
         name = self._expect(T.IDENT, "function name").value
+        generic_params = []
+        if self._at(T.LT):
+            self._advance()
+            generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            while self._at(T.COMMA):
+                self._advance()
+                generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            self._expect(T.GT, "'>'")
         self._expect(T.LPAREN, "'('")
         params = []
         if not self._at(T.RPAREN):
@@ -266,7 +274,7 @@ class Parser:
             self._advance()
             ret = self._type_name()
         body = self._block()
-        return A.FnDecl(name, params, ret, body, line)
+        return A.FnDecl(name, params, ret, body, line, generic_params)
 
     def _extern_fn_decl(self):
         line = self._advance().line  # 'extern'
@@ -547,7 +555,26 @@ class Parser:
     def _postfix(self):
         expr = self._primary()
         while True:
-            if self._at(T.LPAREN):
+            if self._at(T.LT) and self._looks_like_call_type_args():
+                name = self._qualified_name(expr)
+                if name is None:
+                    raise MortError("only named functions can have type arguments", self._peek().line)
+                self._advance()
+                type_args = [self._type_name()]
+                while self._at(T.COMMA):
+                    self._advance()
+                    type_args.append(self._type_name())
+                self._expect_type_close()
+                lp = self._expect(T.LPAREN, "'('")
+                args = []
+                if not self._at(T.RPAREN):
+                    args.append(self._expression())
+                    while self._at(T.COMMA):
+                        self._advance()
+                        args.append(self._expression())
+                self._expect(T.RPAREN, "')'")
+                expr = A.Call(name, args, lp.line, type_args)
+            elif self._at(T.LPAREN):
                 name = self._qualified_name(expr)
                 if name is None:
                     raise MortError("only named functions can be called", self._peek().line)
@@ -571,6 +598,28 @@ class Parser:
                 expr = A.Index(expr, index, lb.line)
             else:
                 return expr
+
+    def _looks_like_call_type_args(self):
+        depth = 0
+        offset = 0
+        while self.i + offset < len(self.toks):
+            token_type = self._peek(offset).type
+            if token_type == T.LT:
+                depth += 1
+            elif token_type == T.GT:
+                depth -= 1
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.LPAREN
+            elif token_type == T.SHR:
+                depth -= 2
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.LPAREN
+                if depth < 0:
+                    return False
+            elif token_type in (T.SEMI, T.EOF):
+                return False
+            offset += 1
+        return False
 
     @staticmethod
     def _qualified_name(expr):

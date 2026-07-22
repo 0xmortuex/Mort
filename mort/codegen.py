@@ -54,7 +54,7 @@ def _array_parts(t):
 
 
 def _c_symbol(name):
-    return name.replace(".", "__")
+    return _type_tag(name.replace(".", "__"))
 
 
 def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
@@ -122,7 +122,12 @@ class CodeGen:
                 for item in vars(value).values():
                     visit(item)
 
-        visit(program)
+        visit(program.globals)
+        visit([item for item in program.structs if not item.generic_params])
+        visit([item for item in program.enums if not item.generic_params])
+        visit(program.externs)
+        visit([item for item in program.funcs if not item.generic_params])
+        visit(program.tests)
         return sorted(found)
 
     def _ct(self, t):
@@ -202,6 +207,8 @@ class CodeGen:
         saved = self.lines
         self.lines = []
         for f in self.program.funcs:
+            if f.generic_params:
+                continue
             self._gen_fn(f)
             self._emit()
         if self.test_mode:
@@ -330,7 +337,8 @@ class CodeGen:
         for f in self.program.externs:
             self._emit("extern " + self._extern_signature(f) + ";")
         for f in self.program.funcs:
-            self._emit(self._signature(f) + ";")
+            if not f.generic_params:
+                self._emit(self._signature(f) + ";")
         self._emit()
         self.lines.extend(body_lines)
         # Hosted builds get a real C main that calls the user's main; a
@@ -497,8 +505,13 @@ class CodeGen:
             self.indent += 1
             self._emit(f"{self._ct(s.expr.type)} {temporary} = {self._gen_expr(s.expr)};")
             emitted_condition = False
-            for arm in s.arms:
+            for arm_index, arm in enumerate(s.arms):
                 if arm.pattern is None:
+                    self._emit("else {" if emitted_condition else "{")
+                elif s.exhaustive and arm_index == len(s.arms) - 1:
+                    # The checker proved every enum variant is covered. Making
+                    # the final arm unconditional communicates that fact to C
+                    # compilers as well, avoiding false missing-return warnings.
                     self._emit("else {" if emitted_condition else "{")
                 else:
                     keyword = "else if" if emitted_condition else "if"
@@ -675,6 +688,8 @@ class CodeGen:
             elif e.name == "len" and e.args[0].type == "*u8":
                 self.used_len = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
+            if e.name == "sizeof":
+                return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
             if e.name == "print":
                 name = "mort_print"
             elif e.name == "println":

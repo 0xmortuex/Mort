@@ -1,0 +1,85 @@
+module std.vec;
+
+import std.option;
+
+struct Vec<T> {
+    data: *T,
+    length: u64,
+    capacity: u64,
+}
+
+pub fn with_capacity<T>(capacity: u64) -> Vec<T> {
+    let actual = capacity;
+    if actual == 0 {
+        actual = 1;
+    }
+    let data = alloc(actual * sizeof<T>()) as *T;
+    return Vec<T> { data: data, length: 0, capacity: actual };
+}
+
+pub fn new<T>() -> Vec<T> {
+    return with_capacity<T>(4);
+}
+
+pub fn reserve<T>(value: *Vec<T>, capacity: u64) -> void {
+    if capacity <= (*value).capacity {
+        return;
+    }
+    let replacement = alloc(capacity * sizeof<T>()) as *T;
+    for index: u64 in 0..(*value).length {
+        replacement[index] = (*value).data[index];
+    }
+    free((*value).data);
+    (*value).data = replacement;
+    (*value).capacity = capacity;
+}
+
+pub fn push<T>(value: *Vec<T>, item: T) -> void {
+    if (*value).length == (*value).capacity {
+        reserve(value, (*value).capacity * 2);
+    }
+    (*value).data[(*value).length] = item;
+    (*value).length = (*value).length + 1;
+}
+
+pub fn get<T>(value: *Vec<T>, index: u64) -> Option<T> {
+    if index >= (*value).length {
+        return Option<T>.None;
+    }
+    return Option<T>.Some((*value).data[index]);
+}
+
+pub fn set<T>(value: *Vec<T>, index: u64, item: T) -> bool {
+    if index >= (*value).length {
+        return false;
+    }
+    (*value).data[index] = item;
+    return true;
+}
+
+pub fn pop<T>(value: *Vec<T>) -> Option<T> {
+    if (*value).length == 0 {
+        return Option<T>.None;
+    }
+    (*value).length = (*value).length - 1;
+    return Option<T>.Some((*value).data[(*value).length]);
+}
+
+pub fn as_slice<T>(value: *Vec<T>) -> []T {
+    return slice((*value).data, (*value).length);
+}
+
+pub fn as_const_slice<T>(value: *Vec<T>) -> []const T {
+    return slice((*value).data as *const T, (*value).length);
+}
+
+pub fn clear<T>(value: *Vec<T>) -> void {
+    (*value).length = 0;
+}
+
+pub fn destroy<T>(value: *Vec<T>) -> void {
+    free((*value).data);
+    (*value).data = 0 as *T;
+    (*value).length = 0;
+    (*value).capacity = 0;
+}

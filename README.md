@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-177%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-186%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.13)
+## The language (v0.14)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -94,6 +94,12 @@ C `main`, so the output is an ordinary native binary.
   as `Option<T>` and `Result<Value, Error>`, with exhaustive destructuring match.
 - **Generic structs:** monomorphized native layouts such as
   `struct Pair<Left, Right> { first: Left, second: Right }`.
+- **Generic functions:** inferred calls such as `identity(42)` and explicit
+  calls such as `vec.new<i64>()`, each monomorphized to checked native code.
+- **Typed collections:** allocation-backed `Vec<T>` and `Map<Key, Value>` in
+  `std.vec` and `std.map`, with deterministic `destroy` functions.
+- **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
+  concrete Mort type.
 - **Error propagation:** `let value = try operation();` unwraps `Result.Ok` or
   returns a type-compatible `Result.Err` from the enclosing function.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).

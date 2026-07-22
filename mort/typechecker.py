@@ -9,6 +9,8 @@ Integer literals are "untyped" (``node.is_lit``) and coerce to any integer type
 in a context that expects one (let annotations, assignments, returns, args, and
 the other operand of a binary op). Everything else needs an explicit ``as`` cast.
 """
+import copy
+
 from .errors import MortError
 from . import mort_ast as A
 
@@ -21,6 +23,7 @@ ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
+    "sizeof",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -150,6 +153,7 @@ class Checker:
         self.test_mode = test_mode
         self.funcs = {}       # name -> (param_types, ret)
         self.func_decls = {}
+        self.func_templates = {}
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
         self.struct_templates = {}
         self.enums = {}       # name -> ordered {variant: optional payload type}
@@ -256,6 +260,132 @@ class Checker:
         self.program.enums.append(concrete)
         return True
 
+    def _unify_generic_type(self, pattern, actual, generic_params, mapping):
+        if pattern in generic_params:
+            previous = mapping.get(pattern)
+            if previous is None:
+                mapping[pattern] = actual
+                return True
+            return previous == actual
+        if is_ptr(pattern):
+            if not is_ptr(actual):
+                return False
+            if is_const_ptr(actual) and not is_const_ptr(pattern):
+                return False
+            return self._unify_generic_type(
+                pointee(pattern), pointee(actual), generic_params, mapping)
+        if is_slice(pattern):
+            if not is_slice(actual) or is_const_slice(pattern) != is_const_slice(actual):
+                return False
+            return self._unify_generic_type(
+                slice_elem(pattern), slice_elem(actual), generic_params, mapping)
+        if is_array(pattern):
+            if not is_array(actual):
+                return False
+            pattern_elem, pattern_count = array_parts(pattern)
+            actual_elem, actual_count = array_parts(actual)
+            return (pattern_count == actual_count
+                    and self._unify_generic_type(
+                        pattern_elem, actual_elem, generic_params, mapping))
+        pattern_parts = generic_parts(pattern)
+        if pattern_parts:
+            actual_parts = generic_parts(actual)
+            if (not actual_parts or pattern_parts[0] != actual_parts[0]
+                    or len(pattern_parts[1]) != len(actual_parts[1])):
+                return False
+            return all(
+                self._unify_generic_type(expected, found, generic_params, mapping)
+                for expected, found in zip(pattern_parts[1], actual_parts[1])
+            )
+        return True
+
+    @staticmethod
+    def _substitute_function_types(function, mapping):
+        def visit(value):
+            if value is None or isinstance(value, (str, int, bool)):
+                return
+            if isinstance(value, list):
+                for item in value:
+                    visit(item)
+                return
+            if isinstance(value, tuple):
+                for item in value:
+                    visit(item)
+                return
+            if isinstance(value, A.FnDecl):
+                value.ret = substitute_type(value.ret, mapping)
+            elif isinstance(value, A.Param):
+                value.typ = substitute_type(value.typ, mapping)
+            elif isinstance(value, A.Let) and value.decl_type is not None:
+                value.decl_type = substitute_type(value.decl_type, mapping)
+            elif isinstance(value, A.For) and value.decl_type is not None:
+                value.decl_type = substitute_type(value.decl_type, mapping)
+            elif isinstance(value, A.Cast):
+                value.target_type = substitute_type(value.target_type, mapping)
+            elif isinstance(value, A.StructLit):
+                value.name = substitute_type(value.name, mapping)
+            elif isinstance(value, A.Var) and generic_parts(value.name):
+                value.name = substitute_type(value.name, mapping)
+            elif isinstance(value, A.Call):
+                value.type_args = [
+                    substitute_type(argument, mapping) for argument in value.type_args
+                ]
+                if "." in value.name:
+                    qualifier, member = value.name.rsplit(".", 1)
+                    substituted = substitute_type(qualifier, mapping)
+                    if substituted != qualifier:
+                        value.name = f"{substituted}.{member}"
+            if hasattr(value, "__dict__"):
+                for child in vars(value).values():
+                    visit(child)
+
+        visit(function)
+
+    def _instantiate_function(self, resolved, mapping, node):
+        template = self.func_templates[resolved]
+        missing = [name for name in template.generic_params if name not in mapping]
+        if missing:
+            self._error(
+                f"cannot infer generic parameter(s) {', '.join(missing)} for "
+                f"function {template.name!r}",
+                node,
+            )
+        type_args = [mapping[name] for name in template.generic_params]
+        concrete_symbol = resolved + "<" + ",".join(type_args) + ">"
+        if concrete_symbol in self.funcs:
+            return concrete_symbol
+        instance = copy.deepcopy(template)
+        self._substitute_function_types(instance, mapping)
+        instance.generic_params = []
+        instance.symbol_name = concrete_symbol
+        for parameter in instance.params:
+            if parameter.typ == "void" or not self._valid_type(parameter.typ):
+                self._error(
+                    f"generic function {template.name!r} produced invalid parameter "
+                    f"type {parameter.typ}",
+                    node,
+                )
+            if is_array(parameter.typ):
+                self._error(
+                    f"parameter {parameter.name!r} cannot be an array; pass a pointer "
+                    "to its elements instead",
+                    node,
+                )
+        if instance.ret != "void":
+            if not self._valid_type(instance.ret):
+                self._error(
+                    f"generic function {template.name!r} produced invalid return type "
+                    f"{instance.ret}",
+                    node,
+                )
+            if is_array(instance.ret):
+                self._error(f"function {template.name!r} cannot return an array", node)
+        self.funcs[concrete_symbol] = (
+            [parameter.typ for parameter in instance.params], instance.ret)
+        self.func_decls[concrete_symbol] = instance
+        self.program.funcs.append(instance)
+        return concrete_symbol
+
     def check(self):
         # Enums are nominal integer-backed types with a closed variant set.
         for ed in list(self.program.enums):
@@ -320,8 +450,15 @@ class Checker:
         #    the platform C ABI and share the same call namespace.
         for f in [*self.program.externs, *self.program.funcs]:
             symbol_name = getattr(f, "symbol_name", f.name)
-            if symbol_name in self.funcs or f.name in BUILTIN_NAMES:
+            if (symbol_name in self.funcs or symbol_name in self.func_templates
+                    or f.name in BUILTIN_NAMES):
                 self._error(f"function {f.name!r} is already defined", f)
+            if getattr(f, "generic_params", None):
+                if len(set(f.generic_params)) != len(f.generic_params):
+                    self._error(
+                        f"function {f.name!r} has a duplicate generic parameter", f)
+                self.func_templates[symbol_name] = f
+                continue
             if isinstance(f, A.ExternFnDecl) and f.name in C_KEYWORDS:
                 self._error(f"external function name {f.name!r} is reserved by C", f)
             for p in f.params:
@@ -347,6 +484,7 @@ class Checker:
         self.scopes = []
         for g in self.program.globals:
             if (g.name in self.globals or g.name in self.funcs
+                    or g.name in self.func_templates
                     or g.name in self.structs or g.name in self.enums
                     or g.name in BUILTIN_NAMES):
                 self._error(f"global {g.name!r} conflicts with another name", g)
@@ -377,7 +515,9 @@ class Checker:
         # Hosted programs are launched through a C main; freestanding ones are
         # entered by a bootloader, so they have no 'main' requirement.
         if not self.freestanding and not self.test_mode:
-            defined_names = {f.symbol_name for f in self.program.funcs}
+            defined_names = {
+                f.symbol_name for f in self.program.funcs if not f.generic_params
+            }
             if "main" not in defined_names:
                 raise MortError("no 'main' function defined")
             params, ret = self.funcs["main"]
@@ -387,6 +527,8 @@ class Checker:
                 raise MortError("'main' must return int")
 
         for f in self.program.funcs:
+            if f.generic_params:
+                continue
             self._check_fn(f)
         test_names = set()
         for test in self.program.tests:
@@ -1078,6 +1220,13 @@ class Checker:
                 e.enum_name = enum_name
                 e.enum_variant = variant_name
                 return enum_name
+        if e.name == "sizeof":
+            if e.args or len(e.type_args) != 1:
+                self._error("sizeof expects exactly one type argument and no values", e)
+            target = e.type_args[0]
+            if target == "void" or not self._valid_type(target):
+                self._error(f"sizeof has invalid type argument {target}", e)
+            return "u64"
         if e.name == "print":
             if self.freestanding:
                 self._error(
@@ -1208,23 +1357,67 @@ class Checker:
             resolved = f"{module}.{member}"
         else:
             local = f"{self.current_module}.{requested}" if self.current_module else None
-            resolved = local if local in self.funcs else requested
-        if resolved not in self.funcs:
+            resolved = (
+                local
+                if local in self.funcs or local in self.func_templates
+                else requested
+            )
+        if resolved not in self.funcs and resolved not in self.func_templates:
             self._error(f"call to undefined function {requested!r}", e)
-        declaration = self.func_decls[resolved]
+        declaration = (
+            self.func_templates[resolved]
+            if resolved in self.func_templates
+            else self.func_decls[resolved]
+        )
         target_module = getattr(declaration, "module", None)
         if (target_module is not None and target_module != self.current_module
                 and not getattr(declaration, "public", False)):
             self._error(f"function {requested!r} is private to module {target_module!r}", e)
-        e.resolved_name = resolved
-        ptypes, ret = self.funcs[resolved]
+        template = self.func_templates.get(resolved)
+        if template is None and e.type_args:
+            self._error(
+                f"function {e.name!r} is not generic and cannot take type arguments", e)
+        ptypes = (
+            [parameter.typ for parameter in template.params]
+            if template is not None else self.funcs[resolved][0]
+        )
         if len(e.args) != len(ptypes):
             self._error(
                 f"function {e.name!r} expects {len(ptypes)} argument(s), "
                 f"got {len(e.args)}", e)
+        actual_types = [self._check_expr(argument) for argument in e.args]
+        if template is not None:
+            if e.type_args and len(e.type_args) != len(template.generic_params):
+                self._error(
+                    f"generic function {e.name!r} expects "
+                    f"{len(template.generic_params)} type argument(s), "
+                    f"got {len(e.type_args)}",
+                    e,
+                )
+            for type_argument in e.type_args:
+                if type_argument == "void" or not self._valid_type(type_argument):
+                    self._error(
+                        f"generic function {e.name!r} has invalid type argument "
+                        f"{type_argument}",
+                        e,
+                    )
+            mapping = dict(zip(template.generic_params, e.type_args))
+            generic_params = set(template.generic_params)
+            if not e.type_args:
+                for index, (pattern, actual) in enumerate(
+                        zip(ptypes, actual_types), start=1):
+                    if not self._unify_generic_type(
+                            pattern, actual, generic_params, mapping):
+                        self._error(
+                            f"argument {index} of {e.name!r} cannot consistently infer "
+                            f"generic type from {pattern} and {actual}",
+                            e,
+                        )
+            resolved = self._instantiate_function(resolved, mapping, e)
+        e.resolved_name = resolved
+        ptypes, ret = self.funcs[resolved]
         for idx, (arg, pt) in enumerate(zip(e.args, ptypes), start=1):
-            at = self._check_expr(arg)
             if not self._coerce(pt, arg):
                 self._error(
-                    f"argument {idx} of {e.name!r} expects {pt}, got {at}", e)
+                    f"argument {idx} of {e.name!r} expects {pt}, got {arg.type}", e)
         return ret

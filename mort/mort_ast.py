@@ -59,7 +59,7 @@ class StructDecl(Node):
 
 
 class FnDecl(Node):
-    def __init__(self, name, params, ret, body, line):
+    def __init__(self, name, params, ret, body, line, generic_params=None):
         super().__init__()
         self.name = name
         self.params = params
@@ -70,6 +70,7 @@ class FnDecl(Node):
         self.module = None
         self.symbol_name = name
         self.import_aliases = {}
+        self.generic_params = generic_params or []
 
 
 class EnumDecl(Node):
@@ -270,7 +271,7 @@ class Binary(Node):
 
 
 class Call(Node):
-    def __init__(self, name, args, line):
+    def __init__(self, name, args, line, type_args=None):
         super().__init__()
         self.name = name
         self.args = args
@@ -278,6 +279,7 @@ class Call(Node):
         self.resolved_name = None
         self.enum_name = None
         self.enum_variant = None
+        self.type_args = type_args or []
 
 
 class Cast(Node):

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.0 — 2026-07-22
+
+Mort's generic-functions and typed-collections release.
+
+### Added
+
+- Inferred and explicit generic function calls with native monomorphization.
+- Recursive generic functions and generic calls across module boundaries.
+- Nested type-pattern inference with conflict and missing-argument diagnostics.
+- `sizeof<T>()` for portable typed allocation.
+- Allocation-backed `std.vec.Vec<T>` with growth, access, slices, and cleanup.
+- Allocation-backed `std.map.Map<Key, Value>` with linear lookup, replacement,
+  growth, membership checks, and cleanup.
+
+### Validation
+
+- 186 compiler, generics, collections, package, native execution, and kernel
+  tests pass.
+
 ## 0.13.0 — 2026-07-22
 
 Mort's generic-sum and structured-error release.

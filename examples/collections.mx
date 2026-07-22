@@ -1,0 +1,24 @@
+import std.map;
+import std.vec;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return 0; },
+    }
+}
+
+fn main() -> int {
+    let numbers: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&numbers);
+    let scores: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&scores);
+
+    vec.push(&numbers, 20);
+    vec.push(&numbers, 22);
+    print(unwrap(vec.get(&numbers, 0)) + unwrap(vec.get(&numbers, 1)));
+
+    map.insert(&scores, 7, 42);
+    print(unwrap(map.get(&scores, 7)));
+    return 0;
+}

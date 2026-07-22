@@ -1,0 +1,110 @@
+module std.map;
+
+import std.option;
+
+struct Map<Key, Value> {
+    keys: *Key,
+    values: *Value,
+    length: u64,
+    capacity: u64,
+}
+
+pub fn with_capacity<Key, Value>(capacity: u64) -> Map<Key, Value> {
+    let actual = capacity;
+    if actual == 0 {
+        actual = 1;
+    }
+    let keys = alloc(actual * sizeof<Key>()) as *Key;
+    let values = alloc(actual * sizeof<Value>()) as *Value;
+    return Map<Key, Value> {
+        keys: keys,
+        values: values,
+        length: 0,
+        capacity: actual,
+    };
+}
+
+pub fn new<Key, Value>() -> Map<Key, Value> {
+    return with_capacity<Key, Value>(4);
+}
+
+fn find<Key, Value>(value: *Map<Key, Value>, key: Key) -> Option<u64> {
+    for index: u64 in 0..(*value).length {
+        if (*value).keys[index] == key {
+            return Option<u64>.Some(index);
+        }
+    }
+    return Option<u64>.None;
+}
+
+pub fn reserve<Key, Value>(value: *Map<Key, Value>, capacity: u64) -> void {
+    if capacity <= (*value).capacity {
+        return;
+    }
+    let keys = alloc(capacity * sizeof<Key>()) as *Key;
+    let values = alloc(capacity * sizeof<Value>()) as *Value;
+    for index: u64 in 0..(*value).length {
+        keys[index] = (*value).keys[index];
+        values[index] = (*value).values[index];
+    }
+    free((*value).keys);
+    free((*value).values);
+    (*value).keys = keys;
+    (*value).values = values;
+    (*value).capacity = capacity;
+}
+
+pub fn insert<Key, Value>(
+value: *Map<Key, Value>,
+key: Key,
+item: Value
+) -> bool {
+    let existing = find(value, key);
+    match existing {
+        Option<u64>.Some(index) => {
+            (*value).values[index] = item;
+            return false;
+        },
+        Option<u64>.None => {},
+    }
+    if (*value).length == (*value).capacity {
+        reserve(value, (*value).capacity * 2);
+    }
+    (*value).keys[(*value).length] = key;
+    (*value).values[(*value).length] = item;
+    (*value).length = (*value).length + 1;
+    return true;
+}
+
+pub fn get<Key, Value>(value: *Map<Key, Value>, key: Key) -> Option<Value> {
+    let existing = find(value, key);
+    match existing {
+        Option<u64>.Some(index) => {
+            return Option<Value>.Some((*value).values[index]);
+        },
+        Option<u64>.None => {
+            return Option<Value>.None;
+        },
+    }
+}
+
+pub fn contains<Key, Value>(value: *Map<Key, Value>, key: Key) -> bool {
+    let existing = find(value, key);
+    match existing {
+        Option<u64>.Some(index) => { return true; },
+        Option<u64>.None => { return false; },
+    }
+}
+
+pub fn clear<Key, Value>(value: *Map<Key, Value>) -> void {
+    (*value).length = 0;
+}
+
+pub fn destroy<Key, Value>(value: *Map<Key, Value>) -> void {
+    free((*value).keys);
+    free((*value).values);
+    (*value).keys = 0 as *Key;
+    (*value).values = 0 as *Value;
+    (*value).length = 0;
+    (*value).capacity = 0;
+}
