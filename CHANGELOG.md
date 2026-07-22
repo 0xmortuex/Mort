@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.21.0 — 2026-07-22
+
+Mort's precise control-flow release.
+
+### Added
+
+- Inclusive `start..=end` ranges with overflow-safe iteration at integer maxima.
+- First-class `loop { ... }` infinite loops.
+- Non-fallthrough analysis for unconditional loops without reachable `break`.
+
+### Improved
+
+- Range start and end expressions are evaluated once, in source order, before
+  iteration begins.
+- Inclusive loops preserve correct increment behavior across `continue`, while
+  `break` and lexical `defer` keep their existing guarantees.
+
+### Validation
+
+- 223 compiler, control-flow, native execution, package, tooling, and kernel
+  tests pass.
+
 ## 0.20.0 — 2026-07-22
 
 Mort's source-ergonomics and pointer-safety release.

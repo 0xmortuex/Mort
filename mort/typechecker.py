@@ -789,6 +789,47 @@ class Checker:
             if isinstance(statement, A.Match) and statement.exhaustive:
                 if all(self._block_always_returns(arm.body) for arm in statement.arms):
                     return True
+            if (isinstance(statement, A.While)
+                    and isinstance(statement.cond, A.BoolLit)
+                    and statement.cond.value
+                    and not self._block_breaks_current_loop(statement.body)):
+                # An unconditional loop without a break cannot fall through,
+                # whether it returns or deliberately runs forever.
+                return True
+        return False
+
+    def _block_breaks_current_loop(self, block):
+        for statement in block.stmts:
+            if isinstance(statement, A.Break):
+                return True
+            # A break in a nested loop belongs to that loop, not this one.
+            if isinstance(statement, (A.While, A.For)):
+                continue
+            if isinstance(statement, A.Block):
+                if self._block_breaks_current_loop(statement):
+                    return True
+            elif isinstance(statement, A.If):
+                if self._block_breaks_current_loop(statement.then):
+                    return True
+                if isinstance(statement.els, A.Block):
+                    if self._block_breaks_current_loop(statement.els):
+                        return True
+                elif isinstance(statement.els, A.If):
+                    if self._if_breaks_current_loop(statement.els):
+                        return True
+            elif isinstance(statement, A.Match):
+                if any(self._block_breaks_current_loop(arm.body)
+                       for arm in statement.arms):
+                    return True
+        return False
+
+    def _if_breaks_current_loop(self, statement):
+        if self._block_breaks_current_loop(statement.then):
+            return True
+        if isinstance(statement.els, A.Block):
+            return self._block_breaks_current_loop(statement.els)
+        if isinstance(statement.els, A.If):
+            return self._if_breaks_current_loop(statement.els)
         return False
 
     def _if_always_returns(self, statement):

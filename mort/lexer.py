@@ -27,6 +27,7 @@ _TWO_CHAR = {
 _THREE_CHAR = {
     "<<=": T.SHL_ASSIGN,
     ">>=": T.SHR_ASSIGN,
+    "..=": T.DOTDOTEQ,
 }
 
 _ONE_CHAR = {

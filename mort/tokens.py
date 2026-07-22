@@ -16,6 +16,7 @@ class T(Enum):
     IF = auto()
     ELSE = auto()
     WHILE = auto()
+    LOOP = auto()
     FOR = auto()
     IN = auto()
     TRUE = auto()
@@ -52,6 +53,7 @@ class T(Enum):
     FAT_ARROW = auto()
     DOT = auto()
     DOTDOT = auto()
+    DOTDOTEQ = auto()
     AMP = auto()
     LBRACKET = auto()
     RBRACKET = auto()
@@ -96,6 +98,7 @@ KEYWORDS = {
     "if": T.IF,
     "else": T.ELSE,
     "while": T.WHILE,
+    "loop": T.LOOP,
     "for": T.FOR,
     "in": T.IN,
     "true": T.TRUE,

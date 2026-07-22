@@ -537,19 +537,24 @@ def test_bitwise_runs():
 def test_for_loop_codegen():
     # both bounds are literals -> i is i64 (Mort's default integer)
     c = c_of("fn main() -> int { let s: i64 = 0; for i in 0..5 { s = s + i; } print(s); return 0; }")
-    assert "for (int64_t m_i = 0; m_i < 5; m_i = m_i + 1)" in c
+    assert "int64_t mort_range_start_0 = 0;" in c
+    assert "int64_t mort_range_end_0 = 5;" in c
+    assert "m_i < mort_range_end_0" in c
 
 
 def test_for_loop_var_type_from_bound():
     # a typed (non-literal) bound gives the loop variable that type -> usable
     # with same-typed data (e.g. a u32 counter), no cast needed
     c = c_of("fn main() -> int { let n: u32 = 3; let s: u32 = 0; for i in 0..n { s = s + i; } print(s as i64); return 0; }")
-    assert "for (uint32_t m_i = 0; m_i < m_n; m_i = m_i + 1)" in c
+    assert "uint32_t mort_range_start_0 = 0;" in c
+    assert "uint32_t mort_range_end_0 = m_n;" in c
+    assert "m_i < mort_range_end_0" in c
 
 
 def test_for_loop_annotated_type():
     c = c_of("fn main() -> int { let s: u32 = 0; for i: u32 in 0..2000 { s = s + i; } print(s as i64); return 0; }")
-    assert "for (uint32_t m_i = 0; m_i < 2000; m_i = m_i + 1)" in c
+    assert "uint32_t mort_range_end_0 = 2000;" in c
+    assert "m_i < mort_range_end_0" in c
 
 
 @needs_cc
@@ -568,6 +573,61 @@ def test_for_loop_runs():
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.stdout == "30\n"
+
+
+@needs_cc
+def test_ranges_cache_bounds_and_inclusive_max_is_overflow_safe():
+    src = (
+        "fn upper(calls: *i64) -> u8 { *calls += 1; return 3; } "
+        "fn main() -> int { let calls: i64 = 0; let exclusive: i64 = 0; "
+        "for i: u8 in 0..upper(&calls) { exclusive += i as i64; } "
+        "let inclusive: u64 = 0; for i: u8 in 254..=255 { "
+        "if i == 254 { continue; } inclusive += i as u64; } "
+        "let empty: i64 = 0; for i: u8 in 9..=3 { empty += i as i64; } "
+        "print(exclusive); print(calls); print(inclusive as i64); print(empty); "
+        "return 0; }"
+    )
+    c_source = c_of(src)
+    assert c_source.count("mort_upper((&m_calls))") == 1
+    assert "mort_range_has_next_1" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "ranges.c")
+        exe = os.path.join(d, "ranges.exe" if os.name == "nt" else "ranges")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "3\n1\n255\n0\n"
+
+
+@needs_cc
+def test_loop_statement_runs_with_break_and_continue():
+    src = (
+        "fn main() -> int { let count: i64 = 0; let total: i64 = 0; loop { "
+        "count += 1; if count == 2 { continue; } total += count; "
+        "if count == 4 { break; } } print(total); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "while (true)" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "loop.c")
+        exe = os.path.join(d, "loop.exe" if os.name == "nt" else "loop")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "8\n"
+
+
+def test_unbroken_loop_is_non_fallthrough_for_return_analysis():
+    c_of("fn forever() -> i64 { loop {} } fn main() -> int { return 0; }")
+    with pytest.raises(MortError, match="may finish without returning"):
+        c_of(
+            "fn maybe(done: bool) -> i64 { loop { if done { break; } } } "
+            "fn main() -> int { return 0; }"
+        )
 
 
 def test_for_loop_var_scoped():

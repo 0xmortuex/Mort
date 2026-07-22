@@ -206,6 +206,7 @@ class CodeGen:
         self.match_id = 0
         self.try_id = 0
         self.return_id = 0
+        self.range_id = 0
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -549,7 +550,25 @@ class CodeGen:
             ct = self._ct(s.var_type)
             start = self._gen_expr(s.start)
             end = self._gen_expr(s.end)
-            self._emit(f"for ({ct} {v} = {start}; {v} < {end}; {v} = {v} + 1) {{")
+            range_id = self.range_id
+            self.range_id += 1
+            cached_start = f"mort_range_start_{range_id}"
+            cached_end = f"mort_range_end_{range_id}"
+            self._emit("{")
+            self.indent += 1
+            self._emit(f"{ct} {cached_start} = {start};")
+            self._emit(f"{ct} {cached_end} = {end};")
+            if s.inclusive:
+                has_next = f"mort_range_has_next_{range_id}"
+                self._emit(f"{ct} {v} = {cached_start};")
+                self._emit(f"bool {has_next} = {v} <= {cached_end};")
+                self._emit(
+                    f"for (; {has_next}; {has_next} = {v} != {cached_end}, "
+                    f"{v} = {has_next} ? {v} + 1 : {v}) {{")
+            else:
+                self._emit(
+                    f"for ({ct} {v} = {cached_start}; {v} < {cached_end}; "
+                    f"{v} = {v} + 1) {{")
             self.indent += 1
             self.defer_scopes.append([])
             self.loop_defer_bases.append(len(self.defer_scopes) - 1)
@@ -558,6 +577,8 @@ class CodeGen:
             self._emit_defer_scopes(len(self.defer_scopes) - 1)
             self.loop_defer_bases.pop()
             self.defer_scopes.pop()
+            self.indent -= 1
+            self._emit("}")
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.Block):

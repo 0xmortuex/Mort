@@ -360,6 +360,9 @@ class Parser:
             return self._if_stmt()
         if t == T.WHILE:
             return self._while_stmt()
+        if t == T.LOOP:
+            line = self._advance().line
+            return A.While(A.BoolLit(True, line), self._block(), line)
         if t == T.FOR:
             return self._for_stmt()
         if t == T.ASM:
@@ -470,12 +473,17 @@ class Parser:
         self._no_struct_lit = True
         try:
             start = self._expression()
-            self._expect(T.DOTDOT, "'..'")
+            if self._at(T.DOTDOTEQ):
+                self._advance()
+                inclusive = True
+            else:
+                self._expect(T.DOTDOT, "'..'")
+                inclusive = False
             end = self._expression()
         finally:
             self._no_struct_lit = saved
         body = self._block()
-        return A.For(var, decl_type, start, end, body, line)
+        return A.For(var, decl_type, start, end, body, line, inclusive)
 
     def _expr_or_assign(self):
         line = self._peek().line

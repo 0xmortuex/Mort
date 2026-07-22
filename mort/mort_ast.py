@@ -164,12 +164,13 @@ class While(Node):
 
 
 class For(Node):
-    def __init__(self, var, decl_type, start, end, body, line):
+    def __init__(self, var, decl_type, start, end, body, line, inclusive=False):
         super().__init__()
         self.var = var
         self.decl_type = decl_type  # optional explicit loop-variable type
         self.start = start
         self.end = end        # exclusive upper bound
+        self.inclusive = inclusive
         self.body = body
         self.line = line
         self.var_type = None  # resolved by the checker
