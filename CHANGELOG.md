@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.0 — 2026-07-22
+
+Mort's generic-sum and structured-error release.
+
+### Added
+
+- Monomorphized generic enums with native tagged-union layouts.
+- Bundled `std.option.Option<T>` and `std.result.Result<Value, Error>` types.
+- Explicit generic variant construction and exhaustive payload matching.
+- `try` propagation for `Result` values, with checked error-type compatibility.
+- Nested generic type parsing without changing expression shift semantics.
+
+### Validation
+
+- 177 compiler, generics, error propagation, package, native execution, and
+  kernel tests pass.
+
 ## 0.12.0 — 2026-07-22
 
 Mort's portable-dependency and deterministic-cleanup release.

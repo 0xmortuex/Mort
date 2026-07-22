@@ -1,20 +1,28 @@
-enum ParseResult {
-    Value(i64),
-    Error(*u8),
+import std.result;
+
+fn parse(ok: bool) -> Result<i64, *u8> {
+    if ok {
+        return Result<i64, *u8>.Ok(21);
+    }
+    return Result<i64, *u8>.Err("invalid input");
 }
 
-fn unwrap(result: ParseResult) -> i64 {
+fn doubled(ok: bool) -> Result<i64, *u8> {
+    let value = try parse(ok);
+    return Result<i64, *u8>.Ok(value * 2);
+}
+
+fn show(result: Result<i64, *u8>) -> void {
     match result {
-        ParseResult.Value(value) => { return value; },
-        ParseResult.Error(message) => {
+        Result<i64, *u8>.Ok(value) => { print(value); },
+        Result<i64, *u8>.Err(message) => {
             println(message);
-            return 0;
         },
     }
 }
 
 fn main() -> int {
-    let result: ParseResult = ParseResult.Value(42);
-    print(unwrap(result));
+    show(doubled(true));
+    show(doubled(false));
     return 0;
 }

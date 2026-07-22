@@ -1,0 +1,6 @@
+module std.result;
+
+enum Result<Value, Error> {
+    Ok(Value),
+    Err(Error),
+}

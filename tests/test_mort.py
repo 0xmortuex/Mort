@@ -1065,6 +1065,135 @@ def test_generic_struct_monomorphization_run():
 
 
 @needs_cc
+def test_generic_option_and_result_enums_run():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "generic_enums.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.option; import std.result; "
+                "fn option_value(value: Option<i64>) -> i64 { match value { "
+                "Option<i64>.Some(inner) => { return inner; }, "
+                "Option<i64>.None => { return 0; } } } "
+                "fn result_value(value: Result<i64, *u8>) -> i64 { match value { "
+                "Result<i64, *u8>.Ok(inner) => { return inner; }, "
+                "Result<i64, *u8>.Err(message) => { println(message); return 0; } } } "
+                "fn nested_value(value: Option<Result<i64, *u8>>) -> i64 { match value { "
+                "Option<Result<i64, *u8>>.Some(inner) => { return result_value(inner); }, "
+                "Option<Result<i64, *u8>>.None => { return 0; } } } "
+                "fn main() -> int { "
+                "let option: Option<i64> = Option<i64>.Some(20); "
+                "let result: Result<i64, *u8> = Result<i64, *u8>.Ok(22); "
+                "let nested: Option<Result<i64, *u8>> = "
+                "Option<Result<i64, *u8>>.Some(Result<i64, *u8>.Ok(42)); "
+                "print(option_value(option) + result_value(result)); "
+                "print(nested_value(nested)); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_Option_i64" in c_source
+        assert "mort_Result_i64_ptr_u8" in c_source
+        cfile = os.path.join(d, "generic_enums.c")
+        exe = os.path.join(d, "generic_enums.exe" if os.name == "nt" else "generic_enums")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "42\n42\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "enum Empty<T> {} fn main() -> int { return 0; }",
+            "must have at least one variant",
+        ),
+        (
+            "enum Duplicate<T> { Value(T), Value(T) } "
+            "fn main() -> int { return 0; }",
+            "has a duplicate variant",
+        ),
+        (
+            "enum Box<T> { Value(Missing) } fn use(value: Box<i64>) -> void {} "
+            "fn main() -> int { return 0; }",
+            "has unknown payload type Missing",
+        ),
+        (
+            "enum Loop<T> { More(Loop<T>), Done } "
+            "fn use(value: Loop<i64>) -> void {} fn main() -> int { return 0; }",
+            "cannot contain itself by value",
+        ),
+    ],
+)
+def test_generic_enum_rejects_invalid_definitions(source, message):
+    with pytest.raises(MortError) as exc:
+        c_of(source)
+    assert message in str(exc.value)
+
+
+@needs_cc
+def test_result_try_propagates_success_and_error():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "result_try.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.result; "
+                "fn parse(ok: bool) -> Result<i64, *u8> { "
+                "if ok { return Result<i64, *u8>.Ok(21); } "
+                "return Result<i64, *u8>.Err(\"bad\"); } "
+                "fn twice(ok: bool) -> Result<i64, *u8> { "
+                "let value = try parse(ok); "
+                "return Result<i64, *u8>.Ok(value * 2); } "
+                "fn show(value: Result<i64, *u8>) -> void { match value { "
+                "Result<i64, *u8>.Ok(inner) => { print(inner); }, "
+                "Result<i64, *u8>.Err(message) => { println(message); } } } "
+                "fn main() -> int { show(twice(true)); show(twice(false)); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_try_0" in c_source
+        cfile = os.path.join(d, "result_try.c")
+        exe = os.path.join(d, "result_try.exe" if os.name == "nt" else "result_try")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\nbad\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "fn main() -> int { let value = try 1; return value; }",
+            "try expects a Result<Value, Error> expression",
+        ),
+        (
+            "import std.result; fn get() -> Result<i64, *u8> { "
+            "return Result<i64, *u8>.Ok(1); } "
+            "fn main() -> int { return try get(); }",
+            "try is currently allowed only as a let initializer",
+        ),
+        (
+            "import std.result; fn get() -> Result<i64, *u8> { "
+            "return Result<i64, *u8>.Ok(1); } "
+            "fn convert() -> Result<i64, i64> { let value = try get(); "
+            "return Result<i64, i64>.Ok(value); } "
+            "fn main() -> int { return 0; }",
+            "try error type *u8 does not match return error type i64",
+        ),
+    ],
+)
+def test_result_try_rejects_invalid_use(source, message):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "invalid_try.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        with pytest.raises(MortError) as exc:
+            mortc.compile_files_to_c([path])
+    assert message in str(exc.value)
+
+
+@needs_cc
 def test_function_scoped_defer_runs_on_return():
     src = (
         "fn choose(flag: bool) -> i64 { "
@@ -1225,7 +1354,7 @@ EXPECTED = {
     "loops.mx": "13\n",
     "enums.mx": "1\n",
     "slices.mx": "42\n",
-    "result.mx": "42\n",
+    "result.mx": "42\ninvalid input\n",
     "generics.mx": "42\n",
     "defer.mx": "cleanup\n42\n",
 }
@@ -1235,8 +1364,7 @@ EXPECTED = {
 @pytest.mark.parametrize("name, expected", EXPECTED.items())
 def test_examples_run(name, expected):
     src_path = os.path.join(ROOT, "examples", name)
-    with open(src_path, encoding="utf-8") as fh:
-        c_source = c_of(fh.read())
+    c_source = mortc.compile_files_to_c([src_path])
     with tempfile.TemporaryDirectory() as d:
         cfile = os.path.join(d, "out.c")
         exe = os.path.join(d, "out.exe" if os.name == "nt" else "out")

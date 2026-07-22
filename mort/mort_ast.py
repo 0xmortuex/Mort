@@ -73,11 +73,12 @@ class FnDecl(Node):
 
 
 class EnumDecl(Node):
-    def __init__(self, name, variants, line):
+    def __init__(self, name, variants, line, generic_params=None):
         super().__init__()
         self.name = name
         self.variants = variants
         self.line = line
+        self.generic_params = generic_params or []
 
 
 class EnumVariant:
@@ -285,6 +286,16 @@ class Cast(Node):
         self.expr = expr
         self.target_type = target_type
         self.line = line
+
+
+class Try(Node):
+    def __init__(self, expr, line):
+        super().__init__()
+        self.expr = expr
+        self.line = line
+        self.result_type = None
+        self.error_type = None
+        self.return_type = None
 
 
 class StructLit(Node):

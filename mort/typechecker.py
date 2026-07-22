@@ -153,6 +153,7 @@ class Checker:
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
         self.struct_templates = {}
         self.enums = {}       # name -> ordered {variant: optional payload type}
+        self.enum_templates = {}
         self.globals = {}     # name -> type
         self.scopes = []
         self.current_ret = None
@@ -162,6 +163,7 @@ class Checker:
         self.current_import_aliases = {}
         self.block_depth = 0
         self.root_defer_open = True
+        self.allowed_try_expr = None
 
     def _error(self, msg, node):
         raise MortError(
@@ -180,7 +182,7 @@ class Checker:
         if is_slice(t):
             return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
         if generic_parts(t):
-            return self._instantiate_struct(t)
+            return self._instantiate_struct(t) or self._instantiate_enum(t)
         return t in INT_TYPES or t == "bool" or t in self.structs or t in self.enums
 
     def _instantiate_struct(self, concrete_type):
@@ -213,16 +215,64 @@ class Checker:
             A.StructDecl(concrete_type, fields, template.line))
         return True
 
+    def _instantiate_enum(self, concrete_type):
+        if concrete_type in self.enums:
+            return True
+        base, args = generic_parts(concrete_type)
+        template = self.enum_templates.get(base)
+        if template is None or len(args) != len(template.generic_params):
+            return False
+        if not all(self._valid_type(arg) for arg in args):
+            return False
+        mapping = dict(zip(template.generic_params, args))
+        variants = [
+            A.EnumVariant(
+                variant.name,
+                None if variant.payload_type is None
+                else substitute_type(variant.payload_type, mapping),
+            )
+            for variant in template.variants
+        ]
+        self.enums[concrete_type] = None
+        resolved = {}
+        for variant in variants:
+            payload_type = variant.payload_type
+            if payload_type == concrete_type:
+                self._error(
+                    f"generic enum {concrete_type!r} cannot contain itself by value",
+                    template,
+                )
+            if payload_type is not None and not self._valid_type(payload_type):
+                self._error(
+                    f"variant {concrete_type}.{variant.name} has unknown payload type "
+                    f"{payload_type}",
+                    template,
+                )
+            resolved[variant.name] = payload_type
+        self.enums[concrete_type] = resolved
+        concrete = A.EnumDecl(concrete_type, variants, template.line)
+        if hasattr(template, "filename"):
+            concrete.filename = template.filename
+        self.program.enums.append(concrete)
+        return True
+
     def check(self):
         # Enums are nominal integer-backed types with a closed variant set.
-        for ed in self.program.enums:
-            if ed.name in self.enums:
-                self._error(f"enum {ed.name!r} is already defined", ed)
+        for ed in list(self.program.enums):
             if not ed.variants:
                 self._error(f"enum {ed.name!r} must have at least one variant", ed)
             variant_names = [variant.name for variant in ed.variants]
             if len(set(variant_names)) != len(variant_names):
                 self._error(f"enum {ed.name!r} has a duplicate variant", ed)
+            if ed.generic_params:
+                if ed.name in self.enum_templates or ed.name in self.enums:
+                    self._error(f"enum {ed.name!r} is already defined", ed)
+                if len(set(ed.generic_params)) != len(ed.generic_params):
+                    self._error(f"enum {ed.name!r} has a duplicate generic parameter", ed)
+                self.enum_templates[ed.name] = ed
+                continue
+            if ed.name in self.enums:
+                self._error(f"enum {ed.name!r} is already defined", ed)
             self.enums[ed.name] = {
                 variant.name: variant.payload_type for variant in ed.variants
             }
@@ -231,8 +281,11 @@ class Checker:
         #    (including recursively through pointers, e.g. `next: *Node`).
         for sd in self.program.structs:
             if sd.generic_params:
-                if sd.name in self.struct_templates or sd.name in self.structs:
+                if (sd.name in self.struct_templates or sd.name in self.structs
+                        or sd.name in self.enum_templates or sd.name in self.enums):
                     self._error(f"struct {sd.name!r} is already defined", sd)
+                if len(set(sd.generic_params)) != len(sd.generic_params):
+                    self._error(f"struct {sd.name!r} has a duplicate generic parameter", sd)
                 self.struct_templates[sd.name] = sd
                 continue
             if sd.name in self.structs or sd.name in self.enums:
@@ -254,7 +307,9 @@ class Checker:
                 fields[fld.name] = fld.typ
             self.structs[sd.name] = fields
 
-        for ed in self.program.enums:
+        for ed in list(self.program.enums):
+            if ed.generic_params:
+                continue
             for variant in ed.variants:
                 if variant.payload_type is not None and not self._valid_type(variant.payload_type):
                     self._error(
@@ -551,7 +606,12 @@ class Checker:
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
                 self._declare(s.name, s.var_type, s)
                 return
-            t = self._check_expr(s.expr)
+            previous_try_expr = self.allowed_try_expr
+            self.allowed_try_expr = s.expr if isinstance(s.expr, A.Try) else None
+            try:
+                t = self._check_expr(s.expr)
+            finally:
+                self.allowed_try_expr = previous_try_expr
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if s.decl_type:
@@ -666,7 +726,7 @@ class Checker:
                 else:
                     if (subject_type in self.enums and isinstance(arm.pattern, A.Call)
                             and arm.pattern.name.startswith(subject_type + ".")):
-                        variant_name = arm.pattern.name.split(".", 1)[1]
+                        variant_name = arm.pattern.name.rsplit(".", 1)[1]
                         if variant_name not in self.enums[subject_type]:
                             self._error(
                                 f"enum {subject_type!r} has no variant {variant_name!r}", arm)
@@ -780,6 +840,36 @@ class Checker:
                 self._error(f"cannot cast {st} to {tgt}", e)
             return tgt
 
+        if isinstance(e, A.Try):
+            if e is not self.allowed_try_expr:
+                self._error("try is currently allowed only as a let initializer", e)
+            result_type = self._check_expr(e.expr)
+            result_parts = generic_parts(result_type)
+            return_parts = generic_parts(self.current_ret)
+            if (not result_parts or result_parts[0] != "Result"
+                    or len(result_parts[1]) != 2):
+                self._error("try expects a Result<Value, Error> expression", e)
+            if (not return_parts or return_parts[0] != "Result"
+                    or len(return_parts[1]) != 2):
+                self._error("try requires the enclosing function to return Result", e)
+            result_variants = self.enums.get(result_type, {})
+            return_variants = self.enums.get(self.current_ret, {})
+            if (result_variants.get("Ok") is None
+                    or result_variants.get("Err") is None):
+                self._error("try requires Result to define payload variants Ok and Err", e)
+            if return_variants.get("Err") is None:
+                self._error("the enclosing Result must define a payload Err variant", e)
+            value_type, error_type = result_parts[1]
+            _, return_error_type = return_parts[1]
+            if error_type != return_error_type:
+                self._error(
+                    f"try error type {error_type} does not match return error type "
+                    f"{return_error_type}", e)
+            e.result_type = result_type
+            e.error_type = error_type
+            e.return_type = self.current_ret
+            return value_type
+
         if isinstance(e, A.Unary):
             if e.op == "&":
                 ot = self._check_expr(e.operand)
@@ -875,6 +965,8 @@ class Checker:
             return e.name
 
         if isinstance(e, A.FieldAccess):
+            if isinstance(e.obj, A.Var):
+                self._valid_type(e.obj.name)
             if isinstance(e.obj, A.Var) and e.obj.name in self.enums:
                 enum_name = e.obj.name
                 if e.field not in self.enums[enum_name]:
@@ -968,7 +1060,8 @@ class Checker:
 
     def _infer_call(self, e):
         if "." in e.name:
-            enum_name, variant_name = e.name.split(".", 1)
+            enum_name, variant_name = e.name.rsplit(".", 1)
+            self._valid_type(enum_name)
             if enum_name in self.enums and variant_name in self.enums[enum_name]:
                 payload_type = self.enums[enum_name][variant_name]
                 if payload_type is None:

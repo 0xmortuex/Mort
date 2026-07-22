@@ -19,7 +19,7 @@ Grammar (informal):
 Precedence (low -> high):
     || , && , == != , < > <= >= , + - , * / % , unary ! - , call , primary
 """
-from .tokens import T
+from .tokens import T, Token
 from .errors import MortError
 from . import mort_ast as A
 
@@ -55,6 +55,28 @@ class Parser:
             tok = self._peek()
             raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line)
         return self._advance()
+
+    def _expect_type_close(self):
+        """Consume one generic-type closing angle.
+
+        The lexer correctly treats ``>>`` as a shift in expressions. Inside a
+        type, however, the same bytes may close two nested generic argument
+        lists. Split that token lazily so expression shift parsing stays
+        unchanged.
+        """
+        if self._at(T.SHR):
+            tok = self._peek()
+            tok.type = T.GT
+            tok.value = ">"
+            tok.col += 1
+            return Token(T.GT, ">", tok.line, tok.col - 1)
+        if self._at(T.GE):
+            tok = self._peek()
+            tok.type = T.ASSIGN
+            tok.value = "="
+            tok.col += 1
+            return Token(T.GT, ">", tok.line, tok.col - 1)
+        return self._expect(T.GT, "'>'")
 
     # ----- entry -----
     def parse(self):
@@ -152,6 +174,14 @@ class Parser:
     def _enum_decl(self):
         line = self._advance().line
         name = self._expect(T.IDENT, "enum name").value
+        generic_params = []
+        if self._at(T.LT):
+            self._advance()
+            generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            while self._at(T.COMMA):
+                self._advance()
+                generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            self._expect(T.GT, "'>'")
         self._expect(T.LBRACE, "'{'")
         variants = []
         while not self._at(T.RBRACE) and not self._at(T.EOF):
@@ -167,7 +197,7 @@ class Parser:
             else:
                 break
         self._expect(T.RBRACE, "'}'")
-        return A.EnumDecl(name, variants, line)
+        return A.EnumDecl(name, variants, line, generic_params)
 
     def _type_name(self):
         # pointer type: *T
@@ -214,7 +244,7 @@ class Parser:
                 while self._at(T.COMMA):
                     self._advance()
                     args.append(self._type_name())
-                self._expect(T.GT, "'>'")
+                self._expect_type_close()
                 name += "<" + ",".join(args) + ">"
             return name
         raise MortError(f"expected a type, got {tok.value!r}", tok.line)
@@ -509,6 +539,9 @@ class Parser:
             op = self._advance()
             op_str = "&" if op.type == T.AMP else op.value
             return A.Unary(op_str, self._unary(), op.line)
+        if self._at(T.TRY):
+            line = self._advance().line
+            return A.Try(self._unary(), line)
         return self._postfix()
 
     def _postfix(self):
@@ -568,6 +601,8 @@ class Parser:
             # struct literal:  Name { field: expr, ... }
             if self._looks_like_struct_lit() and not self._no_struct_lit:
                 return self._struct_lit()
+            if self._looks_like_generic_qualifier():
+                return A.Var(self._type_name(), t.line)
             self._advance()
             return A.Var(t.value, t.line)
         if t.type == T.LPAREN:
@@ -613,6 +648,30 @@ class Parser:
                 depth -= 1
                 if depth == 0:
                     return self._peek(offset + 1).type == T.LBRACE
+            elif token_type in (T.SEMI, T.EOF):
+                return False
+            offset += 1
+        return False
+
+    def _looks_like_generic_qualifier(self):
+        if self._peek().type != T.IDENT or self._peek(1).type != T.LT:
+            return False
+        depth = 0
+        offset = 1
+        while self.i + offset < len(self.toks):
+            token_type = self._peek(offset).type
+            if token_type == T.LT:
+                depth += 1
+            elif token_type == T.GT:
+                depth -= 1
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.DOT
+            elif token_type == T.SHR:
+                depth -= 2
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.DOT
+                if depth < 0:
+                    return False
             elif token_type in (T.SEMI, T.EOF):
                 return False
             offset += 1

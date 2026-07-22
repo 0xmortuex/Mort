@@ -73,9 +73,9 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
     if t in struct_names:
         return "struct mort_" + _type_tag(t)
     if t in payload_enum_names:
-        return "struct mort_" + t
+        return "struct mort_" + _type_tag(t)
     if t in enum_names:
-        return "enum mort_" + t
+        return "enum mort_" + _type_tag(t)
     return _C_BASE[t]
 
 
@@ -85,10 +85,11 @@ class CodeGen:
         self.freestanding = freestanding
         self.test_mode = test_mode
         self.struct_names = {s.name for s in program.structs if not s.generic_params}
-        self.enum_names = {e.name for e in program.enums}
+        self.enum_names = {e.name for e in program.enums if not e.generic_params}
         self.payload_enum_names = {
             enum.name for enum in program.enums
-            if any(variant.payload_type is not None for variant in enum.variants)
+            if not enum.generic_params
+            and any(variant.payload_type is not None for variant in enum.variants)
         }
         self.extern_names = {f.name for f in program.externs}
         self.lines = []
@@ -188,6 +189,7 @@ class CodeGen:
         self.used_len = False
         self.used_bounds = False
         self.match_id = 0
+        self.try_id = 0
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -220,7 +222,7 @@ class CodeGen:
         self._emit("#include <stddef.h>")
         self._emit()
         for enum in self.program.enums:
-            if enum.name not in self.payload_enum_names:
+            if not enum.generic_params and enum.name not in self.payload_enum_names:
                 self._gen_enum(enum)
                 self._emit()
         # Forward declarations let slice element pointers and structs refer to
@@ -231,8 +233,8 @@ class CodeGen:
                     self._emit(f"struct mort_{_type_tag(s.name)};")
             self._emit()
         for enum in self.program.enums:
-            if enum.name in self.payload_enum_names:
-                self._emit(f"struct mort_{enum.name};")
+            if not enum.generic_params and enum.name in self.payload_enum_names:
+                self._emit(f"struct mort_{_type_tag(enum.name)};")
         if self.payload_enum_names:
             self._emit()
         if self.slice_types:
@@ -252,7 +254,7 @@ class CodeGen:
                     self._gen_struct(s)
                     self._emit()
         for enum in self.program.enums:
-            if enum.name in self.payload_enum_names:
+            if not enum.generic_params and enum.name in self.payload_enum_names:
                 self._gen_enum(enum)
                 self._emit()
         # String literals live in mutable static storage, so the *u8 type they
@@ -353,16 +355,18 @@ class CodeGen:
         self._emit("};")
 
     def _gen_enum(self, enum):
-        tag_name = f"mort_{enum.name}_tag" if enum.name in self.payload_enum_names else f"mort_{enum.name}"
+        type_tag = _type_tag(enum.name)
+        tag_name = (f"mort_{type_tag}_tag" if enum.name in self.payload_enum_names
+                    else f"mort_{type_tag}")
         self._emit(f"enum {tag_name} {{")
         self.indent += 1
         for index, variant in enumerate(enum.variants):
             comma = "," if index + 1 < len(enum.variants) else ""
-            self._emit(f"MORT_{enum.name}_{variant.name} = {index}{comma}")
+            self._emit(f"MORT_{type_tag}_{variant.name} = {index}{comma}")
         self.indent -= 1
         self._emit("};")
         if enum.name in self.payload_enum_names:
-            self._emit(f"struct mort_{enum.name} {{")
+            self._emit(f"struct mort_{type_tag} {{")
             self._emit(f"    enum {tag_name} tag;")
             payloads = [variant for variant in enum.variants
                         if variant.payload_type is not None]
@@ -420,6 +424,9 @@ class CodeGen:
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
+            if isinstance(s.expr, A.Try):
+                self._gen_try_let(s)
+                return
             self._emit(self._var_decl(s.var_type, "m_" + s.name, self._gen_expr(s.expr)) + ";")
         elif isinstance(s, A.Assign):
             self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
@@ -496,7 +503,9 @@ class CodeGen:
                 else:
                     keyword = "else if" if emitted_condition else "if"
                     if s.expr.type in self.payload_enum_names:
-                        comparison = f"{temporary}.tag == MORT_{s.expr.type}_{arm.variant_name}"
+                        comparison = (
+                            f"{temporary}.tag == "
+                            f"MORT_{_type_tag(s.expr.type)}_{arm.variant_name}")
                     else:
                         comparison = f"{temporary} == {self._gen_expr(arm.pattern)}"
                     self._emit(f"{keyword} ({comparison}) {{")
@@ -512,6 +521,31 @@ class CodeGen:
                 self._emit("}")
             self.indent -= 1
             self._emit("}")
+
+    def _gen_try_let(self, statement):
+        expression = statement.expr
+        try_id = self.try_id
+        self.try_id += 1
+        temporary = f"mort_try_{try_id}"
+        result_tag = _type_tag(expression.result_type)
+        return_tag = _type_tag(expression.return_type)
+        self._emit(
+            f"{self._ct(expression.result_type)} {temporary} = "
+            f"{self._gen_expr(expression.expr)};")
+        self._emit(f"if ({temporary}.tag == MORT_{result_tag}_Err) {{")
+        self.indent += 1
+        self._emit_defers()
+        self._emit(
+            f"return (struct mort_{return_tag}){{ .tag = MORT_{return_tag}_Err, "
+            f".data.v_Err = {temporary}.data.v_Err }};")
+        self.indent -= 1
+        self._emit("}")
+        self._emit(
+            self._var_decl(
+                statement.var_type,
+                "m_" + statement.name,
+                f"{temporary}.data.v_Ok",
+            ) + ";")
 
     def _gen_cond(self, e):
         """Generate a condition for if/while.
@@ -555,11 +589,12 @@ class CodeGen:
         if isinstance(e, A.FieldAccess):
             if isinstance(e.obj, A.Var) and e.obj.name in self.enum_names:
                 if e.obj.name in self.payload_enum_names:
+                    enum_tag = _type_tag(e.obj.name)
                     return (
-                        f"(struct mort_{e.obj.name}){{ .tag = "
-                        f"MORT_{e.obj.name}_{e.field} }}"
+                        f"(struct mort_{enum_tag}){{ .tag = "
+                        f"MORT_{enum_tag}_{e.field} }}"
                     )
-                return f"MORT_{e.obj.name}_{e.field}"
+                return f"MORT_{_type_tag(e.obj.name)}_{e.field}"
             if _is_slice(e.obj.type):
                 field = "length" if e.field == "len" else e.field
                 return f"({self._gen_expr(e.obj)}).{field}"
@@ -611,9 +646,10 @@ class CodeGen:
             return self._narrow(e, code)
         if isinstance(e, A.Call):
             if e.enum_name is not None:
+                enum_tag = _type_tag(e.enum_name)
                 return (
-                    f"(struct mort_{e.enum_name}){{ .tag = "
-                    f"MORT_{e.enum_name}_{e.enum_variant}, "
+                    f"(struct mort_{enum_tag}){{ .tag = "
+                    f"MORT_{enum_tag}_{e.enum_variant}, "
                     f".data.v_{e.enum_variant} = {self._gen_expr(e.args[0])} }}"
                 )
             if e.name == "inb":
