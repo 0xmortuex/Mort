@@ -1714,6 +1714,74 @@ def test_portable_file_and_time_modules():
 
 
 @needs_cc
+def test_portable_random_and_byte_slice_modules():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "random_bytes.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.bytes; import std.random; "
+                "fn main() -> int { let first = random.seeded(42); "
+                "let second = random.seeded(42); "
+                "assert(random.next_u64(&first) == random.next_u64(&second)); "
+                "assert(random.next_u32(&first) == random.next_u32(&second)); "
+                "assert(random.between(&first, 10, 20) >= 10); "
+                "assert(random.between(&second, 10, 20) < 20); "
+                "let left: [u8; 8] = [0; 8]; let right: [u8; 8] = [0; 8]; "
+                "let left_slice: []u8 = slice(&left[0], 8); "
+                "let right_slice: []u8 = slice(&right[0], 8); "
+                "random.fill(&first, left_slice); random.fill(&second, right_slice); "
+                "let left_const: []const u8 = slice(&left[0] as *const u8, 8); "
+                "let right_const: []const u8 = slice(&right[0] as *const u8, 8); "
+                "assert(bytes.equal(left_const, right_const)); bytes.zero(right_slice); "
+                "assert(bytes.copy(right_slice, left_const) == 8); "
+                "assert(bytes.equal(left_const, right_const)); print(left[0] as i64); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__random__next_u64" in c_source
+        assert "mort_std__bytes__copy" in c_source
+        cfile = os.path.join(d, "random_bytes.c")
+        exe = os.path.join(d, "random_bytes.exe" if os.name == "nt" else "random_bytes")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.strip().isdigit()
+
+
+@needs_cc
+def test_generic_slice_algorithm_module():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithms.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; import std.option; "
+                "fn found(value: Option<u64>) -> u64 { match value { "
+                "Option<u64>.Some(index) => { return index; }, "
+                "Option<u64>.None => { return 99; } } } "
+                "fn main() -> int { let values: [i64; 6] = [4, 1, 6, 2, 5, 3]; "
+                "let mutable: []i64 = slice(&values[0], 6); algorithm.sort(mutable); "
+                "let view: []const i64 = slice(&values[0] as *const i64, 6); "
+                "assert(algorithm.contains(view, 4)); "
+                "assert(found(algorithm.index_of(view, 4)) == 3); "
+                "algorithm.reverse(mutable); print(values[0]); print(values[5]); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__sort_i64" in c_source
+        assert "mort_std__algorithm__index_of_i64" in c_source
+        cfile = os.path.join(d, "algorithms.c")
+        exe = os.path.join(d, "algorithms.exe" if os.name == "nt" else "algorithms")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "6\n1\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")

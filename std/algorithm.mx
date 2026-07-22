@@ -1,0 +1,48 @@
+module std.algorithm;
+
+import std.option;
+
+pub fn reverse<T>(values: []T) -> void {
+    if values.len < 2 {
+        return;
+    }
+    let left: u64 = 0;
+    let right = values.len - 1;
+    while left < right {
+        let temporary = values[left];
+        values[left] = values[right];
+        values[right] = temporary;
+        left += 1;
+        right -= 1;
+    }
+}
+
+pub fn sort<T>(values: []T) -> void {
+    for index: u64 in 1..values.len {
+        let position = index;
+        while position > 0 && values[position] < values[position - 1] {
+            let temporary = values[position];
+            values[position] = values[position - 1];
+            values[position - 1] = temporary;
+            position -= 1;
+        }
+    }
+}
+
+pub fn index_of<T>(values: []const T, needle: T) -> Option<u64> {
+    for index: u64 in 0..values.len {
+        if values[index] == needle {
+            return Option<u64>.Some(index);
+        }
+    }
+    return Option<u64>.None;
+}
+
+pub fn contains<T>(values: []const T, needle: T) -> bool {
+    for index: u64 in 0..values.len {
+        if values[index] == needle {
+            return true;
+        }
+    }
+    return false;
+}

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.23.0 — 2026-07-22
+
+Mort's portable data-utilities release.
+
+### Added
+
+- `std.random.Random` with deterministic nonzero seeding, `next_u64`,
+  `next_u32`, bounded/between generation, and byte-slice filling.
+- `std.bytes` with length-safe fill, zero, copy, and equality operations over
+  mutable and const slices.
+- Generic `std.algorithm` slice sorting, reversal, containment, and
+  `Option<u64>` indexed search.
+
+### Portability
+
+- All three modules are written entirely in Mort and require no hosted runtime,
+  OS API, C library extension, or platform-specific linker flag.
+
+### Validation
+
+- 227 compiler, standard-library, generic, native execution, LSP, package, and
+  kernel tests pass.
+
 ## 0.22.0 — 2026-07-22
 
 Mort's editor-intelligence release.

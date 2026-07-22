@@ -1,0 +1,46 @@
+module std.random;
+
+struct Random {
+    state: u64,
+}
+
+pub fn seeded(seed: u64) -> Random {
+    let state = seed;
+    if state == 0 {
+        state = 0x9E3779B97F4A7C15;
+    }
+    return Random { state: state };
+}
+
+pub fn next_u64(random: *Random) -> u64 {
+    let value = (*random).state;
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    (*random).state = value;
+    return value;
+}
+
+pub fn next_u32(random: *Random) -> u32 {
+    return (next_u64(random) >> 32) as u32;
+}
+
+pub fn below(random: *Random, maximum: u64) -> u64 {
+    if maximum == 0 {
+        return 0;
+    }
+    return next_u64(random) % maximum;
+}
+
+pub fn between(random: *Random, minimum: u64, maximum: u64) -> u64 {
+    if maximum <= minimum {
+        return minimum;
+    }
+    return minimum + below(random, maximum - minimum);
+}
+
+pub fn fill(random: *Random, output: []u8) -> void {
+    for index: u64 in 0..output.len {
+        output[index] = next_u64(random) as u8;
+    }
+}

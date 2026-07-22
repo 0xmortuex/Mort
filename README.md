@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-225%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-227%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.22)
+## The language (v0.23)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -103,7 +103,9 @@ C `main`, so the output is an ordinary native binary.
   `std.vec` and `std.map`, with deterministic `destroy` functions.
 - **Portable standard modules:** environment access, process control, and
   generic integer math through `std.env`, `std.process`, and `std.math`, plus
-  typed hosted file/time APIs through `std.fs` and `std.time`.
+  typed hosted file/time APIs through `std.fs` and `std.time`. Portable
+  `std.random`, `std.bytes`, and `std.algorithm` add deterministic PRNGs,
+  slice operations, sorting, reversal, containment, and indexed search.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `let value = try operation();` unwraps `Result.Ok` or
@@ -211,9 +213,12 @@ All source files in one command form a single statically checked program and
 share top-level functions, structs, and globals. Exactly one hosted `main`
 function is required.
 
-Bundled modules include `string`, `memory`, and the allocation-backed
-`owned_string` module. Include legacy flat modules with a repeatable `--std`
-option; each module is compiled from Mort source and remains fully type-checked.
+Bundled modules include modern importable `std.option`, `std.result`, `std.vec`,
+`std.map`, `std.math`, `std.algorithm`, `std.random`, `std.bytes`, `std.env`,
+`std.process`, `std.fs`, and `std.time` modules. Legacy flat `string`, `memory`,
+and allocation-backed `owned_string` modules remain available through the
+repeatable `--std` option. Every module is Mort source and remains fully
+type-checked in the consuming program.
 
 ### Calling C and native libraries
 
