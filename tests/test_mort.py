@@ -26,7 +26,14 @@ from mort.errors import MortError            # noqa: E402
 import mortc                                 # noqa: E402
 from mort.project import load_manifest, resolve_project  # noqa: E402
 from mort.formatter import format_source                 # noqa: E402
-from mort.lsp import Server, diagnostics_for_document   # noqa: E402
+from mort.lsp import (                                   # noqa: E402
+    Server,
+    completion_items,
+    diagnostics_for_document,
+    document_symbols,
+    hover_for_document,
+    signature_help,
+)
 from mort.fuzz import run_fuzz                          # noqa: E402
 
 
@@ -1297,6 +1304,48 @@ def test_lsp_stdio_initialize_shutdown_cycle():
     protocol_output = output.getvalue().decode("utf-8")
     assert '"name":"mort-lsp"' in protocol_output
     assert '"id":2,"result":null' in protocol_output
+
+
+def test_lsp_completion_symbols_and_hover_use_language_structure():
+    source = (
+        "module app; type Count = u64; struct Point<T> { value: T } "
+        "enum State { Ready, Done } const LIMIT: Count = 4; "
+        "extern fn native(value: i32) -> i32; "
+        "fn add(left: i64, right: i64) -> i64 { return left + right; }"
+    )
+    completions = completion_items(source)
+    labels = {item["label"] for item in completions}
+    assert {"match", "i64", "print", "Point", "State", "LIMIT", "add"} <= labels
+    symbols = document_symbols(source)
+    by_name = {item["name"]: item for item in symbols}
+    assert by_name["app"]["kind"] == 3
+    assert by_name["Point"]["kind"] == 23
+    assert by_name["State"]["kind"] == 10
+    assert by_name["LIMIT"]["kind"] == 14
+    assert by_name["add"]["detail"] == "fn add(left: i64, right: i64) -> i64"
+    line = "fn main() -> int { return add(1, 2); }"
+    hover = hover_for_document(source + "\n" + line, 1, line.index("add") + 1)
+    assert "fn add(left: i64, right: i64) -> i64" in hover["contents"]["value"]
+    assert document_symbols("fn broken(") == []
+    assert {item["label"] for item in completion_items("fn broken(")} >= {"fn", "print"}
+
+
+def test_lsp_signature_help_tracks_nested_arguments():
+    source = (
+        "fn add(left: i64, right: i64) -> i64 { return left + right; }\n"
+        "fn main() -> int { return add(add(1, 2), 3); }"
+    )
+    line = source.splitlines()[1]
+    inner_position = line.index("2)")
+    outer_position = line.index(", 3") + 2
+    inner = signature_help(source, 1, inner_position)
+    outer = signature_help(source, 1, outer_position)
+    assert inner["signatures"][0]["label"] == "fn add(left: i64, right: i64) -> i64"
+    assert inner["activeParameter"] == 1
+    assert outer["activeParameter"] == 1
+    builtin_source = "fn main() -> int { print(42); return 0; }"
+    builtin = signature_help(builtin_source, 0, builtin_source.index("42") + 1)
+    assert builtin["signatures"][0]["label"] == "fn print(value) -> void"
 
 
 def test_deterministic_frontend_fuzzer_and_cli(capsys):

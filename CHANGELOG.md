@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.22.0 — 2026-07-22
+
+Mort's editor-intelligence release.
+
+### Added
+
+- Parser-backed LSP document symbols for modules, aliases, structs, enums,
+  globals, external declarations, functions, and tests.
+- Completion for Mort keywords, primitive types, builtins, imports, and
+  document-level declarations, with useful fallback results on incomplete code.
+- Signature hover for builtins and source functions.
+- Nested-call-aware signature help with active-parameter tracking.
+- LSP whole-document formatting through Mort's comment-preserving formatter.
+
+### Improved
+
+- `initialize` now advertises completion, outline, hover, signature-help, and
+  formatting capabilities alongside full-document synchronization.
+
+### Validation
+
+- 225 compiler, LSP, formatting, native execution, package, and kernel tests
+  pass.
+
 ## 0.21.0 — 2026-07-22
 
 Mort's precise control-flow release.
