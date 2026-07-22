@@ -127,6 +127,7 @@ def _compile_programs(programs, freestanding=False, test_mode=False, warnings=No
         [e for p in programs for e in p.externs],
         enums=[e for p in programs for e in p.enums],
         tests=[t for p in programs for t in p.tests],
+        aliases=[a for p in programs for a in p.aliases],
     )
     checker = Checker(program, freestanding=freestanding, test_mode=test_mode)
     checker.check()

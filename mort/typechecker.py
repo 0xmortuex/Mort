@@ -19,6 +19,7 @@ INT_TYPES = {
     "c_char", "c_uchar", "c_short", "c_ushort", "c_int", "c_uint",
     "c_long", "c_ulong", "c_size",
 }
+FLOAT_TYPES = {"f32", "f64"}
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {
@@ -160,6 +161,8 @@ class Checker:
         self.struct_templates = {}
         self.enums = {}       # name -> ordered {variant: optional payload type}
         self.enum_templates = {}
+        self.aliases = {}
+        self.alias_decls = {}
         self.globals = {}     # name -> type
         self.global_mutable = {}
         self.scopes = []
@@ -182,6 +185,7 @@ class Checker:
 
     def _valid_type(self, t):
         """A type is usable if its (possibly pointed-to / element) base is known."""
+        t = self._resolve_alias_type(t)
         if is_ptr(t):
             return pointee(t) == "void" or self._valid_type(pointee(t))
         if is_array(t):
@@ -191,7 +195,83 @@ class Checker:
             return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
         if generic_parts(t):
             return self._instantiate_struct(t) or self._instantiate_enum(t)
-        return t in INT_TYPES or t == "bool" or t in self.structs or t in self.enums
+        return (t in INT_TYPES or t in FLOAT_TYPES or t == "bool"
+                or t in self.structs or t in self.enums)
+
+    def _resolve_alias_type(self, t, stack=()):
+        if t in self.aliases:
+            if t in stack:
+                declaration = self.alias_decls[t]
+                self._error(
+                    "cyclic type alias: " + " -> ".join((*stack, t)), declaration)
+            return self._resolve_alias_type(self.aliases[t], (*stack, t))
+        if is_ptr(t):
+            prefix = "*const " if is_const_ptr(t) else "*"
+            return prefix + self._resolve_alias_type(pointee(t), stack)
+        if is_slice(t):
+            prefix = "[]const " if is_const_slice(t) else "[]"
+            return prefix + self._resolve_alias_type(slice_elem(t), stack)
+        if is_array(t):
+            element, count = array_parts(t)
+            return f"[{self._resolve_alias_type(element, stack)};{count}]"
+        parts = generic_parts(t)
+        if parts:
+            base, arguments = parts
+            return base + "<" + ",".join(
+                self._resolve_alias_type(argument, stack) for argument in arguments
+            ) + ">"
+        return t
+
+    def _apply_type_aliases(self):
+        seen = set()
+
+        def visit(value):
+            if value is None or isinstance(value, (str, int, bool, float)):
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    visit(item)
+                return
+            if id(value) in seen:
+                return
+            seen.add(id(value))
+            if isinstance(value, A.TypeAliasDecl):
+                value.target = self._resolve_alias_type(value.target)
+            elif isinstance(value, A.FnDecl):
+                value.ret = self._resolve_alias_type(value.ret)
+            elif isinstance(value, A.ExternFnDecl):
+                value.ret = self._resolve_alias_type(value.ret)
+            elif isinstance(value, A.Param):
+                value.typ = self._resolve_alias_type(value.typ)
+            elif isinstance(value, A.StructField):
+                value.typ = self._resolve_alias_type(value.typ)
+            elif isinstance(value, A.EnumVariant) and value.payload_type is not None:
+                value.payload_type = self._resolve_alias_type(value.payload_type)
+            elif isinstance(value, A.Let) and value.decl_type is not None:
+                value.decl_type = self._resolve_alias_type(value.decl_type)
+            elif isinstance(value, A.For) and value.decl_type is not None:
+                value.decl_type = self._resolve_alias_type(value.decl_type)
+            elif isinstance(value, A.Cast):
+                value.target_type = self._resolve_alias_type(value.target_type)
+            elif isinstance(value, A.StructLit):
+                value.name = self._resolve_alias_type(value.name)
+            elif isinstance(value, A.FieldAccess):
+                if isinstance(value.obj, A.Var) and value.obj.name in self.aliases:
+                    value.obj.name = self._resolve_alias_type(value.obj.name)
+            elif isinstance(value, A.Call):
+                value.type_args = [
+                    self._resolve_alias_type(argument) for argument in value.type_args
+                ]
+                if "." in value.name:
+                    qualifier, member = value.name.rsplit(".", 1)
+                    resolved = self._resolve_alias_type(qualifier)
+                    if resolved != qualifier:
+                        value.name = f"{resolved}.{member}"
+            if hasattr(value, "__dict__"):
+                for child in vars(value).values():
+                    visit(child)
+
+        visit(self.program)
 
     def _instantiate_struct(self, concrete_type):
         if concrete_type in self.structs:
@@ -391,6 +471,17 @@ class Checker:
         return concrete_symbol
 
     def check(self):
+        for declaration in self.program.aliases:
+            if (declaration.name in self.aliases or declaration.name in INT_TYPES
+                    or declaration.name in FLOAT_TYPES
+                    or declaration.name in ("bool", "void")):
+                self._error(f"type alias {declaration.name!r} is already defined", declaration)
+            self.aliases[declaration.name] = declaration.target
+            self.alias_decls[declaration.name] = declaration
+        for name in list(self.aliases):
+            self.aliases[name] = self._resolve_alias_type(name)
+        self._apply_type_aliases()
+
         # Enums are nominal integer-backed types with a closed variant set.
         for ed in list(self.program.enums):
             if not ed.variants:
@@ -399,13 +490,14 @@ class Checker:
             if len(set(variant_names)) != len(variant_names):
                 self._error(f"enum {ed.name!r} has a duplicate variant", ed)
             if ed.generic_params:
-                if ed.name in self.enum_templates or ed.name in self.enums:
+                if (ed.name in self.enum_templates or ed.name in self.enums
+                        or ed.name in self.aliases):
                     self._error(f"enum {ed.name!r} is already defined", ed)
                 if len(set(ed.generic_params)) != len(ed.generic_params):
                     self._error(f"enum {ed.name!r} has a duplicate generic parameter", ed)
                 self.enum_templates[ed.name] = ed
                 continue
-            if ed.name in self.enums:
+            if ed.name in self.enums or ed.name in self.aliases:
                 self._error(f"enum {ed.name!r} is already defined", ed)
             self.enums[ed.name] = {
                 variant.name: variant.payload_type for variant in ed.variants
@@ -416,13 +508,14 @@ class Checker:
         for sd in self.program.structs:
             if sd.generic_params:
                 if (sd.name in self.struct_templates or sd.name in self.structs
-                        or sd.name in self.enum_templates or sd.name in self.enums):
+                        or sd.name in self.enum_templates or sd.name in self.enums
+                        or sd.name in self.aliases):
                     self._error(f"struct {sd.name!r} is already defined", sd)
                 if len(set(sd.generic_params)) != len(sd.generic_params):
                     self._error(f"struct {sd.name!r} has a duplicate generic parameter", sd)
                 self.struct_templates[sd.name] = sd
                 continue
-            if sd.name in self.structs or sd.name in self.enums:
+            if sd.name in self.structs or sd.name in self.enums or sd.name in self.aliases:
                 self._error(f"struct {sd.name!r} is already defined", sd)
             self.structs[sd.name] = None  # placeholder until fields validated
 
@@ -449,6 +542,12 @@ class Checker:
                     self._error(
                         f"variant {ed.name}.{variant.name} has unknown payload type "
                         f"{variant.payload_type}", ed)
+
+        for declaration in self.program.aliases:
+            if declaration.target == "void" or not self._valid_type(declaration.target):
+                self._error(
+                    f"type alias {declaration.name!r} has invalid target "
+                    f"{declaration.target}", declaration)
 
         # 3. collect and validate function signatures. Extern declarations use
         #    the platform C ABI and share the same call namespace.
@@ -565,7 +664,7 @@ class Checker:
 
     def _is_const_init(self, expr):
         """Globals need a compile-time-constant initialiser."""
-        if isinstance(expr, (A.BoolLit, A.StrLit)):
+        if isinstance(expr, (A.BoolLit, A.StrLit, A.FloatLit)):
             return True
         if (isinstance(expr, A.FieldAccess) and isinstance(expr.obj, A.Var)
                 and expr.obj.name in self.enums):
@@ -769,6 +868,9 @@ class Checker:
         `let x: u8 = 300;` are compile errors, not silent truncation.
         """
         if expr.type == expected:
+            return True
+        if expected in FLOAT_TYPES and isinstance(expr, A.FloatLit):
+            expr.type = expected
             return True
         if is_const_ptr(expected) and is_ptr(expr.type):
             if pointee(expected) == pointee(expr.type):
@@ -1020,6 +1122,8 @@ class Checker:
         if isinstance(e, A.IntLit):
             e.is_lit = True
             return "i64"
+        if isinstance(e, A.FloatLit):
+            return "f64"
         if isinstance(e, A.BoolLit):
             return "bool"
         if isinstance(e, A.StrLit):
@@ -1037,8 +1141,10 @@ class Checker:
                 name for name, variants in self.enums.items()
                 if any(payload is not None for payload in variants.values())
             }
-            src_ok = st in INT_TYPES or (st in self.enums and st not in payload_enums) or is_ptr(st)
-            tgt_ok = tgt in INT_TYPES or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt)
+            src_ok = (st in INT_TYPES or st in FLOAT_TYPES
+                      or (st in self.enums and st not in payload_enums) or is_ptr(st))
+            tgt_ok = (tgt in INT_TYPES or tgt in FLOAT_TYPES
+                      or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt))
             if not (src_ok and tgt_ok):
                 self._error(f"cannot cast {st} to {tgt}", e)
             return tgt
@@ -1092,9 +1198,9 @@ class Checker:
                 return pointee(ot)
             if e.op == "-":
                 ot = self._check_expr(e.operand)
-                if ot not in INT_TYPES:
-                    self._error("unary '-' requires an integer", e)
-                e.is_lit = e.operand.is_lit
+                if ot not in INT_TYPES and ot not in FLOAT_TYPES:
+                    self._error("unary '-' requires a numeric value", e)
+                e.is_lit = e.operand.is_lit if ot in INT_TYPES else False
                 return ot
             if e.op == "!":
                 if self._check_expr(e.operand) != "bool":
@@ -1112,9 +1218,30 @@ class Checker:
             rt = self._check_expr(e.right)
             op = e.op
             if op in ARITH_OPS or op in REL_OPS:
-                res = self._unify_ints(e, lt, rt, op)
+                if lt in FLOAT_TYPES or rt in FLOAT_TYPES:
+                    if op == "%":
+                        self._error("operator '%' is not defined for floats", e)
+                    if lt not in FLOAT_TYPES or rt not in FLOAT_TYPES:
+                        self._error(
+                            f"operator '{op}' cannot mix integer and float operands; "
+                            "add an 'as' cast", e)
+                    if lt != rt:
+                        if isinstance(e.left, A.FloatLit):
+                            e.left.type = rt
+                            res = rt
+                        elif isinstance(e.right, A.FloatLit):
+                            e.right.type = lt
+                            res = lt
+                        else:
+                            self._error(
+                                f"mismatched float types {lt} and {rt}; add an 'as' cast", e)
+                    else:
+                        res = lt
+                else:
+                    res = self._unify_ints(e, lt, rt, op)
                 if op in ARITH_OPS:
-                    e.is_lit = e.left.is_lit and e.right.is_lit
+                    e.is_lit = (
+                        e.left.is_lit and e.right.is_lit if res in INT_TYPES else False)
                     return res
                 return "bool"
             if op in ("&", "|", "^"):
@@ -1134,6 +1261,15 @@ class Checker:
             if op in ("==", "!="):
                 if lt in INT_TYPES and rt in INT_TYPES:
                     self._unify_ints(e, lt, rt, op)
+                elif lt in FLOAT_TYPES and rt in FLOAT_TYPES:
+                    if lt != rt:
+                        if isinstance(e.left, A.FloatLit):
+                            e.left.type = rt
+                        elif isinstance(e.right, A.FloatLit):
+                            e.right.type = lt
+                        else:
+                            self._error(
+                                f"mismatched float types {lt} and {rt}; add an 'as' cast", e)
                 elif lt != rt:
                     self._error(f"operator '{op}' needs operands of the same type", e)
                 elif lt in self.structs or (
@@ -1344,8 +1480,8 @@ class Checker:
             if len(e.args) != 1:
                 self._error("print expects exactly 1 argument", e)
             at = self._check_expr(e.args[0])
-            if at not in INT_TYPES:
-                self._error(f"print expects an integer, got {at}", e)
+            if at not in INT_TYPES and at not in FLOAT_TYPES:
+                self._error(f"print expects an integer or float, got {at}", e)
             return "void"
         if e.name == "println":
             if self.freestanding:

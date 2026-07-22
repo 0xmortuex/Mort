@@ -28,6 +28,7 @@ FIXED_INT_TYPES = {
     "c_char", "c_uchar", "c_short", "c_ushort", "c_int", "c_uint",
     "c_long", "c_ulong", "c_size",
 }
+FLOAT_TYPES = {"f32", "f64"}
 
 
 class Parser:
@@ -87,10 +88,12 @@ class Parser:
         imports = []
         enums = []
         tests = []
+        aliases = []
         module_name = None
         while not self._at(T.EOF):
             if self._at(T.MODULE):
-                if module_name is not None or funcs or structs or globals_ or externs or imports or enums or tests:
+                if (module_name is not None or funcs or structs or globals_ or externs
+                        or imports or enums or tests or aliases):
                     tok = self._peek()
                     raise MortError("module declaration must be the first declaration", tok.line)
                 module_name = self._module_decl()
@@ -107,6 +110,8 @@ class Parser:
                 structs.append(self._struct_decl())
             elif self._at(T.ENUM):
                 enums.append(self._enum_decl())
+            elif self._at(T.TYPE):
+                aliases.append(self._type_alias_decl())
             elif self._at(T.TEST):
                 tests.append(self._test_decl())
             elif self._at(T.LET):
@@ -118,7 +123,8 @@ class Parser:
             else:
                 funcs.append(self._fn_decl())
         return A.Program(
-            funcs, structs, globals_, externs, imports, enums, tests, module_name)
+            funcs, structs, globals_, externs, imports, enums, tests, module_name,
+            aliases=aliases)
 
     def _module_decl(self):
         self._advance()
@@ -172,6 +178,14 @@ class Parser:
                 break
         self._expect(T.RBRACE, "'}'")
         return A.StructDecl(name, fields, line, generic_params)
+
+    def _type_alias_decl(self):
+        line = self._advance().line
+        name = self._expect(T.IDENT, "type alias name").value
+        self._expect(T.ASSIGN, "'='")
+        target = self._type_name()
+        self._expect(T.SEMI, "';'")
+        return A.TypeAliasDecl(name, target, line)
 
     def _enum_decl(self):
         line = self._advance().line
@@ -233,7 +247,7 @@ class Parser:
         if tok.type == T.KW_VOID:
             self._advance()
             return "void"
-        if tok.type == T.IDENT and tok.value in FIXED_INT_TYPES:
+        if tok.type == T.IDENT and tok.value in FIXED_INT_TYPES | FLOAT_TYPES:
             self._advance()
             return tok.value
         if tok.type == T.IDENT:
@@ -639,6 +653,9 @@ class Parser:
         if t.type == T.INT:
             self._advance()
             return A.IntLit(t.value, t.line)
+        if t.type == T.FLOAT:
+            self._advance()
+            return A.FloatLit(t.value, t.line)
         if t.type == T.TRUE:
             self._advance()
             return A.BoolLit(True, t.line)

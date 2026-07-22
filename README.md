@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-209%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,10 +68,12 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.18)
+## The language (v0.19)
 
-- **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
-  types (`c_int`, `c_size`, etc.), structs, and enums.
+- **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
+  C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
+- **Type aliases:** representation-transparent names such as
+  `type UserId = u64;`, including aliases of nested generic types.
 - **Strings:** string literals `"hi"` are `*u8` — a pointer to static,
   NUL-terminated bytes, with `len(text)` and indexed access.
 - **Arrays:** fixed-size `[T; N]` with literal (`[1, 2, 3]`) or repeat

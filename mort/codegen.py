@@ -13,6 +13,7 @@ _C_BASE = {
     "i8": "int8_t", "i16": "int16_t", "i32": "int32_t", "i64": "int64_t",
     "u8": "uint8_t", "u16": "uint16_t", "u32": "uint32_t", "u64": "uint64_t",
     "bool": "bool", "void": "void",
+    "f32": "float", "f64": "double",
     "c_char": "char", "c_uchar": "unsigned char",
     "c_short": "short", "c_ushort": "unsigned short",
     "c_int": "int", "c_uint": "unsigned int",
@@ -194,6 +195,7 @@ class CodeGen:
         self.used_inl = False
         self.used_outl = False
         self.used_println = False
+        self.used_print_float = False
         self.used_assert = False
         self.used_alloc = False
         self.used_free = False
@@ -324,6 +326,9 @@ class CodeGen:
             self._emit()
         if not self.freestanding:
             self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
+            if self.used_print_float:
+                self._emit(
+                    'static void mort_print_float(double v) { printf("%.17g\\n", v); }')
             if self.used_println:
                 self._emit("static void mort_println(uint8_t* text) { puts((char*)text); }")
             if self.used_assert:
@@ -657,6 +662,11 @@ class CodeGen:
     def _gen_expr(self, e):
         if isinstance(e, A.IntLit):
             return str(e.value)
+        if isinstance(e, A.FloatLit):
+            value = format(e.value, ".17g")
+            if "." not in value and "e" not in value.lower():
+                value += ".0"
+            return value + ("f" if e.type == "f32" else "")
         if isinstance(e, A.BoolLit):
             return "true" if e.value else "false"
         if isinstance(e, A.StrLit):
@@ -752,6 +762,8 @@ class CodeGen:
                 self.used_outl = True
             elif e.name == "println":
                 self.used_println = True
+            elif e.name == "print" and e.args[0].type in ("f32", "f64"):
+                self.used_print_float = True
             elif e.name == "assert":
                 self.used_assert = True
             elif e.name == "alloc":
@@ -769,7 +781,9 @@ class CodeGen:
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
             if e.name == "print":
-                name = "mort_print"
+                name = (
+                    "mort_print_float"
+                    if e.args[0].type in ("f32", "f64") else "mort_print")
             elif e.name == "println":
                 name = "mort_println"
             elif e.name == "assert":

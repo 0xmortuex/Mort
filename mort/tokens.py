@@ -5,6 +5,7 @@ from enum import Enum, auto
 class T(Enum):
     # literals & identifiers
     INT = auto()
+    FLOAT = auto()
     STRING = auto()
     IDENT = auto()
     # keywords
@@ -36,6 +37,7 @@ class T(Enum):
     PUB = auto()
     DEFER = auto()
     TRY = auto()
+    TYPE = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -104,6 +106,7 @@ KEYWORDS = {
     "pub": T.PUB,
     "defer": T.DEFER,
     "try": T.TRY,
+    "type": T.TYPE,
 }
 
 

@@ -1,0 +1,11 @@
+type Temperature = f64;
+
+fn average(left: Temperature, right: Temperature) -> Temperature {
+    return (left + right) / 2.0;
+}
+
+fn main() -> int {
+    let result = average(4e1, 45.0);
+    print(result);
+    return 0;
+}

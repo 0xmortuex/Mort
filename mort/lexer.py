@@ -108,6 +108,34 @@ class Lexer:
         s = ""
         while self._peek().isdigit():
             s += self._advance()
+        if self._peek() == "." and self._peek(1).isdigit():
+            s += self._advance()
+            while self._peek().isdigit():
+                s += self._advance()
+            if self._peek() in "eE":
+                s += self._advance()
+                if self._peek() in "+-":
+                    s += self._advance()
+                if not self._peek().isdigit():
+                    raise MortError("invalid floating-point exponent", line, col)
+                while self._peek().isdigit():
+                    s += self._advance()
+            if self._peek().isalnum() or self._peek() == "_":
+                raise MortError("invalid floating-point literal", line, col)
+            self._add(T.FLOAT, float(s), line, col)
+            return
+        if self._peek() in "eE":
+            s += self._advance()
+            if self._peek() in "+-":
+                s += self._advance()
+            if not self._peek().isdigit():
+                raise MortError("invalid floating-point exponent", line, col)
+            while self._peek().isdigit():
+                s += self._advance()
+            if self._peek().isalnum() or self._peek() == "_":
+                raise MortError("invalid floating-point literal", line, col)
+            self._add(T.FLOAT, float(s), line, col)
+            return
         # reject things like 12abc
         if self._peek().isalpha() or self._peek() == "_":
             raise MortError(f"invalid number literal near {s + self._peek()!r}", line, col)

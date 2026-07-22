@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.19.0 — 2026-07-22
+
+Mort's floating-point and type-alias release.
+
+### Added
+
+- Native `f32` and `f64` types.
+- Decimal and scientific-notation floating-point literals.
+- Checked float arithmetic, comparisons, casts, and literal narrowing.
+- Precision-preserving numeric output for floats.
+- Representation-transparent `type Name = Target;` aliases.
+- Alias expansion through pointers, slices, arrays, generics, structs, enums,
+  functions, casts, and constructors, with cycle/collision diagnostics.
+
+### Validation
+
+- 209 compiler, floats, aliases, generics, native execution, package, tooling,
+  and kernel tests pass.
+
 ## 0.18.0 — 2026-07-22
 
 Mort's immutable-bindings and portable-I/O release.

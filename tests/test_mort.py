@@ -79,6 +79,57 @@ def test_const_local_and_global_bindings_run():
     assert result.stdout == "42\n"
 
 
+@needs_cc
+def test_float_literals_arithmetic_casts_and_output_run():
+    src = (
+        "fn average(left: f64, right: f64) -> f64 { return (left + right) / 2.0; } "
+        "fn main() -> int { let result = average(4e1, 45.0); "
+        "let narrow: f32 = 3.5; let converted: f64 = 42 as f64; "
+        "print(result); print(narrow); print(converted); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "double m_result" in c_source
+    assert "float m_narrow = 3.5f" in c_source
+    assert "mort_print_float" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "floats.c")
+        exe = os.path.join(d, "floats.exe" if os.name == "nt" else "floats")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42.5\n3.5\n42\n"
+
+
+@needs_cc
+def test_type_aliases_resolve_through_structs_generics_and_variants():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "aliases.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.option; type UserId = u64; type Score = f64; "
+                "type MaybeId = Option<UserId>; struct User { id: UserId } "
+                "fn boosted(value: Score) -> Score { return value + 1.5; } "
+                "fn main() -> int { let user = User { id: 42 }; "
+                "let selected: MaybeId = MaybeId.Some(user.id); match selected { "
+                "MaybeId.Some(value) => { print(value); }, "
+                "MaybeId.None => { print(0); } } "
+                "print(boosted(40.5)); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "UserId" not in c_source
+        assert "MaybeId" not in c_source
+        cfile = os.path.join(d, "aliases.c")
+        exe = os.path.join(d, "aliases.exe" if os.name == "nt" else "aliases")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n42\n"
+
+
 def test_condition_has_no_double_parens():
     # if/while conditions must not double-wrap (avoids -Wparentheses-equality)
     c = c_of("fn main() -> int { let x = 1; if x == 0 { print(1); } while x == 2 { print(2); } return 0; }")
@@ -1662,6 +1713,18 @@ def test_c_abi_types_and_const_pointer_run():
     ("fn main() -> int { let a: u8 = 1; let b: i32 = 2; let c = a + b; return 0; }",
      "mismatched integer types"),
     ("fn main() -> int { let b = true; let x = b as i32; return 0; }", "cannot cast"),
+    ("fn main() -> int { let value = 1.5 + 1; return 0; }",
+     "cannot mix integer and float operands"),
+    ("fn main() -> int { let left: f32 = 1.0; let right: f64 = 2.0; "
+     "let value = left + right; return 0; }", "mismatched float types"),
+    ("fn main() -> int { let value = 5.0 % 2.0; return 0; }",
+     "operator '%' is not defined for floats"),
+    ("type First = Second; type Second = First; "
+     "fn main() -> int { return 0; }", "cyclic type alias"),
+    ("type Missing = Nope; fn main() -> int { return 0; }",
+     "type alias 'Missing' has invalid target Nope"),
+    ("type Value = i64; struct Value { item: i64 } "
+     "fn main() -> int { return 0; }", "struct 'Value' is already defined"),
     ("fn main() -> int { let p: *i32 = 0 as *i32; print(p); return 0; }",
      "print expects an integer"),
     ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1, y: 2 }; return 0; }",
@@ -1782,6 +1845,7 @@ EXPECTED = {
     "generics.mx": "42\n",
     "defer.mx": "inner cleanup\nouter cleanup\n42\n",
     "collections.mx": "42\n42\n",
+    "floats.mx": "42.5\n",
 }
 
 

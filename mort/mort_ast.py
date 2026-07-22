@@ -15,7 +15,7 @@ class Node:
 # ----- top level -----
 class Program(Node):
     def __init__(self, funcs, structs, globals=None, externs=None, imports=None,
-                 enums=None, tests=None, module_name=None):
+                 enums=None, tests=None, module_name=None, aliases=None):
         super().__init__()
         self.funcs = funcs
         self.structs = structs
@@ -26,6 +26,7 @@ class Program(Node):
         self.tests = tests or []
         self.module_name = module_name
         self.import_aliases = {}
+        self.aliases = aliases or []
 
 
 class ImportDecl(Node):
@@ -56,6 +57,14 @@ class StructDecl(Node):
         self.fields = fields  # list of StructField, in declared order
         self.line = line
         self.generic_params = generic_params or []
+
+
+class TypeAliasDecl(Node):
+    def __init__(self, name, target, line):
+        super().__init__()
+        self.name = name
+        self.target = target
+        self.line = line
 
 
 class FnDecl(Node):
@@ -227,6 +236,13 @@ class Match(Node):
 
 # ----- expressions -----
 class IntLit(Node):
+    def __init__(self, value, line):
+        super().__init__()
+        self.value = value
+        self.line = line
+
+
+class FloatLit(Node):
     def __init__(self, value, line):
         super().__init__()
         self.value = value
