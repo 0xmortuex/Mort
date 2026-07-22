@@ -103,6 +103,96 @@ def test_float_literals_arithmetic_casts_and_output_run():
 
 
 @needs_cc
+def test_extended_literals_null_and_nested_block_comments_run():
+    src = (
+        "/* outer comment /* nested comment */ complete */ "
+        "const BINARY: i64 = 0b0010_1010; const OCTAL: i64 = 0o52; "
+        "fn main() -> int { let pointer: *i64 = null; assert(pointer == null); "
+        "pointer = alloc(8) as *i64; assert(pointer != null); free(pointer); "
+        "print(BINARY); print(OCTAL); print('A'); print('\\n'); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "NULL" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "literals.c")
+        exe = os.path.join(d, "literals.exe" if os.name == "nt" else "literals")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n42\n65\n10\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "fn main() -> int { return 0; } /* unterminated",
+        "fn main() -> int { let bad = 'ab'; return 0; }",
+        "fn main() -> int { let bad = 0b102; return 0; }",
+        "fn main() -> int { let bad = 1__000; return 0; }",
+    ],
+)
+def test_malformed_extended_literals_are_rejected(source):
+    with pytest.raises(MortError):
+        c_of(source)
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("fn main() -> int { let pointer = null; return 0; }",
+         "null bindings require an explicit pointer type"),
+        ("fn main() -> int { let equal = null == null; return 0; }",
+         "can compare null only with pointers"),
+        ("fn main() -> int { let value = null as i64; return 0; }",
+         "cannot cast null to i64"),
+    ],
+)
+def test_null_requires_pointer_context(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@needs_cc
+def test_compound_assignments_run_and_preserve_lvalue_evaluation():
+    src = (
+        "fn next_index(calls: *i64) -> i64 { *calls += 1; return 0; } "
+        "fn main() -> int { let value: i64 = 7; value += 5; value -= 2; "
+        "value *= 3; value /= 5; value %= 5; value |= 8; value &= 11; "
+        "value ^= 2; value <<= 2; value >>= 1; "
+        "let calls: i64 = 0; let values: [i64; 1] = [10]; "
+        "values[next_index(&calls)] += 5; print(value); print(values[0]); "
+        "print(calls); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "mort_next_index((&m_calls))" in c_source
+    assert ")] += 5;" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "compound.c")
+        exe = os.path.join(d, "compound.exe" if os.name == "nt" else "compound")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "22\n15\n1\n"
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [
+        ("value %= 2.0;", "operator '%' is not defined for floats"),
+        ("value &= 2.0;", "requires int operands"),
+    ],
+)
+def test_invalid_float_compound_assignments_are_rejected(statement, message):
+    source = f"fn main() -> int {{ let value: f64 = 4.0; {statement} return 0; }}"
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@needs_cc
 def test_type_aliases_resolve_through_structs_generics_and_variants():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "aliases.mx")
@@ -1003,11 +1093,25 @@ def test_first_class_test_blocks_run_with_project_code():
 
 
 def test_formatter_preserves_comments_strings_and_indents():
-    source = 'fn main() -> int {  \n// { is not structure\nprintln("}");\nreturn 0;\n}\n'
+    source = (
+        "fn main() -> int {  \n"
+        "// { is not structure\n"
+        "/* } is ignored\n"
+        "   /* nested { too */\n"
+        "*/\n"
+        "println(\"}\");\n"
+        "print('{');\n"
+        "return 0;\n"
+        "}\n"
+    )
     assert format_source(source) == (
         'fn main() -> int {\n'
         '    // { is not structure\n'
+        '    /* } is ignored\n'
+        '    /* nested { too */\n'
+        '    */\n'
         '    println("}");\n'
+        "    print('{');\n"
         '    return 0;\n'
         '}\n'
     )

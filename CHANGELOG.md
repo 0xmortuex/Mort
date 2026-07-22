@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.20.0 — 2026-07-22
+
+Mort's source-ergonomics and pointer-safety release.
+
+### Added
+
+- Typed `null` for pointer initialization, assignment, comparison, return
+  values, and arguments, with rejection outside pointer contexts.
+- Character and hexadecimal character literals with a checked `u8` type.
+- Binary and octal integer literals and `_` numeric separators.
+- Nestable `/* block comments */` throughout Mort source.
+- Arithmetic, bitwise, and shift compound assignments (`+=` through `>>=`)
+  for every assignable lvalue, preserving single target evaluation.
+
+### Improved
+
+- The formatter now ignores braces inside character literals and nested block
+  comments, including comments spanning multiple lines.
+- Literal diagnostics reject malformed bases, separators, escapes, and
+  unterminated comments before parsing.
+
+### Validation
+
+- 220 compiler, literal, pointer, formatter, native execution, package,
+  tooling, and kernel tests pass.
+
 ## 0.19.0 — 2026-07-22
 
 Mort's floating-point and type-alias release.

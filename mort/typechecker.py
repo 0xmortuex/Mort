@@ -602,6 +602,8 @@ class Checker:
             t = self._check_expr(g.expr)
             if t == "void":
                 self._error("cannot bind a void value to a global", g)
+            if t == "null" and not g.decl_type:
+                self._error("null bindings require an explicit pointer type", g)
             if g.decl_type:
                 if not self._valid_type(g.decl_type):
                     self._error(f"global {g.name!r} has unknown type {g.decl_type}", g)
@@ -664,7 +666,7 @@ class Checker:
 
     def _is_const_init(self, expr):
         """Globals need a compile-time-constant initialiser."""
-        if isinstance(expr, (A.BoolLit, A.StrLit, A.FloatLit)):
+        if isinstance(expr, (A.BoolLit, A.StrLit, A.FloatLit, A.CharLit, A.NullLit)):
             return True
         if (isinstance(expr, A.FieldAccess) and isinstance(expr.obj, A.Var)
                 and expr.obj.name in self.enums):
@@ -819,6 +821,8 @@ class Checker:
         wrap instead; see codegen's _narrow.)"""
         if isinstance(e, A.IntLit):
             return e.value
+        if isinstance(e, A.CharLit):
+            return e.value
         if isinstance(e, A.Unary) and e.op == "-":
             v = self._const_value(e.operand)
             return None if v is None else -v
@@ -869,6 +873,9 @@ class Checker:
         """
         if expr.type == expected:
             return True
+        if is_ptr(expected) and expr.type == "null":
+            expr.type = expected
+            return True
         if expected in FLOAT_TYPES and isinstance(expr, A.FloatLit):
             expr.type = expected
             return True
@@ -903,6 +910,8 @@ class Checker:
                 self.allowed_try_expr = previous_try_expr
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
+            if t == "null" and not s.decl_type:
+                self._error("null bindings require an explicit pointer type", s)
             if s.decl_type:
                 if not self._valid_type(s.decl_type):
                     self._error(f"variable {s.name!r} has unknown type {s.decl_type}", s)
@@ -932,10 +941,18 @@ class Checker:
                 self._error("cannot assign through a const slice", s)
             if is_array(tt):
                 self._error("cannot assign to a whole array; assign elements via a[i]", s)
-            self._check_expr(s.expr)
-            if not self._coerce(tt, s.expr):
-                self._error(
-                    f"type mismatch: target is {tt} but value is {s.expr.type}", s)
+            if s.op == "=":
+                self._check_expr(s.expr)
+                if not self._coerce(tt, s.expr):
+                    self._error(
+                        f"type mismatch: target is {tt} but value is {s.expr.type}", s)
+            else:
+                operation = A.Binary(s.op[:-1], s.target, s.expr, s.line)
+                result_type = self._check_expr(operation)
+                if result_type != tt:
+                    self._error(
+                        f"compound assignment {s.op!r} produces {result_type}, "
+                        f"but the target is {tt}", s)
 
         elif isinstance(s, A.Return):
             if s.expr is None:
@@ -1124,6 +1141,11 @@ class Checker:
             return "i64"
         if isinstance(e, A.FloatLit):
             return "f64"
+        if isinstance(e, A.CharLit):
+            e.is_lit = True
+            return "u8"
+        if isinstance(e, A.NullLit):
+            return "null"
         if isinstance(e, A.BoolLit):
             return "bool"
         if isinstance(e, A.StrLit):
@@ -1141,12 +1163,14 @@ class Checker:
                 name for name, variants in self.enums.items()
                 if any(payload is not None for payload in variants.values())
             }
-            src_ok = (st in INT_TYPES or st in FLOAT_TYPES
+            src_ok = (st in INT_TYPES or st in FLOAT_TYPES or st == "null"
                       or (st in self.enums and st not in payload_enums) or is_ptr(st))
             tgt_ok = (tgt in INT_TYPES or tgt in FLOAT_TYPES
                       or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt))
             if not (src_ok and tgt_ok):
                 self._error(f"cannot cast {st} to {tgt}", e)
+            if st == "null" and not is_ptr(tgt):
+                self._error(f"cannot cast null to {tgt}", e)
             return tgt
 
         if isinstance(e, A.Try):
@@ -1259,6 +1283,15 @@ class Checker:
                 e.is_lit = e.left.is_lit and e.right.is_lit
                 return lt
             if op in ("==", "!="):
+                if lt == "null" and is_ptr(rt):
+                    e.left.type = rt
+                    lt = rt
+                elif rt == "null" and is_ptr(lt):
+                    e.right.type = lt
+                    rt = lt
+                elif lt == "null" or rt == "null":
+                    self._error(
+                        f"operator '{op}' can compare null only with pointers", e)
                 if lt in INT_TYPES and rt in INT_TYPES:
                     self._unify_ints(e, lt, rt, op)
                 elif lt in FLOAT_TYPES and rt in FLOAT_TYPES:

@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-209%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-220%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.19)
+## The language (v0.20)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -83,8 +83,9 @@ C `main`, so the output is an ordinary native binary.
 - **Structs:** `struct Point { x: i64, y: i64 }`, construct with
   `Point { x: 3, y: 4 }`, read/write fields with `p.x`, pass by value, and
   mutate through a pointer with `(*p).x = 1;`.
-- **Pointers:** `*T` types (including FFI-friendly `*void`), address-of `&x`,
-  dereference `*p`, indexed access with `p[i]`, and writing through a pointer.
+- **Pointers:** `*T` types (including FFI-friendly `*void`), typed `null`,
+  address-of `&x`, dereference `*p`, indexed access with `p[i]`, and writing
+  through a pointer.
 - **Casts:** `expr as T` between integer types and pointers — e.g.
   `0xB8000 as *u8` to point at raw memory.
 - **Inline assembly:** `asm("hlt");` — an escape hatch to real instructions,
@@ -113,9 +114,13 @@ C `main`, so the output is an ordinary native binary.
 - **Control flow:** `if` / `else if` / `else`, `while`, range `for`, `break`, and
   `continue` (`for i in 0..n { ... }`, or `for i: u32 in 0..n` to fix the
   counter's type).
-- **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, bitwise `& | ^ << >> ~`, unary `-`.
-- **Literals:** decimal and hex (`0xFF`); untyped integer literals adopt the
-  integer type they're used with, so `let b: u8 = a + 5;` needs no cast.
+- **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, bitwise
+  `& | ^ << >> ~`, unary `-`, and the matching compound assignments such as
+  `+=`, `*=`, `|=`, and `<<=`.
+- **Literals:** decimal, hex (`0xFF`), binary (`0b1010`), octal (`0o755`),
+  character (`'A'` and `'\n'`), floating point, and readable numeric separators
+  (`1_000_000`). Untyped integer literals adopt the integer type they're used
+  with, so `let b: u8 = a + 5;` needs no cast.
 - **Globals:** top-level `let name: type = <constant>;` — file-scope state shared
   across functions (used by the kernel's interrupt handler).
 - **Hosted runtime:** `print`, `println`, `assert`, `len`, `alloc`, and `free`,
@@ -125,7 +130,7 @@ C `main`, so the output is an ordinary native binary.
 - **Hardware builtins:** the x86 port-I/O family
   (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
   and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).
-- **Comments:** `// to end of line`.
+- **Comments:** `// to end of line` and nestable `/* block comments */`.
 
 Everything is statically type-checked before a single line of C is emitted:
 mismatched types, mixing integer widths without a cast, dereferencing a

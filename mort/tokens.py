@@ -6,6 +6,7 @@ class T(Enum):
     # literals & identifiers
     INT = auto()
     FLOAT = auto()
+    CHAR = auto()
     STRING = auto()
     IDENT = auto()
     # keywords
@@ -38,6 +39,7 @@ class T(Enum):
     DEFER = auto()
     TRY = auto()
     TYPE = auto()
+    NULL = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -55,6 +57,16 @@ class T(Enum):
     RBRACKET = auto()
     # operators
     ASSIGN = auto()
+    PLUS_ASSIGN = auto()
+    MINUS_ASSIGN = auto()
+    STAR_ASSIGN = auto()
+    SLASH_ASSIGN = auto()
+    PERCENT_ASSIGN = auto()
+    AMP_ASSIGN = auto()
+    PIPE_ASSIGN = auto()
+    CARET_ASSIGN = auto()
+    SHL_ASSIGN = auto()
+    SHR_ASSIGN = auto()
     PLUS = auto()
     MINUS = auto()
     STAR = auto()
@@ -107,6 +119,7 @@ KEYWORDS = {
     "defer": T.DEFER,
     "try": T.TRY,
     "type": T.TYPE,
+    "null": T.NULL,
 }
 
 

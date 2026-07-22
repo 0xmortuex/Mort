@@ -501,7 +501,8 @@ class CodeGen:
                 s.var_type, "m_" + s.name, self._gen_expr(s.expr),
                 binding_const=not s.mutable) + ";")
         elif isinstance(s, A.Assign):
-            self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
+            self._emit(
+                f"{self._gen_expr(s.target)} {s.op} {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Asm):
             self._emit(f'__asm__ volatile ("{s.text}");')
         elif isinstance(s, A.Return):
@@ -667,6 +668,10 @@ class CodeGen:
             if "." not in value and "e" not in value.lower():
                 value += ".0"
             return value + ("f" if e.type == "f32" else "")
+        if isinstance(e, A.CharLit):
+            return str(e.value)
+        if isinstance(e, A.NullLit):
+            return "NULL"
         if isinstance(e, A.BoolLit):
             return "true" if e.value else "false"
         if isinstance(e, A.StrLit):

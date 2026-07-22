@@ -30,6 +30,20 @@ FIXED_INT_TYPES = {
 }
 FLOAT_TYPES = {"f32", "f64"}
 
+ASSIGNMENT_OPS = {
+    T.ASSIGN: "=",
+    T.PLUS_ASSIGN: "+=",
+    T.MINUS_ASSIGN: "-=",
+    T.STAR_ASSIGN: "*=",
+    T.SLASH_ASSIGN: "/=",
+    T.PERCENT_ASSIGN: "%=",
+    T.AMP_ASSIGN: "&=",
+    T.PIPE_ASSIGN: "|=",
+    T.CARET_ASSIGN: "^=",
+    T.SHL_ASSIGN: "<<=",
+    T.SHR_ASSIGN: ">>=",
+}
+
 
 class Parser:
     def __init__(self, tokens):
@@ -268,7 +282,7 @@ class Parser:
     def _fn_decl(self):
         line = self._peek().line
         self._expect(T.FN, "'fn'")
-        name = self._expect(T.IDENT, "function name").value
+        name = self._function_name()
         generic_params = []
         if self._at(T.LT):
             self._advance()
@@ -295,7 +309,7 @@ class Parser:
     def _extern_fn_decl(self):
         line = self._advance().line  # 'extern'
         self._expect(T.FN, "'fn'")
-        name = self._expect(T.IDENT, "function name").value
+        name = self._function_name()
         self._expect(T.LPAREN, "'('")
         params = []
         if not self._at(T.RPAREN):
@@ -310,6 +324,14 @@ class Parser:
             ret = self._type_name()
         self._expect(T.SEMI, "';'")
         return A.ExternFnDecl(name, params, ret, line)
+
+    def _function_name(self):
+        """Accept historical function names that became contextual literals."""
+        token = self._peek()
+        if token.type not in (T.IDENT, T.NULL):
+            raise MortError(f"expected function name, got {token.value!r}", token.line)
+        self._advance()
+        return token.value
 
     def _param(self):
         name = self._expect(T.IDENT, "parameter name").value
@@ -458,13 +480,13 @@ class Parser:
     def _expr_or_assign(self):
         line = self._peek().line
         expr = self._expression()
-        if self._at(T.ASSIGN):
-            self._advance()
+        if self._peek().type in ASSIGNMENT_OPS:
+            op = ASSIGNMENT_OPS[self._advance().type]
             if not self._is_lvalue(expr):
                 raise MortError("invalid assignment target", line)
             value = self._expression()
             self._expect(T.SEMI, "';'")
-            return A.Assign(expr, value, line)
+            return A.Assign(expr, value, line, op)
         self._expect(T.SEMI, "';'")
         return A.ExprStmt(expr, line)
 
@@ -656,6 +678,17 @@ class Parser:
         if t.type == T.FLOAT:
             self._advance()
             return A.FloatLit(t.value, t.line)
+        if t.type == T.CHAR:
+            self._advance()
+            return A.CharLit(t.value, t.line)
+        if t.type == T.NULL:
+            self._advance()
+            # `null` is reserved as a value, but keeping it contextual in call
+            # position preserves source compatibility with pre-0.20 functions.
+            if self._at(T.LPAREN) or (
+                    self._at(T.LT) and self._looks_like_call_type_args()):
+                return A.Var(t.value, t.line)
+            return A.NullLit(t.line)
         if t.type == T.TRUE:
             self._advance()
             return A.BoolLit(True, t.line)

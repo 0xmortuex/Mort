@@ -131,10 +131,11 @@ class Let(Node):
 
 
 class Assign(Node):
-    def __init__(self, target, expr, line):
+    def __init__(self, target, expr, line, op="="):
         super().__init__()
         self.target = target  # an lvalue expression (Var or unary '*' deref)
         self.expr = expr
+        self.op = op
         self.line = line
 
 
@@ -246,6 +247,19 @@ class FloatLit(Node):
     def __init__(self, value, line):
         super().__init__()
         self.value = value
+        self.line = line
+
+
+class CharLit(Node):
+    def __init__(self, value, line):
+        super().__init__()
+        self.value = value
+        self.line = line
+
+
+class NullLit(Node):
+    def __init__(self, line):
+        super().__init__()
         self.line = line
 
 
