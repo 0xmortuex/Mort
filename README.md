@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.14)
+## The language (v0.15)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -113,8 +113,8 @@ C `main`, so the output is an ordinary native binary.
   across functions (used by the kernel's interrupt handler).
 - **Hosted runtime:** `print`, `println`, `assert`, `len`, `alloc`, and `free`,
   with compile-time and runtime array bounds validation.
-- **Cleanup:** function-scoped `defer expression;` executes cleanup in reverse
-  order on every return path.
+- **Cleanup:** lexical `defer expression;` executes cleanup in reverse order on
+  normal scope exits, returns, `break`, `continue`, and propagated errors.
 - **Hardware builtins:** the x86 port-I/O family
   (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
   and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).

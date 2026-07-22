@@ -195,6 +195,7 @@ class CodeGen:
         self.used_bounds = False
         self.match_id = 0
         self.try_id = 0
+        self.return_id = 0
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -406,29 +407,47 @@ class CodeGen:
         return f"{ret} {f.name}({params})"
 
     def _gen_fn(self, f):
-        saved_defers = getattr(self, "current_defers", [])
-        self.current_defers = [s.expr for s in f.body.stmts if isinstance(s, A.Defer)]
+        saved_scopes = getattr(self, "defer_scopes", [])
+        saved_loops = getattr(self, "loop_defer_bases", [])
+        self.defer_scopes = [[]]
+        self.loop_defer_bases = []
         self._emit(self._signature(f) + " {")
         self.indent += 1
         for s in f.body.stmts:
             self._gen_stmt(s)
         if f.ret == "void":
-            self._emit_defers()
+            self._emit_defer_scopes()
         self.indent -= 1
         self._emit("}")
-        self.current_defers = saved_defers
+        self.defer_scopes = saved_scopes
+        self.loop_defer_bases = saved_loops
 
-    def _emit_defers(self):
-        for expression in reversed(getattr(self, "current_defers", [])):
-            self._emit(self._gen_expr(expression) + ";")
+    def _emit_defer_scopes(self, start=0):
+        for scope in reversed(getattr(self, "defer_scopes", [])[start:]):
+            for expression in reversed(scope):
+                self._emit(self._gen_expr(expression) + ";")
+
+    def _gen_scoped_statements(self, statements):
+        self.defer_scopes.append([])
+        for statement in statements:
+            self._gen_stmt(statement)
+        self._emit_defer_scopes(len(self.defer_scopes) - 1)
+        self.defer_scopes.pop()
 
     def _gen_test(self, test, index):
+        saved_scopes = getattr(self, "defer_scopes", [])
+        saved_loops = getattr(self, "loop_defer_bases", [])
+        self.defer_scopes = [[]]
+        self.loop_defer_bases = []
         self._emit(f"static void mort_test_{index}(void) {{")
         self.indent += 1
         for statement in test.body.stmts:
             self._gen_stmt(statement)
+        self._emit_defer_scopes()
         self.indent -= 1
         self._emit("}")
+        self.defer_scopes = saved_scopes
+        self.loop_defer_bases = saved_loops
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
@@ -441,16 +460,20 @@ class CodeGen:
         elif isinstance(s, A.Asm):
             self._emit(f'__asm__ volatile ("{s.text}");')
         elif isinstance(s, A.Return):
-            self._emit_defers()
             if s.expr is None:
+                self._emit_defer_scopes()
                 self._emit("return;")
             else:
-                self._emit(f"return {self._gen_expr(s.expr)};")
+                temporary = f"mort_return_{self.return_id}"
+                self.return_id += 1
+                self._emit(self._var_decl(
+                    s.expr.type, temporary, self._gen_expr(s.expr)) + ";")
+                self._emit_defer_scopes()
+                self._emit(f"return {temporary};")
         elif isinstance(s, A.If):
             self._emit(f"if ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
-            for st in s.then.stmts:
-                self._gen_stmt(st)
+            self._gen_scoped_statements(s.then.stmts)
             self.indent -= 1
             if s.els is None:
                 self._emit("}")
@@ -460,15 +483,19 @@ class CodeGen:
                 if isinstance(s.els, A.If):
                     self._gen_stmt(s.els)
                 else:
-                    for st in s.els.stmts:
-                        self._gen_stmt(st)
+                    self._gen_scoped_statements(s.els.stmts)
                 self.indent -= 1
                 self._emit("}")
         elif isinstance(s, A.While):
             self._emit(f"while ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
+            self.defer_scopes.append([])
+            self.loop_defer_bases.append(len(self.defer_scopes) - 1)
             for st in s.body.stmts:
                 self._gen_stmt(st)
+            self._emit_defer_scopes(len(self.defer_scopes) - 1)
+            self.loop_defer_bases.pop()
+            self.defer_scopes.pop()
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.For):
@@ -478,25 +505,31 @@ class CodeGen:
             end = self._gen_expr(s.end)
             self._emit(f"for ({ct} {v} = {start}; {v} < {end}; {v} = {v} + 1) {{")
             self.indent += 1
+            self.defer_scopes.append([])
+            self.loop_defer_bases.append(len(self.defer_scopes) - 1)
             for st in s.body.stmts:
                 self._gen_stmt(st)
+            self._emit_defer_scopes(len(self.defer_scopes) - 1)
+            self.loop_defer_bases.pop()
+            self.defer_scopes.pop()
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.Block):
             self._emit("{")
             self.indent += 1
-            for st in s.stmts:
-                self._gen_stmt(st)
+            self._gen_scoped_statements(s.stmts)
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.ExprStmt):
             self._emit(self._gen_expr(s.expr) + ";")
         elif isinstance(s, A.Break):
+            self._emit_defer_scopes(self.loop_defer_bases[-1])
             self._emit("break;")
         elif isinstance(s, A.Continue):
+            self._emit_defer_scopes(self.loop_defer_bases[-1])
             self._emit("continue;")
         elif isinstance(s, A.Defer):
-            pass
+            self.defer_scopes[-1].append(s.expr)
         elif isinstance(s, A.Match):
             match_id = self.match_id
             self.match_id += 1
@@ -528,8 +561,7 @@ class CodeGen:
                     self._emit(
                         f"{self._ct(arm.binding_type)} m_{arm.binding_name} = "
                         f"{temporary}.data.v_{arm.variant_name};")
-                for statement in arm.body.stmts:
-                    self._gen_stmt(statement)
+                self._gen_scoped_statements(arm.body.stmts)
                 self.indent -= 1
                 self._emit("}")
             self.indent -= 1
@@ -547,7 +579,7 @@ class CodeGen:
             f"{self._gen_expr(expression.expr)};")
         self._emit(f"if ({temporary}.tag == MORT_{result_tag}_Err) {{")
         self.indent += 1
-        self._emit_defers()
+        self._emit_defer_scopes()
         self._emit(
             f"return (struct mort_{return_tag}){{ .tag = MORT_{return_tag}_Err, "
             f".data.v_Err = {temporary}.data.v_Err }};")

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.0 — 2026-07-22
+
+Mort's lexical-cleanup release.
+
+### Added
+
+- `defer` in functions, nested blocks, conditionals, loops, and match arms.
+- Inner-to-outer cleanup on returns and normal scope exits.
+- Loop-scope cleanup before `break` and `continue`.
+- Full active-scope cleanup when `try` propagates a `Result.Err`.
+- Return-value evaluation before cleanup, preserving resource-dependent results.
+
+### Validation
+
+- 186 compiler, cleanup, generics, collections, native execution, and kernel
+  tests pass.
+
 ## 0.14.0 — 2026-07-22
 
 Mort's generic-functions and typed-collections release.

@@ -1277,8 +1277,10 @@ def test_result_try_propagates_success_and_error():
                 "if ok { return Result<i64, *u8>.Ok(21); } "
                 "return Result<i64, *u8>.Err(\"bad\"); } "
                 "fn twice(ok: bool) -> Result<i64, *u8> { "
-                "let value = try parse(ok); "
+                "defer println(\"outer cleanup\"); if true { "
+                "defer println(\"inner cleanup\"); let value = try parse(ok); "
                 "return Result<i64, *u8>.Ok(value * 2); } "
+                "return Result<i64, *u8>.Err(\"unreachable\"); } "
                 "fn show(value: Result<i64, *u8>) -> void { match value { "
                 "Result<i64, *u8>.Ok(inner) => { print(inner); }, "
                 "Result<i64, *u8>.Err(message) => { println(message); } } } "
@@ -1293,7 +1295,10 @@ def test_result_try_propagates_success_and_error():
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode == 0
-    assert result.stdout == "42\nbad\n"
+    assert result.stdout == (
+        "inner cleanup\nouter cleanup\n42\n"
+        "inner cleanup\nouter cleanup\nbad\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1330,7 +1335,7 @@ def test_result_try_rejects_invalid_use(source, message):
 
 
 @needs_cc
-def test_function_scoped_defer_runs_on_return():
+def test_defer_runs_on_function_return():
     src = (
         "fn choose(flag: bool) -> i64 { "
         "defer println(\"cleanup\"); "
@@ -1346,6 +1351,31 @@ def test_function_scoped_defer_runs_on_return():
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.stdout == "cleanup\n42\n"
+
+
+@needs_cc
+def test_lexical_defer_cleans_up_return_break_and_continue():
+    src = (
+        "fn value() -> i64 { println(\"evaluate\"); return 42; } "
+        "fn returned() -> i64 { defer println(\"outer-return\"); "
+        "if true { defer println(\"inner-return\"); return value(); } return 0; } "
+        "fn loops() -> void { let index = 0; while index < 3 { "
+        "defer println(\"iteration\"); index = index + 1; "
+        "if index == 1 { continue; } if index == 2 { break; } } } "
+        "fn main() -> int { loops(); print(returned()); return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "lexical_defer.c")
+        exe = os.path.join(d, "lexical_defer.exe" if os.name == "nt" else "lexical_defer")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == (
+        "iteration\niteration\nevaluate\ninner-return\nouter-return\n42\n"
+    )
 
 
 @needs_cc
@@ -1462,8 +1492,6 @@ def test_c_abi_types_and_const_pointer_run():
      "payload match patterns require one binding name"),
     ("struct Box<T> { value: T } fn main() -> int { "
      "let box: Box<i64, u8> = 0; return 0; }", "unknown type"),
-    ("fn main() -> int { if true { defer println(\"no\"); } return 0; }",
-     "defer is currently function-scoped"),
     ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
      "cannot assign through a const pointer"),
     ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
@@ -1492,7 +1520,7 @@ EXPECTED = {
     "slices.mx": "42\n",
     "result.mx": "42\ninvalid input\n",
     "generics.mx": "42\n",
-    "defer.mx": "cleanup\n42\n",
+    "defer.mx": "inner cleanup\nouter cleanup\n42\n",
     "collections.mx": "42\n42\n",
 }
 

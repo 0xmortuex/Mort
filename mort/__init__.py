@@ -2,4 +2,4 @@
 
 The compiler pipeline: source text -> Lexer -> Parser -> Checker -> CodeGen -> C.
 """
-__version__ = "0.14.0"
+__version__ = "0.15.0"
