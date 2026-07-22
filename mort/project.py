@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 
 
 class ProjectError(Exception):
@@ -127,8 +128,28 @@ def resolve_project(manifest_path, _seen=None):
     for alias, dependency_path in dependencies.items():
         if not _NAME_RE.match(alias) or not isinstance(dependency_path, str):
             raise ProjectError(
-                f"{manifest_path}: dependencies must map names to local path strings")
-        dependency_root = os.path.abspath(os.path.join(root, dependency_path))
+                f"{manifest_path}: dependencies must map names to path or git strings")
+        if dependency_path.startswith("git+"):
+            specification = dependency_path[4:]
+            if "#" in specification:
+                url, revision = specification.rsplit("#", 1)
+            else:
+                url, revision = specification, None
+            dependency_root = os.path.join(root, ".mort", "deps", alias)
+            if not os.path.isdir(os.path.join(dependency_root, ".git")):
+                os.makedirs(os.path.dirname(dependency_root), exist_ok=True)
+                command = ["git", "clone", "--quiet"]
+                if revision:
+                    command += ["--branch", revision, "--depth", "1"]
+                command += [url, dependency_root]
+                try:
+                    subprocess.run(command, check=True, capture_output=True, text=True)
+                except (OSError, subprocess.CalledProcessError) as error:
+                    detail = getattr(error, "stderr", "") or str(error)
+                    raise ProjectError(
+                        f"failed to fetch dependency {alias!r}: {detail.strip()}")
+        else:
+            dependency_root = os.path.abspath(os.path.join(root, dependency_path))
         dependency_manifest = find_manifest(dependency_root)
         dependency = resolve_project(dependency_manifest, set(_seen))
         dependency_data = load_manifest(dependency_manifest)
@@ -207,7 +228,7 @@ def create_project(target):
             "    assert(str_len(\"Mort\") == 4);\n"
             "}\n"
         ),
-        os.path.join(target, ".gitignore"): "build/\n*.exe\n*.o\n",
+        os.path.join(target, ".gitignore"): "build/\n.mort/\n*.exe\n*.o\n",
     }
     for path, content in files.items():
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -217,19 +238,33 @@ def create_project(target):
 
 def add_path_dependency(manifest_path, name, dependency_path):
     """Add a local path dependency while preserving the rest of mort.toml."""
-    if not _NAME_RE.match(name):
-        raise ProjectError(f"invalid dependency name {name!r}")
     manifest_path = os.path.abspath(manifest_path)
     project_root = os.path.dirname(manifest_path)
     dependency_manifest = find_manifest(dependency_path)
     dependency_root = os.path.dirname(dependency_manifest)
     relative = os.path.relpath(dependency_root, project_root).replace("\\", "/")
+    _append_dependency(manifest_path, name, relative)
+    return dependency_manifest
+
+
+def add_git_dependency(manifest_path, name, url, revision=None):
+    """Add a pinned or branch-based Git dependency."""
+    if not url:
+        raise ProjectError("git dependency URL cannot be empty")
+    value = "git+" + url + ("#" + revision if revision else "")
+    _append_dependency(os.path.abspath(manifest_path), name, value)
+    return value
+
+
+def _append_dependency(manifest_path, name, value):
+    if not _NAME_RE.match(name):
+        raise ProjectError(f"invalid dependency name {name!r}")
     data = load_manifest(manifest_path)
     if name in data.get("dependencies", {}):
         raise ProjectError(f"dependency {name!r} is already declared")
     with open(manifest_path, "r", encoding="utf-8") as handle:
         text = handle.read().rstrip() + "\n"
-    escaped = relative.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     if "dependencies" in data:
         lines = text.splitlines()
         section_index = next(i for i, line in enumerate(lines)
@@ -245,7 +280,6 @@ def add_path_dependency(manifest_path, name, dependency_path):
         text += f'\n[dependencies]\n{name} = "{escaped}"\n'
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
-    return dependency_manifest
 
 
 def write_lockfile(project):
@@ -255,11 +289,21 @@ def write_lockfile(project):
         with open(manifest, "rb") as handle:
             digest = hashlib.sha256(handle.read()).hexdigest()
         data = load_manifest(manifest)
-        packages.append({
+        package = {
             "name": data["package"]["name"],
-            "manifest": os.path.abspath(manifest),
+            "manifest": os.path.relpath(
+                manifest, project["root"]).replace("\\", "/"),
             "sha256": digest,
-        })
+        }
+        dependency_root = os.path.dirname(manifest)
+        if os.path.isdir(os.path.join(dependency_root, ".git")):
+            try:
+                package["revision"] = subprocess.run(
+                    ["git", "-C", dependency_root, "rev-parse", "HEAD"],
+                    check=True, capture_output=True, text=True).stdout.strip()
+            except (OSError, subprocess.CalledProcessError):
+                pass
+        packages.append(package)
     content = {"lock_version": 1, "packages": packages}
     path = os.path.join(project["root"], "mort.lock")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:

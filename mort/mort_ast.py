@@ -195,6 +195,13 @@ class Continue(Node):
         self.line = line
 
 
+class Defer(Node):
+    def __init__(self, expr, line):
+        super().__init__()
+        self.expr = expr
+        self.line = line
+
+
 class MatchArm(Node):
     def __init__(self, pattern, body, line):
         super().__init__()

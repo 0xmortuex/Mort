@@ -394,12 +394,21 @@ class CodeGen:
         return f"{ret} {f.name}({params})"
 
     def _gen_fn(self, f):
+        saved_defers = getattr(self, "current_defers", [])
+        self.current_defers = [s.expr for s in f.body.stmts if isinstance(s, A.Defer)]
         self._emit(self._signature(f) + " {")
         self.indent += 1
         for s in f.body.stmts:
             self._gen_stmt(s)
+        if f.ret == "void":
+            self._emit_defers()
         self.indent -= 1
         self._emit("}")
+        self.current_defers = saved_defers
+
+    def _emit_defers(self):
+        for expression in reversed(getattr(self, "current_defers", [])):
+            self._emit(self._gen_expr(expression) + ";")
 
     def _gen_test(self, test, index):
         self._emit(f"static void mort_test_{index}(void) {{")
@@ -417,6 +426,7 @@ class CodeGen:
         elif isinstance(s, A.Asm):
             self._emit(f'__asm__ volatile ("{s.text}");')
         elif isinstance(s, A.Return):
+            self._emit_defers()
             if s.expr is None:
                 self._emit("return;")
             else:
@@ -470,6 +480,8 @@ class CodeGen:
             self._emit("break;")
         elif isinstance(s, A.Continue):
             self._emit("continue;")
+        elif isinstance(s, A.Defer):
+            pass
         elif isinstance(s, A.Match):
             match_id = self.match_id
             self.match_id += 1

@@ -160,6 +160,8 @@ class Checker:
         self.loop_depth = 0
         self.current_module = None
         self.current_import_aliases = {}
+        self.block_depth = 0
+        self.root_defer_open = True
 
     def _error(self, msg, node):
         raise MortError(
@@ -414,10 +416,18 @@ class Checker:
         self.current_import_aliases = f.import_aliases
         self.scopes = [{}]
         self.loop_depth = 0
+        self.block_depth = 0
+        self.root_defer_open = True
         for p in f.params:
             self._declare(p.name, p.typ, f)
         for s in f.body.stmts:
+            if isinstance(s, A.Defer) and not self.root_defer_open:
+                self._error(
+                    "function-scoped defer must appear before control-flow or "
+                    "expression statements", s)
             self._check_stmt(s)
+            if not isinstance(s, (A.Let, A.Defer)):
+                self.root_defer_open = False
         if f.ret != "void" and not self._block_always_returns(f.body):
             self._error(f"function {f.name!r} may finish without returning {f.ret}", f)
 
@@ -450,9 +460,13 @@ class Checker:
 
     def _check_block(self, block):
         self.scopes.append({})
-        for s in block.stmts:
-            self._check_stmt(s)
-        self.scopes.pop()
+        self.block_depth += 1
+        try:
+            for s in block.stmts:
+                self._check_stmt(s)
+        finally:
+            self.block_depth -= 1
+            self.scopes.pop()
 
     # ----- coercion -----
     def _const_value(self, e):
@@ -704,6 +718,12 @@ class Checker:
 
         elif isinstance(s, A.Asm):
             pass  # an opaque escape hatch; nothing to type-check
+
+        elif isinstance(s, A.Defer):
+            if self.block_depth != 0:
+                self._error("defer is currently function-scoped and must be top-level", s)
+            if self._check_expr(s.expr) != "void":
+                self._error("defer expression must return void", s)
 
         elif isinstance(s, (A.Break, A.Continue)):
             if self.loop_depth == 0:

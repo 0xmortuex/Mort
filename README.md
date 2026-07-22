@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-164%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-168%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.11)
+## The language (v0.12)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -105,6 +105,8 @@ C `main`, so the output is an ordinary native binary.
   across functions (used by the kernel's interrupt handler).
 - **Hosted runtime:** `print`, `println`, `assert`, `len`, `alloc`, and `free`,
   with compile-time and runtime array bounds validation.
+- **Cleanup:** function-scoped `defer expression;` executes cleanup in reverse
+  order on every return path.
 - **Hardware builtins:** the x86 port-I/O family
   (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
   and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).
@@ -141,6 +143,7 @@ mortc test            # compile and run test "name" { ... } blocks
 mortc fmt              # format project sources and tests
 mortc fmt --check      # CI-friendly formatting check
 mortc add util --path ../util  # add a local package and update mort.lock
+mortc add json --git URL --ref v1.0.0  # fetch and pin a Git package
 mortc fetch            # resolve dependencies and refresh the lockfile
 ```
 
@@ -288,6 +291,10 @@ test "addition" {
   exhaustive payload bindings, and monomorphized generic structs.
 - [ ] **Phase 9b — Generic ecosystem:** generic functions/enums, `Option<T>`,
   `Result<T,E>`, ownership checking, and reusable generic collections.
+- [x] **Phase 10a — Portable dependencies and cleanup:** cached Git packages,
+  commit-pinned portable lockfiles, and return-safe function-scoped `defer`.
+- [ ] **Phase 10b — Ownership and remote ecosystem:** move checking, automatic
+  destructors, semantic-version solving, registry publishing, and offline mirrors.
 
 ## License
 

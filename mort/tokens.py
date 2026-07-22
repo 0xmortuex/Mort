@@ -34,6 +34,7 @@ class T(Enum):
     TEST = auto()
     MODULE = auto()
     PUB = auto()
+    DEFER = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -100,6 +101,7 @@ KEYWORDS = {
     "test": T.TEST,
     "module": T.MODULE,
     "pub": T.PUB,
+    "defer": T.DEFER,
 }
 
 

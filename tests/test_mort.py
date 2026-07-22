@@ -763,6 +763,43 @@ def test_local_package_dependency_and_lockfile_run():
 
 
 @needs_cc
+def test_git_package_dependency_is_cached_and_revision_locked():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        library = os.path.join(d, "git_utility")
+        os.makedirs(os.path.join(library, "src"))
+        with open(os.path.join(library, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "git_utility"\nversion = "0.1.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\nentry = "src/lib.mx"\n'
+            )
+        with open(os.path.join(library, "src", "lib.mx"), "w", encoding="utf-8") as fh:
+            fh.write("module git_utility; pub fn answer() -> i64 { return 42; }")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=library, check=True)
+        subprocess.run(["git", "add", "."], cwd=library, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Mort Tests", "-c", "user.email=mort@example.test",
+             "commit", "-q", "-m", "fixture"], cwd=library, check=True)
+
+        assert mortc.main(["new", app]) == 0
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "import git_utility; fn main() -> int { "
+                "print(git_utility.answer()); return 0; }"
+            )
+        assert mortc.main([
+            "add", "git_utility", "--git", library, "--ref", "main", "--project", app
+        ]) == 0
+        assert mortc.main(["run", app]) == 0
+        cache = os.path.join(app, ".mort", "deps", "git_utility", ".git")
+        assert os.path.isdir(cache)
+        with open(os.path.join(app, "mort.lock"), encoding="utf-8") as fh:
+            lock = fh.read()
+    assert '"revision"' in lock
+    assert os.path.abspath(library) not in lock
+
+
+@needs_cc
 def test_typed_slices_and_owned_strings_run():
     slice_src = (
         "fn sum(values: []i32) -> i64 { let total: i64 = 0; "
@@ -1028,6 +1065,25 @@ def test_generic_struct_monomorphization_run():
 
 
 @needs_cc
+def test_function_scoped_defer_runs_on_return():
+    src = (
+        "fn choose(flag: bool) -> i64 { "
+        "defer println(\"cleanup\"); "
+        "if flag { return 42; } return 0; } "
+        "fn main() -> int { print(choose(true)); return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "defer.c")
+        exe = os.path.join(d, "defer.exe" if os.name == "nt" else "defer")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "cleanup\n42\n"
+
+
+@needs_cc
 def test_c_abi_types_and_const_pointer_run():
     src = (
         "extern fn strlen(text: *const c_char) -> c_size; "
@@ -1141,6 +1197,8 @@ def test_c_abi_types_and_const_pointer_run():
      "payload match patterns require one binding name"),
     ("struct Box<T> { value: T } fn main() -> int { "
      "let box: Box<i64, u8> = 0; return 0; }", "unknown type"),
+    ("fn main() -> int { if true { defer println(\"no\"); } return 0; }",
+     "defer is currently function-scoped"),
     ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
      "cannot assign through a const pointer"),
     ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
@@ -1169,6 +1227,7 @@ EXPECTED = {
     "slices.mx": "42\n",
     "result.mx": "42\n",
     "generics.mx": "42\n",
+    "defer.mx": "cleanup\n42\n",
 }
 
 

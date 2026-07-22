@@ -1,0 +1,12 @@
+fn choose(flag: bool) -> i64 {
+    defer println("cleanup");
+    if flag {
+        return 42;
+    }
+    return 0;
+}
+
+fn main() -> int {
+    print(choose(true));
+    return 0;
+}

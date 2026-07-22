@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.12.0 — 2026-07-22
+
+Mort's portable-dependency and deterministic-cleanup release.
+
+### Added
+
+- Function-scoped `defer` cleanup across every return path.
+- Git dependencies through `mortc add --git URL --ref BRANCH_OR_TAG`.
+- Project-local `.mort/deps` package caching.
+- Exact Git commit revisions in `mort.lock`.
+- Relative local-dependency lock records for cross-machine portability.
+
+### Validation
+
+- 168 compiler, cleanup, package, native execution, and kernel tests pass.
+
 ## 0.11.0 — 2026-07-22
 
 Mort's algebraic-data and generic-layout release.

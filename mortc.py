@@ -30,6 +30,7 @@ from mort.mort_ast import Node, Program  # noqa: E402
 from mort import __version__         # noqa: E402
 from mort.project import (           # noqa: E402
     ProjectError,
+    add_git_dependency,
     add_path_dependency,
     create_project,
     find_manifest,
@@ -499,12 +500,18 @@ def main(argv=None):
     if argv and argv[0] == "add":
         ap = argparse.ArgumentParser(prog="mortc add", description="Add a project dependency.")
         ap.add_argument("name", help="dependency import name")
-        ap.add_argument("--path", required=True, help="local dependency project path")
+        source = ap.add_mutually_exclusive_group(required=True)
+        source.add_argument("--path", help="local dependency project path")
+        source.add_argument("--git", help="Git repository URL")
+        ap.add_argument("--ref", help="Git branch or tag (with --git)")
         ap.add_argument("--project", default=".", help="target project directory")
         args = ap.parse_args(argv[1:])
         try:
             manifest = find_manifest(args.project)
-            add_path_dependency(manifest, args.name, args.path)
+            if args.path:
+                add_path_dependency(manifest, args.name, args.path)
+            else:
+                add_git_dependency(manifest, args.name, args.git, args.ref)
             project = resolve_project(manifest)
             lock = write_lockfile(project)
         except (OSError, ProjectError) as error:

@@ -296,6 +296,11 @@ class Parser:
             return A.Continue(line)
         if t == T.MATCH:
             return self._match_stmt()
+        if t == T.DEFER:
+            line = self._advance().line
+            expr = self._expression()
+            self._expect(T.SEMI, "';'")
+            return A.Defer(expr, line)
         if t == T.LBRACE:
             return self._block()
         return self._expr_or_assign()
