@@ -66,8 +66,8 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
     if _is_slice(t):
         return _slice_c_name(t)
     if t.startswith("*const "):
-        return "const " + c_type(
-            t[7:], struct_names, enum_names, payload_enum_names) + "*"
+        inner = c_type(t[7:], struct_names, enum_names, payload_enum_names)
+        return (inner + " const*" if inner.endswith("*") else "const " + inner + "*")
     if t.startswith("*"):
         return c_type(t[1:], struct_names, enum_names, payload_enum_names) + "*"
     if t in struct_names:
@@ -166,14 +166,20 @@ class CodeGen:
             return f"(({self._ct(e.type)}){code})"
         return code
 
-    def _var_decl(self, var_type, cname, init=None):
+    def _var_decl(self, var_type, cname, init=None, binding_const=False):
         """A C declaration for a variable/field, handling arrays (whose size
         sits after the name): '[i32;8]' -> 'int32_t cname[8]'."""
         if _is_array(var_type):
             elem, n = _array_parts(var_type)
-            decl = f"{self._ct(elem)} {cname}[{n}]"
+            qualifier = "const " if binding_const else ""
+            decl = f"{qualifier}{self._ct(elem)} {cname}[{n}]"
         else:
-            decl = f"{self._ct(var_type)} {cname}"
+            ctype = self._ct(var_type)
+            if binding_const and ctype.endswith("*"):
+                decl = f"{ctype} const {cname}"
+            else:
+                qualifier = "const " if binding_const else ""
+                decl = f"{qualifier}{ctype} {cname}"
         return decl if init is None else f"{decl} = {init}"
 
     def _emit(self, s=""):
@@ -193,6 +199,8 @@ class CodeGen:
         self.used_free = False
         self.used_len = False
         self.used_bounds = False
+        self.used_time = False
+        self.used_file = False
         self.match_id = 0
         self.try_id = 0
         self.return_id = 0
@@ -202,7 +210,9 @@ class CodeGen:
         # StrLit and port-I/O call registers itself), so the string table and
         # helpers can be emitted ahead of the code that references them.
         global_decls = [
-            "static " + self._var_decl(g.var_type, "m_" + g.name, self._gen_expr(g.expr)) + ";"
+            "static " + self._var_decl(
+                g.var_type, "m_" + g.name, self._gen_expr(g.expr),
+                binding_const=not g.mutable) + ";"
             for g in self.program.globals
         ]
         saved = self.lines
@@ -225,6 +235,8 @@ class CodeGen:
             self._emit("#include <stdio.h>")
             if self.used_assert or self.used_alloc or self.used_free or self.used_bounds:
                 self._emit("#include <stdlib.h>")
+            if self.used_time:
+                self._emit("#include <time.h>")
         self._emit("#include <stdint.h>")
         self._emit("#include <stdbool.h>")
         self._emit("#include <stddef.h>")
@@ -333,6 +345,32 @@ class CodeGen:
                 self._emit('    if (index >= length) { fprintf(stderr, "index out of bounds at Mort line %lld\\n", (long long)line); exit(1); }')
                 self._emit("    return index;")
                 self._emit("}")
+            if self.used_time:
+                self._emit(
+                    "static int64_t mort_unix_time(void) { return (int64_t)time(NULL); }")
+                self._emit("static uint64_t mort_cpu_millis(void) {")
+                self._emit(
+                    "    return ((uint64_t)clock() * 1000ULL) / "
+                    "(uint64_t)CLOCKS_PER_SEC;")
+                self._emit("}")
+            if self.used_file:
+                self._emit(
+                    "static void* mort_file_open(uint8_t* path, uint8_t* mode) { "
+                    "return (void*)fopen((char*)path, (char*)mode); }")
+                self._emit(
+                    "static bool mort_file_close(void* handle) { "
+                    "return handle != NULL && fclose((FILE*)handle) == 0; }")
+                self._emit(
+                    "static uint64_t mort_file_read(void* handle, uint8_t* buffer, "
+                    "uint64_t length) { return (uint64_t)fread(buffer, 1, "
+                    "(size_t)length, (FILE*)handle); }")
+                self._emit(
+                    "static uint64_t mort_file_write(void* handle, const uint8_t* buffer, "
+                    "uint64_t length) { return (uint64_t)fwrite(buffer, 1, "
+                    "(size_t)length, (FILE*)handle); }")
+                self._emit(
+                    "static bool mort_file_flush(void* handle) { "
+                    "return handle != NULL && fflush((FILE*)handle) == 0; }")
             self._emit()
         # prototypes first, so any call order works
         for f in self.program.externs:
@@ -454,7 +492,9 @@ class CodeGen:
             if isinstance(s.expr, A.Try):
                 self._gen_try_let(s)
                 return
-            self._emit(self._var_decl(s.var_type, "m_" + s.name, self._gen_expr(s.expr)) + ";")
+            self._emit(self._var_decl(
+                s.var_type, "m_" + s.name, self._gen_expr(s.expr),
+                binding_const=not s.mutable) + ";")
         elif isinstance(s, A.Assign):
             self._emit(f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Asm):
@@ -590,6 +630,7 @@ class CodeGen:
                 statement.var_type,
                 "m_" + statement.name,
                 f"{temporary}.data.v_Ok",
+                binding_const=not statement.mutable,
             ) + ";")
 
     def _gen_cond(self, e):
@@ -719,6 +760,11 @@ class CodeGen:
                 self.used_free = True
             elif e.name == "len" and e.args[0].type == "*u8":
                 self.used_len = True
+            elif e.name in ("unix_time", "cpu_millis"):
+                self.used_time = True
+            elif e.name in (
+                    "file_open", "file_close", "file_read", "file_write", "file_flush"):
+                self.used_file = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"

@@ -24,6 +24,8 @@ REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
     "sizeof",
+    "unix_time", "cpu_millis",
+    "file_open", "file_close", "file_read", "file_write", "file_flush",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -159,6 +161,7 @@ class Checker:
         self.enums = {}       # name -> ordered {variant: optional payload type}
         self.enum_templates = {}
         self.globals = {}     # name -> type
+        self.global_mutable = {}
         self.scopes = []
         self.binding_scopes = []
         self.warnings = []
@@ -495,6 +498,7 @@ class Checker:
                 if not self._is_const_init(g.expr):
                     self._error(f"global {g.name!r} must be initialised with constants", g)
                 self.globals[g.name] = g.var_type
+                self.global_mutable[g.name] = g.mutable
                 continue
             t = self._check_expr(g.expr)
             if t == "void":
@@ -513,6 +517,7 @@ class Checker:
                     f"global {g.name!r} must be initialised with a constant "
                     f"(a literal or literal expression)", g)
             self.globals[g.name] = g.var_type
+            self.global_mutable[g.name] = g.mutable
 
         # Hosted programs are launched through a C main; freestanding ones are
         # entered by a bootloader, so they have no 'main' requirement.
@@ -571,7 +576,7 @@ class Checker:
             return all(self._is_const_init(el) for el in expr.elements)
         return bool(getattr(expr, "is_lit", False))  # int literal expression
 
-    def _declare(self, name, typ, node, kind="variable"):
+    def _declare(self, name, typ, node, kind="variable", mutable=True):
         if name in self.scopes[-1]:
             self._error(f"variable {name!r} already declared in this scope", node)
         self.scopes[-1][name] = typ
@@ -579,7 +584,25 @@ class Checker:
             "node": node,
             "used": False,
             "kind": kind,
+            "mutable": mutable,
         }
+
+    def _binding_mutable(self, name):
+        for scope, bindings in zip(
+                reversed(self.scopes), reversed(self.binding_scopes)):
+            if name in scope:
+                return bindings.get(name, {}).get("mutable", True)
+        return self.global_mutable.get(name, True)
+
+    @staticmethod
+    def _assignment_root(expression):
+        if isinstance(expression, A.Var):
+            return expression.name
+        if isinstance(expression, A.FieldAccess):
+            return Checker._assignment_root(expression.obj)
+        if isinstance(expression, A.Index):
+            return Checker._assignment_root(expression.obj)
+        return None
 
     def _finish_binding_scope(self):
         bindings = self.binding_scopes[-1]
@@ -768,7 +791,7 @@ class Checker:
         if isinstance(s, A.Let):
             if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
-                self._declare(s.name, s.var_type, s)
+                self._declare(s.name, s.var_type, s, mutable=s.mutable)
                 return
             previous_try_expr = self.allowed_try_expr
             self.allowed_try_expr = s.expr if isinstance(s.expr, A.Try) else None
@@ -791,10 +814,13 @@ class Checker:
                 s.var_type = s.decl_type
             else:
                 s.var_type = t
-            self._declare(s.name, s.var_type, s)
+            self._declare(s.name, s.var_type, s, mutable=s.mutable)
 
         elif isinstance(s, A.Assign):
             tt = self._check_expr(s.target)
+            root_name = self._assignment_root(s.target)
+            if root_name is not None and not self._binding_mutable(root_name):
+                self._error(f"cannot assign to const binding {root_name!r}", s)
             if (isinstance(s.target, A.Unary) and s.target.op == "*"
                     and is_const_ptr(s.target.operand.type)):
                 self._error("cannot assign through a const pointer", s)
@@ -960,8 +986,7 @@ class Checker:
             pass  # an opaque escape hatch; nothing to type-check
 
         elif isinstance(s, A.Defer):
-            if self._check_expr(s.expr) != "void":
-                self._error("defer expression must return void", s)
+            self._check_expr(s.expr)
 
         elif isinstance(s, (A.Break, A.Continue)):
             if self.loop_depth == 0:
@@ -1053,7 +1078,13 @@ class Checker:
                 ot = self._check_expr(e.operand)
                 if not self._is_lvalue(e.operand):
                     self._error("cannot take the address of this expression", e)
-                return "*" + ot
+                root_name = self._assignment_root(e.operand)
+                prefix = (
+                    "*const "
+                    if root_name is not None and not self._binding_mutable(root_name)
+                    else "*"
+                )
+                return prefix + ot
             if e.op == "*":
                 ot = self._check_expr(e.operand)
                 if not is_ptr(ot):
@@ -1262,6 +1293,48 @@ class Checker:
             target = e.type_args[0]
             if target == "void" or not self._valid_type(target):
                 self._error(f"sizeof has invalid type argument {target}", e)
+            return "u64"
+        if e.name in ("unix_time", "cpu_millis"):
+            if self.freestanding:
+                self._error(f"{e.name} is not available in freestanding mode", e)
+            if e.args or e.type_args:
+                self._error(f"{e.name} expects no arguments", e)
+            return "i64" if e.name == "unix_time" else "u64"
+        if e.name == "file_open":
+            if self.freestanding:
+                self._error("file I/O is not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error("file_open expects path and mode strings", e)
+            for argument in e.args:
+                actual = self._check_expr(argument)
+                if actual != "*u8":
+                    self._error(f"file_open expects string arguments, got {actual}", e)
+            return "*void"
+        if e.name in ("file_close", "file_flush"):
+            if self.freestanding:
+                self._error("file I/O is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error(f"{e.name} expects one file handle", e)
+            actual = self._check_expr(e.args[0])
+            if actual != "*void":
+                self._error(f"{e.name} expects a *void file handle, got {actual}", e)
+            return "bool"
+        if e.name in ("file_read", "file_write"):
+            if self.freestanding:
+                self._error("file I/O is not available in freestanding mode", e)
+            if len(e.args) != 3:
+                self._error(f"{e.name} expects handle, buffer, and length", e)
+            handle_type = self._check_expr(e.args[0])
+            if handle_type != "*void":
+                self._error(f"{e.name} expects a *void file handle, got {handle_type}", e)
+            self._check_expr(e.args[1])
+            buffer_type = "*u8" if e.name == "file_read" else "*const u8"
+            if not self._coerce(buffer_type, e.args[1]):
+                self._error(
+                    f"{e.name} expects buffer type {buffer_type}, got {e.args[1].type}", e)
+            self._check_expr(e.args[2])
+            if not self._coerce("u64", e.args[2]):
+                self._error(f"{e.name} length must be u64, got {e.args[2].type}", e)
             return "u64"
         if e.name == "print":
             if self.freestanding:

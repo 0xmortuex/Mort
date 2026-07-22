@@ -292,6 +292,10 @@ def _compile_main(argv=None, test_mode=False):
     ap.add_argument("--deny-warnings", action="store_true",
                     help="report enabled warnings and fail the check/build")
     ap.add_argument("--run", action="store_true", help="run the program after building")
+    ap.add_argument("-O", "--opt-level", choices=("0", "1", "2", "3", "s"),
+                    default="2", help="C backend optimization level (default: 2)")
+    ap.add_argument("-g", "--debug", action="store_true",
+                    help="include backend debug information")
     ap.add_argument("--freestanding", action="store_true",
                     help="compile to a bare-metal object file (no libc, no main)")
     ap.add_argument("--link", action="append", default=[], metavar="FILE",
@@ -407,10 +411,12 @@ def _compile_main(argv=None, test_mode=False):
         cmd = list(cc)
         if is_zig(cc):
             cmd += ["-target", "x86_64-freestanding-none"]
-        cmd += ["-ffreestanding", "-O2", "-std=c11", "-c"]
+        cmd += ["-ffreestanding", f"-O{args.opt_level}", "-std=c11", "-c"]
     else:
         out = args.output or (base + (".exe" if os.name == "nt" else ""))
-        cmd = [*cc, "-O2", "-std=c11"]
+        cmd = [*cc, f"-O{args.opt_level}", "-std=c11"]
+    if args.debug:
+        cmd.append("-g")
 
     tmp = tempfile.NamedTemporaryFile("w", suffix=".c", delete=False, encoding="utf-8")
     try:
@@ -436,7 +442,9 @@ def _compile_main(argv=None, test_mode=False):
 
 
 def _project_args(project, sources, output, run=False):
-    argv = [*sources, "-o", output]
+    argv = [*sources, "-o", output, "--opt-level", project["opt_level"]]
+    if project["debug"]:
+        argv.append("--debug")
     for module in project["std"]:
         argv += ["--std", module]
     for path in project["links"]:
@@ -501,7 +509,9 @@ def _project_fingerprint(project):
     digest.update(f"mort:{__version__}\0".encode("utf-8"))
     configuration = {
         key: project[key]
-        for key in ("name", "output", "std", "links", "libraries", "packages")
+        for key in (
+            "name", "output", "std", "links", "libraries", "packages",
+            "opt_level", "debug")
     }
     digest.update(json.dumps(
         configuration, sort_keys=True, separators=(",", ":")).encode("utf-8"))
@@ -666,12 +676,14 @@ def main(argv=None):
     if argv and argv[0] == "fetch":
         ap = argparse.ArgumentParser(prog="mortc fetch", description="Resolve project dependencies.")
         ap.add_argument("path", nargs="?", default=".", help="project directory")
+        ap.add_argument("--locked", action="store_true",
+                        help="fail instead of changing an out-of-date lockfile")
         args = ap.parse_args(argv[1:])
         project = _load_project(args.path)
         if project is None:
             return 1
         try:
-            lock = write_lockfile(project)
+            lock = write_lockfile(project, locked=args.locked)
         except (OSError, ProjectError) as error:
             print(f"mortc: {error}", file=sys.stderr)
             return 1

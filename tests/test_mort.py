@@ -58,6 +58,27 @@ def test_types_and_inference():
     assert "int64_t m_y = (m_x + 1);" in c
 
 
+@needs_cc
+def test_const_local_and_global_bindings_run():
+    src = (
+        "const BASE: i64 = 40; "
+        "fn main() -> int { const offset: i64 = 2; "
+        "print(BASE + offset); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "static const int64_t m_BASE" in c_source
+    assert "const int64_t m_offset" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "const.c")
+        exe = os.path.join(d, "const.exe" if os.name == "nt" else "const")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
 def test_condition_has_no_double_parens():
     # if/while conditions must not double-wrap (avoids -Wparentheses-equality)
     c = c_of("fn main() -> int { let x = 1; if x == 0 { print(1); } while x == 2 { print(2); } return 0; }")
@@ -763,8 +784,20 @@ def test_local_package_dependency_and_lockfile_run():
         lock_path = os.path.join(app, "mort.lock")
         assert os.path.isfile(lock_path)
         with open(lock_path, encoding="utf-8") as fh:
-            lock = fh.read()
+            lock_data = json.load(fh)
+        original_digest = lock_data["packages"][0]["content_sha256"]
+        with open(os.path.join(library, "src", "lib.mx"), "a", encoding="utf-8") as fh:
+            fh.write("\n// package content changed\n")
+        assert mortc.main(["fetch", app, "--locked"]) == 1
+        with open(lock_path, encoding="utf-8") as fh:
+            assert json.load(fh)["packages"][0]["content_sha256"] == original_digest
+        assert mortc.main(["fetch", app]) == 0
+        with open(lock_path, encoding="utf-8") as fh:
+            changed_lock_data = json.load(fh)
+        lock = json.dumps(changed_lock_data)
     assert '"name": "utility"' in lock
+    assert changed_lock_data["lock_version"] == 2
+    assert changed_lock_data["packages"][0]["content_sha256"] != original_digest
 
 
 @needs_cc
@@ -878,9 +911,24 @@ def test_project_build_cache_hits_and_invalidates(capsys):
         third = capsys.readouterr().out
         with open(cache_path, "r", encoding="utf-8") as fh:
             second_cache = json.load(fh)
+        manifest = os.path.join(project_dir, "mort.toml")
+        with open(manifest, "r", encoding="utf-8") as fh:
+            manifest_text = fh.read()
+        with open(manifest, "w", encoding="utf-8") as fh:
+            fh.write(manifest_text.replace(
+                "std = []", 'std = []\nopt_level = "0"\ndebug = true'))
+        assert mortc.main(["build", project_dir]) == 0
+        fourth = capsys.readouterr().out
+        configured = resolve_project(manifest)
+        with open(cache_path, "r", encoding="utf-8") as fh:
+            third_cache = json.load(fh)
     assert "build cache hit" not in third
     assert "wrote" in third
     assert first_cache["fingerprint"] != second_cache["fingerprint"]
+    assert "build cache hit" not in fourth
+    assert configured["opt_level"] == "0"
+    assert configured["debug"] is True
+    assert second_cache["fingerprint"] != third_cache["fingerprint"]
 
 
 @needs_cc
@@ -1368,6 +1416,40 @@ def test_portable_env_process_and_generic_math_modules():
 
 
 @needs_cc
+def test_portable_file_and_time_modules():
+    with tempfile.TemporaryDirectory() as d:
+        data_path = os.path.join(d, "mort_io.txt").replace("\\", "/")
+        path = os.path.join(d, "file_time.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.fs; import std.time; "
+                "fn save(path: *u8) -> void { let file = fs.open(path, \"wb\"); "
+                "defer fs.close(&file); assert(fs.is_open(&file)); "
+                "const text: *u8 = \"Mort\"; "
+                "let bytes: []const u8 = slice(text as *const u8, 4); "
+                "assert(fs.write(&file, bytes) == 4); assert(fs.flush(&file)); } "
+                "fn load(path: *u8) -> void { let file = fs.open(path, \"rb\"); "
+                "defer fs.close(&file); let data = alloc(5) as *u8; defer free(data); "
+                "let buffer: []u8 = slice(data, 5); let count = fs.read(&file, buffer); "
+                "data[count] = 0; println(data); } "
+                f"fn main() -> int {{ save(\"{data_path}\"); load(\"{data_path}\"); "
+                "assert(time.unix_seconds() > 0); "
+                "assert(time.cpu_milliseconds() >= 0); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_file_open" in c_source
+        assert "#include <time.h>" in c_source
+        cfile = os.path.join(d, "file_time.c")
+        exe = os.path.join(d, "file_time.exe" if os.name == "nt" else "file_time")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "Mort\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")
@@ -1661,6 +1743,17 @@ def test_c_abi_types_and_const_pointer_run():
      "let box: Box<i64, u8> = 0; return 0; }", "unknown type"),
     ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
      "cannot assign through a const pointer"),
+    ("fn main() -> int { const value = 1; value = 2; return 0; }",
+     "cannot assign to const binding 'value'"),
+    ("struct Point { x: i64 } fn main() -> int { "
+     "const point = Point { x: 1 }; point.x = 2; return 0; }",
+     "cannot assign to const binding 'point'"),
+    ("fn main() -> int { const values: [i64; 2] = [1, 2]; "
+     "values[0] = 3; return 0; }", "cannot assign to const binding 'values'"),
+    ("const GLOBAL: i64 = 1; fn main() -> int { GLOBAL = 2; return 0; }",
+     "cannot assign to const binding 'GLOBAL'"),
+    ("fn main() -> int { const value = 1; let pointer = &value; "
+     "*pointer = 2; return 0; }", "cannot assign through a const pointer"),
     ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
      "s[0] = 0; return 0; }", "cannot assign through a const slice"),
 ])

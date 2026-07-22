@@ -111,6 +111,8 @@ class Parser:
                 tests.append(self._test_decl())
             elif self._at(T.LET):
                 globals_.append(self._let_stmt())  # top-level let = global var
+            elif self._at(T.CONST):
+                globals_.append(self._let_stmt(mutable=False))
             elif self._at(T.EXTERN):
                 externs.append(self._extern_fn_decl())
             else:
@@ -314,6 +316,8 @@ class Parser:
         t = self._peek().type
         if t == T.LET:
             return self._let_stmt()
+        if t == T.CONST:
+            return self._let_stmt(mutable=False)
         if t == T.RETURN:
             return self._return_stmt()
         if t == T.IF:
@@ -371,7 +375,7 @@ class Parser:
         self._expect(T.SEMI, "';'")
         return A.Asm(text, line)
 
-    def _let_stmt(self):
+    def _let_stmt(self, mutable=True):
         line = self._advance().line
         name = self._expect(T.IDENT, "variable name").value
         decl = None
@@ -381,7 +385,7 @@ class Parser:
         self._expect(T.ASSIGN, "'='")
         expr = self._expression()
         self._expect(T.SEMI, "';'")
-        return A.Let(name, decl, expr, line)
+        return A.Let(name, decl, expr, line, mutable=mutable)
 
     def _return_stmt(self):
         line = self._advance().line

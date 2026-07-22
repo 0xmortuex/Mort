@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-193%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.17)
+## The language (v0.18)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -99,12 +99,15 @@ C `main`, so the output is an ordinary native binary.
 - **Typed collections:** allocation-backed `Vec<T>` and `Map<Key, Value>` in
   `std.vec` and `std.map`, with deterministic `destroy` functions.
 - **Portable standard modules:** environment access, process control, and
-  generic integer math through `std.env`, `std.process`, and `std.math`.
+  generic integer math through `std.env`, `std.process`, and `std.math`, plus
+  typed hosted file/time APIs through `std.fs` and `std.time`.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `let value = try operation();` unwraps `Result.Ok` or
   returns a type-compatible `Result.Err` from the enclosing function.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
+- **Immutable bindings:** `const answer: i64 = 42;` for locals and globals,
+  with protected fields, indices, and `*const T` address propagation.
 - **Control flow:** `if` / `else if` / `else`, `while`, range `for`, `break`, and
   `continue` (`for i in 0..n { ... }`, or `for i: u32 in 0..n` to fix the
   counter's type).
@@ -139,6 +142,7 @@ python mortc.py bad.mx --check --diagnostic-format json  # editor/CI diagnostics
 python mortc.py app.mx --check --warn-unused --deny-warnings
 python mortc.py lsp                     # start the stdio language server
 python mortc.py fuzz --cases 1000 --seed 0  # deterministic front-end fuzzing
+python mortc.py app.mx -O3 -g           # backend optimization/debug controls
 python mortc.py program.mx -o myprog    # choose the output name
 python mortc.py main.mx math.mx --run   # one program split across source files
 python mortc.py app.mx --std string     # include a bundled standard module
@@ -160,6 +164,7 @@ mortc fmt --check      # CI-friendly formatting check
 mortc add util --path ../util  # add a local package and update mort.lock
 mortc add json --git URL --ref v1.0.0  # fetch and pin a Git package
 mortc fetch            # resolve dependencies and refresh the lockfile
+mortc fetch --locked   # verify the lockfile without changing it
 ```
 
 Project builds are content-addressed: unchanged sources, dependencies,

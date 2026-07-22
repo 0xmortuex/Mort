@@ -1,0 +1,9 @@
+module std.time;
+
+pub fn unix_seconds() -> i64 {
+    return unix_time();
+}
+
+pub fn cpu_milliseconds() -> u64 {
+    return cpu_millis();
+}

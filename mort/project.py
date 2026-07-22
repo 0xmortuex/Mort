@@ -122,6 +122,14 @@ def resolve_project(manifest_path, _seen=None):
     if os.name == "nt" and not output.lower().endswith(".exe"):
         output += ".exe"
 
+    opt_level = str(build.get("opt_level", "2"))
+    if opt_level not in ("0", "1", "2", "3", "s"):
+        raise ProjectError(
+            f"{manifest_path}: 'build.opt_level' must be 0, 1, 2, 3, or 's'")
+    debug = build.get("debug", False)
+    if not isinstance(debug, bool):
+        raise ProjectError(f"{manifest_path}: 'build.debug' must be a boolean")
+
     dependencies = data.get("dependencies", {})
     packages = {}
     dependency_manifests = []
@@ -182,6 +190,8 @@ def resolve_project(manifest_path, _seen=None):
         "tests": _string_list(data.get("test", {}), "sources", ["tests/**/*.mx"], manifest_path),
         "packages": packages,
         "dependency_manifests": sorted(dict.fromkeys(dependency_manifests)),
+        "opt_level": opt_level,
+        "debug": debug,
     }
     _seen.remove(key)
     return result
@@ -282,7 +292,7 @@ def _append_dependency(manifest_path, name, value):
         handle.write(text)
 
 
-def write_lockfile(project):
+def write_lockfile(project, locked=False):
     """Write a deterministic lock snapshot for all local dependencies."""
     packages = []
     for manifest in project["dependency_manifests"]:
@@ -294,6 +304,7 @@ def write_lockfile(project):
             "manifest": os.path.relpath(
                 manifest, project["root"]).replace("\\", "/"),
             "sha256": digest,
+            "content_sha256": _package_content_digest(os.path.dirname(manifest)),
         }
         dependency_root = os.path.dirname(manifest)
         if os.path.isdir(os.path.join(dependency_root, ".git")):
@@ -304,9 +315,46 @@ def write_lockfile(project):
             except (OSError, subprocess.CalledProcessError):
                 pass
         packages.append(package)
-    content = {"lock_version": 1, "packages": packages}
+    content = {"lock_version": 2, "packages": packages}
     path = os.path.join(project["root"], "mort.lock")
+    if locked:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except (OSError, ValueError) as error:
+            raise ProjectError(f"locked dependency check requires a valid mort.lock: {error}")
+        if existing != content:
+            raise ProjectError(
+                "mort.lock is out of date; run 'mortc fetch' to refresh it")
+        return path
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(content, handle, indent=2, sort_keys=True)
         handle.write("\n")
     return path
+
+
+def _package_content_digest(root):
+    """Hash the complete portable package payload, not just its manifest."""
+    digest = hashlib.sha256()
+    files = []
+    for directory, names, filenames in os.walk(root):
+        names[:] = [
+            name for name in names
+            if name not in (".git", ".mort", "build", "__pycache__")
+        ]
+        for name in filenames:
+            if name == "mort.lock" or name.endswith((".pyc", ".o", ".exe")):
+                continue
+            files.append(os.path.join(directory, name))
+    for path in sorted(files, key=lambda item: os.path.relpath(item, root).replace("\\", "/")):
+        relative = os.path.relpath(path, root).replace("\\", "/")
+        digest.update(relative.encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()

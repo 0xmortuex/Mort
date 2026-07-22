@@ -1,0 +1,43 @@
+module std.fs;
+
+struct File {
+    handle: *void,
+}
+
+pub fn open(path: *u8, mode: *u8) -> File {
+    return File { handle: file_open(path, mode) };
+}
+
+pub fn is_open(file: *File) -> bool {
+    return (*file).handle != (0 as *void);
+}
+
+pub fn close(file: *File) -> bool {
+    if !is_open(file) {
+        return false;
+    }
+    let closed = file_close((*file).handle);
+    (*file).handle = 0 as *void;
+    return closed;
+}
+
+pub fn read(file: *File, buffer: []u8) -> u64 {
+    if !is_open(file) {
+        return 0;
+    }
+    return file_read((*file).handle, buffer.data, buffer.len);
+}
+
+pub fn write(file: *File, buffer: []const u8) -> u64 {
+    if !is_open(file) {
+        return 0;
+    }
+    return file_write((*file).handle, buffer.data, buffer.len);
+}
+
+pub fn flush(file: *File) -> bool {
+    if !is_open(file) {
+        return false;
+    }
+    return file_flush((*file).handle);
+}

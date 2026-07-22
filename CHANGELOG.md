@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.18.0 — 2026-07-22
+
+Mort's immutable-bindings and portable-I/O release.
+
+### Added
+
+- Immutable local and global `const` bindings with C-level const lowering.
+- Transitive const protection for field/index assignment and address taking.
+- Portable hosted `std.fs` file handles and `std.time` clocks.
+- `-O0` through `-O3`, `-Os`, and `-g` backend build controls.
+- Build-mode-aware incremental cache fingerprints.
+- Full-package content hashes in lockfile format version 2.
+- `mortc fetch --locked` for non-mutating dependency-drift checks.
+
+### Validation
+
+- 200 compiler, const-safety, file/time, package-lock, optimization, native
+  execution, and kernel tests pass.
+
 ## 0.17.0 — 2026-07-22
 
 Mort's editor, incremental-build, and portable-stdlib release.

@@ -111,13 +111,14 @@ class TestDecl(Node):
 
 # ----- statements -----
 class Let(Node):
-    def __init__(self, name, decl_type, expr, line):
+    def __init__(self, name, decl_type, expr, line, mutable=True):
         super().__init__()
         self.name = name
         self.decl_type = decl_type  # explicit annotation or None
         self.expr = expr
         self.line = line
         self.var_type = None  # filled in by the checker
+        self.mutable = mutable
 
 
 class Assign(Node):
