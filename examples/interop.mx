@@ -1,0 +1,9 @@
+// Call an existing C ABI function directly. `abs` is supplied by the host C
+// runtime, but the same mechanism works with your own object files/libraries.
+extern fn abs(value: i32) -> i32;
+
+fn main() -> int {
+    let answer: i32 = abs(0 - 42);
+    print(answer);
+    return 0;
+}

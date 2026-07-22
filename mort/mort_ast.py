@@ -14,11 +14,27 @@ class Node:
 
 # ----- top level -----
 class Program(Node):
-    def __init__(self, funcs, structs, globals=None):
+    def __init__(self, funcs, structs, globals=None, externs=None, imports=None,
+                 enums=None, tests=None, module_name=None):
         super().__init__()
         self.funcs = funcs
         self.structs = structs
         self.globals = globals or []  # top-level Let nodes
+        self.externs = externs or []
+        self.imports = imports or []
+        self.enums = enums or []
+        self.tests = tests or []
+        self.module_name = module_name
+        self.import_aliases = {}
+
+
+class ImportDecl(Node):
+    def __init__(self, parts, line, alias=None):
+        super().__init__()
+        self.parts = parts
+        self.line = line
+        self.alias = alias
+        self.resolved_path = None
 
 
 class Param:
@@ -49,6 +65,39 @@ class FnDecl(Node):
         self.ret = ret
         self.body = body
         self.line = line
+        self.public = False
+        self.module = None
+        self.symbol_name = name
+        self.import_aliases = {}
+
+
+class EnumDecl(Node):
+    def __init__(self, name, variants, line):
+        super().__init__()
+        self.name = name
+        self.variants = variants
+        self.line = line
+
+
+class ExternFnDecl(Node):
+    """A C-ABI function declaration with no Mort body."""
+
+    def __init__(self, name, params, ret, line):
+        super().__init__()
+        self.name = name
+        self.params = params
+        self.ret = ret
+        self.line = line
+
+
+class TestDecl(Node):
+    def __init__(self, name, body, line):
+        super().__init__()
+        self.name = name
+        self.body = body
+        self.line = line
+        self.module = None
+        self.import_aliases = {}
 
 
 # ----- statements -----
@@ -127,6 +176,35 @@ class Asm(Node):
         self.line = line
 
 
+class Break(Node):
+    def __init__(self, line):
+        super().__init__()
+        self.line = line
+
+
+class Continue(Node):
+    def __init__(self, line):
+        super().__init__()
+        self.line = line
+
+
+class MatchArm(Node):
+    def __init__(self, pattern, body, line):
+        super().__init__()
+        self.pattern = pattern  # None is the wildcard arm
+        self.body = body
+        self.line = line
+
+
+class Match(Node):
+    def __init__(self, expr, arms, line):
+        super().__init__()
+        self.expr = expr
+        self.arms = arms
+        self.line = line
+        self.exhaustive = False
+
+
 # ----- expressions -----
 class IntLit(Node):
     def __init__(self, value, line):
@@ -179,6 +257,7 @@ class Call(Node):
         self.name = name
         self.args = args
         self.line = line
+        self.resolved_name = None
 
 
 class Cast(Node):

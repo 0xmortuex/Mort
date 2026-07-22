@@ -13,11 +13,37 @@ _C_BASE = {
     "i8": "int8_t", "i16": "int16_t", "i32": "int32_t", "i64": "int64_t",
     "u8": "uint8_t", "u16": "uint16_t", "u32": "uint32_t", "u64": "uint64_t",
     "bool": "bool", "void": "void",
+    "c_char": "char", "c_uchar": "unsigned char",
+    "c_short": "short", "c_ushort": "unsigned short",
+    "c_int": "int", "c_uint": "unsigned int",
+    "c_long": "long", "c_ulong": "unsigned long", "c_size": "size_t",
 }
 
 
 def _is_array(t):
-    return t.startswith("[")
+    return t.startswith("[") and not t.startswith("[]")
+
+
+def _is_slice(t):
+    return t.startswith("[]")
+
+
+def _is_const_slice(t):
+    return t.startswith("[]const ")
+
+
+def _slice_elem(t):
+    return t[8:] if _is_const_slice(t) else t[2:]
+
+
+def _type_tag(t):
+    return (t.replace("*const ", "const_").replace("*", "ptr_")
+            .replace("[]const ", "slice_const_").replace("[]", "slice_")
+            .replace("[", "array_").replace("]", "").replace(";", "_"))
+
+
+def _slice_c_name(t):
+    return "struct mort_" + _type_tag(t)
 
 
 def _array_parts(t):
@@ -26,28 +52,71 @@ def _array_parts(t):
     return inner[:cut], int(inner[cut + 1:])
 
 
-def c_type(t, struct_names=frozenset()):
+def _c_symbol(name):
+    return name.replace(".", "__")
+
+
+def c_type(t, struct_names=frozenset(), enum_names=frozenset()):
     """Map a Mort type string to its C spelling.
 
     '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
     """
+    if _is_slice(t):
+        return _slice_c_name(t)
+    if t.startswith("*const "):
+        return "const " + c_type(t[7:], struct_names, enum_names) + "*"
     if t.startswith("*"):
-        return c_type(t[1:], struct_names) + "*"
+        return c_type(t[1:], struct_names, enum_names) + "*"
     if t in struct_names:
         return "struct mort_" + t
+    if t in enum_names:
+        return "enum mort_" + t
     return _C_BASE[t]
 
 
 class CodeGen:
-    def __init__(self, program, freestanding=False):
+    def __init__(self, program, freestanding=False, test_mode=False):
         self.program = program
         self.freestanding = freestanding
+        self.test_mode = test_mode
         self.struct_names = {s.name for s in program.structs}
+        self.enum_names = {e.name for e in program.enums}
+        self.extern_names = {f.name for f in program.externs}
         self.lines = []
         self.indent = 0
+        self.slice_types = self._collect_slice_types(program)
+
+    @staticmethod
+    def _collect_slice_types(program):
+        found = set()
+        seen = set()
+
+        def visit(value):
+            if isinstance(value, str):
+                if _is_slice(value):
+                    found.add(value)
+                return
+            if value is None or isinstance(value, (int, bool)):
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    visit(key)
+                    visit(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    visit(item)
+                return
+            if hasattr(value, "__dict__") and id(value) not in seen:
+                seen.add(id(value))
+                for item in vars(value).values():
+                    visit(item)
+
+        visit(program)
+        return sorted(found)
 
     def _ct(self, t):
-        return c_type(t, self.struct_names)
+        return c_type(t, self.struct_names, self.enum_names)
 
     _U64_MAX = (1 << 64) - 1
     _I64_MAX = (1 << 63) - 1
@@ -102,6 +171,13 @@ class CodeGen:
         self.used_outw = False
         self.used_inl = False
         self.used_outl = False
+        self.used_println = False
+        self.used_assert = False
+        self.used_alloc = False
+        self.used_free = False
+        self.used_len = False
+        self.used_bounds = False
+        self.match_id = 0
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -116,6 +192,10 @@ class CodeGen:
         for f in self.program.funcs:
             self._gen_fn(f)
             self._emit()
+        if self.test_mode:
+            for index, test in enumerate(self.program.tests):
+                self._gen_test(test, index)
+                self._emit()
         body_lines = self.lines
         self.lines = saved
 
@@ -123,15 +203,40 @@ class CodeGen:
         # <stdint.h>/<stdbool.h> are freestanding-safe; <stdio.h> is not.
         if not self.freestanding:
             self._emit("#include <stdio.h>")
+            if self.used_assert or self.used_alloc or self.used_free or self.used_bounds:
+                self._emit("#include <stdlib.h>")
         self._emit("#include <stdint.h>")
         self._emit("#include <stdbool.h>")
+        self._emit("#include <stddef.h>")
         self._emit()
-        # struct forward declarations (so pointers can cross-reference), then
-        # full definitions in declared order.
+        if self.program.enums:
+            for enum in self.program.enums:
+                self._emit(f"enum mort_{enum.name} {{")
+                self.indent += 1
+                for index, variant in enumerate(enum.variants):
+                    comma = "," if index + 1 < len(enum.variants) else ""
+                    self._emit(f"MORT_{enum.name}_{variant} = {index}{comma}")
+                self.indent -= 1
+                self._emit("};")
+                self._emit()
+        # Forward declarations let slice element pointers and structs refer to
+        # each other before their full definitions.
         if self.program.structs:
             for s in self.program.structs:
                 self._emit(f"struct mort_{s.name};")
             self._emit()
+        if self.slice_types:
+            for slice_type in self.slice_types:
+                elem = _slice_elem(slice_type)
+                pointer = self._ct(elem) + "*"
+                if _is_const_slice(slice_type):
+                    pointer = "const " + pointer
+                self._emit(f"{_slice_c_name(slice_type)} {{")
+                self._emit(f"    {pointer} data;")
+                self._emit("    uint64_t length;")
+                self._emit("};")
+                self._emit()
+        if self.program.structs:
             for s in self.program.structs:
                 self._gen_struct(s)
                 self._emit()
@@ -182,8 +287,31 @@ class CodeGen:
             self._emit()
         if not self.freestanding:
             self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
+            if self.used_println:
+                self._emit("static void mort_println(uint8_t* text) { puts((char*)text); }")
+            if self.used_assert:
+                self._emit("static void mort_assert(bool condition, int64_t line) {")
+                self._emit('    if (!condition) { fprintf(stderr, "assertion failed at Mort line %lld\\n", (long long)line); exit(1); }')
+                self._emit("}")
+            if self.used_alloc:
+                self._emit("static void* mort_alloc(uint64_t size) { return malloc((size_t)size); }")
+            if self.used_free:
+                self._emit("static void mort_free(void* pointer) { free(pointer); }")
+            if self.used_len:
+                self._emit("static uint64_t mort_len(uint8_t* text) {")
+                self._emit("    uint64_t length = 0;")
+                self._emit("    while (text[length] != 0) { length++; }")
+                self._emit("    return length;")
+                self._emit("}")
+            if self.used_bounds:
+                self._emit("static uint64_t mort_bounds(uint64_t index, uint64_t length, int64_t line) {")
+                self._emit('    if (index >= length) { fprintf(stderr, "index out of bounds at Mort line %lld\\n", (long long)line); exit(1); }')
+                self._emit("    return index;")
+                self._emit("}")
             self._emit()
         # prototypes first, so any call order works
+        for f in self.program.externs:
+            self._emit("extern " + self._extern_signature(f) + ";")
         for f in self.program.funcs:
             self._emit(self._signature(f) + ";")
         self._emit()
@@ -191,7 +319,14 @@ class CodeGen:
         # Hosted builds get a real C main that calls the user's main; a
         # freestanding object has no entry point (the bootloader supplies one).
         if not self.freestanding:
-            self._emit("int main(void) { return (int)mort_main(); }")
+            if self.test_mode:
+                self._emit("int main(void) {")
+                for index, _ in enumerate(self.program.tests):
+                    self._emit(f"    mort_test_{index}();")
+                self._emit("    return 0;")
+                self._emit("}")
+            else:
+                self._emit("int main(void) { return (int)mort_main(); }")
         return "\n".join(self.lines) + "\n"
 
     def _gen_struct(self, s):
@@ -208,13 +343,32 @@ class CodeGen:
             params = ", ".join(f"{self._ct(p.typ)} m_{p.name}" for p in f.params)
         else:
             params = "void"
-        return f"{ret} mort_{f.name}({params})"
+        return f"{ret} mort_{_c_symbol(f.symbol_name)}({params})"
+
+    def _extern_signature(self, f):
+        ret = self._ct(f.ret)
+        if f.params:
+            # Parameter names are not part of the C ABI. Omitting them also
+            # prevents a harmless Mort name such as `register` from becoming
+            # an invalid C declaration.
+            params = ", ".join(self._ct(p.typ) for p in f.params)
+        else:
+            params = "void"
+        return f"{ret} {f.name}({params})"
 
     def _gen_fn(self, f):
         self._emit(self._signature(f) + " {")
         self.indent += 1
         for s in f.body.stmts:
             self._gen_stmt(s)
+        self.indent -= 1
+        self._emit("}")
+
+    def _gen_test(self, test, index):
+        self._emit(f"static void mort_test_{index}(void) {{")
+        self.indent += 1
+        for statement in test.body.stmts:
+            self._gen_stmt(statement)
         self.indent -= 1
         self._emit("}")
 
@@ -275,6 +429,33 @@ class CodeGen:
             self._emit("}")
         elif isinstance(s, A.ExprStmt):
             self._emit(self._gen_expr(s.expr) + ";")
+        elif isinstance(s, A.Break):
+            self._emit("break;")
+        elif isinstance(s, A.Continue):
+            self._emit("continue;")
+        elif isinstance(s, A.Match):
+            match_id = self.match_id
+            self.match_id += 1
+            temporary = f"mort_match_{match_id}"
+            self._emit("{")
+            self.indent += 1
+            self._emit(f"{self._ct(s.expr.type)} {temporary} = {self._gen_expr(s.expr)};")
+            emitted_condition = False
+            for arm in s.arms:
+                if arm.pattern is None:
+                    self._emit("else {" if emitted_condition else "{")
+                else:
+                    keyword = "else if" if emitted_condition else "if"
+                    self._emit(
+                        f"{keyword} ({temporary} == {self._gen_expr(arm.pattern)}) {{")
+                    emitted_condition = True
+                self.indent += 1
+                for statement in arm.body.stmts:
+                    self._gen_stmt(statement)
+                self.indent -= 1
+                self._emit("}")
+            self.indent -= 1
+            self._emit("}")
 
     def _gen_cond(self, e):
         """Generate a condition for if/while.
@@ -316,9 +497,26 @@ class CodeGen:
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
             return f"(struct mort_{e.name}){{ {inits} }}"
         if isinstance(e, A.FieldAccess):
+            if isinstance(e.obj, A.Var) and e.obj.name in self.enum_names:
+                return f"MORT_{e.obj.name}_{e.field}"
+            if _is_slice(e.obj.type):
+                field = "length" if e.field == "len" else e.field
+                return f"({self._gen_expr(e.obj)}).{field}"
             return f"({self._gen_expr(e.obj)}).f_{e.field}"
         if isinstance(e, A.Index):
-            return f"{self._gen_expr(e.obj)}[{self._gen_expr(e.index)}]"
+            index = self._gen_expr(e.index)
+            if _is_slice(e.obj.type):
+                obj = self._gen_expr(e.obj)
+                if not self.freestanding:
+                    self.used_bounds = True
+                    index = f"mort_bounds((uint64_t)({index}), ({obj}).length, {e.line})"
+                return f"({obj}).data[{index}]"
+            if (_is_array(e.obj.type) and not self.freestanding
+                    and getattr(e.index, "const_val", None) is None):
+                self.used_bounds = True
+                _, length = _array_parts(e.obj.type)
+                index = f"mort_bounds((uint64_t)({index}), {length}, {e.line})"
+            return f"{self._gen_expr(e.obj)}[{index}]"
         if isinstance(e, A.ArrayLit):
             return "{" + ", ".join(self._gen_expr(el) for el in e.elements) + "}"
         if isinstance(e, A.ArrayRepeat):
@@ -363,7 +561,42 @@ class CodeGen:
                 self.used_inl = True
             elif e.name == "outl":
                 self.used_outl = True
+            elif e.name == "println":
+                self.used_println = True
+            elif e.name == "assert":
+                self.used_assert = True
+            elif e.name == "alloc":
+                self.used_alloc = True
+            elif e.name == "free":
+                self.used_free = True
+            elif e.name == "len" and e.args[0].type == "*u8":
+                self.used_len = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
-            name = "mort_print" if e.name == "print" else f"mort_{e.name}"
+            if e.name == "print":
+                name = "mort_print"
+            elif e.name == "println":
+                name = "mort_println"
+            elif e.name == "assert":
+                return f"mort_assert({args}, {e.line})"
+            elif e.name == "alloc":
+                name = "mort_alloc"
+            elif e.name == "free":
+                name = "mort_free"
+            elif e.name == "len":
+                if _is_array(e.args[0].type):
+                    return str(_array_parts(e.args[0].type)[1])
+                if _is_slice(e.args[0].type):
+                    return f"({self._gen_expr(e.args[0])}).length"
+                name = "mort_len"
+            elif e.name == "slice":
+                slice_type = e.type
+                return (
+                    f"({_slice_c_name(slice_type)}){{ .data = {self._gen_expr(e.args[0])}, "
+                    f".length = {self._gen_expr(e.args[1])} }}"
+                )
+            elif (e.resolved_name or e.name) in self.extern_names:
+                name = e.resolved_name or e.name
+            else:
+                name = f"mort_{_c_symbol(e.resolved_name or e.name)}"
             return f"{name}({args})"
         raise Exception("unreachable: cannot generate expression")  # pragma: no cover

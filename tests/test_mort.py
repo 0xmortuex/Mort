@@ -21,6 +21,8 @@ sys.path.insert(0, ROOT)
 
 from mort.errors import MortError            # noqa: E402
 import mortc                                 # noqa: E402
+from mort.project import load_manifest, resolve_project  # noqa: E402
+from mort.formatter import format_source                 # noqa: E402
 
 
 def c_of(src):
@@ -572,6 +574,432 @@ def test_kernel_builds_multiboot_elf():
     assert "multiboot ELF" in r.stdout
 
 
+# ---------- Phase 5: real-project foundations ----------
+
+def test_extern_function_codegen_and_typechecking():
+    c = c_of(
+        "extern fn triple(value: i64) -> i64; "
+        "fn main() -> int { print(triple(14)); return 0; }"
+    )
+    assert "extern int64_t triple(int64_t);" in c
+    assert "mort_print(triple(14));" in c
+    assert "mort_triple" not in c
+
+
+def test_void_pointer_is_available_for_ffi():
+    c = c_of(
+        "extern fn release(ptr: *void); "
+        "fn main() -> int { let p: *void = 0 as *void; release(p); return 0; }"
+    )
+    assert "extern void release(void*);" in c
+
+
+def test_pointer_indexing_codegen():
+    c = c_of(
+        "fn main() -> int { let a: [i32; 2] = [1, 2]; "
+        "let p: *i32 = &a[0]; p[1] = 9; print(p[1] as i64); return 0; }"
+    )
+    assert "int32_t* m_p = (&m_a[0]);" in c
+    assert "m_p[1] = 9;" in c
+
+
+def test_multiple_sources_share_one_checked_namespace():
+    c = mortc.compile_sources_to_c([
+        "fn twice(x: i64) -> i64 { return x * 2; }",
+        "fn main() -> int { print(twice(21)); return 0; }",
+    ])
+    assert "int64_t mort_twice(int64_t m_x);" in c
+    assert "mort_print(mort_twice(21));" in c
+
+
+def test_multiple_sources_report_the_failing_filename():
+    with pytest.raises(MortError) as exc:
+        mortc.compile_sources_to_c(
+            ["fn helper() { missing(); }", "fn main() -> int { return 0; }"],
+            filenames=["src/helper.mx", "src/main.mx"],
+        )
+    assert exc.value.format().startswith("src/helper.mx:1: error:")
+
+
+def test_standard_library_modules_typecheck_together():
+    paths = [
+        os.path.join(ROOT, "std", "string.mx"),
+        os.path.join(ROOT, "std", "memory.mx"),
+    ]
+    sources = []
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            sources.append(fh.read())
+    sources.append(
+        "fn main() -> int { let a: [u8; 4] = [0; 4]; "
+        "mem_set(&a[0], 7, 4); print(str_len(\"Mort\")); return 0; }"
+    )
+    c = mortc.compile_sources_to_c(sources)
+    assert "mort_mem_set" in c
+    assert "mort_str_len" in c
+
+
+@needs_cc
+def test_std_cli_module_runs():
+    source = os.path.join(ROOT, "examples", "stdlib.mx")
+    with tempfile.TemporaryDirectory() as d:
+        exe = os.path.join(d, "stdlib.exe" if os.name == "nt" else "stdlib")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--std", "string", "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("4\n1\n")
+
+
+def test_project_manifest_and_source_discovery():
+    with tempfile.TemporaryDirectory() as d:
+        project_dir = os.path.join(d, "demo")
+        assert mortc.main(["new", project_dir]) == 0
+        manifest_path = os.path.join(project_dir, "mort.toml")
+        manifest = load_manifest(manifest_path)
+        project = resolve_project(manifest_path)
+    assert manifest["package"]["name"] == "demo"
+    assert len(project["sources"]) == 1
+    assert project["std"] == []
+
+
+def test_file_imports_resolve_local_and_standard_modules():
+    with tempfile.TemporaryDirectory() as d:
+        main_path = os.path.join(d, "main.mx")
+        math_path = os.path.join(d, "math.mx")
+        with open(main_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import math; import std.string; "
+                "fn main() -> int { print(double(str_len(\"Mort\"))); return 0; }"
+            )
+        with open(math_path, "w", encoding="utf-8") as fh:
+            fh.write("fn double(value: u64) -> u64 { return value * 2; }")
+        c = mortc.compile_files_to_c([main_path])
+    assert "mort_double" in c
+    assert "mort_str_len" in c
+
+
+def test_missing_import_names_source_file():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "main.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("import missing; fn main() -> int { return 0; }")
+        with pytest.raises(MortError) as exc:
+            mortc.compile_files_to_c([path])
+    assert exc.value.filename == path
+    assert "cannot find imported module" in exc.value.msg
+
+
+@needs_cc
+def test_namespaced_module_alias_and_pub_visibility_run():
+    with tempfile.TemporaryDirectory() as d:
+        main_path = os.path.join(d, "main.mx")
+        math_path = os.path.join(d, "math.mx")
+        with open(main_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import math as numbers; "
+                "fn main() -> int { print(numbers.double(21)); return 0; }"
+            )
+        with open(math_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "module utilities.math; "
+                "fn add(value: i64) -> i64 { return value + value; } "
+                "pub fn double(value: i64) -> i64 { return add(value); }"
+            )
+        c_source = mortc.compile_files_to_c([main_path])
+        assert "mort_utilities__math__double" in c_source
+        cfile = os.path.join(d, "modules.c")
+        exe = os.path.join(d, "modules.exe" if os.name == "nt" else "modules")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "42\n"
+
+
+def test_private_module_function_is_rejected():
+    with tempfile.TemporaryDirectory() as d:
+        main_path = os.path.join(d, "main.mx")
+        hidden_path = os.path.join(d, "hidden.mx")
+        with open(main_path, "w", encoding="utf-8") as fh:
+            fh.write("import hidden; fn main() -> int { return hidden.secret(); }")
+        with open(hidden_path, "w", encoding="utf-8") as fh:
+            fh.write("module hidden; fn secret() -> i64 { return 1; }")
+        with pytest.raises(MortError) as exc:
+            mortc.compile_files_to_c([main_path])
+    assert "private to module" in exc.value.msg
+
+
+@needs_cc
+def test_local_package_dependency_and_lockfile_run():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        library = os.path.join(d, "utility")
+        assert mortc.main(["new", app]) == 0
+        os.makedirs(os.path.join(library, "src"))
+        with open(os.path.join(library, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "utility"\nversion = "0.1.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\nentry = "src/lib.mx"\n'
+            )
+        with open(os.path.join(library, "src", "lib.mx"), "w", encoding="utf-8") as fh:
+            fh.write("module utility; pub fn answer() -> i64 { return 42; }")
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "import utility; "
+                "fn main() -> int { print(utility.answer()); return 0; }"
+            )
+        assert mortc.main(["add", "utility", "--path", library, "--project", app]) == 0
+        assert mortc.main(["fetch", app]) == 0
+        assert mortc.main(["run", app]) == 0
+        lock_path = os.path.join(app, "mort.lock")
+        assert os.path.isfile(lock_path)
+        with open(lock_path, encoding="utf-8") as fh:
+            lock = fh.read()
+    assert '"name": "utility"' in lock
+
+
+@needs_cc
+def test_typed_slices_and_owned_strings_run():
+    slice_src = (
+        "fn sum(values: []i32) -> i64 { let total: i64 = 0; "
+        "for index: u64 in 0..values.len { total = total + (values[index] as i64); } "
+        "return total; } "
+        "fn main() -> int { let values: [i32; 3] = [10, 20, 12]; "
+        "let view: []i32 = slice(&values[0], len(values)); "
+        "print(sum(view)); return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        slice_path = os.path.join(d, "slices.mx")
+        string_path = os.path.join(d, "strings.mx")
+        with open(slice_path, "w", encoding="utf-8") as fh:
+            fh.write(slice_src)
+        with open(string_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.owned_string as strings; "
+                "fn main() -> int { let left: String = strings.from(\"Mort\"); "
+                "let right: String = strings.from(\" language\"); "
+                "let combined: String = strings.concat(&left, &right); "
+                "println(combined.data); strings.destroy(&left); "
+                "strings.destroy(&right); strings.destroy(&combined); return 0; }"
+            )
+        outputs = []
+        for index, path in enumerate((slice_path, string_path)):
+            c_source = mortc.compile_files_to_c([path])
+            cfile = os.path.join(d, f"safe{index}.c")
+            exe = os.path.join(d, f"safe{index}.exe" if os.name == "nt" else f"safe{index}")
+            with open(cfile, "w", encoding="utf-8") as fh:
+                fh.write(c_source)
+            subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+            outputs.append(subprocess.run([exe], capture_output=True, text=True))
+    assert outputs[0].stdout == "42\n"
+    assert outputs[1].stdout == "Mort language\n"
+
+
+@needs_cc
+def test_project_new_build_run_and_test_commands(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        project_dir = os.path.join(d, "hello_mort")
+        assert mortc.main(["new", project_dir]) == 0
+        assert mortc.main(["build", project_dir]) == 0
+        project = resolve_project(os.path.join(project_dir, "mort.toml"))
+        assert os.path.isfile(project["output"])
+        assert mortc.main(["run", project_dir]) == 0
+        assert mortc.main(["test", project_dir]) == 0
+    output = capsys.readouterr().out
+    assert "created project" in output
+    assert "1 test file(s) passed" in output
+
+
+@needs_cc
+def test_first_class_test_blocks_run_with_project_code():
+    with tempfile.TemporaryDirectory() as d:
+        library = os.path.join(d, "math.mx")
+        tests_path = os.path.join(d, "math_test.mx")
+        with open(library, "w", encoding="utf-8") as fh:
+            fh.write("fn double(value: i64) -> i64 { return value * 2; }")
+        with open(tests_path, "w", encoding="utf-8") as fh:
+            fh.write('test "double" { assert(double(21) == 42); }')
+        c_source = mortc.compile_files_to_c([library, tests_path], test_mode=True)
+        assert "static void mort_test_0" in c_source
+        cfile = os.path.join(d, "tests.c")
+        exe = os.path.join(d, "tests.exe" if os.name == "nt" else "tests")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+
+
+def test_formatter_preserves_comments_strings_and_indents():
+    source = 'fn main() -> int {  \n// { is not structure\nprintln("}");\nreturn 0;\n}\n'
+    assert format_source(source) == (
+        'fn main() -> int {\n'
+        '    // { is not structure\n'
+        '    println("}");\n'
+        '    return 0;\n'
+        '}\n'
+    )
+
+
+def test_fmt_check_and_write_commands():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "main.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int {\nreturn 0;\n}\n")
+        assert mortc.main(["fmt", "--check", path]) == 1
+        assert mortc.main(["fmt", path]) == 0
+        assert mortc.main(["fmt", "--check", path]) == 0
+
+
+def test_diagnostic_render_includes_source_excerpt():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "bad.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int {\n    return nope;\n}\n")
+        with pytest.raises(MortError) as exc:
+            mortc.compile_files_to_c([path])
+        rendered = exc.value.render()
+    assert "return nope;" in rendered
+    assert "| ^" in rendered
+
+
+@needs_cc
+def test_extern_function_links_and_runs(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        helper_c = os.path.join(d, "helper.c")
+        helper_o = os.path.join(d, "helper.o")
+        main_mx = os.path.join(d, "main.mx")
+        exe = os.path.join(d, "ffi.exe" if os.name == "nt" else "ffi")
+        with open(helper_c, "w", encoding="utf-8") as fh:
+            fh.write("#include <stdint.h>\nint64_t triple(int64_t x) { return x * 3; }\n")
+        subprocess.run([*_CC, "-O2", "-c", helper_c, "-o", helper_o], check=True)
+        with open(main_mx, "w", encoding="utf-8") as fh:
+            fh.write(
+                "extern fn triple(value: i64) -> i64; "
+                "fn main() -> int { print(triple(14)); return 0; }"
+            )
+        assert mortc.main([main_mx, "--link", helper_o, "-o", exe]) == 0
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "42\n"
+    assert "mortc: wrote" in capsys.readouterr().out
+
+
+@needs_cc
+def test_break_and_continue_run():
+    src = (
+        "fn main() -> int { let i = 0; let total = 0; "
+        "while true { i = i + 1; if i == 2 { continue; } "
+        "if i == 6 { break; } total = total + i; } "
+        "print(total); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "continue;" in c_source
+    assert "break;" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "loops.c")
+        exe = os.path.join(d, "loops.exe" if os.name == "nt" else "loops")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "13\n"
+
+
+@needs_cc
+def test_hosted_runtime_string_assert_and_allocation():
+    src = (
+        "fn main() -> int { let text: *u8 = alloc(2) as *u8; "
+        "text[0] = 65; text[1] = 0; println(text); "
+        "assert(text[0] == 65); free(text); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "malloc" in c_source
+    assert "mort_assert" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "runtime.c")
+        exe = os.path.join(d, "runtime.exe" if os.name == "nt" else "runtime")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "A\n"
+
+
+@needs_cc
+def test_len_and_runtime_array_bounds_checks():
+    good = c_of(
+        "fn main() -> int { let values: [i32; 3] = [1, 2, 3]; "
+        "print(len(values)); print(len(\"Mort\")); let index = 1; "
+        "print(values[index] as i64); return 0; }"
+    )
+    bad = c_of(
+        "fn main() -> int { let values: [i32; 2] = [1, 2]; "
+        "let index = 3; print(values[index] as i64); return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        results = []
+        for number, source in enumerate((good, bad)):
+            cfile = os.path.join(d, f"bounds{number}.c")
+            exe = os.path.join(d, f"bounds{number}.exe" if os.name == "nt" else f"bounds{number}")
+            with open(cfile, "w", encoding="utf-8") as fh:
+                fh.write(source)
+            subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+            results.append(subprocess.run([exe], capture_output=True, text=True))
+    assert results[0].stdout == "3\n4\n2\n"
+    assert results[1].returncode != 0
+    assert "index out of bounds" in results[1].stderr
+
+
+@needs_cc
+def test_enum_and_exhaustive_match_run():
+    src = (
+        "enum State { Idle, Running, Done } "
+        "fn state_code(state: State) -> i64 { "
+        "match state { "
+        "State.Idle => { return 0; }, "
+        "State.Running => { return 1; }, "
+        "State.Done => { return 2; } "
+        "} } "
+        "fn main() -> int { let state: State = State.Running; "
+        "print(state_code(state)); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "enum mort_State" in c_source
+    assert "MORT_State_Running" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "enum.c")
+        exe = os.path.join(d, "enum.exe" if os.name == "nt" else "enum")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "1\n"
+
+
+@needs_cc
+def test_c_abi_types_and_const_pointer_run():
+    src = (
+        "extern fn strlen(text: *const c_char) -> c_size; "
+        "fn main() -> int { let size: c_size = strlen(\"Mort\" as *const c_char); "
+        "print(size); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "extern size_t strlen(const char*);" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "ffi_types.c")
+        exe = os.path.join(d, "ffi_types.exe" if os.name == "nt" else "ffi_types")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "4\n"
+
+
 # ---------- front-end: errors ----------
 
 @pytest.mark.parametrize("src, needle", [
@@ -640,6 +1068,29 @@ def test_kernel_builds_multiboot_elf():
     ("fn main() -> int { let a: u8 = 1; print((a | (200 << 4)) as i64); return 0; }", "does not fit in u8"),
     ("fn main() -> int { let x: u8 = 1 << (0 - 1); print(x); return 0; }", "shift count cannot be negative"),
     ("fn main() -> int { let x: u8 = 1 << 1000000; print(x); return 0; }", "does not fit in u8"),
+    ("extern fn f(x: void); fn main() -> int { return 0; }", "cannot have type void"),
+    ("extern fn f() -> i64; fn f() -> i64 { return 1; } fn main() -> int { return 0; }",
+     "already defined"),
+    ("extern fn main() -> i64;", "no 'main' function defined"),
+    ("fn main() -> int { break; return 0; }", "only allowed inside a loop"),
+    ("fn main() -> int { continue; return 0; }", "only allowed inside a loop"),
+    ("extern fn auto() -> i32; fn main() -> int { return 0; }", "reserved by C"),
+    ("fn main() -> int { let p: *void = 0 as *void; let x = p[0]; return 0; }",
+     "cannot index a *void pointer"),
+    ("fn value() -> i64 { let x = 1; } fn main() -> int { return 0; }",
+     "may finish without returning i64"),
+    ("fn main() -> int { println(1); return 0; }", "println expects a string"),
+    ("fn main() -> int { assert(1); return 0; }", "assert expects a bool"),
+    ("fn main() -> int { let a: [u8; 2] = [1, 2]; print(a[2] as i64); return 0; }",
+     "out of bounds for length 2"),
+    ("enum State { A, B } fn main() -> int { let s: State = State.A; "
+     "match s { State.A => { print(1); } } return 0; }", "non-exhaustive match"),
+    ("enum State { A } fn main() -> int { let s: State = State.Nope; return 0; }",
+     "has no variant"),
+    ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
+     "cannot assign through a const pointer"),
+    ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
+     "s[0] = 0; return 0; }", "cannot assign through a const slice"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
@@ -658,6 +1109,10 @@ EXPECTED = {
     "structs.mx": "3\n7\n13\n100\n",
     "asm.mx": "1\n2\n",
     "arrays.mx": "0\n55\n100\n",
+    "interop.mx": "42\n",
+    "loops.mx": "13\n",
+    "enums.mx": "1\n",
+    "slices.mx": "42\n",
 }
 
 

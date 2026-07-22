@@ -26,7 +26,7 @@ probe (`--freestanding --emit-c`):
 | Global mutable scalars | works | used throughout kmain.mx |
 | **Global arrays** (`let g: [u8; 512] = [0; 512];`) | **works** (contrary to what kmain.mx's string-literal buffers suggest) | typechecker line 131 explicitly accepts ArrayLit/ArrayRepeat globals; probe compiled to `static uint8_t m_g[512] = {0, ...};` |
 | `(&arr) as u32` / `(&arr) as *u8` | works | `&` on a Var lvalue yields `*[u8;512]`, which is a pointer and castable |
-| `&arr[0]` | **illegal** | `_is_lvalue` (typechecker ~line 429) accepts only Var / deref / FieldAccess — Index is not an lvalue. Use `(&arr) as u32 + i` instead. |
+| `&arr[0]` and pointer indexing | **works** | Array indexes are lvalues, and typed pointers support `p[i]` reads/writes. `*void` must be cast to an element pointer before indexing. |
 | `arr as u32` (no `&`) | illegal | Cast source must be int or pointer; array types are neither |
 | Structs in freestanding | compile fine (plain C structs) | probe compiled; but **not used in this design** — raw offset arithmetic matches the existing multiboot idiom and avoids depending on C struct layout for on-disk data |
 | `<<` `>>` `&` `|` `^` `%` | work | typechecker binary ops |

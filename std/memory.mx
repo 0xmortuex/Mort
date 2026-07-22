@@ -1,0 +1,22 @@
+// Mort standard library: byte-oriented memory operations.
+
+fn mem_set(destination: *u8, value: u8, count: u64) {
+    for index: u64 in 0..count {
+        destination[index] = value;
+    }
+}
+
+fn mem_copy(destination: *u8, source: *u8, count: u64) {
+    for index: u64 in 0..count {
+        destination[index] = source[index];
+    }
+}
+
+fn mem_equal(left: *u8, right: *u8, count: u64) -> bool {
+    for index: u64 in 0..count {
+        if left[index] != right[index] {
+            return false;
+        }
+    }
+    return true;
+}

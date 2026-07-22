@@ -1,0 +1,50 @@
+module std.owned_string;
+
+struct String {
+    data: *u8,
+    length: u64,
+}
+
+pub fn from(text: *u8) -> String {
+    let length: u64 = len(text);
+    let data: *u8 = alloc(length + 1) as *u8;
+    let source: []const u8 = slice(text as *const u8, length);
+    let destination: []u8 = slice(data, length + 1);
+    for index: u64 in 0..length {
+        destination[index] = source[index];
+    }
+    destination[length] = 0;
+    return String { data: data, length: length };
+}
+
+pub fn concat(left: *String, right: *String) -> String {
+    let length: u64 = (*left).length + (*right).length;
+    let data: *u8 = alloc(length + 1) as *u8;
+    let destination: []u8 = slice(data, length + 1);
+    let left_view: []const u8 = slice(
+        (*left).data as *const u8,
+        (*left).length
+    );
+    let right_view: []const u8 = slice(
+        (*right).data as *const u8,
+        (*right).length
+    );
+    for index: u64 in 0..left_view.len {
+        destination[index] = left_view[index];
+    }
+    for index: u64 in 0..right_view.len {
+        destination[left_view.len + index] = right_view[index];
+    }
+    destination[length] = 0;
+    return String { data: data, length: length };
+}
+
+pub fn view(value: *String) -> []const u8 {
+    return slice((*value).data as *const u8, (*value).length);
+}
+
+pub fn destroy(value: *String) {
+    free((*value).data);
+    (*value).data = 0 as *u8;
+    (*value).length = 0;
+}

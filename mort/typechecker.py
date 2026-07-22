@@ -12,10 +12,26 @@ the other operand of a binary op). Everything else needs an explicit ``as`` cast
 from .errors import MortError
 from . import mort_ast as A
 
-INT_TYPES = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
+INT_TYPES = {
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+    "c_char", "c_uchar", "c_short", "c_ushort", "c_int", "c_uint",
+    "c_long", "c_ulong", "c_size",
+}
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
-BUILTIN_NAMES = {"print", "outb", "inb", "outw", "inw", "outl", "inl"}
+BUILTIN_NAMES = {
+    "print", "println", "assert", "alloc", "free", "len", "slice",
+    "outb", "inb", "outw", "inw", "outl", "inl",
+}
+C_KEYWORDS = {
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while", "_Alignas", "_Alignof",
+    "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn",
+    "_Static_assert", "_Thread_local",
+}
 
 # Inclusive value range each integer type can hold.
 INT_RANGES = {
@@ -27,6 +43,16 @@ INT_RANGES = {
     "u16": (0, 65535),
     "u32": (0, 2 ** 32 - 1),
     "u64": (0, 2 ** 64 - 1),
+    "c_char": (-128, 127),
+    "c_uchar": (0, 255),
+    "c_short": (-(2 ** 15), 2 ** 15 - 1),
+    "c_ushort": (0, 2 ** 16 - 1),
+    "c_int": (-(2 ** 31), 2 ** 31 - 1),
+    "c_uint": (0, 2 ** 32 - 1),
+    # Conservative LLP64 ranges keep code portable between Windows and Unix.
+    "c_long": (-(2 ** 31), 2 ** 31 - 1),
+    "c_ulong": (0, 2 ** 32 - 1),
+    "c_size": (0, 2 ** 64 - 1),
 }
 
 
@@ -47,11 +73,27 @@ def is_ptr(t):
 
 
 def pointee(t):
-    return t[1:]
+    return t[7:] if t.startswith("*const ") else t[1:]
+
+
+def is_const_ptr(t):
+    return isinstance(t, str) and t.startswith("*const ")
 
 
 def is_array(t):
-    return isinstance(t, str) and t.startswith("[")
+    return isinstance(t, str) and t.startswith("[") and not t.startswith("[]")
+
+
+def is_slice(t):
+    return isinstance(t, str) and t.startswith("[]")
+
+
+def is_const_slice(t):
+    return isinstance(t, str) and t.startswith("[]const ")
+
+
+def slice_elem(t):
+    return t[8:] if is_const_slice(t) else t[2:]
 
 
 def array_parts(t):
@@ -62,32 +104,55 @@ def array_parts(t):
 
 
 class Checker:
-    def __init__(self, program, freestanding=False):
+    def __init__(self, program, freestanding=False, test_mode=False):
         self.program = program
         self.freestanding = freestanding
+        self.test_mode = test_mode
         self.funcs = {}       # name -> (param_types, ret)
+        self.func_decls = {}
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
+        self.enums = {}       # name -> ordered variant names
         self.globals = {}     # name -> type
         self.scopes = []
         self.current_ret = None
+        self.extern_names = set()
+        self.loop_depth = 0
+        self.current_module = None
+        self.current_import_aliases = {}
 
     def _error(self, msg, node):
-        raise MortError(msg, getattr(node, "line", None))
+        raise MortError(
+            msg,
+            getattr(node, "line", None),
+            filename=getattr(node, "filename", None),
+        )
 
     def _valid_type(self, t):
         """A type is usable if its (possibly pointed-to / element) base is known."""
         if is_ptr(t):
-            return self._valid_type(pointee(t))
+            return pointee(t) == "void" or self._valid_type(pointee(t))
         if is_array(t):
             elem, n = array_parts(t)
             return n > 0 and self._valid_type(elem)
-        return t in INT_TYPES or t == "bool" or t in self.structs
+        if is_slice(t):
+            return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
+        return t in INT_TYPES or t == "bool" or t in self.structs or t in self.enums
 
     def check(self):
+        # Enums are nominal integer-backed types with a closed variant set.
+        for ed in self.program.enums:
+            if ed.name in self.enums:
+                self._error(f"enum {ed.name!r} is already defined", ed)
+            if not ed.variants:
+                self._error(f"enum {ed.name!r} must have at least one variant", ed)
+            if len(set(ed.variants)) != len(ed.variants):
+                self._error(f"enum {ed.name!r} has a duplicate variant", ed)
+            self.enums[ed.name] = list(ed.variants)
+
         # 1. collect struct names first so fields may reference any struct
         #    (including recursively through pointers, e.g. `next: *Node`).
         for sd in self.program.structs:
-            if sd.name in self.structs:
+            if sd.name in self.structs or sd.name in self.enums:
                 self._error(f"struct {sd.name!r} is already defined", sd)
             self.structs[sd.name] = None  # placeholder until fields validated
 
@@ -104,11 +169,17 @@ class Checker:
                 fields[fld.name] = fld.typ
             self.structs[sd.name] = fields
 
-        # 3. collect and validate function signatures
-        for f in self.program.funcs:
-            if f.name in self.funcs or f.name in BUILTIN_NAMES:
+        # 3. collect and validate function signatures. Extern declarations use
+        #    the platform C ABI and share the same call namespace.
+        for f in [*self.program.externs, *self.program.funcs]:
+            symbol_name = getattr(f, "symbol_name", f.name)
+            if symbol_name in self.funcs or f.name in BUILTIN_NAMES:
                 self._error(f"function {f.name!r} is already defined", f)
+            if isinstance(f, A.ExternFnDecl) and f.name in C_KEYWORDS:
+                self._error(f"external function name {f.name!r} is reserved by C", f)
             for p in f.params:
+                if p.typ == "void":
+                    self._error(f"parameter {p.name!r} cannot have type void", f)
                 if not self._valid_type(p.typ):
                     self._error(f"parameter {p.name!r} has unknown type {p.typ}", f)
                 if is_array(p.typ):
@@ -120,13 +191,17 @@ class Checker:
                     self._error(f"function {f.name!r} has unknown return type {f.ret}", f)
                 if is_array(f.ret):
                     self._error(f"function {f.name!r} cannot return an array", f)
-            self.funcs[f.name] = ([p.typ for p in f.params], f.ret)
+            self.funcs[symbol_name] = ([p.typ for p in f.params], f.ret)
+            self.func_decls[symbol_name] = f
+            if isinstance(f, A.ExternFnDecl):
+                self.extern_names.add(f.name)
 
         # 4. globals — initialised with a compile-time constant, usable anywhere
         self.scopes = []
         for g in self.program.globals:
             if (g.name in self.globals or g.name in self.funcs
-                    or g.name in self.structs or g.name in BUILTIN_NAMES):
+                    or g.name in self.structs or g.name in self.enums
+                    or g.name in BUILTIN_NAMES):
                 self._error(f"global {g.name!r} conflicts with another name", g)
             if isinstance(g.expr, (A.ArrayLit, A.ArrayRepeat)):
                 g.var_type = self._check_array_expr(g.expr, g.decl_type, g)
@@ -154,8 +229,9 @@ class Checker:
 
         # Hosted programs are launched through a C main; freestanding ones are
         # entered by a bootloader, so they have no 'main' requirement.
-        if not self.freestanding:
-            if "main" not in self.funcs:
+        if not self.freestanding and not self.test_mode:
+            defined_names = {f.symbol_name for f in self.program.funcs}
+            if "main" not in defined_names:
                 raise MortError("no 'main' function defined")
             params, ret = self.funcs["main"]
             if params:
@@ -165,6 +241,18 @@ class Checker:
 
         for f in self.program.funcs:
             self._check_fn(f)
+        test_names = set()
+        for test in self.program.tests:
+            if test.name in test_names:
+                self._error(f"test {test.name!r} is already defined", test)
+            test_names.add(test.name)
+            self.current_ret = "void"
+            self.current_module = test.module
+            self.current_import_aliases = test.import_aliases
+            self.scopes = [{}]
+            self.loop_depth = 0
+            for statement in test.body.stmts:
+                self._check_stmt(statement)
         return self.program
 
     # ----- scopes -----
@@ -177,6 +265,9 @@ class Checker:
     def _is_const_init(self, expr):
         """Globals need a compile-time-constant initialiser."""
         if isinstance(expr, (A.BoolLit, A.StrLit)):
+            return True
+        if (isinstance(expr, A.FieldAccess) and isinstance(expr.obj, A.Var)
+                and expr.obj.name in self.enums):
             return True
         if isinstance(expr, A.ArrayRepeat):
             return self._is_const_init(expr.value)
@@ -229,11 +320,43 @@ class Checker:
 
     def _check_fn(self, f):
         self.current_ret = f.ret
+        self.current_module = f.module
+        self.current_import_aliases = f.import_aliases
         self.scopes = [{}]
+        self.loop_depth = 0
         for p in f.params:
             self._declare(p.name, p.typ, f)
         for s in f.body.stmts:
             self._check_stmt(s)
+        if f.ret != "void" and not self._block_always_returns(f.body):
+            self._error(f"function {f.name!r} may finish without returning {f.ret}", f)
+
+    def _block_always_returns(self, block):
+        """Conservative control-flow check for non-void function returns."""
+        for statement in block.stmts:
+            if isinstance(statement, A.Return):
+                return True
+            if isinstance(statement, A.Block) and self._block_always_returns(statement):
+                return True
+            if isinstance(statement, A.If) and statement.els is not None:
+                then_returns = self._block_always_returns(statement.then)
+                if isinstance(statement.els, A.If):
+                    else_returns = self._if_always_returns(statement.els)
+                else:
+                    else_returns = self._block_always_returns(statement.els)
+                if then_returns and else_returns:
+                    return True
+            if isinstance(statement, A.Match) and statement.exhaustive:
+                if all(self._block_always_returns(arm.body) for arm in statement.arms):
+                    return True
+        return False
+
+    def _if_always_returns(self, statement):
+        if statement.els is None or not self._block_always_returns(statement.then):
+            return False
+        if isinstance(statement.els, A.If):
+            return self._if_always_returns(statement.els)
+        return self._block_always_returns(statement.els)
 
     def _check_block(self, block):
         self.scopes.append({})
@@ -301,6 +424,10 @@ class Checker:
         """
         if expr.type == expected:
             return True
+        if is_const_ptr(expected) and is_ptr(expr.type):
+            if pointee(expected) == pointee(expr.type):
+                expr.type = expected
+                return True
         if expected in INT_TYPES and expr.is_lit:
             value = self._const_value(expr)
             if value is not None:
@@ -340,6 +467,13 @@ class Checker:
 
         elif isinstance(s, A.Assign):
             tt = self._check_expr(s.target)
+            if (isinstance(s.target, A.Unary) and s.target.op == "*"
+                    and is_const_ptr(s.target.operand.type)):
+                self._error("cannot assign through a const pointer", s)
+            if isinstance(s.target, A.Index) and is_const_ptr(s.target.obj.type):
+                self._error("cannot assign through a const pointer", s)
+            if isinstance(s.target, A.Index) and is_const_slice(s.target.obj.type):
+                self._error("cannot assign through a const slice", s)
             if is_array(tt):
                 self._error("cannot assign to a whole array; assign elements via a[i]", s)
             self._check_expr(s.expr)
@@ -370,7 +504,11 @@ class Checker:
         elif isinstance(s, A.While):
             if self._check_expr(s.cond) != "bool":
                 self._error("while condition must be a bool", s)
-            self._check_block(s.body)
+            self.loop_depth += 1
+            try:
+                self._check_block(s.body)
+            finally:
+                self.loop_depth -= 1
 
         elif isinstance(s, A.For):
             st = self._check_expr(s.start)
@@ -397,9 +535,47 @@ class Checker:
                 self._error(f"mismatched range types {st} and {et}; add an 'as' cast", s)
             # the loop variable is scoped to the loop (with the body)
             self.scopes.append({s.var: s.var_type})
-            for st2 in s.body.stmts:
-                self._check_stmt(st2)
-            self.scopes.pop()
+            self.loop_depth += 1
+            try:
+                for st2 in s.body.stmts:
+                    self._check_stmt(st2)
+            finally:
+                self.loop_depth -= 1
+                self.scopes.pop()
+
+        elif isinstance(s, A.Match):
+            subject_type = self._check_expr(s.expr)
+            if (subject_type in self.structs or is_array(subject_type)
+                    or is_slice(subject_type) or is_ptr(subject_type)):
+                self._error(f"cannot match on a value of type {subject_type}", s)
+            wildcard_seen = False
+            enum_variants = set()
+            for index, arm in enumerate(s.arms):
+                if arm.pattern is None:
+                    if wildcard_seen:
+                        self._error("match has more than one wildcard arm", arm)
+                    if index != len(s.arms) - 1:
+                        self._error("the wildcard match arm must be last", arm)
+                    wildcard_seen = True
+                else:
+                    pattern_type = self._check_expr(arm.pattern)
+                    if not self._coerce(subject_type, arm.pattern):
+                        self._error(
+                            f"match pattern expects {subject_type}, got {pattern_type}", arm)
+                    if (isinstance(arm.pattern, A.FieldAccess)
+                            and isinstance(arm.pattern.obj, A.Var)
+                            and arm.pattern.obj.name == subject_type):
+                        enum_variants.add(arm.pattern.field)
+                self._check_block(arm.body)
+            if subject_type in self.enums:
+                missing = set(self.enums[subject_type]) - enum_variants
+                if missing and not wildcard_seen:
+                    self._error(
+                        f"non-exhaustive match on {subject_type}; missing: "
+                        f"{', '.join(sorted(missing))}", s)
+                s.exhaustive = True
+            else:
+                s.exhaustive = wildcard_seen
 
         elif isinstance(s, A.Block):
             self._check_block(s)
@@ -409,6 +585,11 @@ class Checker:
 
         elif isinstance(s, A.Asm):
             pass  # an opaque escape hatch; nothing to type-check
+
+        elif isinstance(s, (A.Break, A.Continue)):
+            if self.loop_depth == 0:
+                word = "break" if isinstance(s, A.Break) else "continue"
+                self._error(f"'{word}' is only allowed inside a loop", s)
 
         else:  # pragma: no cover
             self._error("unknown statement kind", s)
@@ -430,6 +611,7 @@ class Checker:
             isinstance(e, A.Var)
             or (isinstance(e, A.Unary) and e.op == "*")
             or isinstance(e, A.FieldAccess)
+            or isinstance(e, A.Index)
         )
 
     def _infer(self, e):
@@ -449,8 +631,8 @@ class Checker:
         if isinstance(e, A.Cast):
             st = self._check_expr(e.expr)
             tgt = e.target_type
-            src_ok = st in INT_TYPES or is_ptr(st)
-            tgt_ok = tgt in INT_TYPES or is_ptr(tgt)
+            src_ok = st in INT_TYPES or st in self.enums or is_ptr(st)
+            tgt_ok = tgt in INT_TYPES or tgt in self.enums or is_ptr(tgt)
             if not (src_ok and tgt_ok):
                 self._error(f"cannot cast {st} to {tgt}", e)
             return tgt
@@ -547,7 +729,19 @@ class Checker:
             return e.name
 
         if isinstance(e, A.FieldAccess):
+            if isinstance(e.obj, A.Var) and e.obj.name in self.enums:
+                enum_name = e.obj.name
+                if e.field not in self.enums[enum_name]:
+                    self._error(f"enum {enum_name!r} has no variant {e.field!r}", e)
+                return enum_name
             ot = self._check_expr(e.obj)
+            if is_slice(ot):
+                if e.field == "len":
+                    return "u64"
+                if e.field == "data":
+                    prefix = "*const " if is_const_slice(ot) else "*"
+                    return prefix + slice_elem(ot)
+                self._error(f"slice has no field {e.field!r}", e)
             if is_ptr(ot):
                 self._error(
                     f"cannot access a field through a pointer; "
@@ -560,12 +754,24 @@ class Checker:
 
         if isinstance(e, A.Index):
             ot = self._check_expr(e.obj)
-            if not is_array(ot):
-                self._error(f"cannot index a value of type {ot} (not an array)", e)
+            if not is_array(ot) and not is_slice(ot) and not is_ptr(ot):
+                self._error(
+                    f"cannot index a value of type {ot} (not an array, slice, or pointer)", e)
             it = self._check_expr(e.index)
             if it not in INT_TYPES:
                 self._error(f"array index must be an integer, got {it}", e)
-            elem, _ = array_parts(ot)
+            if is_ptr(ot):
+                elem = pointee(ot)
+                if elem == "void":
+                    self._error("cannot index a *void pointer; cast it to an element pointer first", e)
+                return elem
+            if is_slice(ot):
+                return slice_elem(ot)
+            elem, length = array_parts(ot)
+            constant = self._const_value(e.index)
+            if constant is not None and not (0 <= constant < length):
+                self._error(
+                    f"array index {constant} is out of bounds for length {length}", e)
             return elem
 
         if isinstance(e, (A.ArrayLit, A.ArrayRepeat)):
@@ -623,6 +829,59 @@ class Checker:
             if at not in INT_TYPES:
                 self._error(f"print expects an integer, got {at}", e)
             return "void"
+        if e.name == "println":
+            if self.freestanding:
+                self._error("println is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("println expects exactly 1 argument", e)
+            at = self._check_expr(e.args[0])
+            if at != "*u8":
+                self._error(f"println expects a string (*u8), got {at}", e)
+            return "void"
+        if e.name == "assert":
+            if self.freestanding:
+                self._error("assert is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("assert expects exactly 1 argument", e)
+            if self._check_expr(e.args[0]) != "bool":
+                self._error("assert expects a bool", e)
+            return "void"
+        if e.name == "alloc":
+            if self.freestanding:
+                self._error("alloc is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("alloc expects exactly 1 argument", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u64", e.args[0]):
+                self._error(f"alloc size must be u64, got {e.args[0].type}", e)
+            return "*void"
+        if e.name == "free":
+            if self.freestanding:
+                self._error("free is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("free expects exactly 1 argument", e)
+            at = self._check_expr(e.args[0])
+            if not is_ptr(at):
+                self._error(f"free expects a pointer, got {at}", e)
+            return "void"
+        if e.name == "len":
+            if len(e.args) != 1:
+                self._error("len expects exactly 1 argument", e)
+            at = self._check_expr(e.args[0])
+            if not is_array(at) and not is_slice(at) and at != "*u8":
+                self._error(f"len expects an array, slice, or string, got {at}", e)
+            return "u64"
+        if e.name == "slice":
+            if len(e.args) != 2:
+                self._error("slice expects 2 arguments (pointer, length)", e)
+            pointer_type = self._check_expr(e.args[0])
+            if not is_ptr(pointer_type) or pointee(pointer_type) == "void":
+                self._error("slice expects a typed pointer as its first argument", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u64", e.args[1]):
+                self._error(f"slice length must be u64, got {e.args[1].type}", e)
+            prefix = "[]const " if is_const_ptr(pointer_type) else "[]"
+            return prefix + pointee(pointer_type)
         if e.name == "outb":
             # outb(port: u16, value: u8) — write a byte to an I/O port
             if len(e.args) != 2:
@@ -680,9 +939,25 @@ class Checker:
             if not self._coerce("u16", e.args[0]):
                 self._error(f"inl port must be u16, got {e.args[0].type}", e)
             return "u32"
-        if e.name not in self.funcs:
-            self._error(f"call to undefined function {e.name!r}", e)
-        ptypes, ret = self.funcs[e.name]
+        requested = e.name
+        if "." in requested:
+            alias, member = requested.split(".", 1)
+            module = self.current_import_aliases.get(alias)
+            if module is None:
+                self._error(f"unknown module or import alias {alias!r}", e)
+            resolved = f"{module}.{member}"
+        else:
+            local = f"{self.current_module}.{requested}" if self.current_module else None
+            resolved = local if local in self.funcs else requested
+        if resolved not in self.funcs:
+            self._error(f"call to undefined function {requested!r}", e)
+        declaration = self.func_decls[resolved]
+        target_module = getattr(declaration, "module", None)
+        if (target_module is not None and target_module != self.current_module
+                and not getattr(declaration, "public", False)):
+            self._error(f"function {requested!r} is private to module {target_module!r}", e)
+        e.resolved_name = resolved
+        ptypes, ret = self.funcs[resolved]
         if len(e.args) != len(ptypes):
             self._error(
                 f"function {e.name!r} expects {len(ptypes)} argument(s), "

@@ -1,0 +1,12 @@
+import std.string;
+
+fn main() -> int {
+    let message: *u8 = "Mort";
+    print(str_len(message));
+    if str_equal(message, "Mort") {
+        print(1);
+    } else {
+        print(0);
+    }
+    return 0;
+}

@@ -23,6 +23,17 @@ class T(Enum):
     AS = auto()
     STRUCT = auto()
     ASM = auto()
+    EXTERN = auto()
+    BREAK = auto()
+    CONTINUE = auto()
+    KW_VOID = auto()
+    IMPORT = auto()
+    ENUM = auto()
+    MATCH = auto()
+    CONST = auto()
+    TEST = auto()
+    MODULE = auto()
+    PUB = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -32,6 +43,7 @@ class T(Enum):
     SEMI = auto()
     COLON = auto()
     ARROW = auto()
+    FAT_ARROW = auto()
     DOT = auto()
     DOTDOT = auto()
     AMP = auto()
@@ -77,6 +89,17 @@ KEYWORDS = {
     "as": T.AS,
     "struct": T.STRUCT,
     "asm": T.ASM,
+    "extern": T.EXTERN,
+    "break": T.BREAK,
+    "continue": T.CONTINUE,
+    "void": T.KW_VOID,
+    "import": T.IMPORT,
+    "enum": T.ENUM,
+    "match": T.MATCH,
+    "const": T.CONST,
+    "test": T.TEST,
+    "module": T.MODULE,
+    "pub": T.PUB,
 }
 
 

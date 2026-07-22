@@ -1,7 +1,9 @@
 """Recursive-descent parser: tokens -> AST.
 
 Grammar (informal):
-    program   := fn_decl*
+    program   := (import_decl | struct_decl | enum_decl | global | extern_decl | fn_decl)*
+    import_decl := 'import' IDENT ('.' IDENT)* ';'
+    extern_decl := 'extern' 'fn' IDENT '(' params? ')' ('->' type)? ';'
     fn_decl   := 'fn' IDENT '(' params? ')' ('->' type)? block
     params    := param (',' param)*
     param     := IDENT ':' type
@@ -21,7 +23,11 @@ from .tokens import T
 from .errors import MortError
 from . import mort_ast as A
 
-FIXED_INT_TYPES = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
+FIXED_INT_TYPES = {
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+    "c_char", "c_uchar", "c_short", "c_ushort", "c_int", "c_uint",
+    "c_long", "c_ulong", "c_size",
+}
 
 
 class Parser:
@@ -55,14 +61,68 @@ class Parser:
         funcs = []
         structs = []
         globals_ = []
+        externs = []
+        imports = []
+        enums = []
+        tests = []
+        module_name = None
         while not self._at(T.EOF):
-            if self._at(T.STRUCT):
+            if self._at(T.MODULE):
+                if module_name is not None or funcs or structs or globals_ or externs or imports or enums or tests:
+                    tok = self._peek()
+                    raise MortError("module declaration must be the first declaration", tok.line)
+                module_name = self._module_decl()
+            elif self._at(T.IMPORT):
+                imports.append(self._import_decl())
+            elif self._at(T.PUB):
+                line = self._advance().line
+                if not self._at(T.FN):
+                    raise MortError("pub currently applies to function declarations", line)
+                function = self._fn_decl()
+                function.public = True
+                funcs.append(function)
+            elif self._at(T.STRUCT):
                 structs.append(self._struct_decl())
+            elif self._at(T.ENUM):
+                enums.append(self._enum_decl())
+            elif self._at(T.TEST):
+                tests.append(self._test_decl())
             elif self._at(T.LET):
                 globals_.append(self._let_stmt())  # top-level let = global var
+            elif self._at(T.EXTERN):
+                externs.append(self._extern_fn_decl())
             else:
                 funcs.append(self._fn_decl())
-        return A.Program(funcs, structs, globals_)
+        return A.Program(
+            funcs, structs, globals_, externs, imports, enums, tests, module_name)
+
+    def _module_decl(self):
+        self._advance()
+        parts = [self._expect(T.IDENT, "module name").value]
+        while self._at(T.DOT):
+            self._advance()
+            parts.append(self._expect(T.IDENT, "module name").value)
+        self._expect(T.SEMI, "';'")
+        return ".".join(parts)
+
+    def _test_decl(self):
+        line = self._advance().line
+        name = self._expect(T.STRING, "test name").value
+        body = self._block()
+        return A.TestDecl(name, body, line)
+
+    def _import_decl(self):
+        line = self._advance().line
+        parts = [self._expect(T.IDENT, "module name").value]
+        while self._at(T.DOT):
+            self._advance()
+            parts.append(self._expect(T.IDENT, "module name").value)
+        alias = None
+        if self._at(T.AS):
+            self._advance()
+            alias = self._expect(T.IDENT, "import alias").value
+        self._expect(T.SEMI, "';'")
+        return A.ImportDecl(parts, line, alias)
 
     def _struct_decl(self):
         line = self._peek().line
@@ -81,14 +141,37 @@ class Parser:
         self._expect(T.RBRACE, "'}'")
         return A.StructDecl(name, fields, line)
 
+    def _enum_decl(self):
+        line = self._advance().line
+        name = self._expect(T.IDENT, "enum name").value
+        self._expect(T.LBRACE, "'{'")
+        variants = []
+        while not self._at(T.RBRACE) and not self._at(T.EOF):
+            variants.append(self._expect(T.IDENT, "variant name").value)
+            if self._at(T.COMMA):
+                self._advance()
+            else:
+                break
+        self._expect(T.RBRACE, "'}'")
+        return A.EnumDecl(name, variants, line)
+
     def _type_name(self):
         # pointer type: *T
         if self._at(T.STAR):
             self._advance()
+            if self._at(T.CONST):
+                self._advance()
+                return "*const " + self._type_name()
             return "*" + self._type_name()
         # array type: [T; N]
         if self._at(T.LBRACKET):
             self._advance()
+            if self._at(T.RBRACKET):
+                self._advance()
+                if self._at(T.CONST):
+                    self._advance()
+                    return "[]const " + self._type_name()
+                return "[]" + self._type_name()
             elem = self._type_name()
             self._expect(T.SEMI, "';'")
             n = self._expect(T.INT, "an array size").value
@@ -101,6 +184,9 @@ class Parser:
         if tok.type == T.KW_BOOL:
             self._advance()
             return "bool"
+        if tok.type == T.KW_VOID:
+            self._advance()
+            return "void"
         if tok.type == T.IDENT and tok.value in FIXED_INT_TYPES:
             self._advance()
             return tok.value
@@ -128,6 +214,25 @@ class Parser:
             ret = self._type_name()
         body = self._block()
         return A.FnDecl(name, params, ret, body, line)
+
+    def _extern_fn_decl(self):
+        line = self._advance().line  # 'extern'
+        self._expect(T.FN, "'fn'")
+        name = self._expect(T.IDENT, "function name").value
+        self._expect(T.LPAREN, "'('")
+        params = []
+        if not self._at(T.RPAREN):
+            params.append(self._param())
+            while self._at(T.COMMA):
+                self._advance()
+                params.append(self._param())
+        self._expect(T.RPAREN, "')'")
+        ret = "void"
+        if self._at(T.ARROW):
+            self._advance()
+            ret = self._type_name()
+        self._expect(T.SEMI, "';'")
+        return A.ExternFnDecl(name, params, ret, line)
 
     def _param(self):
         name = self._expect(T.IDENT, "parameter name").value
@@ -158,9 +263,39 @@ class Parser:
             return self._for_stmt()
         if t == T.ASM:
             return self._asm_stmt()
+        if t == T.BREAK:
+            line = self._advance().line
+            self._expect(T.SEMI, "';'")
+            return A.Break(line)
+        if t == T.CONTINUE:
+            line = self._advance().line
+            self._expect(T.SEMI, "';'")
+            return A.Continue(line)
+        if t == T.MATCH:
+            return self._match_stmt()
         if t == T.LBRACE:
             return self._block()
         return self._expr_or_assign()
+
+    def _match_stmt(self):
+        line = self._advance().line
+        expr = self._condition()
+        self._expect(T.LBRACE, "'{'")
+        arms = []
+        while not self._at(T.RBRACE) and not self._at(T.EOF):
+            arm_line = self._peek().line
+            pattern = None
+            if self._at(T.IDENT) and self._peek().value == "_":
+                self._advance()
+            else:
+                pattern = self._expression()
+            self._expect(T.FAT_ARROW, "'=>'")
+            body = self._block()
+            arms.append(A.MatchArm(pattern, body, arm_line))
+            if self._at(T.COMMA):
+                self._advance()
+        self._expect(T.RBRACE, "'}'")
+        return A.Match(expr, arms, line)
 
     def _asm_stmt(self):
         line = self._advance().line
@@ -352,7 +487,8 @@ class Parser:
         expr = self._primary()
         while True:
             if self._at(T.LPAREN):
-                if not isinstance(expr, A.Var):
+                name = self._qualified_name(expr)
+                if name is None:
                     raise MortError("only named functions can be called", self._peek().line)
                 lp = self._advance()
                 args = []
@@ -362,7 +498,7 @@ class Parser:
                         self._advance()
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
-                expr = A.Call(expr.name, args, lp.line)
+                expr = A.Call(name, args, lp.line)
             elif self._at(T.DOT):
                 dot = self._advance()
                 field = self._expect(T.IDENT, "field name").value
@@ -374,6 +510,15 @@ class Parser:
                 expr = A.Index(expr, index, lb.line)
             else:
                 return expr
+
+    @staticmethod
+    def _qualified_name(expr):
+        if isinstance(expr, A.Var):
+            return expr.name
+        if isinstance(expr, A.FieldAccess):
+            base = Parser._qualified_name(expr.obj)
+            return None if base is None else base + "." + expr.field
+        return None
 
     def _primary(self):
         t = self._peek()

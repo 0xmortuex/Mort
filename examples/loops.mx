@@ -1,0 +1,18 @@
+fn main() -> int {
+    let i = 0;
+    let total = 0;
+
+    while true {
+        i = i + 1;
+        if i == 2 {
+            continue;
+        }
+        if i == 6 {
+            break;
+        }
+        total = total + i;
+    }
+
+    print(total); // 1 + 3 + 4 + 5 = 13
+    return 0;
+}

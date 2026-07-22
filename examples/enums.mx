@@ -1,0 +1,19 @@
+enum State {
+    Idle,
+    Running,
+    Done,
+}
+
+fn state_code(state: State) -> i64 {
+    match state {
+        State.Idle => { return 0; },
+        State.Running => { return 1; },
+        State.Done => { return 2; },
+    }
+}
+
+fn main() -> int {
+    let state: State = State.Running;
+    print(state_code(state));
+    return 0;
+}

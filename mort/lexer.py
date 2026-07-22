@@ -4,6 +4,7 @@ from .errors import MortError
 
 _TWO_CHAR = {
     "->": T.ARROW,
+    "=>": T.FAT_ARROW,
     "..": T.DOTDOT,
     "==": T.EQ,
     "!=": T.NE,

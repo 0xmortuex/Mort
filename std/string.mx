@@ -1,0 +1,30 @@
+// Mort standard library: null-terminated byte strings.
+
+fn str_len(text: *u8) -> u64 {
+    let length: u64 = 0;
+    while text[length] != 0 {
+        length = length + 1;
+    }
+    return length;
+}
+
+fn str_equal(left: *u8, right: *u8) -> bool {
+    let index: u64 = 0;
+    while left[index] == right[index] {
+        if left[index] == 0 {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+fn str_copy(destination: *u8, source: *u8) -> u64 {
+    let index: u64 = 0;
+    while source[index] != 0 {
+        destination[index] = source[index];
+        index = index + 1;
+    }
+    destination[index] = 0;
+    return index;
+}

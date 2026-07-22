@@ -1,0 +1,14 @@
+fn sum(values: []i32) -> i64 {
+    let total: i64 = 0;
+    for index: u64 in 0..values.len {
+        total = total + (values[index] as i64);
+    }
+    return total;
+}
+
+fn main() -> int {
+    let values: [i32; 3] = [10, 20, 12];
+    let view: []i32 = slice(&values[0], len(values));
+    print(sum(view));
+    return 0;
+}
