@@ -982,6 +982,52 @@ def test_enum_and_exhaustive_match_run():
 
 
 @needs_cc
+def test_payload_enum_destructuring_run():
+    src = (
+        "enum ParseResult { Value(i64), Error(*u8) } "
+        "fn unwrap(result: ParseResult) -> i64 { "
+        "match result { "
+        "ParseResult.Value(value) => { return value; }, "
+        "ParseResult.Error(message) => { println(message); return 0; } "
+        "} } "
+        "fn main() -> int { let result: ParseResult = ParseResult.Value(42); "
+        "print(unwrap(result)); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "struct mort_ParseResult" in c_source
+    assert "v_Value" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "payload_enum.c")
+        exe = os.path.join(d, "payload_enum.exe" if os.name == "nt" else "payload_enum")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "42\n"
+
+
+@needs_cc
+def test_generic_struct_monomorphization_run():
+    src = (
+        "struct Pair<Left, Right> { first: Left, second: Right } "
+        "fn first_value(pair: Pair<i64, u8>) -> i64 { return pair.first; } "
+        "fn main() -> int { let pair: Pair<i64, u8> = "
+        "Pair<i64, u8> { first: 42, second: 7 }; "
+        "print(first_value(pair)); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "struct mort_Pair_i64_u8" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "generic.c")
+        exe = os.path.join(d, "generic.exe" if os.name == "nt" else "generic")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.stdout == "42\n"
+
+
+@needs_cc
 def test_c_abi_types_and_const_pointer_run():
     src = (
         "extern fn strlen(text: *const c_char) -> c_size; "
@@ -1087,6 +1133,14 @@ def test_c_abi_types_and_const_pointer_run():
      "match s { State.A => { print(1); } } return 0; }", "non-exhaustive match"),
     ("enum State { A } fn main() -> int { let s: State = State.Nope; return 0; }",
      "has no variant"),
+    ("enum Value { Some(i64), None } fn main() -> int { "
+     "let value: Value = Value.Some(); return 0; }", "expects 1 payload"),
+    ("enum Value { Some(i64), None } fn main() -> int { "
+     "let value: Value = Value.Some(1); match value { "
+     "Value.Some(1) => { print(1); }, Value.None => { print(0); } } return 0; }",
+     "payload match patterns require one binding name"),
+    ("struct Box<T> { value: T } fn main() -> int { "
+     "let box: Box<i64, u8> = 0; return 0; }", "unknown type"),
     ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
      "cannot assign through a const pointer"),
     ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
@@ -1113,6 +1167,8 @@ EXPECTED = {
     "loops.mx": "13\n",
     "enums.mx": "1\n",
     "slices.mx": "42\n",
+    "result.mx": "42\n",
+    "generics.mx": "42\n",
 }
 
 

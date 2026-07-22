@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.0 — 2026-07-22
+
+Mort's algebraic-data and generic-layout release.
+
+### Added
+
+- Payload-carrying enum variants compiled as tagged native unions.
+- Exhaustive match bindings such as `Result.Value(value)`.
+- Payload constructor arity and type validation.
+- Monomorphized generic structs with multiple type parameters.
+- Concrete generic layouts in parameters, returns, literals, and fields.
+
+### Validation
+
+- 164 compiler, generic-layout, native execution, project, and kernel tests pass.
+
 ## 0.10.0 — 2026-07-22
 
 Mort's namespaced-package and safe-data release.

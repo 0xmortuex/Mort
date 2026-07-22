@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-157%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-164%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.10)
+## The language (v0.11)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, C-ABI integer
   types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -90,8 +90,10 @@ C `main`, so the output is an ordinary native binary.
 - **Functions:** `fn name(a: int, b: int) -> int { ... }`, with recursion and any call order.
 - **C interoperability:** declare a native C-ABI function with
   `extern fn name(arg: i32) -> i32;`, then call it like any checked Mort function.
-- **Enums and matching:** `enum State { Ready, Done }` and exhaustive
-  `match state { State.Ready => { ... }, State.Done => { ... } }`.
+- **Enums and matching:** payload-free or tagged-union variants such as
+  `enum Result { Value(i64), Error(*u8) }`, with exhaustive destructuring match.
+- **Generic structs:** monomorphized native layouts such as
+  `struct Pair<Left, Right> { first: Left, second: Right }`.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
 - **Control flow:** `if` / `else if` / `else`, `while`, range `for`, `break`, and
   `continue` (`for i in 0..n { ... }`, or `for i: u32 in 0..n` to fix the
@@ -282,6 +284,10 @@ test "addition" {
   allocation-backed owned-string module.
 - [ ] **Phase 8b — Ecosystem tooling:** remote registry, language server,
   debugger integration, publishing, richer containers, and generics.
+- [x] **Phase 9a — Algebraic and generic foundations:** payload-carrying enums,
+  exhaustive payload bindings, and monomorphized generic structs.
+- [ ] **Phase 9b — Generic ecosystem:** generic functions/enums, `Option<T>`,
+  `Result<T,E>`, ownership checking, and reusable generic collections.
 
 ## License
 

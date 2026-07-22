@@ -50,11 +50,12 @@ class StructField:
 
 
 class StructDecl(Node):
-    def __init__(self, name, fields, line):
+    def __init__(self, name, fields, line, generic_params=None):
         super().__init__()
         self.name = name
         self.fields = fields  # list of StructField, in declared order
         self.line = line
+        self.generic_params = generic_params or []
 
 
 class FnDecl(Node):
@@ -77,6 +78,12 @@ class EnumDecl(Node):
         self.name = name
         self.variants = variants
         self.line = line
+
+
+class EnumVariant:
+    def __init__(self, name, payload_type=None):
+        self.name = name
+        self.payload_type = payload_type
 
 
 class ExternFnDecl(Node):
@@ -194,6 +201,9 @@ class MatchArm(Node):
         self.pattern = pattern  # None is the wildcard arm
         self.body = body
         self.line = line
+        self.variant_name = None
+        self.binding_name = None
+        self.binding_type = None
 
 
 class Match(Node):
@@ -258,6 +268,8 @@ class Call(Node):
         self.args = args
         self.line = line
         self.resolved_name = None
+        self.enum_name = None
+        self.enum_variant = None
 
 
 class Cast(Node):

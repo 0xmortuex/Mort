@@ -1,0 +1,20 @@
+enum ParseResult {
+    Value(i64),
+    Error(*u8),
+}
+
+fn unwrap(result: ParseResult) -> i64 {
+    match result {
+        ParseResult.Value(value) => { return value; },
+        ParseResult.Error(message) => {
+            println(message);
+            return 0;
+        },
+    }
+}
+
+fn main() -> int {
+    let result: ParseResult = ParseResult.Value(42);
+    print(unwrap(result));
+    return 0;
+}

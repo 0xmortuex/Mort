@@ -1,0 +1,17 @@
+struct Pair<Left, Right> {
+    first: Left,
+    second: Right,
+}
+
+fn first_value(pair: Pair<i64, u8>) -> i64 {
+    return pair.first;
+}
+
+fn main() -> int {
+    let pair: Pair<i64, u8> = Pair<i64, u8> {
+        first: 42,
+        second: 7,
+    };
+    print(first_value(pair));
+    return 0;
+}

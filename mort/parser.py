@@ -128,6 +128,14 @@ class Parser:
         line = self._peek().line
         self._expect(T.STRUCT, "'struct'")
         name = self._expect(T.IDENT, "struct name").value
+        generic_params = []
+        if self._at(T.LT):
+            self._advance()
+            generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            while self._at(T.COMMA):
+                self._advance()
+                generic_params.append(self._expect(T.IDENT, "generic parameter").value)
+            self._expect(T.GT, "'>'")
         self._expect(T.LBRACE, "'{'")
         fields = []
         while not self._at(T.RBRACE) and not self._at(T.EOF):
@@ -139,7 +147,7 @@ class Parser:
             else:
                 break
         self._expect(T.RBRACE, "'}'")
-        return A.StructDecl(name, fields, line)
+        return A.StructDecl(name, fields, line, generic_params)
 
     def _enum_decl(self):
         line = self._advance().line
@@ -147,7 +155,13 @@ class Parser:
         self._expect(T.LBRACE, "'{'")
         variants = []
         while not self._at(T.RBRACE) and not self._at(T.EOF):
-            variants.append(self._expect(T.IDENT, "variant name").value)
+            variant_name = self._expect(T.IDENT, "variant name").value
+            payload_type = None
+            if self._at(T.LPAREN):
+                self._advance()
+                payload_type = self._type_name()
+                self._expect(T.RPAREN, "')'")
+            variants.append(A.EnumVariant(variant_name, payload_type))
             if self._at(T.COMMA):
                 self._advance()
             else:
@@ -191,9 +205,18 @@ class Parser:
             self._advance()
             return tok.value
         if tok.type == T.IDENT:
-            # a struct type; the checker validates it exists
+            # A nominal or instantiated generic type; the checker validates it.
             self._advance()
-            return tok.value
+            name = tok.value
+            if self._at(T.LT):
+                self._advance()
+                args = [self._type_name()]
+                while self._at(T.COMMA):
+                    self._advance()
+                    args.append(self._type_name())
+                self._expect(T.GT, "'>'")
+                name += "<" + ",".join(args) + ">"
+            return name
         raise MortError(f"expected a type, got {tok.value!r}", tok.line)
 
     def _fn_decl(self):
@@ -538,7 +561,7 @@ class Parser:
             return self._array_lit()
         if t.type == T.IDENT:
             # struct literal:  Name { field: expr, ... }
-            if self._peek(1).type == T.LBRACE and not self._no_struct_lit:
+            if self._looks_like_struct_lit() and not self._no_struct_lit:
                 return self._struct_lit()
             self._advance()
             return A.Var(t.value, t.line)
@@ -556,8 +579,8 @@ class Parser:
         raise MortError(f"unexpected token {t.value!r}", t.line)
 
     def _struct_lit(self):
-        name_tok = self._advance()  # IDENT
-        line = self._advance().line  # '{'
+        name = self._type_name()
+        line = self._expect(T.LBRACE, "'{'").line
         fields = []
         while not self._at(T.RBRACE) and not self._at(T.EOF):
             fname = self._expect(T.IDENT, "field name").value
@@ -568,7 +591,27 @@ class Parser:
             else:
                 break
         self._expect(T.RBRACE, "'}'")
-        return A.StructLit(name_tok.value, fields, line)
+        return A.StructLit(name, fields, line)
+
+    def _looks_like_struct_lit(self):
+        if self._peek().type != T.IDENT:
+            return False
+        offset = 1
+        if self._peek(offset).type != T.LT:
+            return self._peek(offset).type == T.LBRACE
+        depth = 0
+        while self.i + offset < len(self.toks):
+            token_type = self._peek(offset).type
+            if token_type == T.LT:
+                depth += 1
+            elif token_type == T.GT:
+                depth -= 1
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.LBRACE
+            elif token_type in (T.SEMI, T.EOF):
+                return False
+            offset += 1
+        return False
 
     def _array_lit(self):
         line = self._advance().line  # '['
