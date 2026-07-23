@@ -232,6 +232,35 @@ def test_function_pointer_types_support_c_callback_signatures():
     assert "bool (*)(void*, int64_t)" in c_source
 
 
+@needs_cc
+def test_imported_public_function_can_be_used_as_callback_value():
+    with tempfile.TemporaryDirectory() as d:
+        helper = os.path.join(d, "math.mx")
+        main = os.path.join(d, "main.mx")
+        with open(helper, "w", encoding="utf-8") as fh:
+            fh.write(
+                "module tools.math; "
+                "pub fn add(left: i64, right: i64) -> i64 { return left + right; }"
+            )
+        with open(main, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import math as numbers; fn main() -> int { "
+                "let callback: fn(i64, i64) -> i64 = numbers.add; "
+                "print(callback(20, 22)); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([main])
+        assert "= mort_tools__math__add;" in c_source
+        cfile = os.path.join(d, "module_callback.c")
+        exe = os.path.join(
+            d, "module_callback.exe" if os.name == "nt" else "module_callback")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
 @pytest.mark.parametrize(
     ("source", "message"),
     [

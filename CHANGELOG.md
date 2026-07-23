@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.25.1 — 2026-07-23
+
+Mort's module-callback interoperability patch.
+
+### Added
+
+- Public imported functions such as `numbers.add` can now be captured as typed
+  callback values through their module alias.
+- Imported callback capture enforces module visibility and rejects private or
+  unresolved members before C generation.
+
+### Validation
+
+- Imported callbacks compile and execute across separate source modules.
+- 240 compiler, callback, module, packaging, CLI, native, LSP, package, and
+  kernel tests pass.
+
 ## 0.25.0 — 2026-07-23
 
 Mort's first-class callbacks release.

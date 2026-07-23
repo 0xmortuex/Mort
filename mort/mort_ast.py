@@ -348,6 +348,7 @@ class FieldAccess(Node):
         self.obj = obj
         self.field = field
         self.line = line
+        self.resolved_function = None
 
 
 class ArrayLit(Node):

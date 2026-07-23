@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-239%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-240%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.25)
+## The language (v0.25.1)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -94,7 +94,8 @@ C `main`, so the output is an ordinary native binary.
 - **Function values and callbacks:** typed `fn(i64, i64) -> i64` values can be
   stored in bindings, globals, structs, and generic containers; passed to
   higher-order functions; invoked indirectly; returned from functions; and
-  used in C callback signatures.
+  used in C callback signatures. Public imported functions can be captured
+  through their module alias.
 - **C interoperability:** declare a native C-ABI function with
   `extern fn name(arg: i32) -> i32;`, then call it like any checked Mort
   function. External functions can be used as callback values too.

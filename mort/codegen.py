@@ -784,6 +784,10 @@ class CodeGen:
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
             return f"(struct mort_{_type_tag(e.name)}){{ {inits} }}"
         if isinstance(e, A.FieldAccess):
+            if e.resolved_function is not None:
+                if e.resolved_function in self.extern_names:
+                    return e.resolved_function
+                return f"mort_{_c_symbol(e.resolved_function)}"
             if isinstance(e.obj, A.Var) and e.obj.name in self.enum_names:
                 if e.obj.name in self.payload_enum_names:
                     enum_tag = _type_tag(e.obj.name)

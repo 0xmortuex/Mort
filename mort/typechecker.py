@@ -1505,6 +1505,21 @@ class Checker:
         if isinstance(e, A.FieldAccess):
             if isinstance(e.obj, A.Var):
                 self._valid_type(e.obj.name)
+                module = self.current_import_aliases.get(e.obj.name)
+                resolved = f"{module}.{e.field}" if module is not None else None
+                if resolved in self.func_templates:
+                    self._error(
+                        f"generic function {e.obj.name}.{e.field!s} cannot be used "
+                        "directly as a value; wrap it in a concrete function", e)
+                if resolved in self.funcs:
+                    declaration = self.func_decls[resolved]
+                    if not getattr(declaration, "public", False):
+                        self._error(
+                            f"function {e.obj.name}.{e.field!s} is private to "
+                            f"module {module!r}", e)
+                    parameters, result = self.funcs[resolved]
+                    e.resolved_function = resolved
+                    return f"fn({','.join(parameters)})->{result}"
             if isinstance(e.obj, A.Var) and e.obj.name in self.enums:
                 enum_name = e.obj.name
                 if e.field not in self.enums[enum_name]:
