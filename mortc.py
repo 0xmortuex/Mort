@@ -500,6 +500,8 @@ def _compile_main(argv=None, test_mode=False):
             link_args = [*args.link, *(f"-l{name}" for name in args.library)]
             if os.name == "nt" and "MORT_REQUIRES_WINSOCK" in c_source:
                 link_args.append("-lws2_32")
+            if os.name == "nt" and "MORT_REQUIRES_BCRYPT" in c_source:
+                link_args.append("-lbcrypt")
             subprocess.run([*cmd, tmp.name, *link_args, "-o", out], check=True)
         except subprocess.CalledProcessError:
             print("mortc: the C backend failed to compile the generated code", file=sys.stderr)

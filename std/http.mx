@@ -179,6 +179,68 @@ pub fn content_length(data: *const u8, length: u64) -> i64 {
     return parsed as i64;
 }
 
+pub fn header_value(
+    data: *const u8,
+    length: u64,
+    name: *u8,
+    value_offset: *u64,
+    value_length: *u64
+) -> bool {
+    if data == null || value_offset == null || value_length == null
+            || !safe_token(name) {
+        return false;
+    }
+    let end = find_header_end(data, length);
+    if end < 0 {
+        return false;
+    }
+    let header_length = end as u64;
+    let name_length = len(name);
+    let found = false;
+    let found_offset: u64 = 0;
+    let found_length: u64 = 0;
+    for index: u64 in 0..header_length {
+        if header_name_at(
+                data, index, header_length, name, name_length) {
+            if found {
+                return false;
+            }
+            found = true;
+            let cursor = index + name_length + 1;
+            while cursor < header_length
+                    && (data[cursor] == ' ' || data[cursor] == '\t') {
+                cursor += 1;
+            }
+            let start = cursor;
+            while cursor + 1 < header_length
+                    && !(data[cursor] == '\r'
+                        && data[cursor + 1] == '\n') {
+                if data[cursor] == '\r' || data[cursor] == '\n' {
+                    return false;
+                }
+                cursor += 1;
+            }
+            if cursor + 1 >= header_length {
+                return false;
+            }
+            let finish = cursor;
+            while finish > start
+                    && (data[finish - 1] == ' '
+                        || data[finish - 1] == '\t') {
+                finish -= 1;
+            }
+            found_offset = start;
+            found_length = finish - start;
+        }
+    }
+    if !found {
+        return false;
+    }
+    *value_offset = found_offset;
+    *value_length = found_length;
+    return true;
+}
+
 pub fn status_code(data: *const u8, length: u64) -> i32 {
     if data == null || length < 12 {
         return 0 - 1;
@@ -309,6 +371,29 @@ pub fn read_message(
         }
         if expected >= 0 && total >= expected as u64 {
             return expected;
+        }
+    }
+    return 0 - 1;
+}
+
+pub fn read_headers(
+    socket: *Socket,
+    buffer: *u8,
+    capacity: u64
+) -> i64 {
+    if buffer == null || capacity < 4 {
+        return 0 - 1;
+    }
+    let total: u64 = 0;
+    while total < capacity {
+        let amount = net.receive(socket, &buffer[total], 1);
+        if amount <= 0 {
+            return 0 - 1;
+        }
+        total += 1;
+        let end = find_header_end(buffer as *const u8, total);
+        if end >= 0 {
+            return end;
         }
     }
     return 0 - 1;

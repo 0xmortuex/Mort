@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-318%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-321%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -75,9 +75,9 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.39)
+## The language (v0.40)
 
-Mort 0.39 has a
+Mort 0.40 has a
 [versioned normative language specification](docs/language-specification.md)
 and a black-box [executable conformance suite](conformance/README.md). Run
 `mortc --language-version` to print the implemented language contract.
@@ -159,6 +159,13 @@ and a black-box [executable conformance suite](conformance/README.md). Run
   responses, parses status and unambiguous `Content-Length` framing, rejects
   transfer-encoding conflicts, and reads one caller-bounded close-delimited
   message. Cleartext HTTP is kept explicitly separate from future TLS support.
+- **Secure random:** `std.crypto` fills buffers from the operating-system
+  CSPRNG and provides secure random `u64` values without falling back to clocks
+  or deterministic generators.
+- **Bounded WebSocket:** `std.websocket` validates RFC 6455 client/server
+  upgrades, uses fresh OS-random keys and client masks, and handles bounded
+  text, binary, close, ping, and pong frames with strict length, masking,
+  UTF-8, and close-code validation.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `try operation()` unwraps `Result.Ok` or returns a

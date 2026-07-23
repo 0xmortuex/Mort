@@ -1,0 +1,12 @@
+import std.crypto;
+
+fn main() -> int {
+    let bytes: [u8; 32] = [0; 32];
+    assert(crypto.random_fill(&bytes[0], 32));
+    let value = crypto.random_u64();
+    print(32);
+    if value == 0 {
+        return 0;
+    }
+    return 0;
+}

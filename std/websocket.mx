@@ -1,0 +1,728 @@
+module std.websocket;
+
+import std.crypto;
+import std.http;
+import std.net;
+import std.vec;
+
+fn rotate_left(value: u32, amount: u32) -> u32 {
+    return (value << amount) | (value >> (32 - amount));
+}
+
+fn padded_byte(
+    data: *const u8,
+    length: u64,
+    index: u64,
+    total: u64
+) -> u8 {
+    if index < length {
+        return data[index];
+    }
+    if index == length {
+        return 128;
+    }
+    if index >= total - 8 {
+        let shift = (total - 1 - index) * 8;
+        return ((length * 8) >> shift) as u8;
+    }
+    return 0;
+}
+
+fn sha1(
+    data: *const u8,
+    length: u64,
+    digest: *u8
+) -> bool {
+    if data == null || digest == null
+            || length > 2305843009213693951 {
+        return false;
+    }
+    let blocks = (length + 72) / 64;
+    let total = blocks * 64;
+    let h0: u32 = 0x67452301;
+    let h1: u32 = 0xEFCDAB89;
+    let h2: u32 = 0x98BADCFE;
+    let h3: u32 = 0x10325476;
+    let h4: u32 = 0xC3D2E1F0;
+    for block: u64 in 0..blocks {
+        let words: [u32; 80] = [0; 80];
+        for index: u64 in 0..16 {
+            let offset = block * 64 + index * 4;
+            words[index] = (
+                (padded_byte(data, length, offset, total) as u32) << 24
+                | (padded_byte(data, length, offset + 1, total) as u32) << 16
+                | (padded_byte(data, length, offset + 2, total) as u32) << 8
+                | padded_byte(data, length, offset + 3, total) as u32
+            );
+        }
+        for index: u64 in 16..80 {
+            words[index] = rotate_left(
+                words[index - 3] ^ words[index - 8]
+                    ^ words[index - 14] ^ words[index - 16],
+                1
+            );
+        }
+        let a = h0;
+        let b = h1;
+        let c = h2;
+        let d = h3;
+        let e = h4;
+        for index: u64 in 0..80 {
+            let function: u32 = 0;
+            let constant: u32 = 0;
+            if index < 20 {
+                function = (b & c) | ((~b) & d);
+                constant = 0x5A827999;
+            } else if index < 40 {
+                function = b ^ c ^ d;
+                constant = 0x6ED9EBA1;
+            } else if index < 60 {
+                function = (b & c) | (b & d) | (c & d);
+                constant = 0x8F1BBCDC;
+            } else {
+                function = b ^ c ^ d;
+                constant = 0xCA62C1D6;
+            }
+            let temporary = rotate_left(a, 5)
+                + function + e + constant + words[index];
+            e = d;
+            d = c;
+            c = rotate_left(b, 30);
+            b = a;
+            a = temporary;
+        }
+        h0 += a;
+        h1 += b;
+        h2 += c;
+        h3 += d;
+        h4 += e;
+    }
+    digest[0] = (h0 >> 24) as u8;
+    digest[1] = (h0 >> 16) as u8;
+    digest[2] = (h0 >> 8) as u8;
+    digest[3] = h0 as u8;
+    digest[4] = (h1 >> 24) as u8;
+    digest[5] = (h1 >> 16) as u8;
+    digest[6] = (h1 >> 8) as u8;
+    digest[7] = h1 as u8;
+    digest[8] = (h2 >> 24) as u8;
+    digest[9] = (h2 >> 16) as u8;
+    digest[10] = (h2 >> 8) as u8;
+    digest[11] = h2 as u8;
+    digest[12] = (h3 >> 24) as u8;
+    digest[13] = (h3 >> 16) as u8;
+    digest[14] = (h3 >> 8) as u8;
+    digest[15] = h3 as u8;
+    digest[16] = (h4 >> 24) as u8;
+    digest[17] = (h4 >> 16) as u8;
+    digest[18] = (h4 >> 8) as u8;
+    digest[19] = h4 as u8;
+    return true;
+}
+
+fn base64_value(value: u8) -> i32 {
+    if value >= 'A' && value <= 'Z' {
+        return (value - 'A') as i32;
+    }
+    if value >= 'a' && value <= 'z' {
+        return (value - 'a') as i32 + 26;
+    }
+    if value >= '0' && value <= '9' {
+        return (value - '0') as i32 + 52;
+    }
+    if value == '+' {
+        return 62;
+    }
+    if value == '/' {
+        return 63;
+    }
+    return 0 - 1;
+}
+
+fn valid_client_key(data: *const u8, length: u64) -> bool {
+    if data == null || length != 24
+            || data[22] != '=' || data[23] != '=' {
+        return false;
+    }
+    for index: u64 in 0..22 {
+        if base64_value(data[index]) < 0 {
+            return false;
+        }
+    }
+    return (base64_value(data[21]) & 15) == 0;
+}
+
+fn base64_encode(
+    data: *const u8,
+    length: u64,
+    output: *u8,
+    capacity: u64
+) -> i64 {
+    if data == null || output == null || length > 2305843009213693949 {
+        return 0 - 1;
+    }
+    let encoded = ((length + 2) / 3) * 4;
+    if capacity <= encoded {
+        return 0 - 1;
+    }
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let input: u64 = 0;
+    let written: u64 = 0;
+    while input < length {
+        let remaining = length - input;
+        let first = data[input] as u32;
+        let second: u32 = 0;
+        let third: u32 = 0;
+        if remaining > 1 {
+            second = data[input + 1] as u32;
+        }
+        if remaining > 2 {
+            third = data[input + 2] as u32;
+        }
+        output[written] = alphabet[(first >> 2) as u64];
+        output[written + 1] = alphabet[
+            (((first & 3) << 4) | (second >> 4)) as u64
+        ];
+        if remaining > 1 {
+            output[written + 2] = alphabet[
+                (((second & 15) << 2) | (third >> 6)) as u64
+            ];
+        } else {
+            output[written + 2] = '=';
+        }
+        if remaining > 2 {
+            output[written + 3] = alphabet[(third & 63) as u64];
+        } else {
+            output[written + 3] = '=';
+        }
+        input += 3;
+        written += 4;
+    }
+    output[written] = 0;
+    return written as i64;
+}
+
+pub fn accept_key(
+    client_key: *const u8,
+    key_length: u64,
+    output: *u8,
+    capacity: u64
+) -> i64 {
+    if !valid_client_key(client_key, key_length) {
+        return 0 - 1;
+    }
+    let source: [u8; 60] = [0; 60];
+    for index: u64 in 0..24 {
+        source[index] = client_key[index];
+    }
+    let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    for index: u64 in 0..36 {
+        source[24 + index] = guid[index];
+    }
+    let digest: [u8; 20] = [0; 20];
+    if !sha1(&source[0] as *const u8, 60, &digest[0]) {
+        return 0 - 1;
+    }
+    return base64_encode(
+        &digest[0] as *const u8,
+        20,
+        output,
+        capacity
+    );
+}
+
+fn append_bytes(output: *Vec<u8>, data: *const u8, length: u64) -> void {
+    for index: u64 in 0..length {
+        vec.push(output, data[index]);
+    }
+}
+
+fn append_text(output: *Vec<u8>, text: *u8) -> void {
+    append_bytes(output, text as *const u8, len(text));
+}
+
+fn safe_handshake_field(text: *u8) -> bool {
+    if text == null || text[0] == 0 {
+        return false;
+    }
+    let index: u64 = 0;
+    while text[index] != 0 {
+        if text[index] <= 32 || text[index] == 127 {
+            return false;
+        }
+        index += 1;
+    }
+    return true;
+}
+
+fn equal_case_insensitive(
+    data: *const u8,
+    offset: u64,
+    length: u64,
+    expected: *u8
+) -> bool {
+    if length != len(expected) {
+        return false;
+    }
+    for index: u64 in 0..length {
+        let left = data[offset + index];
+        let right = expected[index];
+        let folded_left = left;
+        let folded_right = right;
+        if folded_left >= 'A' && folded_left <= 'Z' {
+            folded_left += 32;
+        }
+        if folded_right >= 'A' && folded_right <= 'Z' {
+            folded_right += 32;
+        }
+        if folded_left != folded_right {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn contains_token(
+    data: *const u8,
+    offset: u64,
+    length: u64,
+    expected: *u8
+) -> bool {
+    let cursor: u64 = 0;
+    while cursor < length {
+        while cursor < length
+                && (data[offset + cursor] == ' '
+                    || data[offset + cursor] == '\t'
+                    || data[offset + cursor] == ',') {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < length && data[offset + cursor] != ',' {
+            cursor += 1;
+        }
+        let finish = cursor;
+        while finish > start
+                && (data[offset + finish - 1] == ' '
+                    || data[offset + finish - 1] == '\t') {
+            finish -= 1;
+        }
+        if equal_case_insensitive(
+                data, offset + start, finish - start, expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn header_matches(
+    data: *const u8,
+    length: u64,
+    name: *u8,
+    expected: *u8,
+    token: bool
+) -> bool {
+    let offset: u64 = 0;
+    let value_length: u64 = 0;
+    if !http.header_value(
+            data, length, name, &offset, &value_length) {
+        return false;
+    }
+    if token {
+        return contains_token(data, offset, value_length, expected);
+    }
+    return equal_case_insensitive(
+        data, offset, value_length, expected);
+}
+
+fn request_is_websocket(data: *const u8, length: u64) -> bool {
+    if data == null || length < 16 || data[0] != 'G'
+            || data[1] != 'E' || data[2] != 'T' || data[3] != ' ' {
+        return false;
+    }
+    let line_end: u64 = 4;
+    while line_end + 1 < length
+            && !(data[line_end] == '\r'
+                && data[line_end + 1] == '\n') {
+        line_end += 1;
+    }
+    if line_end + 1 >= length || line_end < 13 {
+        return false;
+    }
+    let suffix = " HTTP/1.1";
+    if line_end < 9 {
+        return false;
+    }
+    for index: u64 in 0..9 {
+        if data[line_end - 9 + index] != suffix[index] {
+            return false;
+        }
+    }
+    return true;
+}
+
+pub fn client_handshake(
+    socket: *Socket,
+    host: *u8,
+    target: *u8,
+    response: *u8,
+    response_capacity: u64
+) -> bool {
+    if !safe_handshake_field(host) || !safe_handshake_field(target)
+            || response == null || response_capacity < 4 {
+        return false;
+    }
+    let nonce: [u8; 16] = [0; 16];
+    if !crypto.random_fill(&nonce[0], 16) {
+        return false;
+    }
+    let key: [u8; 25] = [0; 25];
+    if base64_encode(
+            &nonce[0] as *const u8, 16, &key[0], 25) != 24 {
+        return false;
+    }
+    let request = vec.new<u8>();
+    append_text(&request, "GET ");
+    append_text(&request, target);
+    append_text(&request, " HTTP/1.1\r\nHost: ");
+    append_text(&request, host);
+    append_text(&request, "\r\nUpgrade: websocket\r\nConnection: Upgrade");
+    append_text(&request, "\r\nSec-WebSocket-Version: 13");
+    append_text(&request, "\r\nSec-WebSocket-Key: ");
+    append_bytes(&request, &key[0] as *const u8, 24);
+    append_text(&request, "\r\n\r\n");
+    if !net.send_all(
+            socket,
+            (*(&request)).data as *const u8,
+            (*(&request)).length) {
+        return false;
+    }
+    let response_length = http.read_headers(
+        socket, response, response_capacity);
+    if response_length < 0 || http.status_code(
+            response as *const u8,
+            response_length as u64) != 101 {
+        return false;
+    }
+    if !header_matches(
+            response as *const u8,
+            response_length as u64,
+            "Upgrade",
+            "websocket",
+            false)
+            || !header_matches(
+                response as *const u8,
+                response_length as u64,
+                "Connection",
+                "upgrade",
+                true) {
+        return false;
+    }
+    let accept_offset: u64 = 0;
+    let accept_length: u64 = 0;
+    if !http.header_value(
+            response as *const u8,
+            response_length as u64,
+            "Sec-WebSocket-Accept",
+            &accept_offset,
+            &accept_length) {
+        return false;
+    }
+    let expected: [u8; 29] = [0; 29];
+    if accept_key(
+            &key[0] as *const u8,
+            24,
+            &expected[0],
+            29) != 28 || accept_length != 28 {
+        return false;
+    }
+    for index: u64 in 0..28 {
+        if response[accept_offset + index] != expected[index] {
+            return false;
+        }
+    }
+    return true;
+}
+
+pub fn server_handshake(
+    socket: *Socket,
+    request: *u8,
+    request_capacity: u64
+) -> bool {
+    let request_length = http.read_headers(
+        socket, request, request_capacity);
+    if request_length < 0 || !request_is_websocket(
+            request as *const u8,
+            request_length as u64) {
+        return false;
+    }
+    if !header_matches(
+            request as *const u8,
+            request_length as u64,
+            "Upgrade",
+            "websocket",
+            false)
+            || !header_matches(
+                request as *const u8,
+                request_length as u64,
+                "Connection",
+                "upgrade",
+                true)
+            || !header_matches(
+                request as *const u8,
+                request_length as u64,
+                "Sec-WebSocket-Version",
+                "13",
+                false) {
+        return false;
+    }
+    let key_offset: u64 = 0;
+    let key_length: u64 = 0;
+    if !http.header_value(
+            request as *const u8,
+            request_length as u64,
+            "Sec-WebSocket-Key",
+            &key_offset,
+            &key_length) {
+        return false;
+    }
+    let accept: [u8; 29] = [0; 29];
+    if accept_key(
+            &request[key_offset] as *const u8,
+            key_length,
+            &accept[0],
+            29) != 28 {
+        return false;
+    }
+    let response = vec.new<u8>();
+    append_text(
+        &response,
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket");
+    append_text(&response, "\r\nConnection: Upgrade");
+    append_text(&response, "\r\nSec-WebSocket-Accept: ");
+    append_bytes(&response, &accept[0] as *const u8, 28);
+    append_text(&response, "\r\n\r\n");
+    return net.send_all(
+        socket,
+        (*(&response)).data as *const u8,
+        (*(&response)).length
+    );
+}
+
+fn valid_opcode(opcode: u8) -> bool {
+    return opcode == 1 || opcode == 2 || opcode == 8
+        || opcode == 9 || opcode == 10;
+}
+
+fn valid_utf8(data: *const u8, length: u64) -> bool {
+    let index: u64 = 0;
+    while index < length {
+        let first = data[index];
+        if first <= 0x7F {
+            index += 1;
+        } else if first >= 0xC2 && first <= 0xDF {
+            if index + 1 >= length || data[index + 1] < 0x80
+                    || data[index + 1] > 0xBF {
+                return false;
+            }
+            index += 2;
+        } else if first >= 0xE0 && first <= 0xEF {
+            if index + 2 >= length || data[index + 2] < 0x80
+                    || data[index + 2] > 0xBF {
+                return false;
+            }
+            let second = data[index + 1];
+            if (first == 0xE0 && (second < 0xA0 || second > 0xBF))
+                    || (first == 0xED
+                        && (second < 0x80 || second > 0x9F))
+                    || (first != 0xE0 && first != 0xED
+                        && (second < 0x80 || second > 0xBF)) {
+                return false;
+            }
+            index += 3;
+        } else if first >= 0xF0 && first <= 0xF4 {
+            if index + 3 >= length || data[index + 2] < 0x80
+                    || data[index + 2] > 0xBF
+                    || data[index + 3] < 0x80
+                    || data[index + 3] > 0xBF {
+                return false;
+            }
+            let second = data[index + 1];
+            if (first == 0xF0 && (second < 0x90 || second > 0xBF))
+                    || (first == 0xF4
+                        && (second < 0x80 || second > 0x8F))
+                    || (first != 0xF0 && first != 0xF4
+                        && (second < 0x80 || second > 0xBF)) {
+                return false;
+            }
+            index += 4;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn valid_close_payload(data: *const u8, length: u64) -> bool {
+    if length == 1 {
+        return false;
+    }
+    if length == 0 {
+        return true;
+    }
+    let code = (data[0] as u16) << 8 | data[1] as u16;
+    let valid_code = (
+        (code >= 1000 && code <= 1014
+            && code != 1004 && code != 1005 && code != 1006)
+        || (code >= 3000 && code <= 4999)
+    );
+    return valid_code
+        && valid_utf8(&data[2], length - 2);
+}
+
+pub fn send(
+    socket: *Socket,
+    client_side: bool,
+    opcode: u8,
+    payload: *const u8,
+    length: u64
+) -> bool {
+    if !valid_opcode(opcode) || (length > 0 && payload == null)
+            || length > 9223372036854775807
+            || (opcode >= 8 && length > 125)
+            || (opcode == 1 && !valid_utf8(payload, length))
+            || (opcode == 8 && !valid_close_payload(payload, length)) {
+        return false;
+    }
+    let header: [u8; 14] = [0; 14];
+    let header_length: u64 = 2;
+    header[0] = 128 | opcode;
+    let mask_flag: u8 = 0;
+    if client_side {
+        mask_flag = 128;
+    }
+    if length < 126 {
+        header[1] = mask_flag | length as u8;
+    } else if length <= 65535 {
+        header[1] = mask_flag | 126;
+        header[2] = (length >> 8) as u8;
+        header[3] = length as u8;
+        header_length = 4;
+    } else {
+        header[1] = mask_flag | 127;
+        for index: u64 in 0..8 {
+            header[2 + index] = (length >> ((7 - index) * 8)) as u8;
+        }
+        header_length = 10;
+    }
+    let mask: [u8; 4] = [0; 4];
+    if client_side {
+        if !crypto.random_fill(&mask[0], 4) {
+            return false;
+        }
+        for index: u64 in 0..4 {
+            header[header_length + index] = mask[index];
+        }
+        header_length += 4;
+    }
+    if !net.send_all(socket, &header[0] as *const u8, header_length) {
+        return false;
+    }
+    if !client_side {
+        return net.send_all(socket, payload, length);
+    }
+    let sent: u64 = 0;
+    let chunk: [u8; 4096] = [0; 4096];
+    while sent < length {
+        let amount = length - sent;
+        if amount > 4096 {
+            amount = 4096;
+        }
+        for index: u64 in 0..amount {
+            chunk[index] = payload[sent + index]
+                ^ mask[(sent + index) % 4];
+        }
+        if !net.send_all(
+                socket,
+                &chunk[0] as *const u8,
+                amount) {
+            return false;
+        }
+        sent += amount;
+    }
+    return true;
+}
+
+pub fn receive(
+    socket: *Socket,
+    expect_masked: bool,
+    output: *u8,
+    capacity: u64,
+    opcode: *u8
+) -> i64 {
+    if opcode == null {
+        return 0 - 1;
+    }
+    let header: [u8; 2] = [0; 2];
+    if !net.receive_exact(socket, &header[0], 2) {
+        return 0 - 1;
+    }
+    if (header[0] & 0xF0) != 0x80 {
+        return 0 - 1;
+    }
+    let frame_opcode = header[0] & 15;
+    if !valid_opcode(frame_opcode) {
+        return 0 - 1;
+    }
+    let masked = (header[1] & 128) != 0;
+    if masked != expect_masked {
+        return 0 - 1;
+    }
+    let length = (header[1] & 127) as u64;
+    if length == 126 {
+        let extended: [u8; 2] = [0; 2];
+        if !net.receive_exact(socket, &extended[0], 2) {
+            return 0 - 1;
+        }
+        length = (extended[0] as u64) << 8 | extended[1] as u64;
+        if length < 126 {
+            return 0 - 1;
+        }
+    } else if length == 127 {
+        let extended: [u8; 8] = [0; 8];
+        if !net.receive_exact(socket, &extended[0], 8)
+                || (extended[0] & 128) != 0 {
+            return 0 - 1;
+        }
+        length = 0;
+        for index: u64 in 0..8 {
+            length = (length << 8) | extended[index] as u64;
+        }
+        if length < 65536 {
+            return 0 - 1;
+        }
+    }
+    if length > capacity || (length > 0 && output == null)
+            || (frame_opcode >= 8 && length > 125)
+            || (frame_opcode == 8 && length == 1) {
+        return 0 - 1;
+    }
+    let mask: [u8; 4] = [0; 4];
+    if masked && !net.receive_exact(socket, &mask[0], 4) {
+        return 0 - 1;
+    }
+    if length > 0 && !net.receive_exact(socket, output, length) {
+        return 0 - 1;
+    }
+    if masked {
+        for index: u64 in 0..length {
+            output[index] ^= mask[index % 4];
+        }
+    }
+    if (frame_opcode == 1 && !valid_utf8(output as *const u8, length))
+            || (frame_opcode == 8
+                && !valid_close_payload(output as *const u8, length)) {
+        return 0 - 1;
+    }
+    *opcode = frame_opcode;
+    return length as i64;
+}

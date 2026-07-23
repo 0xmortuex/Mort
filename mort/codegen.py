@@ -242,7 +242,14 @@ class CodeGen:
                 visit_type(result)
                 return
             if _is_array(value):
-                item, _ = _array_parts(value)
+                # This walk visits every string in the AST, including string
+                # *literals* (e.g. "[sudo] password for "), which _is_array
+                # matches on the leading '['. A real array type has a numeric
+                # size; if it doesn't parse, it isn't a type — skip it.
+                try:
+                    item, _ = _array_parts(value)
+                except ValueError:
+                    return
                 visit_type(item)
                 return
             if _is_slice(value):
@@ -1438,6 +1445,56 @@ class CodeGen:
         self._emit("#undef MORT_NET_INTERNAL")
         self._emit()
 
+    def _gen_secure_random_helpers(self):
+        if not self.used_secure_random:
+            return
+
+        self._emit("#if defined(__GNUC__) || defined(__clang__)")
+        self._emit("#define MORT_RANDOM_INTERNAL __attribute__((unused))")
+        self._emit("#else")
+        self._emit("#define MORT_RANDOM_INTERNAL")
+        self._emit("#endif")
+        self._emit(
+            "static MORT_RANDOM_INTERNAL bool mort_secure_random_fill("
+            "uint8_t* buffer, uint64_t length) {")
+        self._emit(
+            "    if (buffer == NULL) { return length == 0; }")
+        self._emit("#ifdef _WIN32")
+        self._emit("    while (length > 0) {")
+        self._emit(
+            "        ULONG amount = length > 4294967295ULL "
+            "? 4294967295UL : (ULONG)length;")
+        self._emit(
+            "        NTSTATUS status = BCryptGenRandom("
+            "NULL, buffer, amount, BCRYPT_USE_SYSTEM_PREFERRED_RNG);")
+        self._emit("        if (!BCRYPT_SUCCESS(status)) { return false; }")
+        self._emit("        buffer += amount;")
+        self._emit("        length -= amount;")
+        self._emit("    }")
+        self._emit("    return true;")
+        self._emit("#else")
+        self._emit(
+            '    int descriptor = open("/dev/urandom", O_RDONLY);')
+        self._emit("    if (descriptor < 0) { return false; }")
+        self._emit("    while (length > 0) {")
+        self._emit(
+            "        size_t amount = length > (uint64_t)SIZE_MAX "
+            "? SIZE_MAX : (size_t)length;")
+        self._emit("        ssize_t received = read(descriptor, buffer, amount);")
+        self._emit("        if (received < 0 && errno == EINTR) { continue; }")
+        self._emit("        if (received <= 0) {")
+        self._emit("            close(descriptor);")
+        self._emit("            return false;")
+        self._emit("        }")
+        self._emit("        buffer += (size_t)received;")
+        self._emit("        length -= (uint64_t)received;")
+        self._emit("    }")
+        self._emit("    return close(descriptor) == 0;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit("#undef MORT_RANDOM_INTERNAL")
+        self._emit()
+
     def generate(self):
         self.strings = []       # raw string-literal values, index = id
         self.used_inb = False   # set if a port-I/O builtin is generated, per helper
@@ -1460,6 +1517,7 @@ class CodeGen:
         self.used_mutexes = False
         self.used_atomics = False
         self.used_network = False
+        self.used_secure_random = False
         self.used_int_helpers = set()
         self.match_id = 0
         self.try_id = 0
@@ -1528,6 +1586,16 @@ class CodeGen:
                 self._emit("#include <netdb.h>")
                 self._emit("#include <poll.h>")
                 self._emit("#include <sys/socket.h>")
+                self._emit("#include <unistd.h>")
+                self._emit("#endif")
+            if self.used_secure_random:
+                self._emit("#ifdef _WIN32")
+                self._emit("#define MORT_REQUIRES_BCRYPT 1")
+                self._emit("#include <windows.h>")
+                self._emit("#include <bcrypt.h>")
+                self._emit("#else")
+                self._emit("#include <errno.h>")
+                self._emit("#include <fcntl.h>")
                 self._emit("#include <unistd.h>")
                 self._emit("#endif")
             if self.used_threads or self.used_mutexes:
@@ -1653,6 +1721,7 @@ class CodeGen:
         self._gen_integer_helpers()
         self._gen_concurrency_helpers()
         self._gen_network_helpers()
+        self._gen_secure_random_helpers()
         if not self.freestanding:
             if self.used_print:
                 self._emit(
@@ -2501,6 +2570,8 @@ class CodeGen:
                 self.used_atomics = True
             elif e.name.startswith("net_"):
                 self.used_network = True
+            elif e.name == "secure_random_fill":
+                self.used_secure_random = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
@@ -2532,7 +2603,8 @@ class CodeGen:
                     "thread_spawn", "thread_join", "thread_sleep_millis",
                     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock")
                     or e.name.startswith("atomic_i64_")
-                    or e.name.startswith("net_")):
+                    or e.name.startswith("net_")
+                    or e.name == "secure_random_fill"):
                 name = f"mort_{e.name}"
             elif (e.resolved_name or e.name) in self.extern_names:
                 name = e.resolved_name or e.name

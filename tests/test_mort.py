@@ -845,6 +845,27 @@ def test_network_builtins_are_typed_and_hosted_only():
         )
 
 
+def test_secure_random_builtin_is_typed_and_hosted_only():
+    c_source = c_of(
+        "fn main() -> int { let bytes: [u8; 16] = [0; 16]; "
+        "assert(secure_random_fill(&bytes[0], 16)); return 0; }"
+    )
+    assert "MORT_REQUIRES_BCRYPT" in c_source
+    assert "BCryptGenRandom" in c_source
+    assert 'open("/dev/urandom"' in c_source
+    with pytest.raises(MortError, match="secure random is not available"):
+        mortc.compile_to_c(
+            "fn kmain() { let bytes: [u8; 1] = [0; 1]; "
+            "secure_random_fill(&bytes[0], 1); }",
+            freestanding=True,
+        )
+    with pytest.raises(MortError, match="buffer must be"):
+        c_of(
+            "fn main() -> int { let value: u64 = 0; "
+            "secure_random_fill(&value, 8); return 0; }"
+        )
+
+
 @needs_cc
 def test_network_only_program_compiles_under_strict_c11():
     source = (
@@ -987,6 +1008,58 @@ def test_bounded_http11_loopback_and_framing_validation():
         result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n200\n4\n77\n111\n114\n116\n"
+
+
+@needs_cc
+def test_os_secure_random_runs_under_strict_c():
+    source = os.path.join(ROOT, "examples", "secure_random.mx")
+    c_source = mortc.compile_files_to_c([source])
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "secure_random.c")
+        exe = os.path.join(
+            d, "secure_random.exe" if os.name == "nt" else "secure_random")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name == "nt":
+            command.append("-lbcrypt")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "32\n"
+
+
+@needs_cc
+def test_websocket_rfc6455_loopback_and_frame_validation():
+    source = os.path.join(ROOT, "examples", "websocket_loopback.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "mort_std__websocket__accept_key" in c_source
+    assert "mort_std__websocket__client_handshake" in c_source
+    assert "mort_std__websocket__receive" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "websocket_loopback.c")
+        exe = os.path.join(
+            d,
+            "websocket_loopback.exe" if os.name == "nt"
+            else "websocket_loopback",
+        )
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name == "nt":
+            command.extend(["-lws2_32", "-lbcrypt"])
+        else:
+            command.append("-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "4\n1\n4\n112\n111\n110\n103\n"
 
 
 def test_global_variable_codegen():
@@ -2355,6 +2428,8 @@ def test_packaging_version_matches_compiler_version():
     assert "std/net.mx" in project_text
     assert "std/task.mx" in project_text
     assert "std/http.mx" in project_text
+    assert "std/crypto.mx" in project_text
+    assert "std/websocket.mx" in project_text
     with open(
             os.path.join(ROOT, "conformance", "manifest.json"),
             encoding="utf-8") as handle:

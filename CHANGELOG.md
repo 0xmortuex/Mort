@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.40.0 - 2026-07-23
+
+Mort's secure-random and bounded WebSocket release.
+
+### Added
+
+- `std.crypto.random_fill` and `random_u64` use the operating-system CSPRNG:
+  system-preferred CNG on Windows and the OS random device on Linux/macOS.
+- The compiler links Windows CNG automatically only when secure randomness is
+  used.
+- `std.websocket` implements RFC 6455 client/server HTTP upgrades, the
+  published SHA-1/Base64 accept transform, random client keys and masks, and
+  text, binary, close, ping, and pong frames.
+- Frame encoding and parsing cover minimal 7-bit, 16-bit, and 64-bit lengths,
+  caller-bounded receives, direction-specific masking, UTF-8 validation, and
+  close status validation.
+
+### Security and validation
+
+- WebSocket handshakes reject missing/duplicate required headers, invalid
+  Base64 keys, wrong version/status/accept values, and injected client fields.
+- Frames reject reserved bits/opcodes, fragmentation, wrong masking direction,
+  nonminimal lengths, payloads above capacity, malformed UTF-8, and invalid
+  close payloads.
+- The loopback exercises the RFC accept vector, 126-byte and 65,536-byte
+  binary frames, masked/unmasked text, and a normal close handshake.
+- CSPRNG and WebSocket run under strict generated-C warnings, the
+  Windows/Linux/macOS conformance matrix, AddressSanitizer, and
+  UndefinedBehaviorSanitizer.
+- The full regression suite contains 321 tests, and all 27 Mort 0.40
+  conformance cases pass through the public compiler CLI.
+
 ## 0.39.0 - 2026-07-23
 
 Mort's bounded HTTP/1.1 foundation release.

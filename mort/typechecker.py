@@ -40,6 +40,7 @@ BUILTIN_NAMES = {
     "net_socket_shutdown", "net_socket_local_port",
     "net_socket_set_nonblocking", "net_socket_wait",
     "net_last_error_would_block",
+    "secure_random_fill",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -2381,6 +2382,23 @@ class Checker:
                 self._error("networking is not available in freestanding mode", e)
             if e.args:
                 self._error("net_last_error_would_block expects no arguments", e)
+            return "bool"
+        if e.name == "secure_random_fill":
+            if self.freestanding:
+                self._error(
+                    "secure random is not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error("secure_random_fill expects buffer and length", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("*u8", e.args[0]):
+                self._error(
+                    "secure_random_fill buffer must be *u8, "
+                    f"got {e.args[0].type}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u64", e.args[1]):
+                self._error(
+                    "secure_random_fill length must be u64, "
+                    f"got {e.args[1].type}", e)
             return "bool"
         if e.name in ("net_socket_send", "net_socket_recv"):
             if self.freestanding:

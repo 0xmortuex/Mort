@@ -1,0 +1,231 @@
+import std.net;
+import std.thread;
+import std.websocket;
+
+struct ServerContext {
+    listener: *Socket,
+}
+
+fn serve_websocket(raw: *void) -> i64 {
+    let context = raw as *ServerContext;
+    let client = net.accept((*context).listener);
+    let request: [u8; 1024] = [0; 1024];
+    if !websocket.server_handshake(&client, &request[0], 1024) {
+        return 0 - 1;
+    }
+    let payload: [u8; 32] = [0; 32];
+    let opcode: u8 = 0;
+    let length = websocket.receive(
+        &client,
+        true,
+        &payload[0],
+        32,
+        &opcode
+    );
+    if length != 4 || opcode != 1 || payload[0] != 'p'
+            || payload[1] != 'i' || payload[2] != 'n'
+            || payload[3] != 'g' {
+        return 0 - 1;
+    }
+    if !websocket.send(
+            &client,
+            false,
+            1,
+            "pong",
+            4) {
+        return 0 - 1;
+    }
+    let frame: [u8; 65536] = [0; 65536];
+    let frame_opcode: u8 = 0;
+    let medium_length = websocket.receive(
+        &client,
+        true,
+        &frame[0],
+        65536,
+        &frame_opcode
+    );
+    if medium_length != 126 || frame_opcode != 2
+            || frame[0] != 0 || frame[125] != 125 {
+        return 0 - 1;
+    }
+    if !websocket.send(
+            &client,
+            false,
+            2,
+            &frame[0] as *const u8,
+            126) {
+        return 0 - 1;
+    }
+    let large_length = websocket.receive(
+        &client,
+        true,
+        &frame[0],
+        65536,
+        &frame_opcode
+    );
+    if large_length != 65536 || frame_opcode != 2
+            || frame[0] != 0 || frame[65535] != 255 {
+        return 0 - 1;
+    }
+    if !websocket.send(
+            &client,
+            false,
+            1,
+            "large",
+            5) {
+        return 0 - 1;
+    }
+    let close_payload: [u8; 16] = [0; 16];
+    let close_opcode: u8 = 0;
+    let close_length = websocket.receive(
+        &client,
+        true,
+        &close_payload[0],
+        16,
+        &close_opcode
+    );
+    if close_length != 2 || close_opcode != 8 {
+        return 0 - 1;
+    }
+    if !websocket.send(
+            &client,
+            false,
+            8,
+            &close_payload[0] as *const u8,
+            close_length as u64) {
+        return 0 - 1;
+    }
+    return length;
+}
+
+fn main() -> int {
+    let known_accept: [u8; 29] = [0; 29];
+    assert(websocket.accept_key(
+        "dGhlIHNhbXBsZSBub25jZQ==" as *const u8,
+        24,
+        &known_accept[0],
+        29
+    ) == 28);
+    let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+    for index: u64 in 0..28 {
+        assert(known_accept[index] == expected[index]);
+    }
+
+    let listener = net.tcp_listen("127.0.0.1", 0, 4);
+    let port = net.local_port(&listener);
+    let context = ServerContext { listener: &listener };
+    let server = thread.spawn(serve_websocket, &context as *void);
+
+    let socket = net.tcp_connect("localhost", port);
+    let response: [u8; 1024] = [0; 1024];
+    assert(websocket.client_handshake(
+        &socket,
+        "localhost",
+        "/chat",
+        &response[0],
+        1024
+    ));
+    assert(websocket.send(&socket, true, 1, "ping", 4));
+    let payload: [u8; 32] = [0; 32];
+    let opcode: u8 = 0;
+    let length = websocket.receive(
+        &socket,
+        false,
+        &payload[0],
+        32,
+        &opcode
+    );
+    assert(length == 4);
+    assert(opcode == 1);
+
+    let medium: [u8; 126] = [0; 126];
+    for index: u64 in 0..126 {
+        medium[index] = index as u8;
+    }
+    assert(websocket.send(
+        &socket,
+        true,
+        2,
+        &medium[0] as *const u8,
+        126
+    ));
+    let medium_reply: [u8; 126] = [0; 126];
+    assert(websocket.receive(
+        &socket,
+        false,
+        &medium_reply[0],
+        126,
+        &opcode
+    ) == 126);
+    assert(opcode == 2);
+    assert(medium_reply[0] == 0 && medium_reply[125] == 125);
+
+    let large: [u8; 65536] = [0; 65536];
+    for index: u64 in 0..65536 {
+        large[index] = index as u8;
+    }
+    assert(websocket.send(
+        &socket,
+        true,
+        2,
+        &large[0] as *const u8,
+        65536
+    ));
+    let large_reply: [u8; 5] = [0; 5];
+    assert(websocket.receive(
+        &socket,
+        false,
+        &large_reply[0],
+        5,
+        &opcode
+    ) == 5);
+    assert(opcode == 1);
+    assert(large_reply[0] == 'l' && large_reply[4] == 'e');
+
+    let invalid_socket = Socket { handle: null };
+    let invalid_utf8: [u8; 2] = [192, 128];
+    assert(!websocket.send(
+        &invalid_socket,
+        true,
+        1,
+        &invalid_utf8[0] as *const u8,
+        2
+    ));
+    let reserved_close: [u8; 2] = [3, 237];
+    assert(!websocket.send(
+        &invalid_socket,
+        true,
+        8,
+        &reserved_close[0] as *const u8,
+        2
+    ));
+
+    let normal_close: [u8; 2] = [3, 232];
+    assert(websocket.send(
+        &socket,
+        true,
+        8,
+        &normal_close[0] as *const u8,
+        2
+    ));
+    let close_payload: [u8; 16] = [0; 16];
+    let close_opcode: u8 = 0;
+    assert(websocket.receive(
+        &socket,
+        false,
+        &close_payload[0],
+        16,
+        &close_opcode
+    ) == 2);
+    assert(close_opcode == 8);
+
+    let served = thread.join(&server);
+    print(served);
+    print(opcode);
+    print(length);
+    print(payload[0]);
+    print(payload[1]);
+    print(payload[2]);
+    print(payload[3]);
+    return 0;
+}

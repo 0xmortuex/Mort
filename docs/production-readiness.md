@@ -24,7 +24,7 @@ only when an automated gate or named artifact provides repeatable evidence.
   UBSan with leak detection enabled.
 - [ ] Differential and metamorphic tests cover optimization levels and multiple
   C backends.
-- [x] Mort 0.39 has a versioned
+- [x] Mort 0.40 has a versioned
   [normative specification](language-specification.md) and a black-box
   [executable conformance suite](../conformance/README.md), gated on Linux,
   Windows, macOS, and releases.
@@ -70,7 +70,7 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Hosted native and x86 freestanding compilation.
 - [ ] Borrowed-reference lifetimes prevent dangling pointers without requiring
   raw-pointer discipline.
-- [x] Mort 0.39 defines thread-safety and data-race rules and provides
+- [x] Mort 0.40 defines thread-safety and data-race rules and provides
   cross-platform threads, joins, mutexes, sequentially consistent `AtomicI64`,
   synchronized conformance coverage, and positive/negative ThreadSanitizer
   gates.
@@ -84,9 +84,14 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] First-party bounded HTTP/1.1 with injection-safe serialization,
   unambiguous content-length framing, caller-controlled message limits,
   loopback conformance coverage, and sanitizer gates.
-- [ ] First-party TLS and WebSocket libraries.
+- [x] First-party bounded RFC 6455 WebSocket upgrades and frames with
+  OS-random client keys/masks, strict framing, UTF-8 and close-code validation,
+  loopback conformance coverage, and sanitizer gates.
+- [ ] First-party TLS with certificate and hostname verification.
+- [x] Operating-system cryptographic random bytes on Windows, Linux, and
+  macOS, with no deterministic fallback.
 - [ ] Unicode text, locale, regular-expression, serialization, compression,
-  cryptography, and database libraries.
+  general-purpose cryptography, and database libraries.
 - [ ] Stable dynamic-library, plugin, and cross-language binding workflows.
 
 ## Developer experience and ecosystem

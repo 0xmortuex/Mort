@@ -1,0 +1,15 @@
+module std.crypto;
+
+pub fn random_fill(buffer: *u8, length: u64) -> bool {
+    return secure_random_fill(buffer, length);
+}
+
+pub fn random_u64() -> u64 {
+    let bytes: [u8; 8] = [0; 8];
+    assert(secure_random_fill(&bytes[0], 8));
+    let value: u64 = 0;
+    for index: u64 in 0..8 {
+        value |= (bytes[index] as u64) << (index * 8);
+    }
+    return value;
+}

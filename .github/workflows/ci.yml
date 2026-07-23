@@ -62,7 +62,7 @@ jobs:
       - name: Run the test suite
         run: python -m pytest tests/ -q
 
-      - name: Run the Mort 0.39 conformance suite
+      - name: Run the Mort 0.40 conformance suite
         run: python conformance/run.py --mortc mortc
 
       - name: Run adversarial front-end fuzzing
@@ -108,6 +108,9 @@ jobs:
           mortc examples/async_io.mx --run -o /tmp/mort-async-io \
             --sanitize address --sanitize undefined
           mortc examples/http_loopback.mx --run -o /tmp/mort-http-loopback \
+            --sanitize address --sanitize undefined
+          mortc examples/websocket_loopback.mx --run \
+            -o /tmp/mort-websocket-loopback \
             --sanitize address --sanitize undefined
 
   thread-sanitizer:

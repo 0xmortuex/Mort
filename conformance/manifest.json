@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.39.0",
+  "language_version": "0.40.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -137,6 +137,22 @@
       "mode": "run",
       "sources": ["cases/run/http_loopback.mx"],
       "stdout": "4\n200\n4\n77\n111\n114\n116\n",
+      "exit": 0
+    },
+    {
+      "id": "crypto.os_csprng",
+      "section": "16",
+      "mode": "run",
+      "sources": ["cases/run/secure_random.mx"],
+      "stdout": "32\n",
+      "exit": 0
+    },
+    {
+      "id": "websocket.rfc6455_loopback",
+      "section": "17",
+      "mode": "run",
+      "sources": ["cases/run/websocket_loopback.mx"],
+      "stdout": "4\n1\n4\n112\n111\n110\n103\n",
       "exit": 0
     },
     {
