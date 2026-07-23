@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.36.0",
+  "language_version": "0.37.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -104,6 +104,14 @@
       "section": "13",
       "mode": "run",
       "sources": ["cases/run/tcp_loopback.mx"],
+      "stdout": "4\n112\n111\n110\n103\n",
+      "exit": 0
+    },
+    {
+      "id": "network.udp_dns_loopback",
+      "section": "13.4",
+      "mode": "run",
+      "sources": ["cases/run/udp_loopback.mx"],
       "stdout": "4\n112\n111\n110\n103\n",
       "exit": 0
     },

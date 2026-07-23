@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.37.0 - 2026-07-23
+
+Mort's portable UDP datagram release.
+
+### Added
+
+- Cross-platform UDP bind and connected-peer sockets use WinSock on Windows and
+  POSIX sockets on Linux/macOS.
+- `std.net.send_to` resolves IPv4/IPv6 destinations and sends one atomic
+  datagram, while `receive_from` returns the numeric source host and port.
+- UDP sockets reuse the move-only `std.net.Socket` ownership model and close
+  automatically on every lexical exit.
+- `examples/udp_loopback.mx` performs a DNS-resolved ping/pong exchange through
+  operating-system-assigned ephemeral ports without public network access.
+
+### Semantics and validation
+
+- The Mort 0.37 specification defines datagram boundaries, zero-length
+  datagrams, truncation, source-address buffers, connected UDP limitations,
+  and UDP's delivery and ordering boundaries.
+- Windows `WSAEMSGSIZE` and POSIX receive truncation are normalized: the bytes
+  that fit are returned and the remainder of that datagram is discarded.
+- The UDP conformance case deliberately truncates an eight-byte datagram into a
+  four-byte buffer before replying to the reported source endpoint.
+- UDP loopback runs under strict generated-C warnings, the Windows/Linux/macOS
+  conformance matrix, AddressSanitizer, and UndefinedBehaviorSanitizer.
+- The full regression suite contains 315 tests, and all 22 Mort 0.37
+  conformance cases pass through the public compiler CLI.
+
 ## 0.36.0 - 2026-07-23
 
 Mort's portable TCP and DNS foundation release.

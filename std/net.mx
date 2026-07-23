@@ -16,6 +16,18 @@ pub fn tcp_listen(host: *u8, port: u16, backlog: u32) -> Socket {
     return Socket { handle: handle };
 }
 
+pub fn udp_connect(host: *u8, port: u16) -> Socket {
+    let handle = net_udp_connect(host, port);
+    assert(handle != null);
+    return Socket { handle: handle };
+}
+
+pub fn udp_bind(host: *u8, port: u16) -> Socket {
+    let handle = net_udp_bind(host, port);
+    assert(handle != null);
+    return Socket { handle: handle };
+}
+
 pub fn accept(listener: *Socket) -> Socket {
     let handle = net_tcp_accept((*listener).handle);
     assert(handle != null);
@@ -60,6 +72,34 @@ pub fn receive_exact(socket: *Socket, buffer: *u8, length: u64) -> bool {
         received += amount as u64;
     }
     return true;
+}
+
+pub fn send_to(
+    socket: *Socket,
+    host: *u8,
+    port: u16,
+    buffer: *const u8,
+    length: u64
+) -> i64 {
+    return net_udp_send_to((*socket).handle, host, port, buffer, length);
+}
+
+pub fn receive_from(
+    socket: *Socket,
+    buffer: *u8,
+    length: u64,
+    source_host: *u8,
+    source_host_capacity: u64,
+    source_port: *u16
+) -> i64 {
+    return net_udp_recv_from(
+        (*socket).handle,
+        buffer,
+        length,
+        source_host,
+        source_host_capacity,
+        source_port
+    );
 }
 
 pub fn shutdown(socket: *Socket) -> bool {

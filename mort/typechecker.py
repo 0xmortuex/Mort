@@ -34,6 +34,8 @@ BUILTIN_NAMES = {
     "atomic_i64_store", "atomic_i64_exchange", "atomic_i64_fetch_add",
     "atomic_i64_fetch_sub", "atomic_i64_compare_exchange",
     "net_tcp_connect", "net_tcp_listen", "net_tcp_accept",
+    "net_udp_connect", "net_udp_bind", "net_udp_send_to",
+    "net_udp_recv_from",
     "net_socket_close", "net_socket_send", "net_socket_recv",
     "net_socket_shutdown", "net_socket_local_port",
     "outb", "inb", "outw", "inw", "outl", "inl",
@@ -2257,6 +2259,67 @@ class Checker:
                     self._error(
                         f"{e.name} backlog must be u32, got {e.args[2].type}", e)
             return "*void"
+        if e.name in ("net_udp_connect", "net_udp_bind"):
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error(f"{e.name} expects host and port", e)
+            host = self._check_expr(e.args[0])
+            if host != "*u8":
+                self._error(f"{e.name} host must be *u8, got {host}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u16", e.args[1]):
+                self._error(f"{e.name} port must be u16, got {e.args[1].type}", e)
+            return "*void"
+        if e.name == "net_udp_send_to":
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if len(e.args) != 5:
+                self._error(
+                    "net_udp_send_to expects handle, host, port, buffer, "
+                    "and length", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(
+                    f"net_udp_send_to handle must be *void, got {handle}", e)
+            host = self._check_expr(e.args[1])
+            if host != "*u8":
+                self._error(
+                    f"net_udp_send_to host must be *u8, got {host}", e)
+            self._check_expr(e.args[2])
+            if not self._coerce("u16", e.args[2]):
+                self._error(
+                    f"net_udp_send_to port must be u16, got {e.args[2].type}", e)
+            self._check_expr(e.args[3])
+            if not self._coerce("*const u8", e.args[3]):
+                self._error(
+                    "net_udp_send_to buffer must be *const u8, "
+                    f"got {e.args[3].type}", e)
+            self._check_expr(e.args[4])
+            if not self._coerce("u64", e.args[4]):
+                self._error(
+                    f"net_udp_send_to length must be u64, got {e.args[4].type}",
+                    e)
+            return "i64"
+        if e.name == "net_udp_recv_from":
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if len(e.args) != 6:
+                self._error(
+                    "net_udp_recv_from expects handle, buffer, length, source "
+                    "host buffer, source host capacity, and source port", e)
+            expected = ("*void", "*u8", "u64", "*u8", "u64", "*u16")
+            labels = (
+                "handle", "buffer", "length", "source host buffer",
+                "source host capacity", "source port")
+            for argument, expected_type, label in zip(
+                    e.args, expected, labels, strict=True):
+                self._check_expr(argument)
+                if not self._coerce(expected_type, argument):
+                    self._error(
+                        f"net_udp_recv_from {label} must be {expected_type}, "
+                        f"got {argument.type}", e)
+            return "i64"
         if e.name in (
                 "net_tcp_accept", "net_socket_close",
                 "net_socket_shutdown", "net_socket_local_port"):

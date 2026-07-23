@@ -1,0 +1,89 @@
+import std.net;
+
+fn main() -> int {
+    let server = net.udp_bind("127.0.0.1", 0);
+    let server_port = net.local_port(&server);
+    assert(server_port != 0);
+
+    let client = net.udp_bind("127.0.0.1", 0);
+    assert(net.send_to(
+        &client,
+        "localhost",
+        server_port,
+        "pingmore",
+        8
+    ) == 8);
+
+    let request: [u8; 4] = [0; 4];
+    let client_host: [u8; 46] = [0; 46];
+    let client_port: u16 = 0;
+    let received = net.receive_from(
+        &server,
+        &request[0],
+        4,
+        &client_host[0],
+        46,
+        &client_port
+    );
+    assert(received == 4);
+    assert(client_port != 0);
+    assert(request[0] == 'p' && request[1] == 'i');
+    assert(request[2] == 'n' && request[3] == 'g');
+    assert(net.send_to(
+        &server,
+        &client_host[0],
+        client_port,
+        "pong",
+        4
+    ) == 4);
+
+    let response: [u8; 4] = [0; 4];
+    let server_host: [u8; 46] = [0; 46];
+    let response_port: u16 = 0;
+    let response_length = net.receive_from(
+        &client,
+        &response[0],
+        4,
+        &server_host[0],
+        46,
+        &response_port
+    );
+    assert(response_port == server_port);
+    assert(response_length == 4);
+    assert(response[0] == 'p' && response[1] == 'o');
+    assert(response[2] == 'n' && response[3] == 'g');
+
+    let connected = net.udp_connect("127.0.0.1", server_port);
+    assert(net.send(&connected, "ok", 2) == 2);
+    let connected_request: [u8; 2] = [0; 2];
+    let connected_host: [u8; 46] = [0; 46];
+    let connected_port: u16 = 0;
+    assert(net.receive_from(
+        &server,
+        &connected_request[0],
+        2,
+        &connected_host[0],
+        46,
+        &connected_port
+    ) == 2);
+    assert(connected_request[0] == 'o' && connected_request[1] == 'k');
+    assert(net.send_to(
+        &server,
+        &connected_host[0],
+        connected_port,
+        "yes",
+        3
+    ) == 3);
+    let connected_response: [u8; 3] = [0; 3];
+    assert(net.receive(&connected, &connected_response[0], 3) == 3);
+    assert(connected_response[0] == 'y');
+    assert(connected_response[1] == 'e');
+    assert(connected_response[2] == 's');
+
+    print(response_length);
+    print(response[0]);
+    print(response[1]);
+    print(response[2]);
+    print(response[3]);
+    return 0;
+}

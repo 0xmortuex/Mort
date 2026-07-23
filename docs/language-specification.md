@@ -1,18 +1,18 @@
-# Mort Language Specification 0.36
+# Mort Language Specification 0.37
 
 Status: Normative  
-Language version: 0.36.0
+Language version: 0.37.0
 Document revision: 1  
 Last updated: 2026-07-23
 
-This document defines the source language accepted by a conforming Mort 0.36
+This document defines the source language accepted by a conforming Mort 0.37
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.36 program.
+Implementation extensions must not change the meaning of a valid 0.37 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.36.
+the programmer's responsibility in Mort 0.37.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.36 does not specify the relative evaluation order of ordinary binary
+Mort 0.37 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.36 does not promise identical
+and shifts are not defined for floats. Mort 0.37 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.36's safety guarantees.
+are outside Mort 0.37's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.36's reference implementation emits C11, but C is not part of the
+Mort 0.37's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -555,7 +555,7 @@ produce a controlled concurrency failure.
 `std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
 creation failure to an assertion failure. `thread.join(&value)` joins early and
 marks the wrapper empty; otherwise its destructor joins automatically. Thus a
-live `Thread` cannot be silently detached in Mort 0.36.
+live `Thread` cannot be silently detached in Mort 0.37.
 
 The context pointer and every object reachable through it must remain valid
 until the thread has been joined. Raw pointers do not acquire lifetime
@@ -617,9 +617,10 @@ target toolchain supports one.
 
 ## 13. Hosted networking
 
-Networking is available only in the hosted profile. Mort 0.36 specifies
-blocking TCP streams and host-name resolution through the portable `std.net`
-module. The `net_*` builtins are reserved implementation interfaces.
+Networking is available only in the hosted profile. Mort 0.37 specifies
+blocking TCP streams, UDP datagrams, and host-name resolution through the
+portable `std.net` module. The `net_*` builtins are reserved implementation
+interfaces.
 
 Network payloads are byte sequences. This version does not implicitly decode
 text, frame messages, encrypt traffic, or convert application integers to
@@ -681,10 +682,40 @@ socket API permits it and reports the send as a failure instead.
 whether the host accepted the request. It does not release ownership; the
 socket must still be destroyed.
 
-### 13.4 Concurrency and portability
+### 13.4 UDP datagrams
+
+`net.udp_bind(host, port)` creates a UDP socket bound to the requested local
+host and port. Port zero asks the host to choose an ephemeral port.
+`net.udp_connect(host, port)` creates a UDP socket with a default peer; this
+permits the ordinary `send` and `receive` operations but does not perform a
+handshake or prove that the peer exists.
+
+`net.send_to(&socket, host, port, buffer, length)` resolves `host` and sends one
+datagram to a compatible resolved address. A successful result equals
+`length`; `-1` indicates failure. Sending a datagram is atomic at this API
+boundary: it must not report a positive partial transfer.
+
+`net.receive_from` receives one datagram and writes its numeric source address
+as a NUL-terminated byte string plus its source port. The source-host buffer
+must have nonzero capacity; portable callers should provide at least 46 bytes
+so any IPv4 or IPv6 numeric address fits. The result is the number of payload
+bytes written or `-1` on failure.
+
+Datagram boundaries are preserved. If a datagram is larger than the supplied
+payload buffer, exactly the bytes that fit are returned and the rest of that
+datagram is discarded. A zero result is a valid zero-length datagram and does
+not mean end-of-stream. If conversion of the source address cannot fit or
+fails, the operation returns `-1` after consuming the datagram.
+
+UDP provides no language-level guarantee of delivery, uniqueness, ordering,
+peer liveness, congestion behavior, or path MTU. Applications needing those
+properties must implement a protocol above UDP. Maximum accepted datagram size
+and fragmentation behavior are host and network properties.
+
+### 13.5 Concurrency and portability
 
 Blocking name resolution and socket calls may suspend the calling thread for
-an operating-system-defined duration. Mort 0.36 does not define timeouts,
+an operating-system-defined duration. Mort 0.37 does not define timeouts,
 non-blocking mode, cancellation, readiness polling, or fairness.
 
 Distinct sockets may be used by distinct threads. Portable programs must
@@ -711,10 +742,10 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.36: checked borrows and
+The following are intentionally not defined by Mort 0.37: checked borrows and
 lifetimes, thread cancellation, detached threads, condition variables,
 read/write locks, atomics other than sequentially consistent `i64`,
-asynchronous tasks, UDP, HTTP, TLS, WebSocket, exceptions, reflection, dynamic
+asynchronous tasks, HTTP, TLS, WebSocket, exceptions, reflection, dynamic
 loading, stable binary package ABI, Unicode text semantics, and
 WebAssembly/mobile platform profiles. Their absence is not permission for an
 implementation to assign new meaning to currently valid syntax.

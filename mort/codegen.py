@@ -1000,6 +1000,213 @@ class CodeGen:
         self._emit()
 
         self._emit(
+            "static MORT_NET_INTERNAL void* mort_net_udp_connect("
+            "uint8_t* host, uint16_t port) {")
+        self._emit("    if (host == NULL || !mort_net_init()) { return NULL; }")
+        self._emit("    char service[6];")
+        self._emit(
+            '    (void)snprintf(service, sizeof(service), "%u", '
+            "(unsigned int)port);")
+        self._emit("    struct addrinfo hints = {0};")
+        self._emit("    hints.ai_family = AF_UNSPEC;")
+        self._emit("    hints.ai_socktype = SOCK_DGRAM;")
+        self._emit("    hints.ai_protocol = IPPROTO_UDP;")
+        self._emit("    struct addrinfo* addresses = NULL;")
+        self._emit(
+            "    if (getaddrinfo((const char*)host, service, &hints, "
+            "&addresses) != 0) { return NULL; }")
+        self._emit("    mort_native_socket connected = MORT_INVALID_SOCKET;")
+        self._emit(
+            "    for (struct addrinfo* address = addresses; "
+            "address != NULL; address = address->ai_next) {")
+        self._emit(
+            "        mort_native_socket candidate = socket("
+            "address->ai_family, address->ai_socktype, address->ai_protocol);")
+        self._emit(
+            "        if (candidate == MORT_INVALID_SOCKET) { continue; }")
+        self._emit(
+            "        if (connect(candidate, address->ai_addr, "
+            "(int)address->ai_addrlen) == 0) {")
+        self._emit("            connected = candidate;")
+        self._emit("            break;")
+        self._emit("        }")
+        self._emit("        mort_native_socket_close(candidate);")
+        self._emit("    }")
+        self._emit("    freeaddrinfo(addresses);")
+        self._emit(
+            "    return connected == MORT_INVALID_SOCKET "
+            "? NULL : mort_socket_wrap(connected);")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL void* mort_net_udp_bind("
+            "uint8_t* host, uint16_t port) {")
+        self._emit("    if (host == NULL || !mort_net_init()) { return NULL; }")
+        self._emit("    char service[6];")
+        self._emit(
+            '    (void)snprintf(service, sizeof(service), "%u", '
+            "(unsigned int)port);")
+        self._emit("    struct addrinfo hints = {0};")
+        self._emit("    hints.ai_family = AF_UNSPEC;")
+        self._emit("    hints.ai_socktype = SOCK_DGRAM;")
+        self._emit("    hints.ai_protocol = IPPROTO_UDP;")
+        self._emit("    hints.ai_flags = AI_PASSIVE;")
+        self._emit("    struct addrinfo* addresses = NULL;")
+        self._emit(
+            "    if (getaddrinfo((const char*)host, service, &hints, "
+            "&addresses) != 0) { return NULL; }")
+        self._emit("    mort_native_socket bound = MORT_INVALID_SOCKET;")
+        self._emit(
+            "    for (struct addrinfo* address = addresses; "
+            "address != NULL; address = address->ai_next) {")
+        self._emit(
+            "        mort_native_socket candidate = socket("
+            "address->ai_family, address->ai_socktype, address->ai_protocol);")
+        self._emit(
+            "        if (candidate == MORT_INVALID_SOCKET) { continue; }")
+        self._emit("#ifdef _WIN32")
+        self._emit("        BOOL reuse = TRUE;")
+        self._emit(
+            "        (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, "
+            "(const char*)&reuse, (int)sizeof(reuse));")
+        self._emit("#else")
+        self._emit("        int reuse = 1;")
+        self._emit(
+            "        (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, "
+            "&reuse, sizeof(reuse));")
+        self._emit("#endif")
+        self._emit(
+            "        if (bind(candidate, address->ai_addr, "
+            "(int)address->ai_addrlen) == 0) {")
+        self._emit("            bound = candidate;")
+        self._emit("            break;")
+        self._emit("        }")
+        self._emit("        mort_native_socket_close(candidate);")
+        self._emit("    }")
+        self._emit("    freeaddrinfo(addresses);")
+        self._emit(
+            "    return bound == MORT_INVALID_SOCKET "
+            "? NULL : mort_socket_wrap(bound);")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL int64_t mort_net_udp_send_to("
+            "void* raw, uint8_t* host, uint16_t port, "
+            "const uint8_t* buffer, uint64_t length) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET || host == NULL "
+            "|| buffer == NULL || !mort_net_init()) { return -1; }")
+        self._emit("    char service[6];")
+        self._emit(
+            '    (void)snprintf(service, sizeof(service), "%u", '
+            "(unsigned int)port);")
+        self._emit("    struct addrinfo hints = {0};")
+        self._emit("    hints.ai_family = AF_UNSPEC;")
+        self._emit("    hints.ai_socktype = SOCK_DGRAM;")
+        self._emit("    hints.ai_protocol = IPPROTO_UDP;")
+        self._emit("    struct addrinfo* addresses = NULL;")
+        self._emit(
+            "    if (getaddrinfo((const char*)host, service, &hints, "
+            "&addresses) != 0) { return -1; }")
+        self._emit(
+            "    int amount = length > 2147483647ULL "
+            "? 2147483647 : (int)length;")
+        self._emit("    int64_t result = -1;")
+        self._emit(
+            "    for (struct addrinfo* address = addresses; "
+            "address != NULL; address = address->ai_next) {")
+        self._emit("#ifdef _WIN32")
+        self._emit(
+            "        int sent = sendto(socket, (const char*)buffer, amount, 0, "
+            "address->ai_addr, (int)address->ai_addrlen);")
+        self._emit("        if (sent != SOCKET_ERROR) {")
+        self._emit("            result = (int64_t)sent;")
+        self._emit("            break;")
+        self._emit("        }")
+        self._emit("#else")
+        self._emit("        int flags = 0;")
+        self._emit("#ifdef MSG_NOSIGNAL")
+        self._emit("        flags = MSG_NOSIGNAL;")
+        self._emit("#endif")
+        self._emit(
+            "        ssize_t sent = sendto(socket, buffer, (size_t)amount, "
+            "flags, address->ai_addr, address->ai_addrlen);")
+        self._emit("        if (sent >= 0) {")
+        self._emit("            result = (int64_t)sent;")
+        self._emit("            break;")
+        self._emit("        }")
+        self._emit("#endif")
+        self._emit("    }")
+        self._emit("    freeaddrinfo(addresses);")
+        self._emit("    return result;")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL int64_t mort_net_udp_recv_from("
+            "void* raw, uint8_t* buffer, uint64_t length, "
+            "uint8_t* source_host, uint64_t source_host_capacity, "
+            "uint16_t* source_port) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET || buffer == NULL "
+            "|| source_host == NULL || source_host_capacity == 0 "
+            "|| source_port == NULL) { return -1; }")
+        self._emit("    source_host[0] = 0;")
+        self._emit("    *source_port = 0;")
+        self._emit(
+            "    int amount = length > 2147483647ULL "
+            "? 2147483647 : (int)length;")
+        self._emit("    struct sockaddr_storage source;")
+        self._emit("#ifdef _WIN32")
+        self._emit("    int source_length = (int)sizeof(source);")
+        self._emit(
+            "    int received = recvfrom(socket, (char*)buffer, amount, 0, "
+            "(struct sockaddr*)&source, &source_length);")
+        self._emit("    if (received == SOCKET_ERROR) {")
+        self._emit(
+            "        if (WSAGetLastError() != WSAEMSGSIZE) { return -1; }")
+        self._emit("        received = amount;")
+        self._emit("    }")
+        self._emit(
+            "    DWORD host_capacity = source_host_capacity > 4294967295ULL "
+            "? 4294967295UL : (DWORD)source_host_capacity;")
+        self._emit("#else")
+        self._emit(
+            "    socklen_t source_length = (socklen_t)sizeof(source);")
+        self._emit(
+            "    ssize_t received = recvfrom(socket, buffer, (size_t)amount, 0, "
+            "(struct sockaddr*)&source, &source_length);")
+        self._emit("    if (received < 0) { return -1; }")
+        self._emit(
+            "    socklen_t host_capacity = source_host_capacity > 2147483647ULL "
+            "? (socklen_t)2147483647 : (socklen_t)source_host_capacity;")
+        self._emit("#endif")
+        self._emit(
+            "    if (getnameinfo((struct sockaddr*)&source, source_length, "
+            "(char*)source_host, host_capacity, NULL, 0, NI_NUMERICHOST) "
+            "!= 0) { return -1; }")
+        self._emit("    if (source.ss_family == AF_INET) {")
+        self._emit(
+            "        *source_port = ntohs("
+            "((struct sockaddr_in*)&source)->sin_port);")
+        self._emit("    }")
+        self._emit("#ifdef AF_INET6")
+        self._emit("    else if (source.ss_family == AF_INET6) {")
+        self._emit(
+            "        *source_port = ntohs("
+            "((struct sockaddr_in6*)&source)->sin6_port);")
+        self._emit("    }")
+        self._emit("#endif")
+        self._emit("    else { return -1; }")
+        self._emit("    return (int64_t)received;")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
             "static MORT_NET_INTERNAL void* mort_net_tcp_accept(void* raw) {")
         self._emit("    mort_native_socket listener = mort_socket_value(raw);")
         self._emit(
@@ -1057,7 +1264,10 @@ class CodeGen:
             "? 2147483647 : (int)length;")
         self._emit("#ifdef _WIN32")
         self._emit("    int result = recv(socket, (char*)buffer, amount, 0);")
-        self._emit("    return result == SOCKET_ERROR ? -1 : (int64_t)result;")
+        self._emit("    if (result != SOCKET_ERROR) { return (int64_t)result; }")
+        self._emit(
+            "    return WSAGetLastError() == WSAEMSGSIZE "
+            "? (int64_t)amount : -1;")
         self._emit("#else")
         self._emit(
             "    ssize_t result = recv(socket, buffer, (size_t)amount, 0);")

@@ -821,6 +821,18 @@ def test_network_builtins_are_typed_and_hosted_only():
             "fn main() -> int { let socket: *void = null; "
             "let value: i64 = 0; net_socket_send(socket, &value, 8); return 0; }"
         )
+    with pytest.raises(MortError, match="source port must be"):
+        c_of(
+            "fn main() -> int { let socket: *void = null; "
+            "let bytes: [u8; 8] = [0; 8]; let wrong: u32 = 0; "
+            "net_udp_recv_from(socket, &bytes[0], 8, &bytes[0], 8, &wrong); "
+            "return 0; }"
+        )
+    with pytest.raises(MortError, match="networking is not available"):
+        mortc.compile_to_c(
+            "fn kmain() { net_udp_bind(\"127.0.0.1\", 0); }",
+            freestanding=True,
+        )
 
 
 @needs_cc
@@ -864,6 +876,31 @@ def test_cross_platform_tcp_dns_loopback_runs():
             "-Wall", "-Wextra", "-Werror",
         ]
         command.append("-lws2_32" if os.name == "nt" else "-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "4\n112\n111\n110\n103\n"
+
+
+@needs_cc
+def test_cross_platform_udp_dns_loopback_runs():
+    source = os.path.join(ROOT, "examples", "udp_loopback.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "mort_net_udp_bind" in c_source
+    assert "mort_net_udp_send_to" in c_source
+    assert "mort_net_udp_recv_from" in c_source
+    assert "getnameinfo" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "udp_loopback.c")
+        exe = os.path.join(d, "udp_loopback.exe" if os.name == "nt" else "udp_loopback")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name == "nt":
+            command.append("-lws2_32")
         subprocess.run(command, check=True)
         result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
