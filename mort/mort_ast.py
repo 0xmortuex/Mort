@@ -283,6 +283,7 @@ class Var(Node):
         super().__init__()
         self.name = name
         self.line = line
+        self.resolved_function = None
 
 
 class Unary(Node):
@@ -312,6 +313,7 @@ class Call(Node):
         self.enum_name = None
         self.enum_variant = None
         self.type_args = type_args or []
+        self.indirect = False
 
 
 class Cast(Node):

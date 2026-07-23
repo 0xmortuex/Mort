@@ -186,6 +186,81 @@ def test_compound_assignments_run_and_preserve_lvalue_evaluation():
     assert result.stdout == "22\n15\n1\n"
 
 
+@needs_cc
+def test_function_values_callbacks_and_generic_higher_order_calls_run():
+    src = (
+        "type Binary = fn(i64, i64) -> i64; "
+        "struct Handler { callback: Binary } "
+        "fn add(left: i64, right: i64) -> i64 { return left + right; } "
+        "fn subtract(left: i64, right: i64) -> i64 { return left - right; } "
+        "const DEFAULT: Binary = add; "
+        "fn choose(addition: bool) -> Binary { "
+        "if addition { return add; } return subtract; } "
+        "fn apply<T>(operation: fn(T, T) -> T, left: T, right: T) -> T { "
+        "return operation(left, right); } "
+        "fn main() -> int { let operation: Binary = choose(true); "
+        "print(operation(20, 22)); operation = subtract; "
+        "print(apply(operation, 50, 8)); print(DEFAULT(40, 2)); "
+        "let handler = Handler { callback: subtract }; "
+        "let selected = handler.callback; print(selected(50, 8)); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "int64_t (* m_operation)(int64_t, int64_t)" in c_source
+    assert "int64_t (* mort_choose(bool m_addition))(int64_t, int64_t)" in c_source
+    assert "mort_apply_i64" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "callbacks.c")
+        exe = os.path.join(d, "callbacks.exe" if os.name == "nt" else "callbacks")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n42\n42\n42\n"
+
+
+def test_function_pointer_types_support_c_callback_signatures():
+    c_source = c_of(
+        "extern fn visit(context: *void, "
+        "callback: fn(*void, i64) -> bool) -> i64; "
+        "fn main() -> int { let callback: fn(*void, i64) -> bool = null; "
+        "assert(callback == null); return 0; }"
+    )
+    assert "bool (*)(void*, int64_t)" in c_source
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "fn add(a: i64, b: i64) -> i64 { return a + b; } "
+            "fn main() -> int { let callback = add; callback(1); return 0; }",
+            "expects 2 argument",
+        ),
+        (
+            "fn main() -> int { let value = 42; value(); return 0; }",
+            "is not callable",
+        ),
+        (
+            "fn identity<T>(value: T) -> T { return value; } "
+            "fn main() -> int { let callback = identity; return 0; }",
+            "cannot be used directly as a value",
+        ),
+        (
+            "fn signed(value: i64) -> i64 { return value; } "
+            "fn main() -> int { let callback: fn(u64) -> u64 = signed; return 0; }",
+            "type mismatch",
+        ),
+    ],
+)
+def test_invalid_function_value_usage_is_rejected(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
 @pytest.mark.parametrize(
     ("statement", "message"),
     [

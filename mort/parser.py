@@ -230,6 +230,20 @@ class Parser:
         return A.EnumDecl(name, variants, line, generic_params)
 
     def _type_name(self):
+        # first-class function pointer: fn(T, U) -> R
+        if self._at(T.FN):
+            self._advance()
+            self._expect(T.LPAREN, "'('")
+            parameters = []
+            if not self._at(T.RPAREN):
+                parameters.append(self._type_name())
+                while self._at(T.COMMA):
+                    self._advance()
+                    parameters.append(self._type_name())
+            self._expect(T.RPAREN, "')'")
+            self._expect(T.ARROW, "'->'")
+            result = self._type_name()
+            return f"fn({','.join(parameters)})->{result}"
         # pointer type: *T
         if self._at(T.STAR):
             self._advance()

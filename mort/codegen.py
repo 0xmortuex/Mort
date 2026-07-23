@@ -38,10 +38,13 @@ def _slice_elem(t):
 
 
 def _type_tag(t):
-    return (t.replace("*const ", "const_").replace("*", "ptr_")
+    return (t.replace("->", "_to_")
+            .replace("*const ", "const_").replace("*", "ptr_")
             .replace("[]const ", "slice_const_").replace("[]", "slice_")
             .replace("[", "array_").replace("]", "").replace(";", "_")
-            .replace("<", "_").replace(">", "").replace(",", "_"))
+            .replace("<", "_").replace(">", "").replace(",", "_")
+            .replace("fn(", "function_").replace("(", "_").replace(")", "")
+            .replace(" ", "_"))
 
 
 def _slice_c_name(t):
@@ -54,6 +57,50 @@ def _array_parts(t):
     return inner[:cut], int(inner[cut + 1:])
 
 
+def _split_type_list(inner):
+    if not inner:
+        return []
+    result = []
+    start = 0
+    angle = paren = bracket = 0
+    for index, char in enumerate(inner):
+        if char == "<":
+            angle += 1
+        elif char == ">":
+            angle -= 1
+        elif char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+        elif char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket -= 1
+        elif char == "," and angle == 0 and paren == 0 and bracket == 0:
+            result.append(inner[start:index])
+            start = index + 1
+    result.append(inner[start:])
+    return result
+
+
+def _function_parts(t):
+    if not isinstance(t, str) or not t.startswith("fn("):
+        return None
+    depth = 0
+    close = None
+    for index in range(2, len(t)):
+        if t[index] == "(":
+            depth += 1
+        elif t[index] == ")":
+            depth -= 1
+            if depth == 0:
+                close = index
+                break
+    if close is None or t[close + 1:close + 3] != "->":
+        return None
+    return _split_type_list(t[3:close]), t[close + 3:]
+
+
 def _c_symbol(name):
     return _type_tag(name.replace(".", "__"))
 
@@ -64,6 +111,16 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
 
     '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
     """
+    callable_type = _function_parts(t)
+    if callable_type:
+        parameters, result = callable_type
+        result_type = c_type(
+            result, struct_names, enum_names, payload_enum_names)
+        parameter_types = ", ".join(
+            c_type(item, struct_names, enum_names, payload_enum_names)
+            for item in parameters
+        ) or "void"
+        return f"{result_type} (*)({parameter_types})"
     if _is_slice(t):
         return _slice_c_name(t)
     if t.startswith("*const "):
@@ -170,10 +227,23 @@ class CodeGen:
     def _var_decl(self, var_type, cname, init=None, binding_const=False):
         """A C declaration for a variable/field, handling arrays (whose size
         sits after the name): '[i32;8]' -> 'int32_t cname[8]'."""
-        if _is_array(var_type):
+        callable_type = _function_parts(var_type)
+        if callable_type:
+            parameters, result = callable_type
+            parameter_types = ", ".join(self._ct(item) for item in parameters) or "void"
+            pointer_qualifier = " const" if binding_const else ""
+            decl = (
+                f"{self._ct(result)} (*{pointer_qualifier} {cname})"
+                f"({parameter_types})"
+            )
+        elif _is_array(var_type):
             elem, n = _array_parts(var_type)
             qualifier = "const " if binding_const else ""
-            decl = f"{qualifier}{self._ct(elem)} {cname}[{n}]"
+            if _function_parts(elem):
+                decl = self._var_decl(
+                    elem, f"{cname}[{n}]", binding_const=binding_const)
+            else:
+                decl = f"{qualifier}{self._ct(elem)} {cname}[{n}]"
         else:
             ctype = self._ct(var_type)
             if binding_const and ctype.endswith("*"):
@@ -320,11 +390,6 @@ class CodeGen:
         if (self.used_inb or self.used_outb or self.used_inw or self.used_outw
                 or self.used_inl or self.used_outl):
             self._emit()
-        # global variables (file-scope statics)
-        if global_decls:
-            for decl in global_decls:
-                self._emit(decl)
-            self._emit()
         if not self.freestanding:
             self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
             if self.used_print_float:
@@ -385,6 +450,12 @@ class CodeGen:
             if not f.generic_params:
                 self._emit(self._signature(f) + ";")
         self._emit()
+        # Function prototypes must precede globals because a function pointer
+        # global may use a Mort function as its constant initializer.
+        if global_decls:
+            for decl in global_decls:
+                self._emit(decl)
+            self._emit()
         self.lines.extend(body_lines)
         # Hosted builds get a real C main that calls the user's main; a
         # freestanding object has no entry point (the bootloader supplies one).
@@ -426,21 +497,21 @@ class CodeGen:
             if payloads:
                 self._emit("    union {")
                 for variant in payloads:
-                    self._emit(
-                        f"        {self._ct(variant.payload_type)} v_{variant.name};")
+                    self._emit("        " + self._var_decl(
+                        variant.payload_type, "v_" + variant.name) + ";")
                 self._emit("    } data;")
             self._emit("};")
 
     def _signature(self, f):
-        ret = self._ct(f.ret)
         if f.params:
-            params = ", ".join(f"{self._ct(p.typ)} m_{p.name}" for p in f.params)
+            params = ", ".join(
+                self._var_decl(p.typ, "m_" + p.name) for p in f.params)
         else:
             params = "void"
-        return f"{ret} mort_{_c_symbol(f.symbol_name)}({params})"
+        return self._var_decl(
+            f.ret, f"mort_{_c_symbol(f.symbol_name)}({params})")
 
     def _extern_signature(self, f):
-        ret = self._ct(f.ret)
         if f.params:
             # Parameter names are not part of the C ABI. Omitting them also
             # prevents a harmless Mort name such as `register` from becoming
@@ -448,7 +519,7 @@ class CodeGen:
             params = ", ".join(self._ct(p.typ) for p in f.params)
         else:
             params = "void"
-        return f"{ret} {f.name}({params})"
+        return self._var_decl(f.ret, f"{f.name}({params})")
 
     def _gen_fn(self, f):
         saved_scopes = getattr(self, "defer_scopes", [])
@@ -701,6 +772,10 @@ class CodeGen:
             self.strings.append(e.value)
             return f"mort_str_{idx}"
         if isinstance(e, A.Var):
+            if e.resolved_function is not None:
+                if e.resolved_function in self.extern_names:
+                    return e.resolved_function
+                return f"mort_{_c_symbol(e.resolved_function)}"
             return f"m_{e.name}"
         if isinstance(e, A.Cast):
             return f"(({self._ct(e.target_type)}){self._gen_expr(e.expr)})"
@@ -774,6 +849,9 @@ class CodeGen:
                     f"MORT_{enum_tag}_{e.enum_variant}, "
                     f".data.v_{e.enum_variant} = {self._gen_expr(e.args[0])} }}"
                 )
+            if e.indirect:
+                args = ", ".join(self._gen_expr(argument) for argument in e.args)
+                return f"m_{e.name}({args})"
             if e.name == "inb":
                 self.used_inb = True
             elif e.name == "outb":

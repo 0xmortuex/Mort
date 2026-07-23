@@ -131,6 +131,52 @@ def generic_parts(t):
     return base, args
 
 
+def _split_type_list(inner):
+    if not inner:
+        return []
+    result = []
+    start = 0
+    angle = paren = bracket = 0
+    for index, char in enumerate(inner):
+        if char == "<":
+            angle += 1
+        elif char == ">":
+            angle -= 1
+        elif char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+        elif char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket -= 1
+        elif char == "," and angle == 0 and paren == 0 and bracket == 0:
+            result.append(inner[start:index])
+            start = index + 1
+    result.append(inner[start:])
+    return result
+
+
+def function_parts(t):
+    """Return (parameter types, return type) for ``fn(...)->...``."""
+    if not isinstance(t, str) or not t.startswith("fn("):
+        return None
+    depth = 0
+    close = None
+    for index in range(2, len(t)):
+        char = t[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                close = index
+                break
+    if close is None or t[close + 1:close + 3] != "->":
+        return None
+    return _split_type_list(t[3:close]), t[close + 3:]
+
+
 def substitute_type(t, mapping):
     if t in mapping:
         return mapping[t]
@@ -143,6 +189,13 @@ def substitute_type(t, mapping):
     if is_array(t):
         elem, count = array_parts(t)
         return f"[{substitute_type(elem, mapping)};{count}]"
+    callable_type = function_parts(t)
+    if callable_type:
+        parameters, result = callable_type
+        return (
+            "fn(" + ",".join(substitute_type(item, mapping) for item in parameters)
+            + ")->" + substitute_type(result, mapping)
+        )
     parts = generic_parts(t)
     if parts:
         base, args = parts
@@ -194,6 +247,13 @@ class Checker:
             return n > 0 and self._valid_type(elem)
         if is_slice(t):
             return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
+        callable_type = function_parts(t)
+        if callable_type:
+            parameters, result = callable_type
+            return (
+                all(item != "void" and self._valid_type(item) for item in parameters)
+                and (result == "void" or self._valid_type(result))
+            )
         if generic_parts(t):
             return self._instantiate_struct(t) or self._instantiate_enum(t)
         return (t in INT_TYPES or t in FLOAT_TYPES or t == "bool"
@@ -215,6 +275,17 @@ class Checker:
         if is_array(t):
             element, count = array_parts(t)
             return f"[{self._resolve_alias_type(element, stack)};{count}]"
+        callable_type = function_parts(t)
+        if callable_type:
+            parameters, result = callable_type
+            return (
+                "fn(" + ",".join(
+                    self._resolve_alias_type(item, stack) for item in parameters
+                ) + ")->" + (
+                    "void" if result == "void"
+                    else self._resolve_alias_type(result, stack)
+                )
+            )
         parts = generic_parts(t)
         if parts:
             base, arguments = parts
@@ -372,6 +443,23 @@ class Checker:
             return (pattern_count == actual_count
                     and self._unify_generic_type(
                         pattern_elem, actual_elem, generic_params, mapping))
+        pattern_callable = function_parts(pattern)
+        if pattern_callable:
+            actual_callable = function_parts(actual)
+            if actual_callable is None:
+                return False
+            pattern_params, pattern_result = pattern_callable
+            actual_params, actual_result = actual_callable
+            return (
+                len(pattern_params) == len(actual_params)
+                and all(
+                    self._unify_generic_type(
+                        expected, found, generic_params, mapping)
+                    for expected, found in zip(pattern_params, actual_params)
+                )
+                and self._unify_generic_type(
+                    pattern_result, actual_result, generic_params, mapping)
+            )
         pattern_parts = generic_parts(pattern)
         if pattern_parts:
             actual_parts = generic_parts(actual)
@@ -676,6 +764,8 @@ class Checker:
             return self._is_const_init(expr.value)
         if isinstance(expr, A.ArrayLit):
             return all(self._is_const_init(el) for el in expr.elements)
+        if isinstance(expr, A.Var) and expr.resolved_function is not None:
+            return True
         return bool(getattr(expr, "is_lit", False))  # int literal expression
 
     def _declare(self, name, typ, node, kind="variable", mutable=True):
@@ -915,7 +1005,7 @@ class Checker:
         """
         if expr.type == expected:
             return True
-        if is_ptr(expected) and expr.type == "null":
+        if (is_ptr(expected) or function_parts(expected)) and expr.type == "null":
             expr.type = expected
             return True
         if expected in FLOAT_TYPES and isinstance(expr, A.FloatLit):
@@ -1196,9 +1286,29 @@ class Checker:
             return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.Var):
             vt = self._lookup(e.name)
-            if vt is None:
-                self._error(f"undefined variable {e.name!r}", e)
-            return vt
+            if vt is not None:
+                return vt
+            local = f"{self.current_module}.{e.name}" if self.current_module else None
+            resolved = (
+                local
+                if local in self.funcs or local in self.func_templates
+                else e.name
+            )
+            if resolved in self.func_templates:
+                self._error(
+                    f"generic function {e.name!r} cannot be used directly as a "
+                    "value; wrap it in a concrete function", e)
+            if resolved in self.funcs:
+                declaration = self.func_decls[resolved]
+                target_module = getattr(declaration, "module", None)
+                if (target_module is not None and target_module != self.current_module
+                        and not getattr(declaration, "public", False)):
+                    self._error(
+                        f"function {e.name!r} is private to module {target_module!r}", e)
+                parameters, result = self.funcs[resolved]
+                e.resolved_function = resolved
+                return f"fn({','.join(parameters)})->{result}"
+            self._error(f"undefined variable {e.name!r}", e)
 
         if isinstance(e, A.Cast):
             st = self._check_expr(e.expr)
@@ -1333,10 +1443,10 @@ class Checker:
                 e.is_lit = e.left.is_lit and e.right.is_lit
                 return lt
             if op in ("==", "!="):
-                if lt == "null" and is_ptr(rt):
+                if lt == "null" and (is_ptr(rt) or function_parts(rt)):
                     e.left.type = rt
                     lt = rt
-                elif rt == "null" and is_ptr(lt):
+                elif rt == "null" and (is_ptr(lt) or function_parts(lt)):
                     e.right.type = lt
                     rt = lt
                 elif lt == "null" or rt == "null":
@@ -1676,6 +1786,33 @@ class Checker:
             if not self._coerce("u16", e.args[0]):
                 self._error(f"inl port must be u16, got {e.args[0].type}", e)
             return "u32"
+        # A local/global binding whose type is a function pointer is invoked
+        # indirectly. Builtins above intentionally keep their reserved call
+        # behavior; ordinary bindings otherwise take precedence over functions.
+        if "." not in e.name:
+            binding_type = self._lookup(e.name)
+            callable_type = function_parts(binding_type)
+            if callable_type:
+                if e.type_args:
+                    self._error(
+                        "an indirect function call cannot take type arguments", e)
+                parameter_types, result = callable_type
+                if len(e.args) != len(parameter_types):
+                    self._error(
+                        f"callback {e.name!r} expects {len(parameter_types)} "
+                        f"argument(s), got {len(e.args)}", e)
+                for index, (argument, expected) in enumerate(
+                        zip(e.args, parameter_types), start=1):
+                    actual = self._check_expr(argument)
+                    if not self._coerce(expected, argument):
+                        self._error(
+                            f"argument {index} of callback {e.name!r} expects "
+                            f"{expected}, got {actual}", e)
+                e.indirect = True
+                return result
+            if binding_type is not None:
+                self._error(
+                    f"value {e.name!r} of type {binding_type} is not callable", e)
         requested = e.name
         if "." in requested:
             alias, member = requested.split(".", 1)

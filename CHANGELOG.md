@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.25.0 — 2026-07-23
+
+Mort's first-class callbacks release.
+
+### Added
+
+- Function pointer types with `fn(Parameter, ...) -> Return` syntax.
+- Function declarations and external functions as statically typed values.
+- Inferred or annotated callback bindings, mutable callback reassignment, and
+  callback globals/struct fields/generic fields.
+- Checked indirect calls with argument count, parameter, return, and
+  non-callable-value diagnostics.
+- Callback parameters and callback-returning Mort functions.
+- Generic higher-order functions that infer type parameters through callback
+  signatures.
+- Nullable callback values for interoperable C APIs.
+
+### Code generation
+
+- Portable C11 declarators for function pointer variables, constants, fields,
+  parameters, external signatures, and return values.
+- Function prototypes now precede global initializers, allowing constant global
+  callbacks without declaration-order constraints.
+
+### Validation
+
+- Callback programs compile under `-Wall -Werror` and execute through direct,
+  indirect, returned, global, struct-field, and generic call paths.
+- 239 compiler, callback, packaging, CLI, standard-library, native, LSP,
+  package, and kernel tests pass.
+
 ## 0.24.1 — 2026-07-23
 
 Mort's distributable-release patch.
