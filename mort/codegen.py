@@ -566,13 +566,13 @@ class CodeGen:
 
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
-            if isinstance(s.expr, A.Try):
-                self._gen_try_let(s)
-                return
+            self._prepare_try_expr(s.expr)
             self._emit(self._var_decl(
                 s.var_type, "m_" + s.name, self._gen_expr(s.expr),
                 binding_const=not s.mutable) + ";")
         elif isinstance(s, A.Assign):
+            self._prepare_try_expr(s.target)
+            self._prepare_try_expr(s.expr)
             self._emit(
                 f"{self._gen_expr(s.target)} {s.op} {self._gen_expr(s.expr)};")
         elif isinstance(s, A.Asm):
@@ -582,6 +582,7 @@ class CodeGen:
                 self._emit_defer_scopes()
                 self._emit("return;")
             else:
+                self._prepare_try_expr(s.expr)
                 temporary = f"mort_return_{self.return_id}"
                 self.return_id += 1
                 self._emit(self._var_decl(
@@ -589,6 +590,7 @@ class CodeGen:
                 self._emit_defer_scopes()
                 self._emit(f"return {temporary};")
         elif isinstance(s, A.If):
+            self._prepare_try_expr(s.cond)
             self._emit(f"if ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
             self._gen_scoped_statements(s.then.stmts)
@@ -605,10 +607,16 @@ class CodeGen:
                 self.indent -= 1
                 self._emit("}")
         elif isinstance(s, A.While):
-            self._emit(f"while ({self._gen_cond(s.cond)}) {{")
+            condition_has_try = self._contains_try(s.cond)
+            self._emit(
+                "while (true) {" if condition_has_try
+                else f"while ({self._gen_cond(s.cond)}) {{")
             self.indent += 1
             self.defer_scopes.append([])
             self.loop_defer_bases.append(len(self.defer_scopes) - 1)
+            if condition_has_try:
+                self._prepare_try_expr(s.cond)
+                self._emit(f"if (!({self._gen_cond(s.cond)})) {{ break; }}")
             for st in s.body.stmts:
                 self._gen_stmt(st)
             self._emit_defer_scopes(len(self.defer_scopes) - 1)
@@ -617,6 +625,8 @@ class CodeGen:
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.For):
+            self._prepare_try_expr(s.start)
+            self._prepare_try_expr(s.end)
             v = "m_" + s.var
             ct = self._ct(s.var_type)
             start = self._gen_expr(s.start)
@@ -659,6 +669,7 @@ class CodeGen:
             self.indent -= 1
             self._emit("}")
         elif isinstance(s, A.ExprStmt):
+            self._prepare_try_expr(s.expr)
             self._emit(self._gen_expr(s.expr) + ";")
         elif isinstance(s, A.Break):
             self._emit_defer_scopes(self.loop_defer_bases[-1])
@@ -669,6 +680,7 @@ class CodeGen:
         elif isinstance(s, A.Defer):
             self.defer_scopes[-1].append(s.expr)
         elif isinstance(s, A.Match):
+            self._prepare_try_expr(s.expr)
             match_id = self.match_id
             self.match_id += 1
             temporary = f"mort_match_{match_id}"
@@ -705,8 +717,90 @@ class CodeGen:
             self.indent -= 1
             self._emit("}")
 
-    def _gen_try_let(self, statement):
-        expression = statement.expr
+    @staticmethod
+    def _contains_try(expression):
+        if isinstance(expression, A.Try):
+            return True
+        if not isinstance(expression, A.Node):
+            return False
+        for value in vars(expression).values():
+            if isinstance(value, A.Node) and CodeGen._contains_try(value):
+                return True
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, A.Node) and CodeGen._contains_try(item):
+                        return True
+                    if isinstance(item, tuple):
+                        if any(
+                                isinstance(part, A.Node)
+                                and CodeGen._contains_try(part)
+                                for part in item):
+                            return True
+        return False
+
+    def _prepare_try_expr(self, expression):
+        """Lower every eager ``try`` subexpression to checked temporaries."""
+        if isinstance(expression, A.Try):
+            self._prepare_try_expr(expression.expr)
+            self._emit_try_unwrap(expression)
+            return
+        if not isinstance(expression, A.Node):
+            return
+        if isinstance(expression, A.Binary):
+            self._prepare_try_expr(expression.left)
+            if (expression.op in ("&&", "||")
+                    and self._contains_try(expression.right)):
+                short_id = self.try_id
+                self.try_id += 1
+                expression.lowered_name = f"mort_short_{short_id}"
+                self._emit(
+                    f"bool {expression.lowered_name} = "
+                    f"{self._gen_expr(expression.left)};")
+                condition = (
+                    expression.lowered_name
+                    if expression.op == "&&"
+                    else "!" + expression.lowered_name
+                )
+                self._emit(f"if ({condition}) {{")
+                self.indent += 1
+                self._prepare_try_expr(expression.right)
+                self._emit(
+                    f"{expression.lowered_name} = "
+                    f"{self._gen_expr(expression.right)};")
+                self.indent -= 1
+                self._emit("}")
+                return
+            self._prepare_try_expr(expression.right)
+            return
+        if isinstance(expression, A.Unary):
+            self._prepare_try_expr(expression.operand)
+            return
+        if isinstance(expression, A.Cast):
+            self._prepare_try_expr(expression.expr)
+            return
+        if isinstance(expression, A.Call):
+            for argument in expression.args:
+                self._prepare_try_expr(argument)
+            return
+        if isinstance(expression, A.StructLit):
+            for _, value in expression.fields:
+                self._prepare_try_expr(value)
+            return
+        if isinstance(expression, A.FieldAccess):
+            self._prepare_try_expr(expression.obj)
+            return
+        if isinstance(expression, A.Index):
+            self._prepare_try_expr(expression.obj)
+            self._prepare_try_expr(expression.index)
+            return
+        if isinstance(expression, A.ArrayLit):
+            for element in expression.elements:
+                self._prepare_try_expr(element)
+            return
+        if isinstance(expression, A.ArrayRepeat):
+            self._prepare_try_expr(expression.value)
+
+    def _emit_try_unwrap(self, expression):
         try_id = self.try_id
         self.try_id += 1
         temporary = f"mort_try_{try_id}"
@@ -723,13 +817,12 @@ class CodeGen:
             f".data.v_Err = {temporary}.data.v_Err }};")
         self.indent -= 1
         self._emit("}")
-        self._emit(
-            self._var_decl(
-                statement.var_type,
-                "m_" + statement.name,
-                f"{temporary}.data.v_Ok",
-                binding_const=not statement.mutable,
-            ) + ";")
+        expression.temp_name = f"mort_try_value_{try_id}"
+        self._emit(self._var_decl(
+            expression.type,
+            expression.temp_name,
+            f"{temporary}.data.v_Ok",
+        ) + ";")
 
     def _gen_cond(self, e):
         """Generate a condition for if/while.
@@ -779,6 +872,10 @@ class CodeGen:
             return f"m_{e.name}"
         if isinstance(e, A.Cast):
             return f"(({self._ct(e.target_type)}){self._gen_expr(e.expr)})"
+        if isinstance(e, A.Try):
+            if e.temp_name is None:  # pragma: no cover - checker/codegen invariant
+                raise Exception("try expression was not prepared before generation")
+            return e.temp_name
         if isinstance(e, A.StructLit):
             inits = ", ".join(
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
@@ -831,6 +928,8 @@ class CodeGen:
                 return self._narrow(e, code)
             return code
         if isinstance(e, A.Binary):
+            if e.lowered_name is not None:
+                return e.lowered_name
             # A fully-constant integer expression is emitted as its single folded
             # value. This is required for shifts (a C `1 << 63` is undefined — 1 is
             # a 32-bit int) and also keeps a nested inner shift like `(1 << 64) - 1`

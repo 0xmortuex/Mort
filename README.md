@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-240%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.25.1)
+## The language (v0.26)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -114,8 +114,11 @@ C `main`, so the output is an ordinary native binary.
   slice operations, sorting, reversal, containment, and indexed search.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
-- **Error propagation:** `let value = try operation();` unwraps `Result.Ok` or
-  returns a type-compatible `Result.Err` from the enclosing function.
+- **Error propagation:** `try operation()` unwraps `Result.Ok` or returns a
+  type-compatible `Result.Err` from the enclosing function. It works throughout
+  eager expressions—including calls, arithmetic, assignments, struct/array
+  values, indexing, matching, range bounds, conditions, and short-circuit
+  boolean logic—while preserving evaluation order and lexical cleanup.
 - **Variables:** `let x = 5;` (inferred) or `let x: u32 = 5;` (annotated).
 - **Immutable bindings:** `const answer: i64 = 42;` for locals and globals,
   with protected fields, indices, and `*const T` address propagation.

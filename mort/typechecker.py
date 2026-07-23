@@ -228,7 +228,6 @@ class Checker:
         self.current_module = None
         self.current_import_aliases = {}
         self.block_depth = 0
-        self.allowed_try_expr = None
 
     def _error(self, msg, node):
         raise MortError(
@@ -1036,12 +1035,7 @@ class Checker:
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
                 self._declare(s.name, s.var_type, s, mutable=s.mutable)
                 return
-            previous_try_expr = self.allowed_try_expr
-            self.allowed_try_expr = s.expr if isinstance(s.expr, A.Try) else None
-            try:
-                t = self._check_expr(s.expr)
-            finally:
-                self.allowed_try_expr = previous_try_expr
+            t = self._check_expr(s.expr)
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if t == "null" and not s.decl_type:
@@ -1172,6 +1166,10 @@ class Checker:
                         self._error("the wildcard match arm must be last", arm)
                     wildcard_seen = True
                 else:
+                    if self._contains_try(arm.pattern):
+                        self._error(
+                            "try is not allowed in a match pattern; evaluate it "
+                            "before the match subject", arm)
                     if (subject_type in self.enums and isinstance(arm.pattern, A.Call)
                             and arm.pattern.name.startswith(subject_type + ".")):
                         variant_name = arm.pattern.name.rsplit(".", 1)[1]
@@ -1239,6 +1237,10 @@ class Checker:
             pass  # an opaque escape hatch; nothing to type-check
 
         elif isinstance(s, A.Defer):
+            if self._contains_try(s.expr):
+                self._error(
+                    "try is not allowed inside defer because propagation occurs "
+                    "after the surrounding scope has begun cleanup", s)
             self._check_expr(s.expr)
 
         elif isinstance(s, (A.Break, A.Continue)):
@@ -1250,6 +1252,27 @@ class Checker:
             self._error("unknown statement kind", s)
 
     # ----- expressions -----
+    @staticmethod
+    def _contains_try(expression):
+        if isinstance(expression, A.Try):
+            return True
+        if not isinstance(expression, A.Node):
+            return False
+        for value in vars(expression).values():
+            if isinstance(value, A.Node) and Checker._contains_try(value):
+                return True
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, A.Node) and Checker._contains_try(item):
+                        return True
+                    if isinstance(item, tuple):
+                        if any(
+                                isinstance(part, A.Node)
+                                and Checker._contains_try(part)
+                                for part in item):
+                            return True
+        return False
+
     def _check_expr(self, e):
         e.is_lit = False
         t = self._infer(e)
@@ -1328,8 +1351,6 @@ class Checker:
             return tgt
 
         if isinstance(e, A.Try):
-            if e is not self.allowed_try_expr:
-                self._error("try is currently allowed only as a let initializer", e)
             result_type = self._check_expr(e.expr)
             result_parts = generic_parts(result_type)
             return_parts = generic_parts(self.current_ret)

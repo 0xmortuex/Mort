@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.26.0 — 2026-07-23
+
+Mort's general error-propagation release.
+
+### Added
+
+- `try` can now appear throughout eager expressions rather than only as a
+  complete `let` initializer.
+- Supported contexts include assignments and compound assignments, arithmetic,
+  function arguments, struct fields, array elements, indices, match subjects,
+  range bounds, `if`/`while` conditions, casts, and nested expressions.
+- Short-circuit `&&` and `||` lower to conditional C11 control flow, so a
+  fallible right operand executes only when the source expression requires it.
+
+### Semantics
+
+- Nested `try` expressions evaluate left-to-right into typed temporaries.
+- Propagated errors retain compatible `Result` error payloads and execute every
+  active lexical `defer` exactly once.
+- Fallible `while` conditions are reevaluated and propagated on each iteration.
+- `try` inside `defer` and match patterns is rejected because those contexts
+  have deferred or pattern-only evaluation semantics.
+
+### Validation
+
+- Success/error, nested eager-expression, loop, match, index, cleanup, and
+  skipped short-circuit paths compile under `-Wall -Werror` and execute natively.
+- 243 compiler, error-propagation, callback, packaging, CLI, native, LSP,
+  package, and kernel tests pass.
+
 ## 0.25.1 — 2026-07-23
 
 Mort's module-callback interoperability patch.

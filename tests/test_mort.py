@@ -2045,7 +2045,7 @@ def test_result_try_propagates_success_and_error():
             "import std.result; fn get() -> Result<i64, *u8> { "
             "return Result<i64, *u8>.Ok(1); } "
             "fn main() -> int { return try get(); }",
-            "try is currently allowed only as a let initializer",
+            "try requires the enclosing function to return Result",
         ),
         (
             "import std.result; fn get() -> Result<i64, *u8> { "
@@ -2065,6 +2065,119 @@ def test_result_try_rejects_invalid_use(source, message):
         with pytest.raises(MortError) as exc:
             mortc.compile_files_to_c([path])
     assert message in str(exc.value)
+
+
+@needs_cc
+def test_try_operates_in_eager_expression_and_loop_contexts():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "general_try.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.result; struct Pair { value: i64 } "
+                "fn number(ok: bool, value: i64) -> Result<i64, *u8> { "
+                "if ok { return Result<i64, *u8>.Ok(value); } "
+                "return Result<i64, *u8>.Err(\"bad\"); } "
+                "fn flag(ok: bool) -> Result<bool, *u8> { "
+                "if ok { return Result<bool, *u8>.Ok(true); } "
+                "return Result<bool, *u8>.Err(\"bad\"); } "
+                "fn condition(ok: bool, count: *i64) -> Result<bool, *u8> { "
+                "if !ok { return Result<bool, *u8>.Err(\"bad\"); } "
+                "let keep = *count < 2; *count += 1; "
+                "return Result<bool, *u8>.Ok(keep); } "
+                "fn accept(value: i64) -> i64 { return value; } "
+                "fn calculate(ok: bool) -> Result<i64, *u8> { "
+                "defer println(\"cleanup\"); let total = try number(ok, 1); "
+                "total += try number(ok, 2); "
+                "total = total + (try number(ok, 3)); "
+                "let pair = Pair { value: try number(ok, 4) }; "
+                "total += pair.value; "
+                "let values: [i64; 2] = [try number(ok, 5), try number(ok, 6)]; "
+                "total += values[0] + values[1]; "
+                "total += values[try number(ok, 0)]; "
+                "match try number(ok, 8) { "
+                "8 => { total += 8; }, _ => {} } "
+                "for index in 0..try number(ok, 3) { total += index; } "
+                "let count: i64 = 0; while try condition(ok, &count) { total += 1; } "
+                "if try flag(ok) { total += 1; } "
+                "total += accept(try number(ok, 7)); "
+                "return Result<i64, *u8>.Ok(total); } "
+                "fn show(value: Result<i64, *u8>) -> void { match value { "
+                "Result<i64, *u8>.Ok(inner) => { print(inner); }, "
+                "Result<i64, *u8>.Err(message) => { println(message); } } } "
+                "fn main() -> int { show(calculate(true)); show(calculate(false)); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert c_source.count("mort_try_") >= 10
+        assert "while (true)" in c_source
+        cfile = os.path.join(d, "general_try.c")
+        exe = os.path.join(d, "general_try.exe" if os.name == "nt" else "general_try")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "cleanup\n47\ncleanup\nbad\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "import std.result; fn get() -> Result<i64, *u8> { "
+            "return Result<i64, *u8>.Ok(1); } "
+            "fn check() -> Result<i64, *u8> { defer print(try get()); "
+            "return Result<i64, *u8>.Ok(0); } fn main() -> int { return 0; }",
+            "try is not allowed inside defer",
+        ),
+    ],
+)
+def test_try_rejects_contexts_with_deferred_or_conditional_evaluation(source, message):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "try_context.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        with pytest.raises(MortError, match=message):
+            mortc.compile_files_to_c([path])
+
+
+@needs_cc
+def test_try_preserves_short_circuit_evaluation():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "short_try.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.result; "
+                "fn flag(ok: bool, calls: *i64) -> Result<bool, *u8> { "
+                "*calls += 1; if ok { return Result<bool, *u8>.Ok(true); } "
+                "return Result<bool, *u8>.Err(\"called\"); } "
+                "fn check(run: bool, ok: bool) -> Result<i64, *u8> { "
+                "let calls: i64 = 0; let both = run && try flag(ok, &calls); "
+                "let either = true || try flag(false, &calls); "
+                "if both || either { return Result<i64, *u8>.Ok(calls); } "
+                "return Result<i64, *u8>.Ok(99); } "
+                "fn show(value: Result<i64, *u8>) -> void { match value { "
+                "Result<i64, *u8>.Ok(inner) => { print(inner); }, "
+                "Result<i64, *u8>.Err(message) => { println(message); } } } "
+                "fn main() -> int { show(check(false, false)); "
+                "show(check(true, true)); show(check(true, false)); return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_short_" in c_source
+        cfile = os.path.join(d, "short_try.c")
+        exe = os.path.join(d, "short_try.exe" if os.name == "nt" else "short_try")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "0\n1\ncalled\n"
 
 
 @needs_cc

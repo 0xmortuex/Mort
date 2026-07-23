@@ -301,6 +301,7 @@ class Binary(Node):
         self.left = left
         self.right = right
         self.line = line
+        self.lowered_name = None
 
 
 class Call(Node):
@@ -332,6 +333,7 @@ class Try(Node):
         self.result_type = None
         self.error_type = None
         self.return_type = None
+        self.temp_name = None
 
 
 class StructLit(Node):
