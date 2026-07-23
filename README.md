@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-317%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-318%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -75,9 +75,9 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.38)
+## The language (v0.39)
 
-Mort 0.38 has a
+Mort 0.39 has a
 [versioned normative language specification](docs/language-specification.md)
 and a black-box [executable conformance suite](conformance/README.md). Run
 `mortc --language-version` to print the implemented language contract.
@@ -155,6 +155,10 @@ and a black-box [executable conformance suite](conformance/README.md). Run
   resolution supports eligible IPv4 and IPv6 addresses through the native
   resolver. Nonblocking mode, would-block detection, and readiness waits with
   timeouts provide the portable event-driven I/O foundation.
+- **Bounded HTTP/1.1:** `std.http` writes injection-checked requests and
+  responses, parses status and unambiguous `Content-Length` framing, rejects
+  transfer-encoding conflicts, and reads one caller-bounded close-delimited
+  message. Cleartext HTTP is kept explicitly separate from future TLS support.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `try operation()` unwraps `Result.Ok` or returns a

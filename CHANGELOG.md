@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.39.0 - 2026-07-23
+
+Mort's bounded HTTP/1.1 foundation release.
+
+### Added
+
+- First-party `std.http` serializes injection-checked requests and responses
+  with exact decimal `Content-Length` framing and `Connection: close`.
+- A bounded reader consumes one caller-buffered message and exposes header-end,
+  content-length, framed-length, and response-status parsing.
+- `http.get` performs a complete cleartext HTTP GET over `std.net` without
+  conflating HTTP with TLS.
+- `examples/http_loopback.mx` runs an in-process Mort HTTP server and client
+  through DNS and TCP.
+
+### Security and validation
+
+- Duplicate or malformed `Content-Length`, any `Transfer-Encoding`, framing
+  overflow, premature EOF, caller-buffer exhaustion, and CRLF injection inputs
+  are rejected.
+- The normative Mort 0.39 contract explicitly limits the API to one bounded
+  message per close-delimited connection and forbids treating it as chunked,
+  persistent, pipelined, HTTP/2, or HTTPS support.
+- HTTP loopback runs under strict generated-C warnings, the
+  Windows/Linux/macOS conformance matrix, AddressSanitizer, and
+  UndefinedBehaviorSanitizer.
+- The full regression suite contains 318 tests, and all 25 Mort 0.39
+  conformance cases pass through the public compiler CLI.
+
 ## 0.38.0 - 2026-07-23
 
 Mort's asynchronous-I/O and structured-task foundation release.

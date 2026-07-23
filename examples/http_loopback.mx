@@ -1,0 +1,90 @@
+import std.http;
+import std.net;
+import std.thread;
+
+struct ServerContext {
+    listener: *Socket,
+}
+
+fn serve_http(raw: *void) -> i64 {
+    let context = raw as *ServerContext;
+    let client = net.accept((*context).listener);
+    let request: [u8; 512] = [0; 512];
+    let request_length = http.read_message(&client, &request[0], 512);
+    if request_length < 0 {
+        return 0 - 1;
+    }
+    if request[0] != 'G' || request[1] != 'E' || request[2] != 'T' {
+        return 0 - 1;
+    }
+    if !http.write_response(
+            &client,
+            200,
+            "OK",
+            "text/plain",
+            "Mort",
+            4) {
+        return 0 - 1;
+    }
+    return 4;
+}
+
+fn main() -> int {
+    let listener = net.tcp_listen("127.0.0.1", 0, 4);
+    let port = net.local_port(&listener);
+    let context = ServerContext { listener: &listener };
+    let server = thread.spawn(serve_http, &context as *void);
+
+    let response: [u8; 512] = [0; 512];
+    let response_length = http.get(
+        "localhost",
+        port,
+        "/",
+        &response[0],
+        512
+    );
+    assert(response_length > 0);
+    let status = http.status_code(
+        &response[0] as *const u8,
+        response_length as u64
+    );
+    let body_length = http.content_length(
+        &response[0] as *const u8,
+        response_length as u64
+    );
+    let body_offset = http.find_header_end(
+        &response[0] as *const u8,
+        response_length as u64
+    );
+    assert(status == 200);
+    assert(body_length == 4);
+    assert(body_offset >= 0);
+    let duplicate = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx";
+    assert(http.content_length(
+        duplicate as *const u8,
+        len(duplicate)
+    ) == 0 - 1);
+    let ambiguous = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nx";
+    assert(http.framed_length(
+        ambiguous as *const u8,
+        len(ambiguous)
+    ) == 0 - 1);
+    let invalid = Socket { handle: null };
+    assert(!http.write_request(
+        &invalid,
+        "GET",
+        "/\r\nInjected: yes",
+        "localhost",
+        null,
+        0
+    ));
+    let served = thread.join(&server);
+    print(served);
+    print(status);
+    print(body_length);
+    print(response[body_offset as u64]);
+    print(response[body_offset as u64 + 1]);
+    print(response[body_offset as u64 + 2]);
+    print(response[body_offset as u64 + 3]);
+    return 0;
+}

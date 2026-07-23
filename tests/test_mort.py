@@ -965,6 +965,30 @@ def test_structured_task_group_cancels_and_joins():
     assert result.stdout == "2\n16\n0\n42\n"
 
 
+@needs_cc
+def test_bounded_http11_loopback_and_framing_validation():
+    source = os.path.join(ROOT, "examples", "http_loopback.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "mort_std__http__write_request" in c_source
+    assert "mort_std__http__read_message" in c_source
+    assert "mort_std__http__framed_length" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "http_loopback.c")
+        exe = os.path.join(
+            d, "http_loopback.exe" if os.name == "nt" else "http_loopback")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        command.append("-lws2_32" if os.name == "nt" else "-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "4\n200\n4\n77\n111\n114\n116\n"
+
+
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
@@ -2330,6 +2354,7 @@ def test_packaging_version_matches_compiler_version():
     assert "std/random.mx" in project_text
     assert "std/net.mx" in project_text
     assert "std/task.mx" in project_text
+    assert "std/http.mx" in project_text
     with open(
             os.path.join(ROOT, "conformance", "manifest.json"),
             encoding="utf-8") as handle:

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.38.0",
+  "language_version": "0.39.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -129,6 +129,14 @@
       "mode": "run",
       "sources": ["cases/run/tasks.mx"],
       "stdout": "2\n16\n0\n42\n",
+      "exit": 0
+    },
+    {
+      "id": "http.bounded_http11_loopback",
+      "section": "15",
+      "mode": "run",
+      "sources": ["cases/run/http_loopback.mx"],
+      "stdout": "4\n200\n4\n77\n111\n114\n116\n",
       "exit": 0
     },
     {

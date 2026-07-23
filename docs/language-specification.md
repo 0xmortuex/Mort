@@ -1,18 +1,18 @@
-# Mort Language Specification 0.38
+# Mort Language Specification 0.39
 
 Status: Normative  
-Language version: 0.38.0
+Language version: 0.39.0
 Document revision: 1  
 Last updated: 2026-07-23
 
-This document defines the source language accepted by a conforming Mort 0.38
+This document defines the source language accepted by a conforming Mort 0.39
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.38 program.
+Implementation extensions must not change the meaning of a valid 0.39 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.38.
+the programmer's responsibility in Mort 0.39.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.38 does not specify the relative evaluation order of ordinary binary
+Mort 0.39 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.38 does not promise identical
+and shifts are not defined for floats. Mort 0.39 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.38's safety guarantees.
+are outside Mort 0.39's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.38's reference implementation emits C11, but C is not part of the
+Mort 0.39's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -555,7 +555,7 @@ produce a controlled concurrency failure.
 `std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
 creation failure to an assertion failure. `thread.join(&value)` joins early and
 marks the wrapper empty; otherwise its destructor joins automatically. Thus a
-live `Thread` cannot be silently detached in Mort 0.38.
+live `Thread` cannot be silently detached in Mort 0.39.
 
 The context pointer and every object reachable through it must remain valid
 until the thread has been joined. Raw pointers do not acquire lifetime
@@ -617,7 +617,7 @@ target toolchain supports one.
 
 ## 13. Hosted networking
 
-Networking is available only in the hosted profile. Mort 0.38 specifies
+Networking is available only in the hosted profile. Mort 0.39 specifies
 blocking TCP streams, UDP datagrams, and host-name resolution through the
 portable `std.net` module. The `net_*` builtins are reserved implementation
 interfaces.
@@ -814,6 +814,76 @@ Task-group spawn and join inherit the happens-before edges in Section 12.
 Cancellation observation uses the sequentially consistent atomic order but
 does not by itself make unrelated non-atomic shared storage race-free.
 
+## 15. Bounded HTTP/1.1
+
+The hosted `std.http` module provides a byte-oriented, one-message HTTP/1.1
+subset over `std.net.Socket`. It is deliberately bounded by caller-provided
+buffers and uses `Connection: close`. It does not imply TLS; cleartext HTTP and
+authenticated HTTPS are distinct protocols.
+
+### 15.1 Message writing
+
+`http.write_request` writes:
+
+1. a caller-provided method and request target;
+2. an HTTP/1.1 `Host` header;
+3. exactly one decimal `Content-Length`;
+4. `Connection: close`;
+5. exactly `body_length` payload bytes.
+
+The method must be a nonempty HTTP token. The target and host must be nonempty
+and contain no whitespace, control characters, carriage return, or line feed.
+Invalid inputs, a null nonempty body, or a socket write failure return `false`
+without claiming success. These checks prevent caller data from injecting
+additional header lines.
+
+`http.write_response` similarly writes an HTTP/1.1 status line, one
+`Content-Length`, a `Content-Type`, `Connection: close`, and the exact body.
+The status must be from 100 through 999. Reason and content-type values must not
+contain carriage return, line feed, or disallowed controls.
+
+Successful message writes mean that all serialized bytes were accepted by the
+local socket. They do not prove peer receipt or application processing.
+
+### 15.2 Framing and parsing
+
+`http.find_header_end` returns the index immediately after the first
+`"\r\n\r\n"` delimiter or `-1`. `http.status_code` accepts an HTTP/1.0 or
+HTTP/1.1 response prefix and returns its three-digit code or `-1`.
+
+`http.content_length` finds a case-insensitive, line-start
+`Content-Length:` field, permits optional horizontal whitespace around its
+decimal value, and returns a nonnegative `i64`. It returns `-1` for a missing,
+duplicate, malformed, negative, or overflowing length.
+
+`http.framed_length` returns header length plus content length only when both
+are valid. It rejects any `Transfer-Encoding` field, even when a
+`Content-Length` is also present. This prevents ambiguous framing from being
+accepted by the bounded subset.
+
+`http.read_message` reads until exactly one valid framed message is available.
+The complete header and payload must fit the caller's buffer. Missing or
+ambiguous framing, premature stream end, buffer exhaustion, or socket failure
+returns `-1`. A successful result is the message length; the body starts at
+`find_header_end`.
+
+The reader may consume bytes beyond the returned message if a peer pipelines
+data into the same native receive. Therefore portable use of this subset must
+send one message per `Connection: close` connection and must not pipeline.
+
+### 15.3 Convenience client and scope
+
+`http.get(host, port, target, buffer, capacity)` opens a TCP connection, writes
+a bodyless `GET`, reads one bounded response, and closes the socket at scope
+exit. It returns the message length or `-1`. The caller chooses the port;
+`http.get` does not perform TLS or infer schemes.
+
+Mort 0.39 does not define chunked transfer coding, informational-response
+chains, persistent connections, pipelining, trailers, multipart parsing,
+content decoding, redirects, cookies, authentication, proxies, URI parsing,
+cache policy, or HTTP/2 and HTTP/3. Applications must not silently treat this
+bounded API as support for those features.
+
 ## Appendix A. Compatibility
 
 The language version uses semantic versioning:
@@ -828,10 +898,10 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.38: checked borrows and
+The following are intentionally not defined by Mort 0.39: checked borrows and
 lifetimes, thread cancellation, detached threads, condition variables,
 read/write locks, atomics other than sequentially consistent `i64`,
-language-level `async`/`await` syntax, HTTP, TLS, WebSocket, exceptions,
+language-level `async`/`await` syntax, TLS, WebSocket, exceptions,
 reflection, dynamic loading, stable binary package ABI, Unicode text
 semantics, and WebAssembly/mobile platform profiles. Their absence is not
 permission for an implementation to assign new meaning to currently valid
