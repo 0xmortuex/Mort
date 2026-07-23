@@ -1,0 +1,10 @@
+struct Pair<Left, Right> { left: Left, right: Right }
+
+fn identity<T>(value: T) -> T {
+    return value;
+}
+
+fn main() -> int {
+    let pair = Pair<i64, bool> { left: identity(42), right: true };
+    return pair.left as int;
+}

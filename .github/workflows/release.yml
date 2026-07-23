@@ -17,8 +17,10 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,14 +32,38 @@ jobs:
 
       - name: Build wheel and source archive
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build pytest ziglang
           python -m build
+
+      - name: Verify tag matches compiler version
+        run: |
+          python - <<'PY'
+          import os
+          from mort import __version__
+          tag = os.environ["RELEASE_TAG"]
+          if tag != "v" + __version__:
+              raise SystemExit(
+                  f"release tag {tag!r} does not match compiler version v{__version__}")
+          PY
+
+      - name: Run release gates
+        env:
+          MORT_CC: clang
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          python -m pytest tests/ -q
+          python mortc.py fuzz --cases 20000 --seed 330
+          python mortc.py examples/collections.mx --run \
+            --sanitize address --sanitize undefined
+          python kernel/build.py check
 
       - name: Verify packaged compiler
         run: |
           python -m venv release-check
-          release-check/bin/python -m pip install dist/*.whl
+          release-check/bin/python -m pip install dist/*.whl ziglang
           release-check/bin/mortc --version
+          release-check/bin/mortc doctor
           release-check/bin/mortc std
 
       - name: Publish GitHub release

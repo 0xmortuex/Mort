@@ -8,11 +8,33 @@ on:
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.10", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+            fuzz-seed: 101
+          - os: ubuntu-latest
+            python: "3.12"
+            fuzz-seed: 102
+          - os: ubuntu-latest
+            python: "3.13"
+            fuzz-seed: 103
+          - os: ubuntu-latest
+            python: "3.14"
+            fuzz-seed: 104
+          - os: windows-latest
+            python: "3.12"
+            fuzz-seed: 201
+          - os: macos-latest
+            python: "3.12"
+            fuzz-seed: 301
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -22,17 +44,108 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install dependencies
-        # ziglang provides the C backend used for end-to-end and kernel tests.
-        run: python -m pip install --upgrade pip pytest ziglang
+        run: python -m pip install --upgrade pip
 
       - name: Install Mort command
-        run: python -m pip install -e .
+        # ziglang in the dev extra supplies the same portable native backend on
+        # Linux, Windows, and macOS.
+        run: python -m pip install -e ".[dev]"
 
       - name: Verify global compiler entry point
-        run: mortc --version
+        run: |
+          mortc --version
+          mortc doctor
+
+      - name: Run Python static checks
+        run: ruff check mort mortc.py fuzz/atheris_frontend.py tests/test_mort.py
 
       - name: Run the test suite
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -q
+
+      - name: Run adversarial front-end fuzzing
+        run: mortc fuzz --cases 10000 --seed ${{ matrix.fuzz-seed }}
 
       - name: Build the MORT OS kernel
         run: python kernel/build.py check
+
+  sanitizers:
+    name: Address/undefined-behavior sanitizers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MORT_CC: clang
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Mort
+        run: python -m pip install -e .
+
+      - name: Run representative native programs under ASan and UBSan
+        run: |
+          mortc examples/hello.mx --run -o /tmp/mort-hello \
+            --sanitize address --sanitize undefined
+          mortc examples/tuples.mx --run -o /tmp/mort-tuples \
+            --sanitize address --sanitize undefined
+          mortc examples/enums.mx --run -o /tmp/mort-enums \
+            --sanitize address --sanitize undefined
+          mortc examples/collections.mx --run -o /tmp/mort-collections \
+            --sanitize address --sanitize undefined
+          mortc examples/resources.mx --run -o /tmp/mort-resources \
+            --sanitize address --sanitize undefined
+
+  fuzz-smoke:
+    name: Coverage-guided fuzzer smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Atheris harness
+        run: python -m pip install -e . atheris
+
+      - name: Exercise the persistent corpus
+        run: python fuzz/atheris_frontend.py fuzz/corpus -runs=5000
+
+  package:
+    name: Verify distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and source archive
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          tar -tf dist/*.tar.gz | grep "/docs/production-readiness.md"
+          tar -tf dist/*.tar.gz | grep "/fuzz/atheris_frontend.py"
+          tar -tf dist/*.tar.gz | grep "/kernel/kmain.mx"
+
+      - name: Verify clean wheel installation
+        run: |
+          python -m venv package-check
+          package-check/bin/python -m pip install dist/*.whl ziglang
+          package-check/bin/mortc --version
+          package-check/bin/mortc doctor
+          package-check/bin/mortc std
+
+      - name: Check Python bytecode and dependency health
+        run: |
+          python -m compileall -q mort mortc.py
+          python -m pip check

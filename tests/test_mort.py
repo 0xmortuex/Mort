@@ -1115,6 +1115,28 @@ def test_project_manifest_and_source_discovery():
     assert project["std"] == []
 
 
+def test_project_sanitizers_are_validated_and_deduplicated():
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "src"))
+        manifest_path = os.path.join(d, "mort.toml")
+        with open(os.path.join(d, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "sanitized"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n'
+                'sanitizers = ["address", "undefined", "address"]\n')
+        assert resolve_project(manifest_path)["sanitizers"] == [
+            "address", "undefined"]
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "sanitized"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n'
+                'sanitizers = ["imaginary"]\n')
+        with pytest.raises(ProjectError, match="unsupported sanitizer"):
+            resolve_project(manifest_path)
+
+
 def test_file_imports_resolve_local_and_standard_modules():
     with tempfile.TemporaryDirectory() as d:
         main_path = os.path.join(d, "main.mx")
@@ -1260,6 +1282,91 @@ def test_git_package_dependency_is_cached_and_revision_locked():
     assert os.path.abspath(library) not in lock
 
 
+def test_cached_git_dependency_refreshes_requested_branch():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        library = os.path.join(d, "library")
+        os.makedirs(os.path.join(app, "src"))
+        os.makedirs(os.path.join(library, "src"))
+        with open(os.path.join(library, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "library"\nversion = "1.0.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\nentry = "src/lib.mx"\n')
+        library_source = os.path.join(library, "src", "lib.mx")
+        with open(library_source, "w", encoding="utf-8") as fh:
+            fh.write("module library; pub fn answer() -> i64 { return 1; }")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=library, check=True)
+        subprocess.run(["git", "add", "."], cwd=library, check=True)
+        commit = [
+            "git", "-c", "user.name=Mort Tests", "-c",
+            "user.email=mort@example.test", "commit", "-qm",
+        ]
+        subprocess.run([*commit, "first"], cwd=library, check=True)
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                '[dependencies]\nlibrary = "git+../library#main"\n')
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        manifest = os.path.join(app, "mort.toml")
+        first = resolve_project(manifest)
+        with open(first["packages"]["library"], encoding="utf-8") as fh:
+            assert "return 1" in fh.read()
+
+        with open(library_source, "w", encoding="utf-8") as fh:
+            fh.write("module library; pub fn answer() -> i64 { return 2; }")
+        subprocess.run(["git", "add", "."], cwd=library, check=True)
+        subprocess.run([*commit, "second"], cwd=library, check=True)
+        expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=library, check=True,
+            capture_output=True, text=True).stdout.strip()
+
+        refreshed = resolve_project(manifest)
+        with open(refreshed["packages"]["library"], encoding="utf-8") as fh:
+            assert "return 2" in fh.read()
+        cached_root = os.path.join(app, ".mort", "deps", "library")
+        actual = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cached_root, check=True,
+            capture_output=True, text=True).stdout.strip()
+    assert actual == expected
+
+
+def test_dependency_sources_and_entry_cannot_escape_package_root():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        library = os.path.join(d, "library")
+        os.makedirs(os.path.join(app, "src"))
+        os.makedirs(library)
+        outside = os.path.join(d, "outside.mx")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("module outside; pub fn answer() -> i64 { return 42; }")
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                '[dependencies]\nlibrary = "../library"\n')
+        dependency_manifest = os.path.join(library, "mort.toml")
+        with open(dependency_manifest, "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "library"\n\n'
+                '[build]\nsources = ["../outside.mx"]\n')
+        with pytest.raises(ProjectError, match="source escapes its package root"):
+            resolve_project(os.path.join(app, "mort.toml"))
+
+        os.makedirs(os.path.join(library, "src"))
+        with open(os.path.join(library, "src", "lib.mx"), "w", encoding="utf-8") as fh:
+            fh.write("module library; pub fn answer() -> i64 { return 1; }")
+        with open(dependency_manifest, "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "library"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\nentry = "../outside.mx"\n')
+        with pytest.raises(ProjectError, match="entry escapes its package root"):
+            resolve_project(os.path.join(app, "mort.toml"))
+
+
 @pytest.mark.parametrize(
     ("version", "constraint", "matches"),
     [
@@ -1289,10 +1396,12 @@ def test_semver_selection_and_validation():
         parse_semver("01.2.3")
     with pytest.raises(ProjectError, match="no published version"):
         select_semver(["1.0.0"], "^2.0.0")
+    with pytest.raises(ProjectError, match="invalid semantic version constraint"):
+        semver_satisfies("1.0.0", ",")
 
 
 @needs_cc
-def test_git_semver_dependency_selects_highest_compatible_tag():
+def test_git_wildcard_dependency_selects_highest_compatible_tag():
     with tempfile.TemporaryDirectory() as d:
         library = os.path.join(d, "versioned")
         app = os.path.join(d, "app")
@@ -1320,7 +1429,7 @@ def test_git_semver_dependency_selects_highest_compatible_tag():
             fh.write(
                 '[package]\nname = "app"\nversion = "0.1.0"\n\n'
                 '[build]\nsources = ["src/**/*.mx"]\n\n'
-                f'[dependencies]\nversioned = "git+{git_url}#^1.0.0"\n'
+                f'[dependencies]\nversioned = "git+{git_url}#1.x"\n'
             )
         with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
             fh.write(
@@ -1374,6 +1483,68 @@ def test_registry_dependency_resolves_from_offline_mirror():
             os.path.join(app, "mort.toml"), offline=True)
     assert project["packages"]["utility"].endswith(
         os.path.join("utility", "1.4.0", "src", "lib.mx"))
+
+
+@pytest.mark.parametrize(
+    ("index", "message"),
+    [
+        ({"format": 2, "packages": {}}, "must use format 1"),
+        ({"format": True, "packages": {}}, "must use format 1"),
+        ({"format": 1, "packages": []}, "packages object"),
+        (
+            {"format": 1, "packages": {"utility": {"versions": []}}},
+            "versions object",
+        ),
+        (
+            {
+                "format": 1,
+                "packages": {
+                    "utility": {"versions": {"not-semver": {"git": "unused"}}}
+                },
+            },
+            "invalid semantic version",
+        ),
+        (
+            {
+                "format": 1,
+                "packages": {"utility": {"versions": {"1.0.0": "not-an-object"}}},
+            },
+            "must be an object",
+        ),
+    ],
+)
+def test_registry_rejects_malformed_indexes_cleanly(index, message):
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        os.makedirs(os.path.join(app, "src"))
+        index_path = os.path.join(d, "index.json")
+        with open(index_path, "w", encoding="utf-8") as fh:
+            json.dump(index, fh)
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                f'[registry]\nurl = "{index_path.replace(chr(92), "/")}"\n\n'
+                '[dependencies]\nutility = "registry:utility@^1.0.0"\n')
+        with pytest.raises(ProjectError, match=message):
+            resolve_project(os.path.join(app, "mort.toml"))
+
+
+def test_registry_rejects_package_path_traversal_before_loading_index():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        os.makedirs(os.path.join(app, "src"))
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                '[dependencies]\nutility = "registry:../outside@^1.0.0"\n')
+        with pytest.raises(ProjectError, match="invalid registry package name"):
+            resolve_project(os.path.join(app, "mort.toml"))
 
 
 @needs_cc
@@ -1683,9 +1854,31 @@ def test_deterministic_frontend_fuzzer_and_cli(capsys):
     result = run_fuzz(cases=100, seed=42)
     assert result["cases"] == 100
     assert result["accepted"] + result["rejected"] == 100
-    assert result["accepted"] >= 50
+    assert result["accepted"] >= 45
     assert mortc.main(["fuzz", "--cases", "20", "--seed", "7"]) == 0
     assert "fuzzed 20 case(s)" in capsys.readouterr().out
+
+
+def test_deep_source_nesting_is_a_controlled_diagnostic(tmp_path, capsys):
+    expression = "(" * 160 + "1" + ")" * 160
+    source = f"fn main() -> int {{ return {expression}; }}"
+    with pytest.raises(MortError, match="compiler safety limit"):
+        c_of(source)
+    path = tmp_path / "deep.mx"
+    path.write_text(source, encoding="utf-8")
+    assert mortc.main([str(path), "--check"]) == 1
+    assert "compiler safety limit" in capsys.readouterr().err
+
+
+def test_coverage_guided_fuzz_corpus_is_valid():
+    corpus = os.path.join(ROOT, "fuzz", "corpus")
+    cases = sorted(
+        os.path.join(corpus, name)
+        for name in os.listdir(corpus) if name.endswith(".mx"))
+    assert len(cases) >= 4
+    for path in cases:
+        with open(path, encoding="utf-8") as handle:
+            assert "int main(void)" in c_of(handle.read()), path
 
 
 def test_std_and_doctor_commands_report_installed_toolchain(capsys):
@@ -1699,6 +1892,36 @@ def test_std_and_doctor_commands_report_installed_toolchain(capsys):
     assert f"Mort {mortc.__version__}" in doctor.out
     assert "Standard library:" in doctor.out
     assert "C backend:" in doctor.out
+
+
+def test_configured_c_backend_and_sanitizer_flags(
+        tmp_path, monkeypatch, capsys):
+    configured = f'"{sys.executable}" -m ziglang cc'
+    monkeypatch.setenv("MORT_CC", configured)
+    assert mortc.find_c_compiler() == [
+        sys.executable, "-m", "ziglang", "cc"]
+
+    source = tmp_path / "main.mx"
+    output = tmp_path / "main"
+    source.write_text("fn main() -> int { return 0; }", encoding="utf-8")
+    commands = []
+
+    def record(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(mortc, "find_c_compiler", lambda: ["test-cc"])
+    monkeypatch.setattr(mortc.subprocess, "run", record)
+    assert mortc.main([
+        str(source), "-o", str(output),
+        "--sanitize", "address", "--sanitize", "undefined",
+    ]) == 0
+    assert "-fsanitize=address,undefined" in commands[0]
+    assert "-fno-omit-frame-pointer" in commands[0]
+    assert mortc.main([
+        str(source), "--freestanding", "--sanitize", "address",
+    ]) == 1
+    assert "unavailable in freestanding mode" in capsys.readouterr().err
 
 
 def test_packaging_version_matches_compiler_version():

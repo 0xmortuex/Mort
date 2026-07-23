@@ -1,0 +1,49 @@
+name: Coverage-guided fuzzing
+
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "mort/**"
+      - "mortc.py"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  atheris:
+    name: Atheris front-end fuzzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fuzzing runtime
+        run: python -m pip install -e . atheris
+
+      - name: Run coverage-guided fuzzing
+        run: |
+          mkdir -p fuzz/findings
+          python fuzz/atheris_frontend.py fuzz/corpus \
+            -max_total_time=900 \
+            -timeout=15 \
+            -rss_limit_mb=2048 \
+            -artifact_prefix=fuzz/findings/
+
+      - name: Preserve minimized crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mort-fuzzer-crashes
+          path: fuzz/findings/
+          if-no-files-found: ignore

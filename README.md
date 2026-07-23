@@ -1,10 +1,17 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-301%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
+
+> **Status: alpha.** Mort is useful for native programs, C interoperability,
+> experiments, and its own operating system, but it is not yet honest to call
+> it error-free or suitable for every possible project. Releases are gated by
+> native tests, adversarial fuzzing, package installation checks, and kernel
+> builds on Linux, Windows, and macOS. The remaining production work is tracked
+> in [the production-readiness checklist](docs/production-readiness.md).
 
 Mort exists for a bigger goal: **build a language, then write an operating system kernel in it** — and it now does exactly that. The same compiler that runs `hello.mx` also builds [MORT OS](kernel/), a multiboot kernel written in Mort that boots in QEMU **and on real hardware** (BIOS/UEFI bootable ISO), sets up an IDT, remaps the PICs, and runs a **graphical desktop with multiple apps** — a Terminal, a Files manager, and a Vex-styled browser, switched with `F1`/`F2`/`F3` — all drawn to a linear framebuffer in a bitmap font. It has an ATA disk driver, **a real filesystem (MortFS)** whose files survive reboots, and it **runs real, interactive compiled programs** through `int 0x80` syscalls (a program can ask your name and greet you). That's why Mort compiles to freestanding-friendly C instead of running on an interpreter.
 
@@ -68,7 +75,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.32)
+## The language (v0.33)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -196,6 +203,7 @@ python mortc.py app.mx --check --warn-unused --deny-warnings
 python mortc.py lsp                     # start the stdio language server
 python mortc.py fuzz --cases 1000 --seed 0  # deterministic front-end fuzzing
 python mortc.py app.mx -O3 -g           # backend optimization/debug controls
+python mortc.py app.mx --run --sanitize address --sanitize undefined
 python mortc.py program.mx -o myprog    # choose the output name
 python mortc.py main.mx math.mx --run   # one program split across source files
 python mortc.py app.mx --std string     # include a bundled standard module
@@ -231,6 +239,12 @@ mortc fetch --offline  # use cached index/checkouts and configured mirrors
 Project builds are content-addressed: unchanged sources, dependencies,
 configuration, standard modules, and compiler versions reuse the existing
 native output without invoking the C backend.
+
+Hosted builds can enable `address`, `undefined`, and `leak` C-backend
+sanitizers with repeated `--sanitize` options or a project setting such as
+`sanitizers = ["address", "undefined"]` in `[build]`. Set `MORT_CC` (or the
+standard `CC`) to select a particular backend command, for example
+`MORT_CC=clang`.
 
 Imports are resolved recursively relative to the importing file. Bundled modules
 use the `std` prefix:
@@ -317,7 +331,7 @@ mortc: wrote kernel.o          # a 64-bit x86-64 ELF object, no libc
 
 ### Requirements
 
-- **Python 3.8+** — runs the compiler itself.
+- **Python 3.10+** — runs the compiler itself.
 - **A C compiler** for the final native-build step. Mort looks for `cc`, `gcc`,
   or `clang` on your `PATH`, then falls back to Zig if it's installed.
 
@@ -388,6 +402,10 @@ test "addition" {
 - [x] **Phase 10c — Remote ecosystem:** SemVer 2.0 range solving, tagged Git
   releases, the public registry index, deterministic version+commit lockfiles,
   cached resolution, and configurable offline mirrors.
+- [x] **Phase 10d — Reliability hardening:** revision-correct Git dependency
+  caches, bounded and schema-validated registry indexes, dependency-root
+  confinement, controlled deep-nesting diagnostics, structured adversarial
+  fuzzing, cross-platform CI, and release-blocking validation.
 
 ## License
 

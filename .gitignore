@@ -22,3 +22,10 @@ kernel/tools/
 # generated C emitted next to a source when no compiler is found
 /*.c
 examples/*.c
+
+# Coverage-guided fuzzer findings
+fuzz/findings/
+crash-*
+leak-*
+timeout-*
+oom-*

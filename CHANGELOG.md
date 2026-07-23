@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.33.0 — 2026-07-23
+
+Mort's reliability and supply-chain hardening release.
+
+### Fixed
+
+- Cached Git dependencies now fetch updates and detach at the exact branch,
+  tag, semantic-version selection, or commit requested by the manifest.
+- Relative filesystem Git URLs resolve from the declaring project, making
+  manifests independent of the caller's working directory.
+- Direct Git wildcard ranges such as `1.x` now use semantic-version selection
+  instead of being mistaken for literal branch names.
+- Excessively nested source now produces a controlled Mort diagnostic instead
+  of exposing a Python `RecursionError`.
+- Hosted builds can enable address, undefined-behavior, and leak sanitizers
+  from either CLI flags or `mort.toml`.
+- `MORT_CC` and `CC` can select a multi-argument C backend command explicitly.
+- The documented Python requirement now agrees with package metadata:
+  Python 3.10 or newer.
+- Distribution metadata uses the current SPDX license format and removes the
+  setuptools license configuration scheduled for removal in 2027.
+
+### Security and reproducibility
+
+- Existing dependency caches must have the requested origin and a clean
+  worktree before Mort updates them.
+- Registry indexes are limited to 4 MiB and every package, version, source, and
+  ref is schema-validated before resolution.
+- Registry package traversal is rejected before any index or mirror access.
+- Dependency sources and entry points are confined to their package root,
+  including after symlink resolution.
+- Portable content hashing records symlink targets rather than following them.
+- Registry cache replacement is atomic, preventing interrupted writes from
+  leaving a partial trusted index.
+- Manifest edits and lockfile refreshes also use durable sibling writes and
+  atomic replacement; package hashing records directory symlinks as well as
+  file symlinks without following either.
+- Source distributions now include the changelog, production documentation,
+  examples, fuzz harness and corpus, registry metadata, and kernel sources.
+
+### Validation
+
+- CI now gates Linux, Windows, and macOS with native tests, 10,000 adversarial
+  fuzz cases per job, Python static analysis, toolchain diagnostics, and a
+  MORT OS kernel build.
+- Dedicated Python 3.13 and 3.14 jobs cover current Python releases, and a
+  Clang job executes representative generated programs under ASan and UBSan.
+- Release publication now requires the full test suite, 20,000 fuzz cases,
+  a kernel build, an exact tag/version match, and an installed-wheel smoke test.
+- Structured valid-program fuzzing now spans control flow, arrays, structs,
+  payload enums, tuples, and generics, with a permanent adversarial corpus.
+- A coverage-guided Atheris/libFuzzer target runs a seeded corpus on relevant
+  pull requests and for 15 minutes every day, preserving minimized crashes.
+- 301 compiler, ownership, package-security, registry, native, LSP, and kernel
+  tests pass.
+
 ## 0.32.0 — 2026-07-23
 
 Mort's ownership-completion release.

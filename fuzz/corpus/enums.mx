@@ -1,0 +1,11 @@
+enum Value<T> { Empty, One(T), Pair(T, T) }
+
+fn main() -> int {
+    let value = Value<i64>.Pair(20, 22);
+    match value {
+        Value<i64>.Empty => {},
+        Value<i64>.One(item) => { print(item); },
+        Value<i64>.Pair(left, right) => { print(left + right); }
+    }
+    return 0;
+}

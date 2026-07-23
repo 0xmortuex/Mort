@@ -1,0 +1,14 @@
+resource struct Handle { value: i64 }
+
+fn destroy(handle: *Handle) {
+    (*handle).value = 0;
+}
+
+fn consume(handle: Handle) -> i64 {
+    return handle.value;
+}
+
+fn main() -> int {
+    let handle = Handle { value: 42 };
+    return consume(move handle) as int;
+}

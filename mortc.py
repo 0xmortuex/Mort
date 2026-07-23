@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,11 +63,16 @@ def compile_to_c(src, freestanding=False):
 def _parse_source(src, filename=None):
     try:
         program = Parser(Lexer(src).tokenize()).parse()
+        if filename:
+            _tag_source(program, filename)
     except MortError as error:
         error.filename = filename
         raise
-    if filename:
-        _tag_source(program, filename)
+    except RecursionError as error:
+        raise MortError(
+            "source nesting exceeds the compiler safety limit",
+            filename=filename,
+        ) from error
     return program
 
 
@@ -114,7 +120,11 @@ def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=N
                 node.line,
                 filename=getattr(node, "filename", None),
             )
-    return _compile_programs(programs, freestanding, warnings=warnings)
+    try:
+        return _compile_programs(programs, freestanding, warnings=warnings)
+    except RecursionError as error:
+        raise MortError(
+            "source nesting exceeds the compiler safety limit") from error
 
 
 def _compile_programs(programs, freestanding=False, test_mode=False, warnings=None):
@@ -201,8 +211,13 @@ def compile_files_to_c(
             declaration.resolved_path = os.path.abspath(imported)
             load(imported)
 
-    for path in paths:
-        load(path)
+    try:
+        for path in paths:
+            load(path)
+    except RecursionError as error:
+        raise MortError(
+            "source nesting or import depth exceeds the compiler safety limit"
+        ) from error
     for program in programs:
         aliases = {}
         for declaration in program.imports:
@@ -234,8 +249,12 @@ def compile_files_to_c(
         for test in program.tests:
             test.module = program.module_name
             test.import_aliases = dict(aliases)
-    return _compile_programs(
-        programs, freestanding, test_mode=test_mode, warnings=warnings)
+    try:
+        return _compile_programs(
+            programs, freestanding, test_mode=test_mode, warnings=warnings)
+    except RecursionError as error:
+        raise MortError(
+            "source nesting exceeds the compiler safety limit") from error
 
 
 def is_zig(cc):
@@ -258,6 +277,16 @@ def find_c_compiler():
     clang-based C compiler in one portable binary, the easiest option to
     install on Windows.
     """
+    configured = os.environ.get("MORT_CC") or os.environ.get("CC")
+    if configured:
+        arguments = shlex.split(configured, posix=os.name != "nt")
+        arguments = [
+            item[1:-1] if len(item) >= 2 and item[0] == item[-1] == '"' else item
+            for item in arguments
+        ]
+        if arguments and (
+                shutil.which(arguments[0]) or os.path.isfile(arguments[0])):
+            return arguments
     for cc in ("cc", "gcc", "clang"):
         found = shutil.which(cc)
         if found:
@@ -305,6 +334,12 @@ def _compile_main(argv=None, test_mode=False):
                     default="2", help="C backend optimization level (default: 2)")
     ap.add_argument("-g", "--debug", action="store_true",
                     help="include backend debug information")
+    ap.add_argument(
+        "--sanitize", action="append",
+        choices=("address", "undefined", "leak"),
+        default=[],
+        help="enable a hosted C-backend sanitizer (repeatable)",
+    )
     ap.add_argument("--freestanding", action="store_true",
                     help="compile to a bare-metal object file (no libc, no main)")
     ap.add_argument("--link", action="append", default=[], metavar="FILE",
@@ -362,6 +397,9 @@ def _compile_main(argv=None, test_mode=False):
     if args.freestanding and (args.link or args.library):
         print("mortc: --link/-l cannot be used with --freestanding object compilation",
               file=sys.stderr)
+        return 1
+    if args.freestanding and args.sanitize:
+        print("mortc: sanitizers are unavailable in freestanding mode", file=sys.stderr)
         return 1
 
     compiler_warnings = []
@@ -426,6 +464,9 @@ def _compile_main(argv=None, test_mode=False):
         cmd = [*cc, f"-O{args.opt_level}", "-std=c11"]
     if args.debug:
         cmd.append("-g")
+    if args.sanitize:
+        sanitizers = ",".join(dict.fromkeys(args.sanitize))
+        cmd += [f"-fsanitize={sanitizers}", "-fno-omit-frame-pointer"]
 
     tmp = tempfile.NamedTemporaryFile("w", suffix=".c", delete=False, encoding="utf-8")
     try:
@@ -460,6 +501,8 @@ def _project_args(project, sources, output, run=False):
         argv += ["--link", path]
     for library in project["libraries"]:
         argv += ["-l", library]
+    for sanitizer in project["sanitizers"]:
+        argv += ["--sanitize", sanitizer]
     for name, entry in project["packages"].items():
         argv += ["--package", f"{name}={entry}"]
     if run:
@@ -520,7 +563,7 @@ def _project_fingerprint(project):
         key: project[key]
         for key in (
             "name", "output", "std", "links", "libraries", "packages",
-            "opt_level", "debug")
+            "sanitizers", "opt_level", "debug")
     }
     digest.update(json.dumps(
         configuration, sort_keys=True, separators=(",", ":")).encode("utf-8"))
