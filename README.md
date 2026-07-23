@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.30)
+## The language (v0.31)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -220,8 +220,10 @@ mortc fmt              # format project sources and tests
 mortc fmt --check      # CI-friendly formatting check
 mortc add util --path ../util  # add a local package and update mort.lock
 mortc add json --git URL --ref v1.0.0  # fetch and pin a Git package
+mortc add json --registry '^1.2.0'  # highest compatible public release
 mortc fetch            # resolve dependencies and refresh the lockfile
 mortc fetch --locked   # verify the lockfile without changing it
+mortc fetch --offline  # use cached index/checkouts and configured mirrors
 ```
 
 Project builds are content-addressed: unchanged sources, dependencies,
@@ -381,8 +383,9 @@ test "addition" {
 - [x] **Phase 10b — Ownership:** resource contracts, move checking,
   branch-aware ownership dataflow, automatic destructors, and recursive cleanup
   for structs, tuples, tagged-enum payloads, and arrays.
-- [ ] **Phase 10c — Remote ecosystem:** semantic-version solving, a public
-  package registry, and offline mirrors.
+- [x] **Phase 10c — Remote ecosystem:** SemVer 2.0 range solving, tagged Git
+  releases, the public registry index, deterministic version+commit lockfiles,
+  cached resolution, and configurable offline mirrors.
 
 ## License
 

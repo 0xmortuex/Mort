@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.31.0 — 2026-07-23
+
+Mort's semantic package ecosystem release.
+
+### Added
+
+- Strict SemVer 2.0 parsing and precedence, including prerelease identifiers.
+- Exact, caret, tilde, wildcard, and comma-separated comparison constraints.
+- Git dependencies can use constraints such as `git+URL#^1.2.0`; Mort selects
+  the highest compatible semantic-version tag and clones that exact release.
+- Registry dependencies use `registry:package@constraint` or
+  `mortc add package --registry CONSTRAINT`.
+- A canonical versioned public registry index lives in `registry/index.json`.
+- Project-specific `registry.url` and `registry.mirrors` settings plus
+  `MORT_REGISTRY_URL` and `MORT_MIRRORS` machine-wide overrides.
+- `mortc fetch --offline` resolves from cached indexes/checkouts and local
+  mirrors without network access.
+
+### Reproducibility and safety
+
+- Selected Git tags must agree with the dependency's declared package version.
+- Registry records must resolve to a package declaring the selected version.
+- Lockfile format 3 records semantic versions, immutable Git revisions,
+  manifest hashes, and complete portable content hashes.
+- Online registry failures fall back to a cached index; offline mode emits
+  targeted diagnostics when required data is unavailable.
+
+### Validation
+
+- 286 compiler, SemVer, registry, mirror, ownership, package, native, LSP, and
+  kernel tests pass, including real local Git tags and an air-gapped mirror.
+
 ## 0.30.0 — 2026-07-23
 
 Mort's compositional ownership release.

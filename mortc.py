@@ -34,6 +34,7 @@ from mort.project import (           # noqa: E402
     ProjectError,
     add_git_dependency,
     add_path_dependency,
+    add_registry_dependency,
     create_project,
     find_manifest,
     resolve_project,
@@ -466,9 +467,9 @@ def _project_args(project, sources, output, run=False):
     return argv
 
 
-def _load_project(start):
+def _load_project(start, offline=False):
     try:
-        return resolve_project(find_manifest(start))
+        return resolve_project(find_manifest(start), offline=offline)
     except ProjectError as error:
         print(f"mortc: {error}", file=sys.stderr)
         return None
@@ -705,6 +706,9 @@ def main(argv=None):
         source = ap.add_mutually_exclusive_group(required=True)
         source.add_argument("--path", help="local dependency project path")
         source.add_argument("--git", help="Git repository URL")
+        source.add_argument(
+            "--registry", metavar="CONSTRAINT",
+            help="public registry semantic-version constraint")
         ap.add_argument("--ref", help="Git branch or tag (with --git)")
         ap.add_argument("--project", default=".", help="target project directory")
         args = ap.parse_args(argv[1:])
@@ -712,6 +716,9 @@ def main(argv=None):
             manifest = find_manifest(args.project)
             if args.path:
                 add_path_dependency(manifest, args.name, args.path)
+            elif args.registry:
+                add_registry_dependency(
+                    manifest, args.name, args.registry)
             else:
                 add_git_dependency(manifest, args.name, args.git, args.ref)
             project = resolve_project(manifest)
@@ -726,8 +733,10 @@ def main(argv=None):
         ap.add_argument("path", nargs="?", default=".", help="project directory")
         ap.add_argument("--locked", action="store_true",
                         help="fail instead of changing an out-of-date lockfile")
+        ap.add_argument("--offline", action="store_true",
+                        help="use only cached registry data and configured mirrors")
         args = ap.parse_args(argv[1:])
-        project = _load_project(args.path)
+        project = _load_project(args.path, offline=args.offline)
         if project is None:
             return 1
         try:

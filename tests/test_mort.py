@@ -24,7 +24,14 @@ sys.path.insert(0, ROOT)
 
 from mort.errors import MortError            # noqa: E402
 import mortc                                 # noqa: E402
-from mort.project import load_manifest, resolve_project  # noqa: E402
+from mort.project import (                                  # noqa: E402
+    ProjectError,
+    load_manifest,
+    parse_semver,
+    resolve_project,
+    select_semver,
+    semver_satisfies,
+)
 from mort.formatter import format_source                 # noqa: E402
 from mort.lsp import (                                   # noqa: E402
     Server,
@@ -1212,7 +1219,7 @@ def test_local_package_dependency_and_lockfile_run():
             changed_lock_data = json.load(fh)
         lock = json.dumps(changed_lock_data)
     assert '"name": "utility"' in lock
-    assert changed_lock_data["lock_version"] == 2
+    assert changed_lock_data["lock_version"] == 3
     assert changed_lock_data["packages"][0]["content_sha256"] != original_digest
 
 
@@ -1251,6 +1258,122 @@ def test_git_package_dependency_is_cached_and_revision_locked():
             lock = fh.read()
     assert '"revision"' in lock
     assert os.path.abspath(library) not in lock
+
+
+@pytest.mark.parametrize(
+    ("version", "constraint", "matches"),
+    [
+        ("1.2.3", "^1.2.0", True),
+        ("1.9.9", "^1.2.0", True),
+        ("2.0.0", "^1.2.0", False),
+        ("0.2.5", "^0.2.3", True),
+        ("0.3.0", "^0.2.3", False),
+        ("1.2.9", "~1.2.3", True),
+        ("1.3.0", "~1.2.3", False),
+        ("2.4.0", ">=2.0.0,<3.0.0", True),
+        ("3.0.0", ">=2.0.0,<3.0.0", False),
+        ("1.5.0", "1.x", True),
+        ("1.5.0", "1.4.x", False),
+        ("1.0.0-beta.2", "<1.0.0", True),
+    ],
+)
+def test_semver_constraints(version, constraint, matches):
+    assert semver_satisfies(version, constraint) is matches
+
+
+def test_semver_selection_and_validation():
+    assert select_semver(
+        ["1.0.0", "1.5.0", "1.5.0-beta.1", "2.0.0"], "^1.0.0"
+    ) == "1.5.0"
+    with pytest.raises(ProjectError, match="invalid semantic version"):
+        parse_semver("01.2.3")
+    with pytest.raises(ProjectError, match="no published version"):
+        select_semver(["1.0.0"], "^2.0.0")
+
+
+@needs_cc
+def test_git_semver_dependency_selects_highest_compatible_tag():
+    with tempfile.TemporaryDirectory() as d:
+        library = os.path.join(d, "versioned")
+        app = os.path.join(d, "app")
+        os.makedirs(os.path.join(library, "src"))
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=library, check=True)
+        for version, answer in (("1.0.0", 10), ("1.5.0", 15), ("2.0.0", 20)):
+            with open(os.path.join(library, "mort.toml"), "w", encoding="utf-8") as fh:
+                fh.write(
+                    f'[package]\nname = "versioned"\nversion = "{version}"\n\n'
+                    '[build]\nentry = "src/lib.mx"\nsources = ["src/**/*.mx"]\n'
+                )
+            with open(os.path.join(library, "src", "lib.mx"), "w", encoding="utf-8") as fh:
+                fh.write(
+                    f"module versioned; pub fn answer() -> i64 {{ return {answer}; }}")
+            subprocess.run(["git", "add", "."], cwd=library, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Mort Tests",
+                 "-c", "user.email=mort@example.test", "commit", "-qm", version],
+                cwd=library, check=True,
+            )
+            subprocess.run(["git", "tag", "v" + version], cwd=library, check=True)
+        os.makedirs(os.path.join(app, "src"))
+        git_url = library.replace("\\", "/")
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                f'[dependencies]\nversioned = "git+{git_url}#^1.0.0"\n'
+            )
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "import versioned; fn main() -> int { "
+                "print(versioned.answer()); return 0; }")
+        assert mortc.main(["run", app]) == 0
+        with open(os.path.join(app, "mort.lock"), encoding="utf-8") as fh:
+            lock = json.load(fh)
+    assert lock["packages"][0]["version"] == "1.5.0"
+
+
+def test_registry_dependency_resolves_from_offline_mirror():
+    with tempfile.TemporaryDirectory() as d:
+        app = os.path.join(d, "app")
+        mirror = os.path.join(d, "mirror")
+        package = os.path.join(mirror, "utility", "1.4.0")
+        os.makedirs(os.path.join(app, "src"))
+        os.makedirs(os.path.join(package, "src"))
+        with open(os.path.join(package, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "utility"\nversion = "1.4.0"\n\n'
+                '[build]\nentry = "src/lib.mx"\nsources = ["src/**/*.mx"]\n')
+        with open(os.path.join(package, "src", "lib.mx"), "w", encoding="utf-8") as fh:
+            fh.write("module utility; pub fn answer() -> i64 { return 42; }")
+        index_path = os.path.join(d, "index.json")
+        with open(index_path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "format": 1,
+                "packages": {
+                    "utility": {
+                        "versions": {
+                            "1.0.0": {"git": "unused"},
+                            "1.4.0": {"git": "unused"},
+                            "2.0.0": {"git": "unused"},
+                        }
+                    }
+                },
+            }, fh)
+        mirror_value = mirror.replace("\\", "/")
+        index_value = index_path.replace("\\", "/")
+        with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "app"\nversion = "0.1.0"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n\n'
+                f'[registry]\nurl = "{index_value}"\n'
+                f'mirrors = ["{mirror_value}"]\n\n'
+                '[dependencies]\nutility = "registry:utility@^1.0.0"\n')
+        with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
+            fh.write("fn main() -> int { return 0; }")
+        project = resolve_project(
+            os.path.join(app, "mort.toml"), offline=True)
+    assert project["packages"]["utility"].endswith(
+        os.path.join("utility", "1.4.0", "src", "lib.mx"))
 
 
 @needs_cc
