@@ -1,4 +1,6 @@
 """Lexer: turns Mort source text into a flat list of tokens."""
+import math
+
 from .tokens import Token, T, KEYWORDS
 from .errors import MortError
 
@@ -157,7 +159,10 @@ class Lexer:
                     s += self._advance()
             if self._peek().isalnum() or self._peek() == "_":
                 raise MortError("invalid floating-point literal", line, col)
-            self._add(T.FLOAT, float(s.replace("_", "")), line, col)
+            value = float(s.replace("_", ""))
+            if not math.isfinite(value):
+                raise MortError("floating-point literal is out of range", line, col)
+            self._add(T.FLOAT, value, line, col)
             return
         if self._peek() in "eE":
             s += self._advance()
@@ -169,7 +174,10 @@ class Lexer:
                 s += self._advance()
             if self._peek().isalnum() or self._peek() == "_":
                 raise MortError("invalid floating-point literal", line, col)
-            self._add(T.FLOAT, float(s.replace("_", "")), line, col)
+            value = float(s.replace("_", ""))
+            if not math.isfinite(value):
+                raise MortError("floating-point literal is out of range", line, col)
+            self._add(T.FLOAT, value, line, col)
             return
         # reject things like 12abc
         if self._peek().isalpha() or self._peek() == "_":

@@ -20,6 +20,7 @@ INT_TYPES = {
     "c_long", "c_ulong", "c_size",
 }
 FLOAT_TYPES = {"f32", "f64"}
+F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {
@@ -918,6 +919,8 @@ class Checker:
             expr.type = expected
             return True
         if expected in FLOAT_TYPES and isinstance(expr, A.FloatLit):
+            if expected == "f32" and abs(expr.value) > F32_MAX:
+                self._error("floating-point literal does not fit in f32", expr)
             expr.type = expected
             return True
         if is_const_ptr(expected) and is_ptr(expr.type):
@@ -1304,6 +1307,12 @@ class Checker:
                         res = lt
                 else:
                     res = self._unify_ints(e, lt, rt, op)
+                    if op in ("/", "%") and self._const_value(e.right) == 0:
+                        self._error(
+                            "integer division by zero" if op == "/"
+                            else "integer remainder by zero",
+                            e,
+                        )
                 if op in ARITH_OPS:
                     e.is_lit = (
                         e.left.is_lit and e.right.is_lit if res in INT_TYPES else False)

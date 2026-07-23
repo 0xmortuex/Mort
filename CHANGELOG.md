@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.1 — 2026-07-23
+
+Mort's numeric-safety patch.
+
+### Fixed
+
+- Constant integer division and remainder by zero are rejected by the type
+  checker instead of reaching invalid generated C.
+- Non-finite floating-point literals are rejected during lexing.
+- Finite `f64` literals that overflow an annotated `f32` are rejected during
+  contextual narrowing.
+
+### Validation
+
+- 231 compiler, numeric-safety, standard-library, native execution, LSP,
+  package, and kernel tests pass.
+
 ## 0.23.0 — 2026-07-22
 
 Mort's portable data-utilities release.

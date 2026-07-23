@@ -199,6 +199,33 @@ def test_invalid_float_compound_assignments_are_rejected(statement, message):
         c_of(source)
 
 
+@pytest.mark.parametrize(
+    ("expression", "message"),
+    [
+        ("10 / 0", "integer division by zero"),
+        ("10 % (2 - 2)", "integer remainder by zero"),
+    ],
+)
+def test_invalid_constant_integer_operations_are_rejected(expression, message):
+    source = f"fn main() -> int {{ let result = {expression}; return 0; }}"
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("fn main() -> int { let value = 1e999; return 0; }",
+         "floating-point literal is out of range"),
+        ("fn main() -> int { let value: f32 = 1e100; return 0; }",
+         "floating-point literal does not fit in f32"),
+    ],
+)
+def test_out_of_range_float_literals_are_rejected(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
 @needs_cc
 def test_type_aliases_resolve_through_structs_generics_and_variants():
     with tempfile.TemporaryDirectory() as d:
