@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.24.0 — 2026-07-23
+
+Mort's install-anywhere toolchain release.
+
+### Added
+
+- Standard `pyproject.toml` packaging with a machine-wide `mortc` console
+  command and Python 3.10–3.12 metadata.
+- Wheel-distributed standard-library sources with automatic source-checkout or
+  installed-layout discovery.
+- `mortc std [--path]` to list and locate all bundled modules.
+- `mortc doctor` to report Mort/Python versions, standard-library health, the
+  native C backend, and the Zig freestanding backend.
+- CI now installs the package and verifies the global entry point before
+  running compiler and kernel tests.
+
+### Validation
+
+- Editable and isolated wheel installations both expose `mortc` and all 15
+  standard modules outside the repository.
+- 232 compiler, packaging, CLI, numeric-safety, standard-library, native, LSP,
+  package, and kernel tests pass.
+
 ## 0.23.1 — 2026-07-23
 
 Mort's numeric-safety patch.

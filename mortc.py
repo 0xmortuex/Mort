@@ -43,7 +43,14 @@ from mort.project import (           # noqa: E402
 from mort.formatter import format_file  # noqa: E402
 
 
-STDLIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "std")
+_SOURCE_STDLIB_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "std")
+_INSTALLED_STDLIB_DIR = os.path.join(sys.prefix, "mort-stdlib")
+STDLIB_DIR = (
+    _SOURCE_STDLIB_DIR
+    if os.path.isdir(_SOURCE_STDLIB_DIR)
+    else _INSTALLED_STDLIB_DIR
+)
 
 
 def compile_to_c(src, freestanding=False):
@@ -622,6 +629,46 @@ def _format_command(paths, check=False):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "std":
+        ap = argparse.ArgumentParser(
+            prog="mortc std", description="List bundled Mort standard modules.")
+        ap.add_argument("--path", action="store_true",
+                        help="also print the resolved standard-library directory")
+        args = ap.parse_args(argv[1:])
+        modules = sorted(
+            os.path.splitext(name)[0]
+            for name in os.listdir(STDLIB_DIR)
+            if name.endswith(".mx")
+        )
+        if args.path:
+            print(STDLIB_DIR)
+        print("\n".join(modules))
+        return 0
+    if argv and argv[0] == "doctor":
+        ap = argparse.ArgumentParser(
+            prog="mortc doctor", description="Check the local Mort toolchain.")
+        ap.parse_args(argv[1:])
+        compiler = find_c_compiler()
+        zig = find_zig()
+        modules = (
+            sorted(name for name in os.listdir(STDLIB_DIR) if name.endswith(".mx"))
+            if os.path.isdir(STDLIB_DIR) else []
+        )
+        print(f"Mort {__version__}")
+        print(f"Python: {sys.version.split()[0]} ({sys.executable})")
+        print(f"Standard library: {STDLIB_DIR} ({len(modules)} modules)")
+        print("C backend: " + (" ".join(compiler) if compiler else "not found"))
+        print("Freestanding backend: " + (" ".join(zig) if zig else "not found"))
+        if not modules:
+            print("mortc: standard library is missing", file=sys.stderr)
+            return 1
+        if compiler is None:
+            print(
+                "mortc: front-end checks work, but native builds need "
+                "cc, gcc, clang, or zig",
+                file=sys.stderr,
+            )
+        return 0
     if argv and argv[0] == "fuzz":
         from mort.fuzz import run_fuzz
         ap = argparse.ArgumentParser(

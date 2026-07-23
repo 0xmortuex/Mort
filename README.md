@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-231%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.23.1)
+## The language (v0.24)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -142,6 +142,19 @@ counts, and a non-`bool` `if` condition are all compile-time errors with line
 numbers.
 
 ## Usage
+
+Install Mort once, then use `mortc` from any directory:
+
+```bash
+python -m pip install -e .
+mortc --version
+mortc doctor
+mortc std
+mortc new hello
+```
+
+The editable install follows this checkout as Mort evolves, so newly published
+compiler changes become available machine-wide without reinstalling.
 
 ```bash
 python mortc.py program.mx              # compile to a native executable

@@ -1384,6 +1384,19 @@ def test_deterministic_frontend_fuzzer_and_cli(capsys):
     assert "fuzzed 20 case(s)" in capsys.readouterr().out
 
 
+def test_std_and_doctor_commands_report_installed_toolchain(capsys):
+    assert mortc.main(["std", "--path"]) == 0
+    standard = capsys.readouterr().out
+    assert mortc.STDLIB_DIR in standard
+    assert "algorithm\n" in standard
+    assert "random\n" in standard
+    assert mortc.main(["doctor"]) == 0
+    doctor = capsys.readouterr()
+    assert f"Mort {mortc.__version__}" in doctor.out
+    assert "Standard library:" in doctor.out
+    assert "C backend:" in doctor.out
+
+
 @needs_cc
 def test_extern_function_links_and_runs(capsys):
     with tempfile.TemporaryDirectory() as d:

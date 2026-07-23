@@ -25,6 +25,12 @@ jobs:
         # ziglang provides the C backend used for end-to-end and kernel tests.
         run: python -m pip install --upgrade pip pytest ziglang
 
+      - name: Install Mort command
+        run: python -m pip install -e .
+
+      - name: Verify global compiler entry point
+        run: mortc --version
+
       - name: Run the test suite
         run: python -m pytest tests/ -v
 

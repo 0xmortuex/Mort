@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mort-lang"
+version = "0.24.0"
+description = "The Mort statically typed systems programming language"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "0xmortuex" },
+]
+keywords = ["compiler", "programming-language", "systems-programming", "c", "osdev"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+]
+
+[project.scripts]
+mortc = "mortc:main"
+
+[project.urls]
+Homepage = "https://github.com/0xmortuex/Mort"
+Repository = "https://github.com/0xmortuex/Mort"
+Issues = "https://github.com/0xmortuex/Mort/issues"
+
+[tool.setuptools]
+packages = ["mort"]
+py-modules = ["mortc"]
+
+[tool.setuptools.data-files]
+mort-stdlib = [
+    "std/algorithm.mx",
+    "std/bytes.mx",
+    "std/env.mx",
+    "std/fs.mx",
+    "std/map.mx",
+    "std/math.mx",
+    "std/memory.mx",
+    "std/option.mx",
+    "std/owned_string.mx",
+    "std/process.mx",
+    "std/random.mx",
+    "std/result.mx",
+    "std/string.mx",
+    "std/time.mx",
+    "std/vec.mx",
+]
