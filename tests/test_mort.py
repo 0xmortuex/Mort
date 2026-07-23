@@ -1726,6 +1726,75 @@ def test_payload_enum_destructuring_run():
 
 
 @needs_cc
+def test_multi_payload_enums_generic_construction_and_destructuring_run():
+    src = (
+        "enum Shape { Point(i64, i64), Label(*u8, bool), Empty } "
+        "enum Pairing<Left, Right> { Pair(Left, Right), Empty } "
+        "enum Wrapped { Pair((i64, bool)) } "
+        "fn shape_value(shape: Shape) -> i64 { match shape { "
+        "Shape.Point(x, y) => { return x + y; }, "
+        "Shape.Label(text, visible) => { "
+        "if visible { return len(text) as i64; } return 0; }, "
+        "Shape.Empty => { return 0; } } } "
+        "fn pair_value(value: Pairing<i64, bool>) -> i64 { match value { "
+        "Pairing<i64, bool>.Pair(number, _) => { return number; }, "
+        "Pairing<i64, bool>.Empty => { return 0; } } } "
+        "fn wrapped_value(value: Wrapped) -> i64 { match value { "
+        "Wrapped.Pair(pair) => { if pair.1 { return pair.0; } return 0; } } } "
+        "fn main() -> int { "
+        "print(shape_value(Shape.Point(20, 22))); "
+        "print(shape_value(Shape.Label(\"Mort\", true)) + 38); "
+        "let pair: Pairing<i64, bool> = Pairing<i64, bool>.Pair(42, true); "
+        "print(pair_value(pair)); "
+        "print(wrapped_value(Wrapped.Pair((42, true)))); return 0; }"
+    )
+    c_source = c_of(src)
+    assert ".data.v_Point" in c_source
+    assert ".f_0" in c_source and ".f_1" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "multi_payload.c")
+        exe = os.path.join(
+            d, "multi_payload.exe" if os.name == "nt" else "multi_payload")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n42\n42\n42\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value: Pair = Pair.Value(1); return 0; }",
+         "expects 2 payloads"),
+        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value: Pair = Pair.Value(true, false); return 0; }",
+         "payload 1 of Pair.Value expects i64"),
+        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value = Pair.Value(1, true); match value { "
+         "Pair.Value(item) => { print(item); } } return 0; }",
+         "require 2 binding names"),
+        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value = Pair.Value(1, true); match value { "
+         "Pair.Value(left, left) => { print(left); } } return 0; }",
+         "must have unique names"),
+        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value = Pair.Value(1, true); match value { "
+         "Pair.Value(left, 1) => { print(left); } } return 0; }",
+         "require 2 binding names"),
+    ],
+)
+def test_multi_payload_enum_errors(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@needs_cc
 def test_generic_struct_monomorphization_run():
     src = (
         "struct Pair<Left, Right> { first: Left, second: Right } "

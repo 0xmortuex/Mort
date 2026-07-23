@@ -1,19 +1,22 @@
 enum State {
     Idle,
-    Running,
+    Running(i64, bool),
     Done,
 }
 
 fn state_code(state: State) -> i64 {
     match state {
         State.Idle => { return 0; },
-        State.Running => { return 1; },
+        State.Running(code, enabled) => {
+            if enabled { return code; }
+            return 0;
+        },
         State.Done => { return 2; },
     }
 }
 
 fn main() -> int {
-    let state: State = State.Running;
+    let state: State = State.Running(1, true);
     print(state_code(state));
     return 0;
 }

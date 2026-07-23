@@ -860,10 +860,13 @@ class CodeGen:
                     self._emit(f"{keyword} ({comparison}) {{")
                     emitted_condition = True
                 self.indent += 1
-                if arm.binding_name is not None:
+                for binding_index, binding_name, binding_type in zip(
+                        arm.binding_indices, arm.binding_names, arm.binding_types):
+                    payload = f"{temporary}.data.v_{arm.variant_name}"
+                    if arm.payload_arity > 1:
+                        payload += f".f_{binding_index}"
                     self._emit(
-                        f"{self._ct(arm.binding_type)} m_{arm.binding_name} = "
-                        f"{temporary}.data.v_{arm.variant_name};")
+                        f"{self._ct(binding_type)} m_{binding_name} = {payload};")
                 self._gen_scoped_statements(arm.body.stmts)
                 self.indent -= 1
                 self._emit("}")
@@ -1111,10 +1114,21 @@ class CodeGen:
         if isinstance(e, A.Call):
             if e.enum_name is not None:
                 enum_tag = _type_tag(e.enum_name)
+                if len(e.args) == 1:
+                    payload = self._gen_expr(e.args[0])
+                else:
+                    tuple_values = ", ".join(
+                        f".f_{index} = {self._gen_expr(argument)}"
+                        for index, argument in enumerate(e.args)
+                    )
+                    payload = (
+                        f"({_tuple_c_name(e.enum_payload_type)})"
+                        f"{{ {tuple_values} }}"
+                    )
                 return (
                     f"(struct mort_{enum_tag}){{ .tag = "
                     f"MORT_{enum_tag}_{e.enum_variant}, "
-                    f".data.v_{e.enum_variant} = {self._gen_expr(e.args[0])} }}"
+                    f".data.v_{e.enum_variant} = {payload} }}"
                 )
             if e.indirect:
                 args = ", ".join(self._gen_expr(argument) for argument in e.args)

@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.27)
+## The language (v0.28)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -104,7 +104,9 @@ C `main`, so the output is an ordinary native binary.
   `extern fn name(arg: i32) -> i32;`, then call it like any checked Mort
   function. External functions can be used as callback values too.
 - **Enums and matching:** payload-free, tagged-union, and generic variants such
-  as `Option<T>` and `Result<Value, Error>`, with exhaustive destructuring match.
+  as `Option<T>` and `Result<Value, Error>`, with exhaustive destructuring
+  match. Variants can carry multiple typed fields—`Point(i64, i64)` constructs
+  with `Point(20, 22)` and matches as `Point(x, y)`; `_` ignores a field.
 - **Generic structs:** monomorphized native layouts such as
   `struct Pair<Left, Right> { first: Left, second: Right }`.
 - **Generic functions:** inferred calls such as `identity(42)` and explicit

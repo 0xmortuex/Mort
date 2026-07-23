@@ -216,12 +216,17 @@ class Parser:
         variants = []
         while not self._at(T.RBRACE) and not self._at(T.EOF):
             variant_name = self._expect(T.IDENT, "variant name").value
-            payload_type = None
             if self._at(T.LPAREN):
                 self._advance()
-                payload_type = self._type_name()
+                payload_types = [self._type_name()]
+                while self._at(T.COMMA):
+                    self._advance()
+                    payload_types.append(self._type_name())
                 self._expect(T.RPAREN, "')'")
-            variants.append(A.EnumVariant(variant_name, payload_type))
+                variants.append(A.EnumVariant(
+                    variant_name, payload_types=payload_types))
+            else:
+                variants.append(A.EnumVariant(variant_name))
             if self._at(T.COMMA):
                 self._advance()
             else:

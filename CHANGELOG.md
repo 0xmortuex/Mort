@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.28.0 — 2026-07-23
+
+Mort's rich enum-payload release.
+
+### Added
+
+- Enum variants can declare multiple payload fields, such as
+  `Point(i64, i64)` or generic `Pair(Left, Right)` variants.
+- Constructors accept and independently type-check each declared payload.
+- Match patterns destructure every payload into typed lexical bindings, such as
+  `Shape.Point(x, y)`.
+- `_` ignores selected payload fields without creating unused bindings.
+- A single tuple payload remains distinct from multiple payloads:
+  `Wrapped((i64, bool))` matches one tuple binding, preserving structural APIs.
+
+### Semantics and code generation
+
+- Multi-field variants reuse Mort's deterministic native tuple layouts inside
+  tagged-union storage without adding allocation or pointer indirection.
+- Destructuring reads each payload field exactly once from the cached match
+  subject and preserves exhaustive-match checking.
+- Arity, individual field types, non-binding patterns, and duplicate binding
+  names receive targeted compile-time diagnostics.
+- Existing single-payload `Option`/`Result`, generic enums, `try` propagation,
+  and imported standard-library enums remain source- and ABI-compatible.
+
+### Validation
+
+- Multi-field, generic, ignored-field, single-tuple, string, boolean, and
+  exhaustive variants compile under `-Wall -Werror` and execute natively.
+- 260 compiler, enum, tuple, error-propagation, callback, packaging, CLI,
+  native, LSP, package, and kernel tests pass.
+
 ## 0.27.0 — 2026-07-23
 
 Mort's native tuple release.

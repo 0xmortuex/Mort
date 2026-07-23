@@ -226,6 +226,7 @@ class Checker:
         self.structs = {}     # name -> {field: type}  (insertion-ordered)
         self.struct_templates = {}
         self.enums = {}       # name -> ordered {variant: optional payload type}
+        self.enum_payloads = {}  # name -> variant -> declared payload type list
         self.enum_templates = {}
         self.aliases = {}
         self.alias_decls = {}
@@ -336,8 +337,14 @@ class Checker:
                 value.typ = self._resolve_alias_type(value.typ)
             elif isinstance(value, A.StructField):
                 value.typ = self._resolve_alias_type(value.typ)
-            elif isinstance(value, A.EnumVariant) and value.payload_type is not None:
-                value.payload_type = self._resolve_alias_type(value.payload_type)
+            elif isinstance(value, A.EnumVariant) and value.payload_types:
+                value.payload_types = [
+                    self._resolve_alias_type(item) for item in value.payload_types
+                ]
+                value.payload_type = (
+                    value.payload_types[0] if len(value.payload_types) == 1
+                    else "(" + ",".join(value.payload_types) + ")"
+                )
             elif isinstance(value, A.Let) and value.decl_type is not None:
                 value.decl_type = self._resolve_alias_type(value.decl_type)
             elif isinstance(value, A.For) and value.decl_type is not None:
@@ -470,8 +477,10 @@ class Checker:
         variants = [
             A.EnumVariant(
                 variant.name,
-                None if variant.payload_type is None
-                else substitute_type(variant.payload_type, mapping),
+                payload_types=[
+                    substitute_type(item, mapping)
+                    for item in variant.payload_types
+                ],
             )
             for variant in template.variants
         ]
@@ -492,6 +501,9 @@ class Checker:
                 )
             resolved[variant.name] = payload_type
         self.enums[concrete_type] = resolved
+        self.enum_payloads[concrete_type] = {
+            variant.name: list(variant.payload_types) for variant in variants
+        }
         concrete = A.EnumDecl(concrete_type, variants, template.line)
         if hasattr(template, "filename"):
             concrete.filename = template.filename
@@ -686,6 +698,9 @@ class Checker:
                 self._error(f"enum {ed.name!r} is already defined", ed)
             self.enums[ed.name] = {
                 variant.name: variant.payload_type for variant in ed.variants
+            }
+            self.enum_payloads[ed.name] = {
+                variant.name: list(variant.payload_types) for variant in ed.variants
             }
             self._aggregate_declarations[ed.name] = ed
 
@@ -1271,8 +1286,8 @@ class Checker:
             wildcard_seen = False
             enum_variants = set()
             for index, arm in enumerate(s.arms):
-                binding_name = None
-                binding_type = None
+                binding_names = []
+                binding_types = []
                 if arm.pattern is None:
                     if wildcard_seen:
                         self._error("match has more than one wildcard arm", arm)
@@ -1294,15 +1309,42 @@ class Checker:
                         if payload_type is None:
                             self._error(
                                 f"variant {subject_type}.{variant_name} has no payload", arm)
-                        if (len(arm.pattern.args) != 1
-                                or not isinstance(arm.pattern.args[0], A.Var)):
+                        expected_payloads = self.enum_payloads[
+                            subject_type][variant_name]
+                        if (len(arm.pattern.args) != len(expected_payloads)
+                                or not all(
+                                    isinstance(argument, A.Var)
+                                    for argument in arm.pattern.args
+                                )):
+                            count = len(expected_payloads)
                             self._error(
-                                "payload match patterns require one binding name", arm)
-                        binding_name = arm.pattern.args[0].name
-                        binding_type = payload_type
+                                "payload match patterns require "
+                                + ("one binding name" if count == 1
+                                   else f"{count} binding names"),
+                                arm,
+                            )
+                        binding_indices = [
+                            index for index, argument in enumerate(arm.pattern.args)
+                            if argument.name != "_"
+                        ]
+                        binding_names = [
+                            arm.pattern.args[index].name
+                            for index in binding_indices
+                        ]
+                        if len(set(binding_names)) != len(binding_names):
+                            self._error(
+                                "payload match bindings must have unique names", arm)
+                        binding_types = [
+                            expected_payloads[index] for index in binding_indices
+                        ]
                         arm.variant_name = variant_name
-                        arm.binding_name = binding_name
-                        arm.binding_type = binding_type
+                        arm.binding_names = binding_names
+                        arm.binding_types = binding_types
+                        arm.binding_indices = binding_indices
+                        arm.payload_arity = len(expected_payloads)
+                        if len(binding_names) == 1:
+                            arm.binding_name = binding_names[0]
+                            arm.binding_type = binding_types[0]
                         enum_variants.add(variant_name)
                     else:
                         pattern_type = self._check_expr(arm.pattern)
@@ -1314,14 +1356,15 @@ class Checker:
                             and arm.pattern.obj.name == subject_type):
                         enum_variants.add(arm.pattern.field)
                         arm.variant_name = arm.pattern.field
-                self.scopes.append({} if binding_name is None else {binding_name: binding_type})
+                self.scopes.append(dict(zip(binding_names, binding_types)))
                 self.binding_scopes.append(
-                    {} if binding_name is None else {
+                    {
                         binding_name: {
                             "node": arm,
                             "used": False,
                             "kind": "match binding",
                         }
+                        for binding_name in binding_names
                     }
                 )
                 try:
@@ -1769,16 +1812,21 @@ class Checker:
                 if payload_type is None:
                     self._error(
                         f"variant {enum_name}.{variant_name} has no payload", e)
-                if len(e.args) != 1:
+                expected_payloads = self.enum_payloads[enum_name][variant_name]
+                if len(e.args) != len(expected_payloads):
                     self._error(
-                        f"variant {enum_name}.{variant_name} expects 1 payload", e)
-                actual = self._check_expr(e.args[0])
-                if not self._coerce(payload_type, e.args[0]):
-                    self._error(
-                        f"variant {enum_name}.{variant_name} expects {payload_type}, "
-                        f"got {actual}", e)
+                        f"variant {enum_name}.{variant_name} expects "
+                        f"{len(expected_payloads)} payloads", e)
+                for index, (expected, argument) in enumerate(
+                        zip(expected_payloads, e.args), start=1):
+                    actual = self._check_expr(argument)
+                    if not self._coerce(expected, argument):
+                        self._error(
+                            f"payload {index} of {enum_name}.{variant_name} "
+                            f"expects {expected}, got {actual}", e)
                 e.enum_name = enum_name
                 e.enum_variant = variant_name
+                e.enum_payload_type = payload_type
                 return enum_name
         if e.name == "sizeof":
             if e.args or len(e.type_args) != 1:

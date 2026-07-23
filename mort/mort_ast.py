@@ -92,9 +92,16 @@ class EnumDecl(Node):
 
 
 class EnumVariant:
-    def __init__(self, name, payload_type=None):
+    def __init__(self, name, payload_type=None, payload_types=None):
         self.name = name
-        self.payload_type = payload_type
+        if payload_types is None:
+            payload_types = [] if payload_type is None else [payload_type]
+        self.payload_types = payload_types
+        self.payload_type = (
+            None if not payload_types
+            else payload_types[0] if len(payload_types) == 1
+            else "(" + ",".join(payload_types) + ")"
+        )
 
 
 class ExternFnDecl(Node):
@@ -225,6 +232,10 @@ class MatchArm(Node):
         self.variant_name = None
         self.binding_name = None
         self.binding_type = None
+        self.binding_names = []
+        self.binding_types = []
+        self.binding_indices = []
+        self.payload_arity = 0
 
 
 class Match(Node):
@@ -313,6 +324,7 @@ class Call(Node):
         self.resolved_name = None
         self.enum_name = None
         self.enum_variant = None
+        self.enum_payload_type = None
         self.type_args = type_args or []
         self.indirect = False
 
