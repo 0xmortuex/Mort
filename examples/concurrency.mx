@@ -1,0 +1,59 @@
+import std.atomic;
+import std.mutex;
+import std.thread;
+
+struct WorkerContext {
+    counter: *AtomicI64,
+    mutex: *Mutex,
+    protected_total: *i64,
+    iterations: i64,
+}
+
+fn worker(raw: *void) -> i64 {
+    let context = raw as *WorkerContext;
+    for index in 0..(*context).iterations {
+        atomic.fetch_add((*context).counter, 1);
+        mutex.lock((*context).mutex);
+        *(*context).protected_total += 1;
+        mutex.unlock((*context).mutex);
+    }
+    return (*context).iterations;
+}
+
+fn main() -> int {
+    let counter = atomic.new_i64(0);
+    let mutex_value = mutex.new();
+    let protected_total: i64 = 0;
+
+    let first_context = WorkerContext {
+        counter: &counter,
+        mutex: &mutex_value,
+        protected_total: &protected_total,
+        iterations: 1000,
+    };
+    let second_context = WorkerContext {
+        counter: &counter,
+        mutex: &mutex_value,
+        protected_total: &protected_total,
+        iterations: 1000,
+    };
+
+    let first = thread.spawn(worker, &first_context as *void);
+    let second = thread.spawn(worker, &second_context as *void);
+    let first_result = thread.join(&first);
+    let second_result = thread.join(&second);
+
+    print(atomic.load(&counter));
+    print(protected_total);
+    print(first_result + second_result);
+    print(atomic.exchange(&counter, 5));
+    print(atomic.fetch_add(&counter, 2));
+    print(atomic.fetch_sub(&counter, 1));
+    if !atomic.compare_exchange(&counter, 6, 9) {
+        return 1;
+    }
+    print(atomic.load(&counter));
+    atomic.store(&counter, 11);
+    print(atomic.load(&counter));
+    return 0;
+}

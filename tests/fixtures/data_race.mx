@@ -1,0 +1,24 @@
+import std.thread;
+
+struct Context {
+    value: *i64,
+}
+
+fn worker(raw: *void) -> i64 {
+    let context = raw as *Context;
+    for index in 0..10000 {
+        *(*context).value += 1;
+    }
+    return 0;
+}
+
+fn main() -> int {
+    let value: i64 = 0;
+    let first_context = Context { value: &value };
+    let second_context = Context { value: &value };
+    let first = thread.spawn(worker, &first_context as *void);
+    let second = thread.spawn(worker, &second_context as *void);
+    thread.join(&first);
+    thread.join(&second);
+    return 0;
+}

@@ -342,7 +342,7 @@ def _compile_main(argv=None, test_mode=False):
                     help="include backend debug information")
     ap.add_argument(
         "--sanitize", action="append",
-        choices=("address", "undefined", "leak"),
+        choices=("address", "undefined", "leak", "thread"),
         default=[],
         help="enable a hosted C-backend sanitizer (repeatable)",
     )
@@ -406,6 +406,14 @@ def _compile_main(argv=None, test_mode=False):
         return 1
     if args.freestanding and args.sanitize:
         print("mortc: sanitizers are unavailable in freestanding mode", file=sys.stderr)
+        return 1
+    if "thread" in args.sanitize and any(
+            item in args.sanitize for item in ("address", "leak")):
+        print(
+            "mortc: thread sanitizer cannot be combined with address or leak "
+            "sanitizers",
+            file=sys.stderr,
+        )
         return 1
 
     compiler_warnings = []
@@ -476,6 +484,8 @@ def _compile_main(argv=None, test_mode=False):
     else:
         out = args.output or (base + (".exe" if os.name == "nt" else ""))
         cmd = [*cc, f"-O{args.opt_level}", "-std=c11"]
+        if os.name != "nt" and "MORT_REQUIRES_PTHREAD" in c_source:
+            cmd.append("-pthread")
     if args.debug:
         cmd.append("-g")
     if args.sanitize:

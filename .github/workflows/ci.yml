@@ -62,7 +62,7 @@ jobs:
       - name: Run the test suite
         run: python -m pytest tests/ -q
 
-      - name: Run the Mort 0.34 conformance suite
+      - name: Run the Mort 0.35 conformance suite
         run: python conformance/run.py --mortc mortc
 
       - name: Run adversarial front-end fuzzing
@@ -101,6 +101,34 @@ jobs:
             --sanitize address --sanitize undefined
           mortc examples/resources.mx --run -o /tmp/mort-resources \
             --sanitize address --sanitize undefined
+
+  thread-sanitizer:
+    name: Thread sanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MORT_CC: gcc
+      TSAN_OPTIONS: halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Mort
+        run: python -m pip install -e .
+
+      - name: Run synchronized concurrency under TSan and UBSan
+        run: |
+          mortc examples/concurrency.mx --run -o /tmp/mort-concurrency \
+            --sanitize thread --sanitize undefined
+          if mortc tests/fixtures/data_race.mx --run -o /tmp/mort-race \
+              --sanitize thread; then
+            echo "ThreadSanitizer failed to detect the intentional data race"
+            exit 1
+          fi
 
   fuzz-smoke:
     name: Coverage-guided fuzzer smoke test

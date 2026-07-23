@@ -70,8 +70,10 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Hosted native and x86 freestanding compilation.
 - [ ] Borrowed-reference lifetimes prevent dangling pointers without requiring
   raw-pointer discipline.
-- [ ] Defined thread-safety rules, atomics, threads, synchronization primitives,
-  and data-race tests.
+- [x] Mort 0.35 defines thread-safety and data-race rules and provides
+  cross-platform threads, joins, mutexes, sequentially consistent `AtomicI64`,
+  synchronized conformance coverage, and positive/negative ThreadSanitizer
+  gates.
 - [ ] An asynchronous I/O model, task runtime, cancellation, and structured
   concurrency.
 - [ ] First-party TCP, UDP, DNS, HTTP, TLS, and WebSocket libraries.

@@ -1,0 +1,26 @@
+module std.mutex;
+
+resource struct Mutex {
+    handle: *void,
+}
+
+pub fn new() -> Mutex {
+    let handle = mutex_create();
+    assert(handle != null);
+    return Mutex { handle: handle };
+}
+
+pub fn lock(value: *Mutex) -> void {
+    assert(mutex_lock((*value).handle));
+}
+
+pub fn unlock(value: *Mutex) -> void {
+    assert(mutex_unlock((*value).handle));
+}
+
+pub fn destroy(value: *Mutex) -> void {
+    if (*value).handle != null {
+        mutex_destroy((*value).handle);
+        (*value).handle = null;
+    }
+}

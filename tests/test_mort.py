@@ -752,6 +752,54 @@ def test_port_io_long_helpers_emitted_per_builtin():
     assert "mort_inl(uint16_t" not in only_out
 
 
+def test_concurrency_builtins_are_typed_and_hosted_only():
+    c_source = c_of(
+        "fn worker(context: *void) -> i64 { return 42; } "
+        "fn main() -> int { let thread = thread_spawn(worker, null); "
+        "print(thread_join(thread)); let atomic = atomic_i64_create(1); "
+        "atomic_i64_store(atomic, 2); print(atomic_i64_load(atomic)); "
+        "atomic_i64_destroy(atomic); return 0; }"
+    )
+    assert "#include <stdatomic.h>" in c_source
+    assert "mort_thread_spawn" in c_source
+    assert "mort_atomic_i64_load" in c_source
+    with pytest.raises(MortError, match="threads are not available"):
+        mortc.compile_to_c(
+            "fn worker(context: *void) -> i64 { return 0; } "
+            "fn kmain() { thread_spawn(worker, null); }",
+            freestanding=True,
+        )
+    with pytest.raises(MortError, match="callback must be"):
+        c_of(
+            "fn wrong(value: i64) -> i64 { return value; } "
+            "fn main() -> int { thread_spawn(wrong, null); return 0; }"
+        )
+
+
+@needs_cc
+def test_cross_platform_threads_mutexes_and_atomics_run():
+    source = os.path.join(ROOT, "examples", "concurrency.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "MORT_REQUIRES_PTHREAD" in c_source
+    assert "CreateThread" in c_source
+    assert "pthread_create" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "concurrency.c")
+        exe = os.path.join(d, "concurrency.exe" if os.name == "nt" else "concurrency")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name != "nt":
+            command.append("-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2000\n2000\n2000\n2000\n5\n7\n9\n11\n"
+
+
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
@@ -1308,6 +1356,13 @@ def test_project_sanitizers_are_validated_and_deduplicated():
                 '[build]\nsources = ["src/**/*.mx"]\n'
                 'sanitizers = ["imaginary"]\n')
         with pytest.raises(ProjectError, match="unsupported sanitizer"):
+            resolve_project(manifest_path)
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                '[package]\nname = "sanitized"\n\n'
+                '[build]\nsources = ["src/**/*.mx"]\n'
+                'sanitizers = ["thread", "address"]\n')
+        with pytest.raises(ProjectError, match="cannot be combined"):
             resolve_project(manifest_path)
 
 
@@ -2096,6 +2151,10 @@ def test_configured_c_backend_and_sanitizer_flags(
         str(source), "--freestanding", "--sanitize", "address",
     ]) == 1
     assert "unavailable in freestanding mode" in capsys.readouterr().err
+    assert mortc.main([
+        str(source), "--sanitize", "thread", "--sanitize", "address",
+    ]) == 1
+    assert "cannot be combined" in capsys.readouterr().err
 
 
 def test_packaging_version_matches_compiler_version():

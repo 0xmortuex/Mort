@@ -1,18 +1,18 @@
-# Mort Language Specification 0.34
+# Mort Language Specification 0.35
 
 Status: Normative  
-Language version: 0.34.0  
+Language version: 0.35.0
 Document revision: 1  
 Last updated: 2026-07-23
 
-This document defines the source language accepted by a conforming Mort 0.34
+This document defines the source language accepted by a conforming Mort 0.35
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.34 program.
+Implementation extensions must not change the meaning of a valid 0.35 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.34.
+the programmer's responsibility in Mort 0.35.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.34 does not specify the relative evaluation order of ordinary binary
+Mort 0.35 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.34 does not promise identical
+and shifts are not defined for floats. Mort 0.35 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -508,7 +508,7 @@ The following are controlled execution failures in hosted mode:
 - failed `assert`;
 - array or slice bounds violation;
 - fixed-width integer division or remainder by zero;
-- a negative runtime shift count.
+- a negative runtime shift count;
 - an out-of-range or non-finite float-to-fixed-integer cast.
 
 A controlled failure must return a nonzero process status and emit a diagnostic
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.34's safety guarantees.
+are outside Mort 0.35's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.34's reference implementation emits C11, but C is not part of the
+Mort 0.35's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -535,6 +535,85 @@ Portable Mort source must not depend on:
 - target inline assembly or port I/O;
 - host filesystem, clock, allocator, or locale behavior not specified by the
   corresponding API.
+
+## 12. Hosted concurrency
+
+Concurrency is available only in the hosted profile. The portable public API is
+provided by `std.thread`, `std.mutex`, and `std.atomic`. Their backing builtins
+are reserved implementation interfaces.
+
+### 12.1 Threads
+
+A thread callback has type `fn(*void)->i64`. `thread_spawn(callback, context)`
+starts one callback invocation and returns an opaque `*void` handle, or `null`
+if the host cannot create the thread. The callback's result is retained by the
+handle. `thread_join(handle)` waits for completion, releases the handle, and
+returns that result. A handle must be joined exactly once. Joining a null,
+already joined, or otherwise invalid handle is an invalid program and may
+produce a controlled concurrency failure.
+
+`std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
+creation failure to an assertion failure. `thread.join(&value)` joins early and
+marks the wrapper empty; otherwise its destructor joins automatically. Thus a
+live `Thread` cannot be silently detached in Mort 0.35.
+
+The context pointer and every object reachable through it must remain valid
+until the thread has been joined. Raw pointers do not acquire lifetime
+protection merely because they cross a thread boundary.
+
+`thread.sleep_millis(duration)` suspends the current thread for at least the
+requested host-clock duration, except that host scheduling and clock failures
+may delay it further.
+
+All evaluations sequenced before a successful spawn **happen before** the first
+callback evaluation. All callback evaluations happen before evaluations
+sequenced after a successful join of that thread.
+
+### 12.2 Mutexes
+
+`std.mutex.Mutex` is a move-only, non-recursive mutual-exclusion resource.
+`mutex.lock(&value)` blocks until the calling thread owns the mutex;
+`mutex.unlock(&value)` releases it. Only the owning thread may unlock it. A
+thread must not recursively lock the same mutex, destroy a locked mutex, or
+access a destroyed handle.
+
+An unlock operation on a mutex synchronizes with the next successful lock of
+that mutex. Evaluations sequenced before the unlock happen before evaluations
+sequenced after that lock.
+
+### 12.3 Atomics
+
+`std.atomic.AtomicI64` is a move-only heap-backed atomic signed 64-bit integer.
+It provides `load`, `store`, `exchange`, `fetch_add`, `fetch_sub`, and
+`compare_exchange`. All operations are sequentially consistent. Therefore all
+atomic operations participate in one total order consistent with each thread's
+sequenced order.
+
+`fetch_add` and `fetch_sub` return the value before modification and use the
+same modulo-2^64 wrapping semantics as ordinary `i64`. `compare_exchange`
+changes the stored value to `desired` only when it equals `expected`, returning
+whether the exchange occurred.
+
+An atomic handle must not be used after destruction. Atomic operations on a
+null or invalid handle produce a controlled concurrency failure or constitute
+invalid raw-handle use.
+
+### 12.4 Data-race rule
+
+Two memory actions conflict when they access overlapping non-atomic storage,
+occur in different threads, and at least one writes. A Mort execution has a
+data race when conflicting actions are not ordered by the happens-before
+relations in this section.
+
+A program that can execute a data race is invalid. Implementations are not
+required to diagnose it in an ordinary build, and no behavior is guaranteed
+after the race. Portable concurrent programs must communicate through
+`AtomicI64`, protect conflicting storage with `Mutex`, or establish an
+equivalent native synchronization relation at a documented FFI boundary.
+
+ThreadSanitizer is a verification aid, not a replacement for this rule.
+Conforming implementations should provide a race-detection build mode when the
+target toolchain supports one.
 
 ## Appendix A. Compatibility
 
@@ -550,9 +629,10 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.34: checked borrows and
-lifetimes, threads and a data-race model, atomics, asynchronous tasks,
-exceptions, reflection, dynamic loading, stable binary package ABI, Unicode
-text semantics, and WebAssembly/mobile platform profiles. Their absence is not
-permission for an implementation to assign new meaning to currently valid
-syntax.
+The following are intentionally not defined by Mort 0.35: checked borrows and
+lifetimes, thread cancellation, detached threads, condition variables,
+read/write locks, atomics other than sequentially consistent `i64`,
+asynchronous tasks, exceptions, reflection, dynamic loading, stable binary
+package ABI, Unicode text semantics, and WebAssembly/mobile platform profiles.
+Their absence is not permission for an implementation to assign new meaning to
+currently valid syntax.

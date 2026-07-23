@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.34.0",
+  "language_version": "0.35.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -89,6 +89,14 @@
       "mode": "run",
       "sources": ["cases/run/resources.mx"],
       "stdout": "42\n",
+      "exit": 0
+    },
+    {
+      "id": "concurrency.threads_mutexes_atomics",
+      "section": "12",
+      "mode": "run",
+      "sources": ["cases/run/concurrency.mx"],
+      "stdout": "2000\n2000\n2000\n2000\n5\n7\n9\n11\n",
       "exit": 0
     },
     {

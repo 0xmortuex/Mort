@@ -1,0 +1,31 @@
+module std.thread;
+
+type Callback = fn(*void) -> i64;
+
+resource struct Thread {
+    handle: *void,
+}
+
+pub fn spawn(callback: Callback, context: *void) -> Thread {
+    let handle = thread_spawn(callback, context);
+    assert(handle != null);
+    return Thread { handle: handle };
+}
+
+pub fn join(value: *Thread) -> i64 {
+    assert((*value).handle != null);
+    let handle = (*value).handle;
+    (*value).handle = null;
+    return thread_join(handle);
+}
+
+pub fn sleep_millis(duration: u64) -> void {
+    thread_sleep_millis(duration);
+}
+
+pub fn destroy(value: *Thread) -> void {
+    if (*value).handle != null {
+        thread_join((*value).handle);
+        (*value).handle = null;
+    }
+}

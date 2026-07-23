@@ -1,0 +1,46 @@
+module std.atomic;
+
+resource struct AtomicI64 {
+    handle: *void,
+}
+
+pub fn new_i64(initial: i64) -> AtomicI64 {
+    let handle = atomic_i64_create(initial);
+    assert(handle != null);
+    return AtomicI64 { handle: handle };
+}
+
+pub fn load(value: *AtomicI64) -> i64 {
+    return atomic_i64_load((*value).handle);
+}
+
+pub fn store(value: *AtomicI64, next: i64) -> void {
+    atomic_i64_store((*value).handle, next);
+}
+
+pub fn exchange(value: *AtomicI64, next: i64) -> i64 {
+    return atomic_i64_exchange((*value).handle, next);
+}
+
+pub fn fetch_add(value: *AtomicI64, amount: i64) -> i64 {
+    return atomic_i64_fetch_add((*value).handle, amount);
+}
+
+pub fn fetch_sub(value: *AtomicI64, amount: i64) -> i64 {
+    return atomic_i64_fetch_sub((*value).handle, amount);
+}
+
+pub fn compare_exchange(
+    value: *AtomicI64,
+    expected: i64,
+    desired: i64
+) -> bool {
+    return atomic_i64_compare_exchange((*value).handle, expected, desired);
+}
+
+pub fn destroy(value: *AtomicI64) -> void {
+    if (*value).handle != null {
+        atomic_i64_destroy((*value).handle);
+        (*value).handle = null;
+    }
+}

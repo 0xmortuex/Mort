@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.35.0 - 2026-07-23
+
+Mort's hosted-concurrency release.
+
+### Added
+
+- Cross-platform hosted threads lower to Win32 threads on Windows and pthreads
+  on Linux/macOS, with `fn(*void)->i64` callbacks, opaque handles, joins, result
+  transfer, and millisecond sleeps.
+- Cross-platform mutexes provide creation, locking, unlocking, destruction, and
+  synchronization across the same supported desktop targets.
+- Heap-backed `AtomicI64` values provide sequentially consistent load, store,
+  exchange, fetch-add, fetch-sub, and compare-exchange operations.
+- Move-only `std.thread.Thread`, `std.mutex.Mutex`, and
+  `std.atomic.AtomicI64` wrappers automatically release or join live handles.
+- ThreadSanitizer is a first-class hosted sanitizer and may be combined with
+  UndefinedBehaviorSanitizer.
+
+### Semantics and validation
+
+- The Mort 0.35 specification defines spawn/join and mutex happens-before
+  edges, sequentially consistent atomic ordering, context lifetimes, ownership
+  of handles, and the language's data-race rule.
+- The conformance suite runs a synchronized two-thread workload using both a
+  mutex and atomics.
+- CI executes the safe workload under ThreadSanitizer and requires the same
+  sanitizer to reject an intentional non-atomic race fixture.
+- The full regression suite contains 311 tests, and all 20 Mort 0.35
+  conformance cases pass through the public compiler CLI.
+
 ## 0.34.0 - 2026-07-23
 
 Mort's specified-semantics and conformance release.

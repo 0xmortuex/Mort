@@ -513,11 +513,16 @@ def resolve_project(
         raise ProjectError(f"{manifest_path}: 'build.debug' must be a boolean")
     sanitizers = _string_list(build, "sanitizers", [], manifest_path)
     invalid_sanitizers = sorted(
-        set(sanitizers) - {"address", "undefined", "leak"})
+        set(sanitizers) - {"address", "undefined", "leak", "thread"})
     if invalid_sanitizers:
         raise ProjectError(
             f"{manifest_path}: unsupported sanitizer(s): "
             + ", ".join(invalid_sanitizers))
+    if "thread" in sanitizers and any(
+            item in sanitizers for item in ("address", "leak")):
+        raise ProjectError(
+            f"{manifest_path}: thread sanitizer cannot be combined with "
+            "address or leak sanitizers")
 
     dependencies = data.get("dependencies", {})
     registry = data.get("registry", {})

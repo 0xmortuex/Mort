@@ -28,6 +28,11 @@ BUILTIN_NAMES = {
     "sizeof",
     "unix_time", "cpu_millis",
     "file_open", "file_close", "file_read", "file_write", "file_flush",
+    "thread_spawn", "thread_join", "thread_sleep_millis",
+    "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock",
+    "atomic_i64_create", "atomic_i64_destroy", "atomic_i64_load",
+    "atomic_i64_store", "atomic_i64_exchange", "atomic_i64_fetch_add",
+    "atomic_i64_fetch_sub", "atomic_i64_compare_exchange",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -2126,6 +2131,109 @@ class Checker:
             if not self._coerce("u64", e.args[2]):
                 self._error(f"{e.name} length must be u64, got {e.args[2].type}", e)
             return "u64"
+        if e.name == "thread_spawn":
+            if self.freestanding:
+                self._error("threads are not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error("thread_spawn expects callback and context", e)
+            callback = self._check_expr(e.args[0])
+            expected_callback = "fn(*void)->i64"
+            if callback != expected_callback:
+                self._error(
+                    f"thread_spawn callback must be {expected_callback}, "
+                    f"got {callback}", e)
+            context = self._check_expr(e.args[1])
+            if not self._coerce("*void", e.args[1]):
+                self._error(
+                    f"thread_spawn context must be *void, got {context}", e)
+            return "*void"
+        if e.name == "thread_join":
+            if self.freestanding:
+                self._error("threads are not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("thread_join expects one thread handle", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(
+                    f"thread_join handle must be *void, got {handle}", e)
+            return "i64"
+        if e.name == "thread_sleep_millis":
+            if self.freestanding:
+                self._error("threads are not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("thread_sleep_millis expects one duration", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u64", e.args[0]):
+                self._error(
+                    f"thread_sleep_millis duration must be u64, "
+                    f"got {e.args[0].type}", e)
+            return "void"
+        if e.name == "mutex_create":
+            if self.freestanding:
+                self._error("mutexes are not available in freestanding mode", e)
+            if e.args or e.type_args:
+                self._error("mutex_create expects no arguments", e)
+            return "*void"
+        if e.name in ("mutex_destroy", "mutex_lock", "mutex_unlock"):
+            if self.freestanding:
+                self._error("mutexes are not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error(f"{e.name} expects one mutex handle", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(f"{e.name} handle must be *void, got {handle}", e)
+            return "void" if e.name == "mutex_destroy" else "bool"
+        if e.name == "atomic_i64_create":
+            if self.freestanding:
+                self._error("atomics are not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error("atomic_i64_create expects one initial value", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("i64", e.args[0]):
+                self._error(
+                    f"atomic_i64_create value must be i64, got {e.args[0].type}", e)
+            return "*void"
+        if e.name in ("atomic_i64_destroy", "atomic_i64_load"):
+            if self.freestanding:
+                self._error("atomics are not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error(f"{e.name} expects one atomic handle", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(f"{e.name} handle must be *void, got {handle}", e)
+            return "void" if e.name == "atomic_i64_destroy" else "i64"
+        if e.name in (
+                "atomic_i64_store", "atomic_i64_exchange",
+                "atomic_i64_fetch_add", "atomic_i64_fetch_sub"):
+            if self.freestanding:
+                self._error("atomics are not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error(f"{e.name} expects handle and value", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(f"{e.name} handle must be *void, got {handle}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("i64", e.args[1]):
+                self._error(f"{e.name} value must be i64, got {e.args[1].type}", e)
+            return "void" if e.name == "atomic_i64_store" else "i64"
+        if e.name == "atomic_i64_compare_exchange":
+            if self.freestanding:
+                self._error("atomics are not available in freestanding mode", e)
+            if len(e.args) != 3:
+                self._error(
+                    "atomic_i64_compare_exchange expects handle, expected, "
+                    "and desired", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(
+                    f"atomic_i64_compare_exchange handle must be *void, "
+                    f"got {handle}", e)
+            for argument in e.args[1:]:
+                self._check_expr(argument)
+                if not self._coerce("i64", argument):
+                    self._error(
+                        "atomic_i64_compare_exchange values must be i64", e)
+            return "bool"
         if e.name == "print":
             if self.freestanding:
                 self._error(

@@ -57,6 +57,8 @@ jobs:
           python mortc.py fuzz --cases 20000 --seed 330
           python mortc.py examples/collections.mx --run \
             --sanitize address --sanitize undefined
+          MORT_CC=gcc python mortc.py examples/concurrency.mx --run \
+            --sanitize thread --sanitize undefined
           python kernel/build.py check
 
       - name: Verify packaged compiler
