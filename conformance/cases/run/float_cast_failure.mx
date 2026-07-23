@@ -1,0 +1,5 @@
+fn main() -> int {
+    let huge: f64 = 1e30;
+    print((huge as i32) as i64);
+    return 0;
+}

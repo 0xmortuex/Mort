@@ -1,0 +1,15 @@
+fn main() -> int {
+    defer println("cleanup");
+    let exclusive: i64 = 0;
+    for index in 0..5 {
+        exclusive += index;
+    }
+    print(exclusive);
+
+    let inclusive: i64 = 0;
+    for index in 1..=3 {
+        inclusive += index;
+    }
+    print(inclusive);
+    return 0;
+}

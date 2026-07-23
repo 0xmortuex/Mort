@@ -1,0 +1,14 @@
+fn main() -> int {
+    let positive: i64 = 128;
+    print((positive as i8) as i64);
+
+    let maximum: u64 = 18446744073709551615;
+    print(maximum as i64);
+
+    let low: f64 = 127.9;
+    print((low as i8) as i64);
+
+    let negative: f64 = 0.0 - 128.9;
+    print((negative as i8) as i64);
+    return 0;
+}

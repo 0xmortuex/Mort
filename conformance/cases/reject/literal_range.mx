@@ -1,0 +1,4 @@
+fn main() -> int {
+    let value: u8 = 256;
+    return 0;
+}

@@ -1,0 +1,6 @@
+import math as numbers;
+
+fn main() -> int {
+    print(numbers.double(21));
+    return 0;
+}

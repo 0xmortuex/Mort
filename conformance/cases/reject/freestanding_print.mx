@@ -1,0 +1,3 @@
+fn kmain() {
+    print(42);
+}

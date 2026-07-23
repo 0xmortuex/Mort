@@ -1,0 +1,4 @@
+fn main() -> int {
+    let value: i64 = 7 / 0;
+    return value;
+}

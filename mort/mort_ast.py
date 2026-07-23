@@ -404,3 +404,4 @@ class Index(Node):
         self.obj = obj
         self.index = index
         self.line = line
+        self.obj_temp_name = None

@@ -1,0 +1,9 @@
+module conformance.math;
+
+fn helper(value: i64) -> i64 {
+    return value + value;
+}
+
+pub fn double(value: i64) -> i64 {
+    return helper(value);
+}

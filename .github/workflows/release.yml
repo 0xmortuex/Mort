@@ -53,6 +53,7 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           python -m pytest tests/ -q
+          python conformance/run.py
           python mortc.py fuzz --cases 20000 --seed 330
           python mortc.py examples/collections.mx --run \
             --sanitize address --sanitize undefined

@@ -69,7 +69,7 @@ def test_hello_generates_c():
 def test_types_and_inference():
     c = c_of("fn main() -> int { let x = 3; let y: int = x + 1; print(y); return 0; }")
     assert "int64_t m_x = 3;" in c
-    assert "int64_t m_y = (m_x + 1);" in c
+    assert "int64_t m_y = mort_wrap_i64(" in c
 
 
 @needs_cc
@@ -181,7 +181,7 @@ def test_compound_assignments_run_and_preserve_lvalue_evaluation():
     )
     c_source = c_of(src)
     assert "mort_next_index((&m_calls))" in c_source
-    assert ")] += 5;" in c_source
+    assert "int64_t* mort_assign_" in c_source
     with tempfile.TemporaryDirectory() as d:
         cfile = os.path.join(d, "compound.c")
         exe = os.path.join(d, "compound.exe" if os.name == "nt" else "compound")
@@ -490,14 +490,69 @@ def test_cast_codegen():
     c = c_of(
         "fn main() -> int { let x: i32 = 1; let p: *i32 = &x; let a: u64 = p as u64; print(x); return 0; }"
     )
-    assert "((uint64_t)m_p)" in c
+    assert "(uintptr_t)(m_p)" in c
+
+
+@needs_cc
+def test_numeric_casts_have_defined_fixed_width_semantics_under_ubsan():
+    src = (
+        "fn main() -> int {"
+        "  let positive: i64 = 128; print((positive as i8) as i64);"
+        "  let maximum: u64 = 18446744073709551615; "
+        "  print(maximum as i64);"
+        "  let low: f64 = 127.9; print((low as i8) as i64);"
+        "  let negative: f64 = 0.0 - 128.9; "
+        "  print((negative as i8) as i64);"
+        "  return 0;"
+        "}"
+    )
+    c_source = c_of(src)
+    assert "mort_wrap_i8" in c_source
+    assert "mort_wrap_i64" in c_source
+    assert "mort_float_to_i8" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "numeric_casts.c")
+        exe = os.path.join(d, "numeric_casts.exe" if os.name == "nt" else "numeric_casts")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        ], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == "-128\n-1\n127\n-128\n"
+
+
+@needs_cc
+def test_out_of_range_float_to_integer_cast_is_a_controlled_failure():
+    c_source = c_of(
+        "fn main() -> int { let huge: f64 = 1e30; "
+        "print((huge as i32) as i64); return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "float_cast.c")
+        exe = os.path.join(d, "float_cast.exe" if os.name == "nt" else "float_cast")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        ], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "floating-point to integer cast out of range" in result.stderr
+    assert "Mort line 1" in result.stderr
+    assert "runtime error" not in result.stderr
 
 
 def test_literal_coercion_in_arithmetic():
     # the untyped literal 5 adopts u8; the u8 result is narrowed back so C's
     # promotion to int doesn't leak (250 + 5 wraps to 255 in u8)
     c = c_of("fn main() -> int { let a: u8 = 250; let b: u8 = a + 5; print(b); return 0; }")
-    assert "uint8_t m_b = ((uint8_t)(m_a + 5));" in c
+    assert "uint8_t m_b = " in c
+    assert "(uint32_t)((uint8_t)(m_a))" in c
 
 
 @needs_cc
@@ -519,6 +574,99 @@ def test_narrow_width_semantics():
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.stdout == "254\n0\n44\n"
+
+
+@needs_cc
+def test_fixed_width_runtime_integer_semantics_are_defined_under_ubsan():
+    src = (
+        "fn main() -> int {"
+        "  let max32: i32 = 2147483647; let one32: i32 = 1;"
+        "  print((max32 + one32) as i64);"
+        "  let min32: i32 = (0 - 1) << 31; let neg32: i32 = 0 - 1;"
+        "  print((min32 / neg32) as i64); print((min32 % neg32) as i64);"
+        "  let max64: i64 = 9223372036854775807; let one64: i64 = 1;"
+        "  print(max64 + one64);"
+        "  let min64: i64 = (0 - 1) << 63; let neg64: i64 = 0 - 1;"
+        "  print(min64 / neg64); print(min64 % neg64);"
+        "  let value: i16 = 30000; let multiplier: i16 = 3;"
+        "  print((value * multiplier) as i64);"
+        "  let left: u16 = 1; let wide: u64 = 16;"
+        "  print((left << wide) as i64);"
+        "  let negative: i16 = 0 - 8; let far: u32 = 40;"
+        "  print((negative >> far) as i64);"
+        "  let assigned: i32 = 2147483647; assigned += one32;"
+        "  print(assigned as i64);"
+        "  return 0;"
+        "}"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "defined_ints.c")
+        exe = os.path.join(d, "defined_ints.exe" if os.name == "nt" else "defined_ints")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        ], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == (
+        "-2147483648\n-2147483648\n0\n"
+        "-9223372036854775808\n-9223372036854775808\n0\n"
+        "24464\n0\n-1\n-2147483648\n"
+    )
+
+
+@needs_cc
+@pytest.mark.parametrize(
+    ("operator", "message"),
+    [
+        ("/", "integer division by zero"),
+        ("%", "integer remainder by zero"),
+    ],
+)
+def test_runtime_integer_zero_divisor_is_a_controlled_failure(operator, message):
+    c_source = c_of(
+        "fn main() -> int { let value: i32 = 7; let zero: i32 = 0; "
+        f"print((value {operator} zero) as i64); return 0; }}"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "zero_divisor.c")
+        exe = os.path.join(d, "zero_divisor.exe" if os.name == "nt" else "zero_divisor")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        ], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert "Mort line 1" in result.stderr
+    assert "runtime error" not in result.stderr
+
+
+@needs_cc
+def test_runtime_negative_shift_count_is_a_controlled_failure():
+    c_source = c_of(
+        "fn main() -> int { let value: i32 = 1; let count: i64 = 0 - 1; "
+        "print((value << count) as i64); return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "negative_shift.c")
+        exe = os.path.join(d, "negative_shift.exe" if os.name == "nt" else "negative_shift")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        ], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "negative integer shift count at Mort line 1" in result.stderr
+    assert "runtime error" not in result.stderr
 
 
 # ---------- Phase 2b: structs and inline asm ----------
@@ -601,7 +749,7 @@ def test_port_io_long_helpers_emitted_per_builtin():
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
-    assert "m_counter = (m_counter + 5);" in c
+    assert "m_counter = mort_wrap_i64(" in c
 
 
 def test_global_string_codegen():
@@ -651,9 +799,10 @@ def test_global_array_codegen():
 def test_bitwise_codegen():
     c = c_of("fn main() -> int { let a: u32 = 6; let b: u32 = 3; "
              "print((a & b) as i64); print((a | b) as i64); print((a ^ b) as i64); return 0; }")
-    assert "(m_a & m_b)" in c
-    assert "(m_a | m_b)" in c
-    assert "(m_a ^ m_b)" in c
+    assert "(uint32_t)(m_a)" in c
+    assert " & " in c
+    assert " | " in c
+    assert " ^ " in c
 
 
 def test_const_fold_bitwise_in_range():
@@ -663,10 +812,10 @@ def test_const_fold_bitwise_in_range():
 
 
 def test_shift_and_not_codegen():
-    # a runtime shift casts its left operand to the result type (right width)
+    # Runtime shifts use width-aware helpers and bitwise-not uses unsigned bits.
     c = c_of("fn main() -> int { let a: u32 = 1; print((a << 4) as i64); print((~a) as i64); return 0; }")
-    assert "((uint32_t)(m_a) << 4)" in c
-    assert "(~m_a)" in c
+    assert "mort_shl_u32((uint32_t)(m_a), mort_shift_count_signed(" in c
+    assert "~(uint32_t)((uint32_t)(m_a))" in c
 
 
 def test_constant_shift_folded():
@@ -1949,6 +2098,11 @@ def test_packaging_version_matches_compiler_version():
     assert f'version = "{mortc.__version__}"' in project_text
     assert 'mortc = "mortc:main"' in project_text
     assert "std/random.mx" in project_text
+    with open(
+            os.path.join(ROOT, "conformance", "manifest.json"),
+            encoding="utf-8") as handle:
+        conformance = json.load(handle)
+    assert conformance["language_version"] == mortc.__language_version__
 
 
 @needs_cc
@@ -2037,6 +2191,31 @@ def test_len_and_runtime_array_bounds_checks():
     assert results[0].stdout == "3\n4\n2\n"
     assert results[1].returncode != 0
     assert "index out of bounds" in results[1].stderr
+
+
+@needs_cc
+def test_typed_slice_index_object_is_evaluated_once():
+    src = (
+        "fn view(values: *i64, calls: *i64) -> []i64 { "
+        "*calls += 1; return slice(values, 1); } "
+        "fn main() -> int { let values: [i64; 1] = [42]; let calls: i64 = 0; "
+        "print(view(&values[0], &calls)[0]); print(calls); return 0; }"
+    )
+    c_source = c_of(src)
+    assert c_source.count("mort_view(") == 3  # prototype, definition, one call
+    assert "mort_index_obj_" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "slice_once.c")
+        exe = os.path.join(d, "slice_once.exe" if os.name == "nt" else "slice_once")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n1\n"
 
 
 @needs_cc

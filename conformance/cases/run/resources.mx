@@ -1,0 +1,29 @@
+resource struct Buffer {
+    data: *u8,
+    length: u64,
+}
+
+fn destroy(value: *Buffer) -> void {
+    free((*value).data);
+    (*value).data = null;
+    (*value).length = 0;
+}
+
+fn make() -> Buffer {
+    let data = alloc(1) as *u8;
+    data[0] = 42;
+    return Buffer { data: data, length: 1 };
+}
+
+fn consume(value: Buffer) -> i64 {
+    let answer = value.data[0] as i64;
+    destroy(&value);
+    return answer;
+}
+
+fn main() -> int {
+    let original = make();
+    let transferred = move original;
+    print(consume(move transferred));
+    return 0;
+}

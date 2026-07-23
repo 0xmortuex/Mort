@@ -1,0 +1,16 @@
+fn main() -> int {
+    let one: u16 = 1;
+    let width: u64 = 16;
+    print((one << width) as i64);
+    print((one >> width) as i64);
+
+    let negative: i16 = 0 - 8;
+    let far: u32 = 40;
+    print((negative >> far) as i64);
+
+    let minimum: i64 = (0 - 1) << 63;
+    let minus_one: i64 = 0 - 1;
+    print(minimum / minus_one);
+    print(minimum % minus_one);
+    return 0;
+}

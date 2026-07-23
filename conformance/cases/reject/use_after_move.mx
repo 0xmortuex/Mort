@@ -1,0 +1,15 @@
+resource struct Handle {
+    value: i64,
+}
+
+fn destroy(value: *Handle) -> void {
+    (*value).value = 0;
+}
+
+fn main() -> int {
+    let first = Handle { value: 42 };
+    let second = move first;
+    print(first.value);
+    destroy(&second);
+    return 0;
+}

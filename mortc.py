@@ -30,7 +30,7 @@ from mort.typechecker import Checker  # noqa: E402
 from mort.codegen import CodeGen      # noqa: E402
 from mort.errors import MortError     # noqa: E402
 from mort.mort_ast import Node, Program  # noqa: E402
-from mort import __version__         # noqa: E402
+from mort import __language_version__, __version__  # noqa: E402
 from mort.project import (           # noqa: E402
     ProjectError,
     add_git_dependency,
@@ -313,6 +313,12 @@ def find_zig():
 def _compile_main(argv=None, test_mode=False):
     ap = argparse.ArgumentParser(prog="mortc", description="The Mort compiler.")
     ap.add_argument("--version", action="version", version=f"Mort {__version__}")
+    ap.add_argument(
+        "--language-version",
+        action="version",
+        version=__language_version__,
+        help="print the implemented Mort language version and exit",
+    )
     ap.add_argument("files", nargs="+", metavar="file",
                     help="one or more .mx source files")
     ap.add_argument("-o", "--output", help="output file name")

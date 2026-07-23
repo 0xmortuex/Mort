@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.34.0 - 2026-07-23
+
+Mort's specified-semantics and conformance release.
+
+### Language semantics
+
+- Fixed-width runtime integer addition, subtraction, multiplication, unary
+  negation, and bitwise operations now use explicit N-bit wrapping without
+  relying on C signed-overflow behavior.
+- Runtime shifts have defined behavior at and beyond the operand width, signed
+  right shift is explicitly arithmetic, and negative runtime counts fail with
+  a source-line diagnostic.
+- Runtime division and remainder by zero fail through a controlled Mort
+  diagnostic. Signed `MIN / -1` wraps to `MIN`, and `MIN % -1` is zero.
+- Compound assignments preserve one evaluation of their target location while
+  using the same defined arithmetic as their binary operators.
+- Indexing a computed slice now captures the slice once instead of potentially
+  evaluating the object expression once for data and again for length.
+
+### Specification and compatibility
+
+- `docs/language-specification.md` is the first versioned normative Mort
+  language specification, covering grammar, typing, integer semantics,
+  control flow, modules, ownership, cleanup, error propagation, profiles, and
+  portability boundaries.
+- `conformance/` provides a black-box, implementation-independent manifest and
+  runner with hosted execution, modules, generics, aggregates, ownership,
+  integer edge cases, and required rejection diagnostics.
+- `mortc --language-version` identifies the implemented language contract
+  independently of the compiler command's ordinary version output.
+- CI runs the conformance suite on Linux, Windows, and macOS, and release gates
+  require it before artifacts can be published.
+
+### Validation
+
+- Generated integer edge cases execute cleanly under UndefinedBehaviorSanitizer.
+- The full regression suite contains 309 tests, and all 19 initial conformance
+  cases pass through the public compiler CLI.
+
 ## 0.33.0 — 2026-07-23
 
 Mort's reliability and supply-chain hardening release.

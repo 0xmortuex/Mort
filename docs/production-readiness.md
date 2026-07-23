@@ -24,8 +24,10 @@ only when an automated gate or named artifact provides repeatable evidence.
   UBSan with leak detection enabled.
 - [ ] Differential and metamorphic tests cover optimization levels and multiple
   C backends.
-- [ ] The language has a versioned normative specification with an executable
-  conformance suite.
+- [x] Mort 0.34 has a versioned
+  [normative specification](language-specification.md) and a black-box
+  [executable conformance suite](../conformance/README.md), gated on Linux,
+  Windows, macOS, and releases.
 - [ ] An independent compiler and security audit has been completed and all
   critical findings are closed.
 

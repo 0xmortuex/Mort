@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-302%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-309%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -75,7 +75,12 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.33)
+## The language (v0.34)
+
+Mort 0.34 has a
+[versioned normative language specification](docs/language-specification.md)
+and a black-box [executable conformance suite](conformance/README.md). Run
+`mortc --language-version` to print the implemented language contract.
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -150,7 +155,9 @@ C `main`, so the output is an ordinary native binary.
   type (`for i: u32 in 0..n`). Inclusive ranges remain safe at integer maxima.
 - **Operators:** `+ - * / %`, `== != < > <= >=`, `&& || !`, bitwise
   `& | ^ << >> ~`, unary `-`, and the matching compound assignments such as
-  `+=`, `*=`, `|=`, and `<<=`.
+  `+=`, `*=`, `|=`, and `<<=`. Fixed-width runtime arithmetic wraps
+  deterministically; shifts and signed division edge cases have specified
+  behavior rather than inheriting C undefined behavior.
 - **Literals:** decimal, hex (`0xFF`), binary (`0b1010`), octal (`0o755`),
   character (`'A'` and `'\n'`), floating point, and readable numeric separators
   (`1_000_000`). Untyped integer literals adopt the integer type they're used

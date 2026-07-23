@@ -1,0 +1,11 @@
+enum State {
+    Idle,
+    Running,
+}
+
+fn main() -> int {
+    let state: State = State.Idle;
+    match state {
+        State.Idle => { return 0; },
+    }
+}

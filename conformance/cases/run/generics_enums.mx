@@ -1,0 +1,26 @@
+struct Box<T> {
+    value: T,
+}
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+fn identity<T>(value: T) -> T {
+    return value;
+}
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return 0; },
+    }
+}
+
+fn main() -> int {
+    let boxed: Box<i64> = Box<i64> { value: identity(42) };
+    print(boxed.value);
+    print(unwrap(Option<i64>.Some(7)));
+    return 0;
+}

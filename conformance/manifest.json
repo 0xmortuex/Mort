@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "language": "Mort",
+  "language_version": "0.34.0",
+  "cases": [
+    {
+      "id": "hosted.hello",
+      "section": "7.3",
+      "mode": "run",
+      "sources": ["cases/run/hello.mx"],
+      "stdout": "Mort\n42\n",
+      "exit": 0
+    },
+    {
+      "id": "lexical.literals",
+      "section": "2.3",
+      "mode": "run",
+      "sources": ["cases/run/literals.mx"],
+      "stdout": "255\n10\n493\n1000000\n65\n10\n",
+      "exit": 0
+    },
+    {
+      "id": "integers.wrapping",
+      "section": "7.1",
+      "mode": "run",
+      "sources": ["cases/run/integer_wrapping.mx"],
+      "stdout": "-2147483648\n-9223372036854775808\n24464\n-2147483648\n",
+      "exit": 0
+    },
+    {
+      "id": "integers.shift_and_division_edges",
+      "section": "7.1",
+      "mode": "run",
+      "sources": ["cases/run/integer_edges.mx"],
+      "stdout": "0\n0\n-1\n-9223372036854775808\n0\n",
+      "exit": 0
+    },
+    {
+      "id": "casts.fixed_width_numeric",
+      "section": "7.1",
+      "mode": "run",
+      "sources": ["cases/run/numeric_casts.mx"],
+      "stdout": "-128\n-1\n127\n-128\n",
+      "exit": 0
+    },
+    {
+      "id": "control.ranges_and_cleanup",
+      "section": "6",
+      "mode": "run",
+      "sources": ["cases/run/control_flow.mx"],
+      "stdout": "10\n6\ncleanup\n",
+      "exit": 0
+    },
+    {
+      "id": "aggregates.struct_tuple_array_slice",
+      "section": "4.2",
+      "mode": "run",
+      "sources": ["cases/run/aggregates.mx"],
+      "stdout": "42\n3\n9\n",
+      "exit": 0
+    },
+    {
+      "id": "generics.enums_and_match",
+      "section": "4.2",
+      "mode": "run",
+      "sources": ["cases/run/generics_enums.mx"],
+      "stdout": "42\n7\n",
+      "exit": 0
+    },
+    {
+      "id": "booleans.short_circuit",
+      "section": "7",
+      "mode": "run",
+      "sources": ["cases/run/short_circuit.mx"],
+      "stdout": "0\n",
+      "exit": 0
+    },
+    {
+      "id": "modules.public_namespace",
+      "section": "5",
+      "mode": "run",
+      "sources": ["cases/run/modules/main.mx", "cases/run/modules/math.mx"],
+      "stdout": "42\n",
+      "exit": 0
+    },
+    {
+      "id": "ownership.explicit_move",
+      "section": "8",
+      "mode": "run",
+      "sources": ["cases/run/resources.mx"],
+      "stdout": "42\n",
+      "exit": 0
+    },
+    {
+      "id": "diagnostic.type_mismatch",
+      "section": "4.3",
+      "mode": "reject",
+      "sources": ["cases/reject/type_mismatch.mx"],
+      "stderr_contains": "type mismatch"
+    },
+    {
+      "id": "diagnostic.literal_range",
+      "section": "2.3",
+      "mode": "reject",
+      "sources": ["cases/reject/literal_range.mx"],
+      "stderr_contains": "does not fit in u8"
+    },
+    {
+      "id": "diagnostic.constant_zero_divisor",
+      "section": "7.1",
+      "mode": "reject",
+      "sources": ["cases/reject/zero_divisor.mx"],
+      "stderr_contains": "integer division by zero"
+    },
+    {
+      "id": "diagnostic.negative_shift",
+      "section": "7.1",
+      "mode": "reject",
+      "sources": ["cases/reject/negative_shift.mx"],
+      "stderr_contains": "shift count cannot be negative"
+    },
+    {
+      "id": "failure.float_cast_range",
+      "section": "7.1",
+      "mode": "run-fail",
+      "sources": ["cases/run/float_cast_failure.mx"],
+      "stderr_contains": "floating-point to integer cast out of range",
+      "exit_nonzero": true
+    },
+    {
+      "id": "diagnostic.non_exhaustive_match",
+      "section": "6",
+      "mode": "reject",
+      "sources": ["cases/reject/non_exhaustive.mx"],
+      "stderr_contains": "non-exhaustive match"
+    },
+    {
+      "id": "diagnostic.use_after_move",
+      "section": "8",
+      "mode": "reject",
+      "sources": ["cases/reject/use_after_move.mx"],
+      "stderr_contains": "use of moved resource"
+    },
+    {
+      "id": "profile.freestanding_rejects_print",
+      "section": "7.3",
+      "mode": "reject",
+      "args": ["--freestanding"],
+      "sources": ["cases/reject/freestanding_print.mx"],
+      "stderr_contains": "not available in freestanding mode"
+    }
+  ]
+}

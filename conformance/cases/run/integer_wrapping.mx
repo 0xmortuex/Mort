@@ -1,0 +1,18 @@
+fn main() -> int {
+    let max32: i32 = 2147483647;
+    let one32: i32 = 1;
+    print((max32 + one32) as i64);
+
+    let max64: i64 = 9223372036854775807;
+    let one64: i64 = 1;
+    print(max64 + one64);
+
+    let value: i16 = 30000;
+    let multiplier: i16 = 3;
+    print((value * multiplier) as i64);
+
+    let assigned: i32 = 2147483647;
+    assigned += one32;
+    print(assigned as i64);
+    return 0;
+}

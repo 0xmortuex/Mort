@@ -57,10 +57,13 @@ jobs:
           mortc doctor
 
       - name: Run Python static checks
-        run: ruff check mort mortc.py fuzz/atheris_frontend.py tests/test_mort.py
+        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tests/test_mort.py
 
       - name: Run the test suite
         run: python -m pytest tests/ -q
+
+      - name: Run the Mort 0.34 conformance suite
+        run: python conformance/run.py --mortc mortc
 
       - name: Run adversarial front-end fuzzing
         run: mortc fuzz --cases 10000 --seed ${{ matrix.fuzz-seed }}
@@ -134,6 +137,8 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
           tar -tf dist/*.tar.gz | grep "/docs/production-readiness.md"
+          tar -tf dist/*.tar.gz | grep "/docs/language-specification.md"
+          tar -tf dist/*.tar.gz | grep "/conformance/manifest.json"
           tar -tf dist/*.tar.gz | grep "/fuzz/atheris_frontend.py"
           tar -tf dist/*.tar.gz | grep "/kernel/kmain.mx"
 

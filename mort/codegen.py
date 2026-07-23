@@ -20,6 +20,19 @@ _C_BASE = {
     "c_long": "long", "c_ulong": "unsigned long", "c_size": "size_t",
 }
 
+_FIXED_INT_INFO = {
+    "i8": ("int8_t", "uint8_t", 8, True),
+    "i16": ("int16_t", "uint16_t", 16, True),
+    "i32": ("int32_t", "uint32_t", 32, True),
+    "i64": ("int64_t", "uint64_t", 64, True),
+    "u8": ("uint8_t", "uint8_t", 8, False),
+    "u16": ("uint16_t", "uint16_t", 16, False),
+    "u32": ("uint32_t", "uint32_t", 32, False),
+    "u64": ("uint64_t", "uint64_t", 64, False),
+}
+
+_FLOAT_TYPES = {"f32", "f64"}
+
 
 def _is_array(t):
     return t.startswith("[") and not t.startswith("[]")
@@ -302,13 +315,71 @@ class CodeGen:
             lit = str(v)
         return f"(({self._ct(t)}){lit})"
 
-    def _narrow(self, e, code):
-        """Cast an arithmetic result back to a sub-int width (i8/u8/i16/u16), so
-        Mort's fixed-width semantics survive C's promotion of narrow types to int.
-        Wider types (i32/u32/i64/u64) already keep their width in C."""
-        if getattr(e, "type", None) in ("i8", "u8", "i16", "u16"):
-            return f"(({self._ct(e.type)}){code})"
-        return code
+    def _fixed_wrap(self, typ, code):
+        """Convert an unsigned bit pattern to a fixed-width Mort integer."""
+        ctype, unsigned, _, signed = _FIXED_INT_INFO[typ]
+        code = f"(({unsigned})({code}))"
+        if signed:
+            self.used_int_helpers.add(("wrap", typ))
+            return f"mort_wrap_{typ}({code})"
+        return f"(({ctype}){code})"
+
+    def _fixed_unary(self, typ, op, operand):
+        _, unsigned, bits, _ = _FIXED_INT_INFO[typ]
+        promoted = "uint32_t" if bits <= 32 else "uint64_t"
+        if op == "-":
+            code = f"(({promoted})0 - ({promoted})(({unsigned})({operand})))"
+        else:
+            code = f"(~({promoted})(({unsigned})({operand})))"
+        return self._fixed_wrap(typ, code)
+
+    def _fixed_binary(self, typ, op, left, right, line):
+        _, unsigned, bits, _ = _FIXED_INT_INFO[typ]
+        if op in ("+", "-", "*", "&", "|", "^"):
+            promoted = "uint32_t" if bits <= 32 else "uint64_t"
+            code = (
+                f"(({promoted})(({unsigned})({left})) {op} "
+                f"({promoted})(({unsigned})({right})))"
+            )
+            return self._fixed_wrap(typ, code)
+        if op in ("/", "%"):
+            helper = "div" if op == "/" else "rem"
+            self.used_int_helpers.add((helper, typ))
+            ctype = self._ct(typ)
+            return (
+                f"mort_{helper}_{typ}(({ctype})({left}), "
+                f"({ctype})({right}), {line})"
+            )
+        raise AssertionError(f"unsupported fixed-width operator {op!r}")
+
+    def _fixed_shift(self, typ, op, left, right, right_type, line):
+        helper = "shl" if op == "<<" else "shr"
+        self.used_int_helpers.add((helper, typ))
+        signed_count = right_type in {
+            "i8", "i16", "i32", "i64", "c_char", "c_short", "c_int", "c_long",
+        }
+        if signed_count:
+            self.used_int_helpers.add(("shift_count", "signed"))
+            count = f"mort_shift_count_signed((int64_t)({right}), {line})"
+        else:
+            count = f"((uint64_t)({right}))"
+        ctype = self._ct(typ)
+        return f"mort_{helper}_{typ}(({ctype})({left}), {count})"
+
+    def _gen_cast(self, expression):
+        source = self._gen_expr(expression.expr)
+        target = expression.target_type
+        if target not in _FIXED_INT_INFO:
+            return f"(({self._ct(target)}){source})"
+        if expression.expr.type in _FLOAT_TYPES:
+            self.used_int_helpers.add(("float_cast", target))
+            return (
+                f"mort_float_to_{target}((double)({source}), "
+                f"{expression.line})"
+            )
+        if expression.expr.type.startswith("*"):
+            source = f"((uintptr_t)({source}))"
+        return self._fixed_wrap(target, source)
 
     def _var_decl(self, var_type, cname, init=None, binding_const=False):
         """A C declaration for a variable/field, handling arrays (whose size
@@ -342,6 +413,166 @@ class CodeGen:
     def _emit(self, s=""):
         self.lines.append(("    " * self.indent + s) if s else "")
 
+    def _gen_integer_helpers(self):
+        if not self.used_int_helpers:
+            return
+
+        needs_failure = any(
+            operation in ("div", "rem", "shift_count", "float_cast")
+            for operation, _ in self.used_int_helpers
+        )
+        if needs_failure:
+            if self.freestanding:
+                self._emit("static void mort_integer_failure(void) {")
+                self._emit("    __builtin_trap();")
+                self._emit("}")
+            else:
+                self._emit(
+                    "static void mort_integer_failure("
+                    "const char* reason, int64_t line) {")
+                self._emit(
+                    '    fprintf(stderr, "%s at Mort line %lld\\n", reason, '
+                    "(long long)line);")
+                self._emit("    exit(1);")
+                self._emit("}")
+            self._emit()
+
+        # Shifts and signed arithmetic request their wrap helper while this
+        # routine is emitting helpers, so close that dependency set first.
+        for operation, typ in tuple(self.used_int_helpers):
+            if operation in ("shl", "shr") and typ.startswith("i"):
+                self.used_int_helpers.add(("wrap", typ))
+
+        for typ in ("i8", "i16", "i32", "i64"):
+            if ("wrap", typ) not in self.used_int_helpers:
+                continue
+            ctype, unsigned, bits, _ = _FIXED_INT_INFO[typ]
+            self._emit(f"static inline {ctype} mort_wrap_{typ}({unsigned} value) {{")
+            self._emit(f"    if (value <= ({unsigned})INT{bits}_MAX) {{")
+            self._emit(f"        return ({ctype})value;")
+            self._emit("    }")
+            self._emit(
+                f"    return ({ctype})(-1 - "
+                f"({ctype})(UINT{bits}_MAX - value));")
+            self._emit("}")
+            self._emit()
+
+        if ("shift_count", "signed") in self.used_int_helpers:
+            self._emit(
+                "static inline uint64_t mort_shift_count_signed("
+                "int64_t count, int64_t line) {")
+            if self.freestanding:
+                self._emit("    (void)line;")
+                self._emit("    if (count < 0) { mort_integer_failure(); }")
+            else:
+                self._emit(
+                    '    if (count < 0) { mort_integer_failure('
+                    '"negative integer shift count", line); }')
+            self._emit("    return (uint64_t)count;")
+            self._emit("}")
+            self._emit()
+
+        for typ, (ctype, _, bits, signed) in _FIXED_INT_INFO.items():
+            if ("float_cast", typ) not in self.used_int_helpers:
+                continue
+            if signed:
+                if bits == 64:
+                    condition = (
+                        "value >= -9223372036854775808.0 "
+                        "&& value < 9223372036854775808.0")
+                else:
+                    lower = -(2 ** (bits - 1)) - 1
+                    upper = 2 ** (bits - 1)
+                    condition = f"value > {lower}.0 && value < {upper}.0"
+            else:
+                upper = 2 ** bits
+                condition = f"value > -1.0 && value < {upper}.0"
+            self._emit(
+                f"static inline {ctype} mort_float_to_{typ}("
+                "double value, int64_t line) {")
+            if self.freestanding:
+                self._emit(
+                    f"    if (!({condition})) {{ mort_integer_failure(); }}")
+                self._emit("    (void)line;")
+            else:
+                self._emit(f"    if (!({condition})) {{")
+                self._emit(
+                    '        mort_integer_failure('
+                    '"floating-point to integer cast out of range", line);')
+                self._emit("    }")
+            self._emit(f"    return ({ctype})value;")
+            self._emit("}")
+            self._emit()
+
+        for operation in ("shl", "shr", "div", "rem"):
+            for typ, (ctype, unsigned, bits, signed) in _FIXED_INT_INFO.items():
+                if (operation, typ) not in self.used_int_helpers:
+                    continue
+                if operation in ("shl", "shr"):
+                    self._emit(
+                        f"static inline {ctype} mort_{operation}_{typ}("
+                        f"{ctype} value, uint64_t count) {{")
+                    if operation == "shl":
+                        self._emit(
+                            f"    if (count >= {bits}U) {{ return ({ctype})0; }}")
+                        promoted = "uint32_t" if bits <= 32 else "uint64_t"
+                        expression = (
+                            f"(({promoted})(({unsigned})value)) << count")
+                    elif signed:
+                        self._emit(
+                            f"    if (count >= {bits}U) {{ "
+                            f"return value < 0 ? ({ctype})-1 : ({ctype})0; }}")
+                        self._emit("    if (count == 0U) { return value; }")
+                        self._emit(
+                            f"    {unsigned} shifted = "
+                            f"(({unsigned})value) >> count;")
+                        self._emit("    if (value < 0) {")
+                        self._emit(
+                            f"        shifted |= ({unsigned})"
+                            f"(UINT{bits}_MAX << ({bits}U - count));")
+                        self._emit("    }")
+                        expression = "shifted"
+                    else:
+                        self._emit(
+                            f"    if (count >= {bits}U) {{ return ({ctype})0; }}")
+                        expression = "value >> count"
+                    if signed:
+                        self._emit(
+                            f"    return mort_wrap_{typ}("
+                            f"({unsigned})({expression}));")
+                    else:
+                        self._emit(f"    return ({ctype})({expression});")
+                    self._emit("}")
+                    self._emit()
+                    continue
+
+                self._emit(
+                    f"static inline {ctype} mort_{operation}_{typ}("
+                    f"{ctype} left, {ctype} right, int64_t line) {{")
+                if self.freestanding:
+                    self._emit("    (void)line;")
+                    self._emit("    if (right == 0) { mort_integer_failure(); }")
+                else:
+                    reason = (
+                        "integer division by zero"
+                        if operation == "div"
+                        else "integer remainder by zero"
+                    )
+                    self._emit(
+                        f'    if (right == 0) {{ mort_integer_failure('
+                        f'"{reason}", line); }}')
+                if signed:
+                    self._emit(
+                        f"    if (left == INT{bits}_MIN "
+                        f"&& right == ({ctype})-1) {{")
+                    result = f"INT{bits}_MIN" if operation == "div" else "0"
+                    self._emit(f"        return {result};")
+                    self._emit("    }")
+                symbol = "/" if operation == "div" else "%"
+                self._emit(f"    return ({ctype})(left {symbol} right);")
+                self._emit("}")
+                self._emit()
+
     def generate(self):
         self.strings = []       # raw string-literal values, index = id
         self.used_inb = False   # set if a port-I/O builtin is generated, per helper
@@ -360,10 +591,13 @@ class CodeGen:
         self.used_bounds = False
         self.used_time = False
         self.used_file = False
+        self.used_int_helpers = set()
         self.match_id = 0
         self.try_id = 0
         self.return_id = 0
         self.range_id = 0
+        self.assign_id = 0
+        self.index_id = 0
 
         # Generate global initialisers and function bodies first, into side
         # buffers. This populates self.strings / used_* port-I/O flags (each
@@ -393,7 +627,10 @@ class CodeGen:
         # <stdint.h>/<stdbool.h> are freestanding-safe; <stdio.h> is not.
         if not self.freestanding:
             self._emit("#include <stdio.h>")
-            if self.used_assert or self.used_alloc or self.used_free or self.used_bounds:
+            if (self.used_assert or self.used_alloc or self.used_free
+                    or self.used_bounds
+                    or any(op in ("div", "rem", "shift_count", "float_cast")
+                           for op, _ in self.used_int_helpers)):
                 self._emit("#include <stdlib.h>")
             if self.used_time:
                 self._emit("#include <time.h>")
@@ -504,6 +741,7 @@ class CodeGen:
         if (self.used_inb or self.used_outb or self.used_inw or self.used_outw
                 or self.used_inl or self.used_outl):
             self._emit()
+        self._gen_integer_helpers()
         if not self.freestanding:
             if self.used_print:
                 self._emit(
@@ -843,9 +1081,31 @@ class CodeGen:
                     ("resource", s.name, destructor, live))
         elif isinstance(s, A.Assign):
             self._prepare_try_expr(s.target)
-            self._prepare_try_expr(s.expr)
-            self._emit(
-                f"{self._gen_expr(s.target)} {s.op} {self._gen_expr(s.expr)};")
+            if s.op == "=":
+                self._prepare_try_expr(s.expr)
+                self._emit(
+                    f"{self._gen_expr(s.target)} = {self._gen_expr(s.expr)};")
+            else:
+                target = self._gen_expr(s.target)
+                temporary = f"mort_assign_{self.assign_id}"
+                self.assign_id += 1
+                self._emit(
+                    f"{self._ct(s.target.type)}* {temporary} = &({target});")
+                self._prepare_try_expr(s.expr)
+                operation = s.op[:-1]
+                right = self._gen_expr(s.expr)
+                if s.target.type in _FIXED_INT_INFO:
+                    if operation in ("<<", ">>"):
+                        value = self._fixed_shift(
+                            s.target.type, operation, f"*{temporary}",
+                            right, s.expr.type, s.line)
+                    else:
+                        value = self._fixed_binary(
+                            s.target.type, operation, f"*{temporary}",
+                            right, s.line)
+                else:
+                    value = f"(*{temporary} {operation} {right})"
+                self._emit(f"*{temporary} = {value};")
         elif isinstance(s, A.Asm):
             self._emit(f'__asm__ volatile ("{s.text}");')
         elif isinstance(s, A.Return):
@@ -1091,6 +1351,14 @@ class CodeGen:
         if isinstance(expression, A.Index):
             self._prepare_try_expr(expression.obj)
             self._prepare_try_expr(expression.index)
+            if _is_slice(expression.obj.type):
+                expression.obj_temp_name = f"mort_index_obj_{self.index_id}"
+                self.index_id += 1
+                self._emit(self._var_decl(
+                    expression.obj.type,
+                    expression.obj_temp_name,
+                    self._gen_expr(expression.obj),
+                ) + ";")
             return
         if isinstance(expression, A.ArrayLit):
             for element in expression.elements:
@@ -1170,7 +1438,7 @@ class CodeGen:
                 return f"mort_{_c_symbol(e.resolved_function)}"
             return f"m_{e.name}"
         if isinstance(e, A.Cast):
-            return f"(({self._ct(e.target_type)}){self._gen_expr(e.expr)})"
+            return self._gen_cast(e)
         if isinstance(e, A.Try):
             if e.temp_name is None:  # pragma: no cover - checker/codegen invariant
                 raise Exception("try expression was not prepared before generation")
@@ -1211,7 +1479,7 @@ class CodeGen:
         if isinstance(e, A.Index):
             index = self._gen_expr(e.index)
             if _is_slice(e.obj.type):
-                obj = self._gen_expr(e.obj)
+                obj = e.obj_temp_name or self._gen_expr(e.obj)
                 if not self.freestanding:
                     self.used_bounds = True
                     index = f"mort_bounds((uint64_t)({index}), ({obj}).length, {e.line})"
@@ -1232,11 +1500,12 @@ class CodeGen:
             # those two int unaries; '*'/'&'/'!' leave it None).
             if e.const_val is not None:
                 return self._c_int_literal(e.const_val, e.type)
-            code = f"({e.op}{self._gen_expr(e.operand)})"
+            operand = self._gen_expr(e.operand)
+            code = f"({e.op}{operand})"
             # '-' and '~' can produce a value wider than the Mort type (C promotes
             # to int); narrow it back. '*'/'&' are lvalue/pointer — never wrap.
-            if e.op in ("-", "~"):
-                return self._narrow(e, code)
+            if e.op in ("-", "~") and e.type in _FIXED_INT_INFO:
+                return self._fixed_unary(e.type, e.op, operand)
             return code
         if isinstance(e, A.Binary):
             if e.lowered_name is not None:
@@ -1247,14 +1516,15 @@ class CodeGen:
             # from emitting an intermediate literal too large for any C type.
             if e.const_val is not None:
                 return self._c_int_literal(e.const_val, e.type)
-            if e.op in ("<<", ">>"):
-                # Runtime shift: cast the left operand to the result type so it
-                # executes at the right width (not C's promoted 32-bit int).
-                code = (f"(({self._ct(e.type)})({self._gen_expr(e.left)}) "
-                        f"{e.op} {self._gen_expr(e.right)})")
-                return self._narrow(e, code)
-            code = f"({self._gen_expr(e.left)} {e.op} {self._gen_expr(e.right)})"
-            return self._narrow(e, code)
+            left = self._gen_expr(e.left)
+            right = self._gen_expr(e.right)
+            if e.type in _FIXED_INT_INFO and e.op in (
+                    "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"):
+                if e.op in ("<<", ">>"):
+                    return self._fixed_shift(
+                        e.type, e.op, left, right, e.right.type, e.line)
+                return self._fixed_binary(e.type, e.op, left, right, e.line)
+            return f"({left} {e.op} {right})"
         if isinstance(e, A.Call):
             if e.enum_name is not None:
                 enum_tag = _type_tag(e.enum_name)

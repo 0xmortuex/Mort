@@ -1,0 +1,15 @@
+fn record(calls: *i64) -> bool {
+    *calls += 1;
+    return true;
+}
+
+fn main() -> int {
+    let calls: i64 = 0;
+    let neither = false && record(&calls);
+    let already = true || record(&calls);
+    if neither || !already {
+        return 1;
+    }
+    print(calls);
+    return 0;
+}
