@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mort-lang"
-version = "0.24.0"
+version = "0.24.1"
 description = "The Mort statically typed systems programming language"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,13 @@ classifiers = [
 
 [project.scripts]
 mortc = "mortc:main"
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=8",
+    "ziglang",
+]
 
 [project.urls]
 Homepage = "https://github.com/0xmortuex/Mort"

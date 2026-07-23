@@ -1397,6 +1397,14 @@ def test_std_and_doctor_commands_report_installed_toolchain(capsys):
     assert "C backend:" in doctor.out
 
 
+def test_packaging_version_matches_compiler_version():
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as handle:
+        project_text = handle.read()
+    assert f'version = "{mortc.__version__}"' in project_text
+    assert 'mortc = "mortc:main"' in project_text
+    assert "std/random.mx" in project_text
+
+
 @needs_cc
 def test_extern_function_links_and_runs(capsys):
     with tempfile.TemporaryDirectory() as d:

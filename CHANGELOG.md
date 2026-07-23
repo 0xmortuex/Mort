@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.24.1 — 2026-07-23
+
+Mort's distributable-release patch.
+
+### Added
+
+- Tagged releases now build a wheel and source archive, verify the wheel in an
+  isolated environment, and publish both artifacts to GitHub Releases.
+- A `dev` packaging extra provides the build, test, and Zig toolchain
+  dependencies used by contributors and CI.
+- Direct Git installation is documented for users who do not keep a checkout.
+
+### Improved
+
+- Packaging/compiler version synchronization is regression-tested.
+- The roadmap now reflects the completed generic ecosystem, LSP, caching,
+  diagnostics, formatter, and machine-wide packaging work.
+
+### Validation
+
+- 233 compiler, packaging, CLI, standard-library, native, LSP, package, and
+  kernel tests pass.
+
 ## 0.24.0 — 2026-07-23
 
 Mort's install-anywhere toolchain release.

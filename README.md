@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-233%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.24)
+## The language (v0.24.1)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -146,6 +146,10 @@ numbers.
 Install Mort once, then use `mortc` from any directory:
 
 ```bash
+# Latest published Git version:
+python -m pip install --upgrade git+https://github.com/0xmortuex/Mort.git
+
+# Or a live editable development checkout:
 python -m pip install -e .
 mortc --version
 mortc doctor
@@ -341,16 +345,18 @@ test "addition" {
   visibility, path dependencies, dependency graphs, and deterministic lockfiles.
 - [x] **Phase 8a — Safe data foundations:** typed mutable/const slices and an
   allocation-backed owned-string module.
-- [ ] **Phase 8b — Ecosystem tooling:** remote registry, language server,
-  debugger integration, publishing, richer containers, and generics.
+- [x] **Phase 8b — Ecosystem tooling:** build caching, JSON diagnostics,
+  formatter, LSP diagnostics/completion/navigation/formatting, wheel packaging,
+  machine-wide installs, and tagged GitHub release artifacts.
 - [x] **Phase 9a — Algebraic and generic foundations:** payload-carrying enums,
   exhaustive payload bindings, and monomorphized generic structs.
-- [ ] **Phase 9b — Generic ecosystem:** generic functions/enums, `Option<T>`,
-  `Result<T,E>`, ownership checking, and reusable generic collections.
+- [x] **Phase 9b — Generic ecosystem:** generic functions/enums, `Option<T>`,
+  `Result<T,E>`, `try`, and reusable `Vec`, `Map`, and slice algorithms.
 - [x] **Phase 10a — Portable dependencies and cleanup:** cached Git packages,
   commit-pinned portable lockfiles, and return-safe function-scoped `defer`.
 - [ ] **Phase 10b — Ownership and remote ecosystem:** move checking, automatic
-  destructors, semantic-version solving, registry publishing, and offline mirrors.
+  destructors, semantic-version solving, a public package registry, and offline
+  mirrors.
 
 ## License
 
