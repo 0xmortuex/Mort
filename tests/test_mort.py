@@ -51,6 +51,11 @@ def c_of(src):
 # End-to-end tests need a C compiler; skip them cleanly when none is present.
 _CC = mortc.find_c_compiler()
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
+_UBSAN_FLAGS = (
+    []
+    if os.name == "nt"
+    else ["-fsanitize=undefined", "-fno-sanitize-recover=all"]
+)
 
 # The kernel build needs Zig specifically (32-bit cross-compile).
 _ZIG = mortc.find_zig()
@@ -510,6 +515,7 @@ def test_numeric_casts_have_defined_fixed_width_semantics_under_ubsan():
     assert "mort_wrap_i8" in c_source
     assert "mort_wrap_i64" in c_source
     assert "mort_float_to_i8" in c_source
+    assert "18446744073709551615ULL" in c_source
     with tempfile.TemporaryDirectory() as d:
         cfile = os.path.join(d, "numeric_casts.c")
         exe = os.path.join(d, "numeric_casts.exe" if os.name == "nt" else "numeric_casts")
@@ -517,7 +523,7 @@ def test_numeric_casts_have_defined_fixed_width_semantics_under_ubsan():
             fh.write(c_source)
         subprocess.run([
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
-            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            *_UBSAN_FLAGS,
         ], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -538,7 +544,7 @@ def test_out_of_range_float_to_integer_cast_is_a_controlled_failure():
             fh.write(c_source)
         subprocess.run([
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
-            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            *_UBSAN_FLAGS,
         ], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode != 0
@@ -607,7 +613,7 @@ def test_fixed_width_runtime_integer_semantics_are_defined_under_ubsan():
             fh.write(c_source)
         subprocess.run([
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
-            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            *_UBSAN_FLAGS,
         ], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -639,7 +645,7 @@ def test_runtime_integer_zero_divisor_is_a_controlled_failure(operator, message)
             fh.write(c_source)
         subprocess.run([
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
-            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            *_UBSAN_FLAGS,
         ], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode != 0
@@ -661,7 +667,7 @@ def test_runtime_negative_shift_count_is_a_controlled_failure():
             fh.write(c_source)
         subprocess.run([
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
-            "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            *_UBSAN_FLAGS,
         ], check=True)
         result = subprocess.run([exe], capture_output=True, text=True)
     assert result.returncode != 0

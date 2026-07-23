@@ -1414,6 +1414,8 @@ class CodeGen:
 
     def _gen_expr(self, e):
         if isinstance(e, A.IntLit):
+            if e.value > self._I64_MAX:
+                return self._c_int_literal(e.value, e.type)
             return str(e.value)
         if isinstance(e, A.FloatLit):
             value = format(e.value, ".17g")
