@@ -2,7 +2,7 @@ module std.map;
 
 import std.option;
 
-struct Map<Key, Value> {
+resource struct Map<Key, Value> {
     keys: *Key,
     values: *Value,
     length: u64,

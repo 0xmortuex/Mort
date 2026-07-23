@@ -2,7 +2,7 @@ module std.vec;
 
 import std.option;
 
-struct Vec<T> {
+resource struct Vec<T> {
     data: *T,
     length: u64,
     capacity: u64,

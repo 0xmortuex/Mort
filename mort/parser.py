@@ -120,6 +120,11 @@ class Parser:
                 function = self._fn_decl()
                 function.public = True
                 funcs.append(function)
+            elif self._at(T.RESOURCE):
+                line = self._advance().line
+                if not self._at(T.STRUCT):
+                    raise MortError("'resource' must precede a struct declaration", line)
+                structs.append(self._struct_decl(resource=True))
             elif self._at(T.STRUCT):
                 structs.append(self._struct_decl())
             elif self._at(T.ENUM):
@@ -168,7 +173,7 @@ class Parser:
         self._expect(T.SEMI, "';'")
         return A.ImportDecl(parts, line, alias)
 
-    def _struct_decl(self):
+    def _struct_decl(self, resource=False):
         line = self._peek().line
         self._expect(T.STRUCT, "'struct'")
         name = self._expect(T.IDENT, "struct name").value
@@ -191,7 +196,7 @@ class Parser:
             else:
                 break
         self._expect(T.RBRACE, "'}'")
-        return A.StructDecl(name, fields, line, generic_params)
+        return A.StructDecl(name, fields, line, generic_params, resource=resource)
 
     def _type_alias_decl(self):
         line = self._advance().line
@@ -633,6 +638,9 @@ class Parser:
         if self._at(T.TRY):
             line = self._advance().line
             return A.Try(self._unary(), line)
+        if self._at(T.MOVE):
+            line = self._advance().line
+            return A.Move(self._unary(), line)
         return self._postfix()
 
     def _postfix(self):

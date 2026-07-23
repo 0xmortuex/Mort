@@ -241,6 +241,10 @@ class Checker:
         self.current_module = None
         self.current_import_aliases = {}
         self.block_depth = 0
+        self.resource_struct_names = set()
+        self.resource_destructor_templates = {}
+        self.destructor_symbols = set()
+        self.checking_defer = False
 
     def _error(self, msg, node):
         raise MortError(
@@ -459,8 +463,9 @@ class Checker:
                     f"{field.typ}", template)
             resolved[field.name] = field.typ
         self.structs[concrete_type] = resolved
-        self.program.structs.append(
-            A.StructDecl(concrete_type, fields, template.line))
+        concrete = A.StructDecl(
+            concrete_type, fields, template.line, resource=template.resource)
+        self.program.structs.append(concrete)
         self._validate_aggregate_cycles([concrete_type], template)
         return True
 
@@ -715,10 +720,14 @@ class Checker:
                 if len(set(sd.generic_params)) != len(sd.generic_params):
                     self._error(f"struct {sd.name!r} has a duplicate generic parameter", sd)
                 self.struct_templates[sd.name] = sd
+                if sd.resource:
+                    self.resource_struct_names.add(sd.name)
                 continue
             if sd.name in self.structs or sd.name in self.enums or sd.name in self.aliases:
                 self._error(f"struct {sd.name!r} is already defined", sd)
             self.structs[sd.name] = None  # placeholder until fields validated
+            if sd.resource:
+                self.resource_struct_names.add(sd.name)
             self._aggregate_declarations[sd.name] = sd
 
         # 2. validate each struct's fields
@@ -787,6 +796,44 @@ class Checker:
             if isinstance(f, A.ExternFnDecl):
                 self.extern_names.add(f.name)
 
+        # A resource struct owns external state and must provide one matching
+        # `destroy(*Resource) -> void` function. Generic resources require the
+        # destructor to carry the same generic parameters.
+        for struct in self.program.structs:
+            if not struct.resource:
+                continue
+            template = self.struct_templates.get(
+                generic_parts(struct.name)[0] if generic_parts(struct.name)
+                else struct.name
+            )
+            declaration = template or struct
+            generic_params = declaration.generic_params
+            declared_name = (
+                declaration.name + (
+                    "<" + ",".join(generic_params) + ">"
+                    if generic_params else ""
+                )
+            )
+            expected_parameter = "*" + declared_name
+            candidates = [
+                function for function in self.program.funcs
+                if function.name == "destroy"
+                and function.ret == "void"
+                and len(function.params) == 1
+                and function.params[0].typ == expected_parameter
+                and function.generic_params == generic_params
+            ]
+            if len(candidates) != 1:
+                self._error(
+                    f"resource struct {declaration.name!r} requires exactly one "
+                    f"fn destroy(value: {expected_parameter}) -> void",
+                    declaration,
+                )
+            struct.destructor_symbol = candidates[0].symbol_name
+            self.resource_destructor_templates[
+                declaration.name] = candidates[0].symbol_name
+            self.destructor_symbols.add(candidates[0].symbol_name)
+
         # 4. globals — initialised with a compile-time constant, usable anywhere
         self.scopes = []
         self.binding_scopes = []
@@ -817,6 +864,12 @@ class Checker:
                 g.var_type = g.decl_type
             else:
                 g.var_type = t
+            if self._is_resource_type(g.var_type):
+                self._error(
+                    "resource globals are not supported because their process "
+                    "shutdown order is undefined; create the resource in main",
+                    g,
+                )
             if not self._is_const_init(g.expr):
                 self._error(
                     f"global {g.name!r} must be initialised with a constant "
@@ -859,11 +912,16 @@ class Checker:
         return self.program
 
     # ----- scopes -----
-    def _lookup(self, name):
+    def _lookup(self, name, node=None):
         for scope, bindings in zip(
                 reversed(self.scopes), reversed(self.binding_scopes)):
             if name in scope:
                 if name in bindings:
+                    if bindings[name].get("moved"):
+                        self._error(
+                            f"use of moved resource {name!r}",
+                            node or bindings[name]["node"],
+                        )
                     bindings[name]["used"] = True
                 return scope[name]
         return self.globals.get(name)  # fall back to globals (locals shadow them)
@@ -894,7 +952,61 @@ class Checker:
             "used": False,
             "kind": kind,
             "mutable": mutable,
+            "moved": False,
         }
+
+    def _local_binding(self, name):
+        for scope, bindings in zip(
+                reversed(self.scopes), reversed(self.binding_scopes)):
+            if name in scope:
+                return scope[name], bindings.get(name)
+        return None, None
+
+    def _move_snapshot(self):
+        return [
+            (binding, binding.get("moved", False))
+            for scope in self.binding_scopes for binding in scope.values()
+        ]
+
+    @staticmethod
+    def _restore_move_snapshot(snapshot):
+        for binding, moved in snapshot:
+            binding["moved"] = moved
+
+    @staticmethod
+    def _merge_move_snapshots(*snapshots):
+        merged = {}
+        for snapshot in snapshots:
+            for binding, moved in snapshot:
+                key = id(binding)
+                merged[key] = (binding, merged.get(key, (binding, False))[1] or moved)
+        for binding, moved in merged.values():
+            binding["moved"] = moved
+
+    def _is_resource_type(self, typ):
+        parts = generic_parts(typ)
+        base = parts[0] if parts else typ
+        return base in self.resource_struct_names
+
+    def _resource_destructor(self, typ, node):
+        parts = generic_parts(typ)
+        base = parts[0] if parts else typ
+        symbol = self.resource_destructor_templates[base]
+        template = self.func_templates.get(symbol)
+        if template is not None:
+            arguments = parts[1] if parts else []
+            symbol = self._instantiate_function(
+                symbol, dict(zip(template.generic_params, arguments)), node)
+            self.destructor_symbols.add(symbol)
+        return symbol
+
+    def _require_explicit_move(self, expected, expr):
+        if (self._is_resource_type(expected) and isinstance(expr, A.Var)):
+            self._error(
+                f"resource {expr.name!r} must be transferred with "
+                f"'move {expr.name}'",
+                expr,
+            )
 
     def _binding_mutable(self, name):
         for scope, bindings in zip(
@@ -961,6 +1073,9 @@ class Checker:
                     self._error(f"array element expects {elem}, got {el.type}", node)
 
         expr.type = f"[{elem};{size}]"
+        if self._is_resource_type(elem):
+            self._error(
+                "resource values cannot be stored directly in arrays yet", node)
         return expr.type
 
     def _check_fn(self, f):
@@ -973,6 +1088,8 @@ class Checker:
         self.block_depth = 0
         for p in f.params:
             self._declare(p.name, p.typ, f, kind="parameter")
+            if self._is_resource_type(p.typ):
+                p.destructor_symbol = self._resource_destructor(p.typ, f)
         for s in f.body.stmts:
             self._check_stmt(s)
         if f.ret != "void" and not self._block_always_returns(f.body):
@@ -1121,6 +1238,7 @@ class Checker:
         `let x: u8 = 300;` are compile errors, not silent truncation.
         """
         if expr.type == expected:
+            self._require_explicit_move(expected, expr)
             return True
         if (is_ptr(expected) or function_parts(expected)) and expr.type == "null":
             expr.type = expected
@@ -1181,7 +1299,10 @@ class Checker:
                 s.var_type = s.decl_type
             else:
                 s.var_type = t
+            self._require_explicit_move(s.var_type, s.expr)
             self._declare(s.name, s.var_type, s, mutable=s.mutable)
+            if self._is_resource_type(s.var_type):
+                s.destructor_symbol = self._resource_destructor(s.var_type, s)
 
         elif isinstance(s, A.Assign):
             tt = self._check_expr(s.target)
@@ -1197,6 +1318,12 @@ class Checker:
                 self._error("cannot assign through a const slice", s)
             if is_array(tt):
                 self._error("cannot assign to a whole array; assign elements via a[i]", s)
+            if self._is_resource_type(tt):
+                self._error(
+                    "cannot overwrite a resource binding; destroy it and "
+                    "create a new binding",
+                    s,
+                )
             if s.op == "=":
                 self._check_expr(s.expr)
                 if not self._coerce(tt, s.expr):
@@ -1223,12 +1350,20 @@ class Checker:
         elif isinstance(s, A.If):
             if self._check_expr(s.cond) != "bool":
                 self._error("if condition must be a bool", s)
+            before = self._move_snapshot()
             self._check_block(s.then)
+            after_then = self._move_snapshot()
+            self._restore_move_snapshot(before)
             if s.els is not None:
                 if isinstance(s.els, A.If):
                     self._check_stmt(s.els)
                 else:
                     self._check_block(s.els)
+                after_else = self._move_snapshot()
+            else:
+                after_else = before
+            self._restore_move_snapshot(before)
+            self._merge_move_snapshots(after_then, after_else)
 
         elif isinstance(s, A.While):
             if self._check_expr(s.cond) != "bool":
@@ -1398,7 +1533,11 @@ class Checker:
                 self._error(
                     "try is not allowed inside defer because propagation occurs "
                     "after the surrounding scope has begun cleanup", s)
-            self._check_expr(s.expr)
+            self.checking_defer = True
+            try:
+                self._check_expr(s.expr)
+            finally:
+                self.checking_defer = False
 
         elif isinstance(s, (A.Break, A.Continue)):
             if self.loop_depth == 0:
@@ -1466,9 +1605,14 @@ class Checker:
             return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.TupleLit):
             element_types = [self._check_expr(element) for element in e.elements]
+            if any(self._is_resource_type(item) for item in element_types):
+                self._error(
+                    "resource values cannot be stored directly in tuples yet", e)
+            for element_type, element in zip(element_types, e.elements):
+                self._require_explicit_move(element_type, element)
             return "(" + ",".join(element_types) + ")"
         if isinstance(e, A.Var):
-            vt = self._lookup(e.name)
+            vt = self._lookup(e.name, e)
             if vt is not None:
                 return vt
             local = f"{self.current_module}.{e.name}" if self.current_module else None
@@ -1492,6 +1636,27 @@ class Checker:
                 e.resolved_function = resolved
                 return f"fn({','.join(parameters)})->{result}"
             self._error(f"undefined variable {e.name!r}", e)
+
+        if isinstance(e, A.Move):
+            if not isinstance(e.expr, A.Var):
+                self._error("move expects a local resource binding", e)
+            typ, binding = self._local_binding(e.expr.name)
+            if typ is None or binding is None or not self._is_resource_type(typ):
+                self._error(
+                    f"move expects a resource binding, got {e.expr.name!r}", e)
+            if binding.get("moved"):
+                self._error(f"resource {e.expr.name!r} was already moved", e)
+            if self.loop_depth:
+                self._error(
+                    "moving a resource from a loop is not yet allowed; "
+                    "move it before entering the loop",
+                    e,
+                )
+            binding["used"] = True
+            binding["moved"] = True
+            e.binding_name = e.expr.name
+            e.expr.type = typ
+            return typ
 
         if isinstance(e, A.Cast):
             st = self._check_expr(e.expr)
@@ -2097,4 +2262,14 @@ class Checker:
             if not self._coerce(pt, arg):
                 self._error(
                     f"argument {idx} of {e.name!r} expects {pt}, got {arg.type}", e)
+        if (resolved in self.destructor_symbols and len(e.args) == 1
+                and isinstance(e.args[0], A.Unary) and e.args[0].op == "&"
+                and isinstance(e.args[0].operand, A.Var)):
+            binding_name = e.args[0].operand.name
+            binding_type, binding = self._local_binding(binding_name)
+            if binding is not None and self._is_resource_type(binding_type):
+                e.destroys_binding = binding_name
+                e.deferred_destroy = self.checking_defer
+                if not self.checking_defer:
+                    binding["moved"] = True
         return ret

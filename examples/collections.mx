@@ -10,9 +10,7 @@ fn unwrap(value: Option<i64>) -> i64 {
 
 fn main() -> int {
     let numbers: Vec<i64> = vec.new<i64>();
-    defer vec.destroy(&numbers);
     let scores: Map<i64, i64> = map.new<i64, i64>();
-    defer map.destroy(&scores);
 
     vec.push(&numbers, 20);
     vec.push(&numbers, 22);

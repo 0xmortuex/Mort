@@ -1795,6 +1795,124 @@ def test_multi_payload_enum_errors(source, message):
 
 
 @needs_cc
+def test_resource_struct_explicit_moves_run():
+    src = (
+        "resource struct Buffer { data: *u8, length: u64 } "
+        "fn destroy(value: *Buffer) -> void { "
+        "free((*value).data); (*value).data = null; (*value).length = 0; } "
+        "fn make() -> Buffer { let data = alloc(1) as *u8; data[0] = 42; "
+        "return Buffer { data: data, length: 1 }; } "
+        "fn consume(value: Buffer) -> i64 { let answer = value.data[0] as i64; "
+        "destroy(&value); return answer; } "
+        "fn main() -> int { let original = make(); "
+        "let transferred = move original; print(consume(move transferred)); "
+        "return 0; }"
+    )
+    c_source = c_of(src)
+    assert "struct mort_Buffer" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "resource_move.c")
+        exe = os.path.join(
+            d, "resource_move.exe" if os.name == "nt" else "resource_move")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
+@needs_cc
+def test_resource_structs_destroy_automatically_on_nested_return():
+    src = (
+        "resource struct Ticket { label: *u8 } "
+        "fn destroy(value: *Ticket) -> void { println((*value).label); } "
+        "fn answer() -> i64 { const outer = Ticket { label: \"outer\" }; "
+        "if true { let inner = Ticket { label: \"inner\" }; return 42; } "
+        "return 0; } "
+        "fn main() -> int { print(answer()); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "mort_live_m_outer" in c_source
+    assert "mort_live_m_inner" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "resource_cleanup.c")
+        exe = os.path.join(
+            d, "resource_cleanup.exe" if os.name == "nt" else "resource_cleanup")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "inner\nouter\n42\n"
+
+
+@needs_cc
+def test_resource_can_move_once_across_exclusive_branches():
+    src = (
+        "resource struct Value { number: i64 } "
+        "fn destroy(value: *Value) -> void { print((*value).number); } "
+        "fn consume(value: Value) -> void {} "
+        "fn main() -> int { let value = Value { number: 42 }; "
+        "let choose_left = true; "
+        "if choose_left { consume(move value); } "
+        "else { consume(move value); } return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "resource_branches.c")
+        exe = os.path.join(
+            d, "resource_branches.exe" if os.name == "nt" else "resource_branches")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("resource struct Handle { value: i64 } "
+         "fn main() -> int { return 0; }",
+         "requires exactly one fn destroy"),
+        ("resource struct Handle { value: i64 } "
+         "fn destroy(value: Handle) -> void {} "
+         "fn main() -> int { return 0; }",
+         "requires exactly one fn destroy"),
+        ("resource struct Handle { value: i64 } "
+         "fn destroy(value: *Handle) -> void {} "
+         "fn main() -> int { let first = Handle { value: 1 }; "
+         "let second = first; return 0; }",
+         "must be transferred with 'move first'"),
+        ("resource struct Handle { value: i64 } "
+         "fn destroy(value: *Handle) -> void {} "
+         "fn main() -> int { let first = Handle { value: 1 }; "
+         "let second = move first; print(first.value); return 0; }",
+         "use of moved resource"),
+        ("resource struct Handle { value: i64 } "
+         "fn destroy(value: *Handle) -> void {} "
+         "fn main() -> int { let first = Handle { value: 1 }; "
+         "let second = move first; let third = move first; return 0; }",
+         "already moved"),
+    ],
+)
+def test_resource_move_errors(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@needs_cc
 def test_generic_struct_monomorphization_run():
     src = (
         "struct Pair<Left, Right> { first: Left, second: Right } "
@@ -2539,6 +2657,7 @@ EXPECTED = {
     "collections.mx": "42\n42\n",
     "floats.mx": "42.5\n",
     "tuples.mx": "43\n42\n",
+    "resources.mx": "42\nreleased\n",
 }
 
 

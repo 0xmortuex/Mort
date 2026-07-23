@@ -681,6 +681,13 @@ class CodeGen:
         self.loop_defer_bases = []
         self._emit(self._signature(f) + " {")
         self.indent += 1
+        for parameter in f.params:
+            destructor = getattr(parameter, "destructor_symbol", None)
+            if destructor is not None:
+                live = f"mort_live_m_{parameter.name}"
+                self._emit(f"bool {live} = true;")
+                self.defer_scopes[0].append(
+                    ("resource", parameter.name, destructor, live))
         for s in f.body.stmts:
             self._gen_stmt(s)
         if f.ret == "void":
@@ -693,7 +700,12 @@ class CodeGen:
     def _emit_defer_scopes(self, start=0):
         for scope in reversed(getattr(self, "defer_scopes", [])[start:]):
             for expression in reversed(scope):
-                self._emit(self._gen_expr(expression) + ";")
+                if isinstance(expression, tuple) and expression[0] == "resource":
+                    _, name, destructor, live = expression
+                    self._emit(
+                        f"if ({live}) {{ mort_{_c_symbol(destructor)}(&m_{name}); }}")
+                else:
+                    self._emit(self._gen_expr(expression) + ";")
 
     def _gen_scoped_statements(self, statements):
         self.defer_scopes.append([])
@@ -720,9 +732,15 @@ class CodeGen:
     def _gen_stmt(self, s):
         if isinstance(s, A.Let):
             self._prepare_try_expr(s.expr)
+            destructor = getattr(s, "destructor_symbol", None)
             self._emit(self._var_decl(
                 s.var_type, "m_" + s.name, self._gen_expr(s.expr),
-                binding_const=not s.mutable) + ";")
+                binding_const=not s.mutable and destructor is None) + ";")
+            if destructor is not None:
+                live = f"mort_live_m_{s.name}"
+                self._emit(f"bool {live} = true;")
+                self.defer_scopes[-1].append(
+                    ("resource", s.name, destructor, live))
         elif isinstance(s, A.Assign):
             self._prepare_try_expr(s.target)
             self._prepare_try_expr(s.expr)
@@ -831,6 +849,17 @@ class CodeGen:
             self._emit_defer_scopes(self.loop_defer_bases[-1])
             self._emit("continue;")
         elif isinstance(s, A.Defer):
+            binding = getattr(s.expr, "destroys_binding", None)
+            if binding is not None:
+                for scope in reversed(self.defer_scopes):
+                    scope[:] = [
+                        item for item in scope
+                        if not (
+                            isinstance(item, tuple)
+                            and item[0] == "resource"
+                            and item[1] == binding
+                        )
+                    ]
             self.defer_scopes[-1].append(s.expr)
         elif isinstance(s, A.Match):
             self._prepare_try_expr(s.expr)
@@ -1036,6 +1065,11 @@ class CodeGen:
             if e.temp_name is None:  # pragma: no cover - checker/codegen invariant
                 raise Exception("try expression was not prepared before generation")
             return e.temp_name
+        if isinstance(e, A.Move):
+            return (
+                f"((mort_live_m_{e.binding_name} = false), "
+                f"{self._gen_expr(e.expr)})"
+            )
         if isinstance(e, A.StructLit):
             inits = ", ".join(
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
@@ -1193,5 +1227,9 @@ class CodeGen:
                 name = e.resolved_name or e.name
             else:
                 name = f"mort_{_c_symbol(e.resolved_name or e.name)}"
-            return f"{name}({args})"
+            call = f"{name}({args})"
+            destroyed = getattr(e, "destroys_binding", None)
+            if destroyed is not None and not getattr(e, "deferred_destroy", False):
+                return f"({call}, mort_live_m_{destroyed} = false)"
+            return call
         raise Exception("unreachable: cannot generate expression")  # pragma: no cover

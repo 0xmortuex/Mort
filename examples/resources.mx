@@ -1,0 +1,13 @@
+resource struct Ticket {
+    label: *u8,
+}
+
+fn destroy(value: *Ticket) -> void {
+    println((*value).label);
+}
+
+fn main() -> int {
+    let ticket = Ticket { label: "released" };
+    print(42);
+    return 0;
+}

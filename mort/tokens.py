@@ -41,6 +41,8 @@ class T(Enum):
     TRY = auto()
     TYPE = auto()
     NULL = auto()
+    RESOURCE = auto()
+    MOVE = auto()
     # punctuation
     LPAREN = auto()
     RPAREN = auto()
@@ -123,6 +125,8 @@ KEYWORDS = {
     "try": T.TRY,
     "type": T.TYPE,
     "null": T.NULL,
+    "resource": T.RESOURCE,
+    "move": T.MOVE,
 }
 
 

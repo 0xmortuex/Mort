@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.29.0 — 2026-07-23
+
+Mort's first ownership and automatic-resource-management release.
+
+### Added
+
+- `resource struct` declarations for move-only values that own external state.
+- Every resource declaration requires exactly one type-correct
+  `destroy(*Resource) -> void` function, including matching generic parameters.
+- Explicit `move value` transfers ownership into bindings, parameters, and
+  returns.
+- Compile-time diagnostics for implicit resource copies, use-after-move,
+  double moves, moves from loops, whole-resource overwrites, and resource
+  globals.
+- Conservative branch dataflow permits one move in each mutually exclusive
+  `if`/`else` branch while preventing later access to a possibly moved value.
+
+### Automatic destruction
+
+- Resource locals and by-value parameters register typed cleanup immediately
+  after initialization.
+- Cleanups run in reverse declaration order on normal scope exits, returns,
+  `break`, `continue`, and propagated errors using the existing lexical cleanup
+  machinery.
+- Per-binding live flags ensure moved sources never destroy transferred values.
+- Existing explicit immediate or deferred destructor calls deactivate or
+  replace implicit cleanup, preserving source compatibility.
+- `Vec<T>`, `Map<Key, Value>`, and owned strings are now standard resource
+  types; ordinary collection code no longer needs manual `defer destroy`.
+
+### Validation
+
+- Moves across bindings, calls, parameters, returns, and exclusive branches;
+  nested cleanup; const resources; early returns; legacy deferred destruction;
+  and generic standard resources compile under `-Wall -Werror`.
+- 269 compiler, ownership, enum, tuple, error-propagation, callback, packaging,
+  CLI, native, LSP, package, and kernel tests pass.
+
 ## 0.28.0 — 2026-07-23
 
 Mort's rich enum-payload release.

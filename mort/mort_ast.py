@@ -51,12 +51,14 @@ class StructField:
 
 
 class StructDecl(Node):
-    def __init__(self, name, fields, line, generic_params=None):
+    def __init__(self, name, fields, line, generic_params=None, resource=False):
         super().__init__()
         self.name = name
         self.fields = fields  # list of StructField, in declared order
         self.line = line
         self.generic_params = generic_params or []
+        self.resource = resource
+        self.destructor_symbol = None
 
 
 class TypeAliasDecl(Node):
@@ -346,6 +348,14 @@ class Try(Node):
         self.error_type = None
         self.return_type = None
         self.temp_name = None
+
+
+class Move(Node):
+    def __init__(self, expr, line):
+        super().__init__()
+        self.expr = expr
+        self.line = line
+        self.binding_name = None
 
 
 class StructLit(Node):

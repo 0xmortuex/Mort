@@ -1,6 +1,6 @@
 module std.owned_string;
 
-struct String {
+resource struct String {
     data: *u8,
     length: u64,
 }

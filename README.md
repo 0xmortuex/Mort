@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.28)
+## The language (v0.29)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -112,7 +112,12 @@ C `main`, so the output is an ordinary native binary.
 - **Generic functions:** inferred calls such as `identity(42)` and explicit
   calls such as `vec.new<i64>()`, each monomorphized to checked native code.
 - **Typed collections:** allocation-backed `Vec<T>` and `Map<Key, Value>` in
-  `std.vec` and `std.map`, with deterministic `destroy` functions.
+  `std.vec` and `std.map`. They are resource types and clean themselves up.
+- **Ownership:** `resource struct` declares a move-only type with a checked
+  `destroy(*Resource) -> void` contract. Resource bindings are destroyed
+  automatically in reverse order on every lexical exit. Transfers use explicit
+  `move value`; implicit copies, use-after-move, double moves, unsafe loop
+  moves, global resources, and destructive overwrites are compile-time errors.
 - **Portable standard modules:** environment access, process control, and
   generic integer math through `std.env`, `std.process`, and `std.math`, plus
   typed hosted file/time APIs through `std.fs` and `std.time`. Portable
@@ -143,8 +148,10 @@ C `main`, so the output is an ordinary native binary.
   across functions (used by the kernel's interrupt handler).
 - **Hosted runtime:** `print`, `println`, `assert`, `len`, `alloc`, and `free`,
   with compile-time and runtime array bounds validation.
-- **Cleanup:** lexical `defer expression;` executes cleanup in reverse order on
-  normal scope exits, returns, `break`, `continue`, and propagated errors.
+- **Cleanup:** resource destruction and lexical `defer expression;` execute in
+  reverse order on normal scope exits, returns, `break`, `continue`, and
+  propagated errors. Existing explicit `defer module.destroy(&value)` remains
+  compatible and suppresses the matching implicit cleanup.
 - **Hardware builtins:** the x86 port-I/O family
   (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
   and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).
