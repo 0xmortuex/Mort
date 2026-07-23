@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.38.0 - 2026-07-23
+
+Mort's asynchronous-I/O and structured-task foundation release.
+
+### Added
+
+- Cross-platform nonblocking socket mode uses `ioctlsocket` on Windows and
+  `fcntl` on Linux/macOS.
+- Readiness waits use `WSAPoll` or POSIX `poll` with immediate, finite, and
+  indefinite timeouts plus stable readable/writable/error result bits.
+- Thread-local would-block detection lets event loops distinguish retryable
+  nonblocking results from other socket failures.
+- Move-only `std.task.TaskGroup` resources own child tasks, provide
+  sequentially consistent cooperative cancellation, aggregate joined results,
+  reject post-cancellation spawns, and cancel/join automatically at scope exit.
+
+### Semantics and validation
+
+- The Mort 0.38 specification defines advisory readiness, timeout behavior,
+  retry requirements, cancellation progress points, task context lifetimes,
+  owner-thread restrictions, join ordering, and structured scope exit.
+- `examples/async_io.mx` proves a zero-time timeout, would-block detection, a
+  bounded wakeup, and non-busy stream completion.
+- `examples/tasks.mx` proves explicit cancellation/join and automatic
+  cancel-and-join of an otherwise nonterminating child during lexical cleanup.
+- Generated programs using only part of the concurrency runtime compile cleanly
+  under strict unused-function warnings.
+- CI runs asynchronous I/O under AddressSanitizer/UndefinedBehaviorSanitizer
+  and structured tasks under ThreadSanitizer/UndefinedBehaviorSanitizer.
+- The full regression suite contains 317 tests, and all 24 Mort 0.38
+  conformance cases pass through the public compiler CLI.
+
 ## 0.37.0 - 2026-07-23
 
 Mort's portable UDP datagram release.

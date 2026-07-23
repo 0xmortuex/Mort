@@ -1,18 +1,18 @@
-# Mort Language Specification 0.37
+# Mort Language Specification 0.38
 
 Status: Normative  
-Language version: 0.37.0
+Language version: 0.38.0
 Document revision: 1  
 Last updated: 2026-07-23
 
-This document defines the source language accepted by a conforming Mort 0.37
+This document defines the source language accepted by a conforming Mort 0.38
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.37 program.
+Implementation extensions must not change the meaning of a valid 0.38 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.37.
+the programmer's responsibility in Mort 0.38.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.37 does not specify the relative evaluation order of ordinary binary
+Mort 0.38 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.37 does not promise identical
+and shifts are not defined for floats. Mort 0.38 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.37's safety guarantees.
+are outside Mort 0.38's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.37's reference implementation emits C11, but C is not part of the
+Mort 0.38's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -555,7 +555,7 @@ produce a controlled concurrency failure.
 `std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
 creation failure to an assertion failure. `thread.join(&value)` joins early and
 marks the wrapper empty; otherwise its destructor joins automatically. Thus a
-live `Thread` cannot be silently detached in Mort 0.37.
+live `Thread` cannot be silently detached in Mort 0.38.
 
 The context pointer and every object reachable through it must remain valid
 until the thread has been joined. Raw pointers do not acquire lifetime
@@ -617,7 +617,7 @@ target toolchain supports one.
 
 ## 13. Hosted networking
 
-Networking is available only in the hosted profile. Mort 0.37 specifies
+Networking is available only in the hosted profile. Mort 0.38 specifies
 blocking TCP streams, UDP datagrams, and host-name resolution through the
 portable `std.net` module. The `net_*` builtins are reserved implementation
 interfaces.
@@ -712,21 +712,107 @@ peer liveness, congestion behavior, or path MTU. Applications needing those
 properties must implement a protocol above UDP. Maximum accepted datagram size
 and fragmentation behavior are host and network properties.
 
-### 13.5 Concurrency and portability
+### 13.5 Nonblocking operation and readiness
+
+`net.set_nonblocking(&socket, enabled)` changes whether native operations on
+the socket may wait for readiness and reports whether the host accepted the
+change. In nonblocking mode, an operation that cannot make immediate progress
+returns `-1`.
+
+`net.would_block()` reports whether the current thread's most recent failed
+socket operation failed specifically because it would block. Its result is
+meaningful only immediately after that operation and before any other socket
+operation on the same thread.
+
+`net.wait(&socket, readable, writable, timeout_millis)` waits for requested
+read or write readiness. `wait_readable` and `wait_writable` are single-event
+conveniences. The result is a bit mask:
+
+- bit 0 (`1`) means readable, including a stream end that can be received;
+- bit 1 (`2`) means writable;
+- bit 2 (`4`) means a hangup, invalid descriptor, or asynchronous socket error.
+
+Zero means the timeout elapsed. `-1` means the wait itself failed or no event
+was requested. A timeout of `-1` waits indefinitely, zero only polls current
+state, and a positive value is an approximate upper bound in milliseconds;
+host scheduling and repeated signal interruption may delay return.
+
+Readiness is advisory. Another thread or consumer may change socket state
+before the next operation. Event-driven code must keep the socket nonblocking,
+handle a subsequent would-block result, preserve its buffers, and wait again.
+
+### 13.6 Concurrency and portability
 
 Blocking name resolution and socket calls may suspend the calling thread for
-an operating-system-defined duration. Mort 0.37 does not define timeouts,
-non-blocking mode, cancellation, readiness polling, or fairness.
+an operating-system-defined duration. Readiness waits provide bounded waiting
+for established sockets but do not impose DNS, connection, or scheduling
+fairness guarantees.
 
 Distinct sockets may be used by distinct threads. Portable programs must
 synchronize concurrent operations on the same `Socket` wrapper and keep the
 wrapper alive until all such operations finish. The concurrency happens-before
 and data-race rules in Section 12 apply to socket buffers and wrapper storage.
 
-Conforming hosted implementations must provide these TCP and DNS operations on
-Windows, Linux, and macOS. Resolver policy, address ordering, firewall behavior,
-interface availability, routing, and failures beyond the process boundary are
-host environment properties rather than deterministic language behavior.
+Conforming hosted implementations must provide these TCP, UDP, DNS,
+nonblocking, and readiness operations on Windows, Linux, and macOS. Resolver
+policy, address ordering, firewall behavior, interface availability, routing,
+and failures beyond the process boundary are host environment properties
+rather than deterministic language behavior.
+
+## 14. Structured tasks and cooperative cancellation
+
+The hosted `std.task` module provides task groups for bounded concurrent work.
+Its backing thread and atomic builtins remain reserved implementation
+interfaces.
+
+### 14.1 Task-group ownership
+
+`task.new()` creates a move-only `TaskGroup` with no children and an
+uncancelled sequentially consistent cancellation flag. A group owns every
+native task handle successfully added to it.
+
+`task.spawn(&group, callback, context)` starts one `fn(*void)->i64` callback and
+returns `true`. It returns `false` without adding a child if the group is
+already cancelled or the host cannot create the task. Children are retained in
+spawn order. A group must have one owning thread; `spawn`, `join_all`, `count`,
+and destruction must not execute concurrently on the same group.
+
+The context pointer and all data reachable through it must remain valid until
+that child has been joined. A pointer to the group remains valid until all
+children finish because group destruction joins them before releasing group
+storage.
+
+### 14.2 Cancellation
+
+`task.cancel(&group)` atomically and idempotently requests cancellation.
+`task.cancelled(&group)` observes that flag with sequentially consistent
+ordering. All children may call `cancelled` concurrently.
+
+Cancellation is cooperative: it does not terminate a thread, unwind its stack,
+close its resources, or interrupt a native blocking operation. A cancellable
+child must check the flag at documented progress points. For I/O, portable
+tasks should use nonblocking sockets and finite readiness waits so they regain
+control and observe cancellation.
+
+After cancellation, new spawns are rejected for the lifetime of that group.
+
+### 14.3 Joining and structured exit
+
+`task.count(&group)` reports the number of retained, unjoined children.
+`task.join_all(&group)` joins every retained child in spawn order, adds their
+`i64` results with ordinary wrapping semantics, clears the child list, and
+returns the sum. Calling it on an empty group returns zero.
+
+The `TaskGroup` destructor first requests cancellation, then joins every
+remaining child, destroys the cancellation flag, and releases its handle
+storage. Consequently no task spawned into a group can outlive that group's
+lexical scope, including exits through `return`, `break`, `continue`, or error
+propagation. A non-cooperative child that never returns can keep joining or
+scope exit blocked; Mort does not forcibly kill it.
+
+Task-group spawn and join inherit the happens-before edges in Section 12.
+Cancellation observation uses the sequentially consistent atomic order but
+does not by itself make unrelated non-atomic shared storage race-free.
 
 ## Appendix A. Compatibility
 
@@ -742,10 +828,11 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.37: checked borrows and
+The following are intentionally not defined by Mort 0.38: checked borrows and
 lifetimes, thread cancellation, detached threads, condition variables,
 read/write locks, atomics other than sequentially consistent `i64`,
-asynchronous tasks, HTTP, TLS, WebSocket, exceptions, reflection, dynamic
-loading, stable binary package ABI, Unicode text semantics, and
-WebAssembly/mobile platform profiles. Their absence is not permission for an
-implementation to assign new meaning to currently valid syntax.
+language-level `async`/`await` syntax, HTTP, TLS, WebSocket, exceptions,
+reflection, dynamic loading, stable binary package ABI, Unicode text
+semantics, and WebAssembly/mobile platform profiles. Their absence is not
+permission for an implementation to assign new meaning to currently valid
+syntax.

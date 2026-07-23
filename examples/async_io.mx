@@ -1,0 +1,55 @@
+import std.net;
+import std.thread;
+
+struct ServerContext {
+    listener: *Socket,
+}
+
+fn delayed_send(raw: *void) -> i64 {
+    let context = raw as *ServerContext;
+    let client = net.accept((*context).listener);
+    thread.sleep_millis(200);
+    if !net.send_all(&client, "ready", 5) {
+        return 0 - 1;
+    }
+    return 5;
+}
+
+fn main() -> int {
+    let listener = net.tcp_listen("127.0.0.1", 0, 4);
+    let port = net.local_port(&listener);
+    let context = ServerContext { listener: &listener };
+    let server = thread.spawn(delayed_send, &context as *void);
+
+    let client = net.tcp_connect("127.0.0.1", port);
+    assert(net.set_nonblocking(&client, true));
+    let response: [u8; 5] = [0; 5];
+    let initial = net.receive(&client, &response[0], 5);
+    let blocked = net.would_block();
+    assert(initial == 0 - 1);
+    assert(blocked);
+    assert(net.wait_readable(&client, 0) == 0);
+    let ready = net.wait_readable(&client, 2000);
+    assert((ready & 1) == 1);
+
+    let received: u64 = 0;
+    while received < 5 {
+        let amount = net.receive(&client, &response[received], 5 - received);
+        if amount > 0 {
+            received += amount as u64;
+        } else {
+            assert(amount == 0 - 1);
+            assert(net.would_block());
+            let next_ready = net.wait_readable(&client, 2000);
+            assert((next_ready & 1) == 1);
+        }
+    }
+    let served = thread.join(&server);
+    print(served);
+    print(response[0]);
+    print(response[1]);
+    print(response[2]);
+    print(response[3]);
+    print(response[4]);
+    return 0;
+}

@@ -38,6 +38,8 @@ BUILTIN_NAMES = {
     "net_udp_recv_from",
     "net_socket_close", "net_socket_send", "net_socket_recv",
     "net_socket_shutdown", "net_socket_local_port",
+    "net_socket_set_nonblocking", "net_socket_wait",
+    "net_last_error_would_block",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -2337,6 +2339,49 @@ class Checker:
             if e.name == "net_socket_shutdown":
                 return "bool"
             return "u16"
+        if e.name == "net_socket_set_nonblocking":
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error(
+                    "net_socket_set_nonblocking expects handle and enabled", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(
+                    "net_socket_set_nonblocking handle must be *void, "
+                    f"got {handle}", e)
+            enabled = self._check_expr(e.args[1])
+            if enabled != "bool":
+                self._error(
+                    "net_socket_set_nonblocking enabled must be bool, "
+                    f"got {enabled}", e)
+            return "bool"
+        if e.name == "net_socket_wait":
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if len(e.args) != 3:
+                self._error(
+                    "net_socket_wait expects handle, events, and timeout", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(
+                    f"net_socket_wait handle must be *void, got {handle}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u32", e.args[1]):
+                self._error(
+                    f"net_socket_wait events must be u32, got {e.args[1].type}",
+                    e)
+            timeout = self._check_expr(e.args[2])
+            if timeout != "i64":
+                self._error(
+                    f"net_socket_wait timeout must be i64, got {timeout}", e)
+            return "i32"
+        if e.name == "net_last_error_would_block":
+            if self.freestanding:
+                self._error("networking is not available in freestanding mode", e)
+            if e.args:
+                self._error("net_last_error_would_block expects no arguments", e)
+            return "bool"
         if e.name in ("net_socket_send", "net_socket_recv"):
             if self.freestanding:
                 self._error("networking is not available in freestanding mode", e)

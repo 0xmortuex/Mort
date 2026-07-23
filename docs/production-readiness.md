@@ -24,7 +24,7 @@ only when an automated gate or named artifact provides repeatable evidence.
   UBSan with leak detection enabled.
 - [ ] Differential and metamorphic tests cover optimization levels and multiple
   C backends.
-- [x] Mort 0.37 has a versioned
+- [x] Mort 0.38 has a versioned
   [normative specification](language-specification.md) and a black-box
   [executable conformance suite](../conformance/README.md), gated on Linux,
   Windows, macOS, and releases.
@@ -70,12 +70,14 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Hosted native and x86 freestanding compilation.
 - [ ] Borrowed-reference lifetimes prevent dangling pointers without requiring
   raw-pointer discipline.
-- [x] Mort 0.37 defines thread-safety and data-race rules and provides
+- [x] Mort 0.38 defines thread-safety and data-race rules and provides
   cross-platform threads, joins, mutexes, sequentially consistent `AtomicI64`,
   synchronized conformance coverage, and positive/negative ThreadSanitizer
   gates.
-- [ ] An asynchronous I/O model, task runtime, cancellation, and structured
-  concurrency.
+- [x] Mort 0.38 provides portable nonblocking sockets, readiness waits,
+  would-block handling, a structured task-group runtime, sequentially
+  consistent cooperative cancellation, automatic cancel/join at scope exit,
+  conformance cases, and sanitizer gates.
 - [x] First-party cross-platform blocking TCP, UDP, and DNS with resource-safe
   sockets, specified stream/datagram semantics, source endpoints, truncation
   normalization, and loopback conformance coverage.

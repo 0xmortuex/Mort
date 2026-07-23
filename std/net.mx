@@ -106,6 +106,38 @@ pub fn shutdown(socket: *Socket) -> bool {
     return net_socket_shutdown((*socket).handle);
 }
 
+pub fn set_nonblocking(socket: *Socket, enabled: bool) -> bool {
+    return net_socket_set_nonblocking((*socket).handle, enabled);
+}
+
+pub fn wait(
+    socket: *Socket,
+    readable: bool,
+    writable: bool,
+    timeout_millis: i64
+) -> i32 {
+    let events: u32 = 0;
+    if readable {
+        events += 1;
+    }
+    if writable {
+        events += 2;
+    }
+    return net_socket_wait((*socket).handle, events, timeout_millis);
+}
+
+pub fn wait_readable(socket: *Socket, timeout_millis: i64) -> i32 {
+    return net_socket_wait((*socket).handle, 1, timeout_millis);
+}
+
+pub fn wait_writable(socket: *Socket, timeout_millis: i64) -> i32 {
+    return net_socket_wait((*socket).handle, 2, timeout_millis);
+}
+
+pub fn would_block() -> bool {
+    return net_last_error_would_block();
+}
+
 pub fn local_port(socket: *Socket) -> u16 {
     return net_socket_local_port((*socket).handle);
 }

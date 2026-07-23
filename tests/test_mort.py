@@ -833,6 +833,16 @@ def test_network_builtins_are_typed_and_hosted_only():
             "fn kmain() { net_udp_bind(\"127.0.0.1\", 0); }",
             freestanding=True,
         )
+    with pytest.raises(MortError, match="timeout must be i64"):
+        c_of(
+            "fn main() -> int { let socket: *void = null; "
+            "let timeout: u64 = 1; net_socket_wait(socket, 1, timeout); "
+            "return 0; }"
+        )
+    with pytest.raises(MortError, match="expects no arguments"):
+        c_of(
+            "fn main() -> int { net_last_error_would_block(1); return 0; }"
+        )
 
 
 @needs_cc
@@ -905,6 +915,54 @@ def test_cross_platform_udp_dns_loopback_runs():
         result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n112\n111\n110\n103\n"
+
+
+@needs_cc
+def test_cross_platform_nonblocking_readiness_runs():
+    source = os.path.join(ROOT, "examples", "async_io.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "mort_net_socket_set_nonblocking" in c_source
+    assert "mort_net_socket_wait" in c_source
+    assert "WSAPoll" in c_source
+    assert "poll(&descriptor" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "async_io.c")
+        exe = os.path.join(d, "async_io.exe" if os.name == "nt" else "async_io")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        command.append("-lws2_32" if os.name == "nt" else "-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "5\n114\n101\n97\n100\n121\n"
+
+
+@needs_cc
+def test_structured_task_group_cancels_and_joins():
+    source = os.path.join(ROOT, "examples", "tasks.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "mort_std__task__join_all" in c_source
+    assert "mort_atomic_i64_store" in c_source
+    assert "mort_thread_join" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "tasks.c")
+        exe = os.path.join(d, "tasks.exe" if os.name == "nt" else "tasks")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name != "nt":
+            command.append("-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2\n16\n0\n42\n"
 
 
 def test_global_variable_codegen():
@@ -2271,6 +2329,7 @@ def test_packaging_version_matches_compiler_version():
     assert 'mortc = "mortc:main"' in project_text
     assert "std/random.mx" in project_text
     assert "std/net.mx" in project_text
+    assert "std/task.mx" in project_text
     with open(
             os.path.join(ROOT, "conformance", "manifest.json"),
             encoding="utf-8") as handle:

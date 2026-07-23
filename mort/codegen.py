@@ -577,8 +577,14 @@ class CodeGen:
         if not (self.used_threads or self.used_mutexes or self.used_atomics):
             return
 
+        self._emit("#if defined(__GNUC__) || defined(__clang__)")
+        self._emit("#define MORT_CONCURRENCY_INTERNAL __attribute__((unused))")
+        self._emit("#else")
+        self._emit("#define MORT_CONCURRENCY_INTERNAL")
+        self._emit("#endif")
         self._emit(
-            "static void mort_concurrency_failure(const char* reason) {")
+            "static MORT_CONCURRENCY_INTERNAL void "
+            "mort_concurrency_failure(const char* reason) {")
         self._emit(
             '    fprintf(stderr, "Mort concurrency failure: %s\\n", reason);')
         self._emit("    exit(1);")
@@ -595,7 +601,8 @@ class CodeGen:
             self._emit("    int64_t result;")
             self._emit("};")
             self._emit(
-                "static DWORD WINAPI mort_thread_entry(LPVOID raw) {")
+                "static MORT_CONCURRENCY_INTERNAL DWORD WINAPI "
+                "mort_thread_entry(LPVOID raw) {")
             self._emit(
                 "    struct mort_thread_handle* handle = "
                 "(struct mort_thread_handle*)raw;")
@@ -610,7 +617,9 @@ class CodeGen:
             self._emit("    void* context;")
             self._emit("    int64_t result;")
             self._emit("};")
-            self._emit("static void* mort_thread_entry(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL void* "
+                "mort_thread_entry(void* raw) {")
             self._emit(
                 "    struct mort_thread_handle* handle = "
                 "(struct mort_thread_handle*)raw;")
@@ -620,7 +629,7 @@ class CodeGen:
             self._emit("}")
             self._emit("#endif")
             self._emit(
-                "static void* mort_thread_spawn("
+                "static MORT_CONCURRENCY_INTERNAL void* mort_thread_spawn("
                 "mort_thread_callback callback, void* context) {")
             self._emit("    if (callback == NULL) { return NULL; }")
             self._emit(
@@ -646,7 +655,8 @@ class CodeGen:
             self._emit("    return handle;")
             self._emit("}")
             self._emit(
-                "static int64_t mort_thread_join(void* raw) {")
+                "static MORT_CONCURRENCY_INTERNAL int64_t "
+                "mort_thread_join(void* raw) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
                 '"cannot join a null thread"); }')
@@ -672,7 +682,8 @@ class CodeGen:
             self._emit("    return result;")
             self._emit("}")
             self._emit(
-                "static void mort_thread_sleep_millis(uint64_t millis) {")
+                "static MORT_CONCURRENCY_INTERNAL void "
+                "mort_thread_sleep_millis(uint64_t millis) {")
             self._emit("#ifdef _WIN32")
             self._emit("    while (millis > 0) {")
             self._emit(
@@ -704,7 +715,9 @@ class CodeGen:
             self._emit("#else")
             self._emit("struct mort_mutex_handle { pthread_mutex_t value; };")
             self._emit("#endif")
-            self._emit("static void* mort_mutex_create(void) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL void* "
+                "mort_mutex_create(void) {")
             self._emit(
                 "    struct mort_mutex_handle* handle = "
                 "(struct mort_mutex_handle*)malloc(sizeof(*handle));")
@@ -719,7 +732,9 @@ class CodeGen:
             self._emit("#endif")
             self._emit("    return handle;")
             self._emit("}")
-            self._emit("static void mort_mutex_destroy(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL void "
+                "mort_mutex_destroy(void* raw) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
                 '"cannot destroy a null mutex"); }')
@@ -736,7 +751,9 @@ class CodeGen:
             self._emit("#endif")
             self._emit("    free(handle);")
             self._emit("}")
-            self._emit("static bool mort_mutex_lock(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL bool "
+                "mort_mutex_lock(void* raw) {")
             self._emit("    if (raw == NULL) { return false; }")
             self._emit(
                 "    struct mort_mutex_handle* handle = "
@@ -748,7 +765,9 @@ class CodeGen:
             self._emit("    return pthread_mutex_lock(&handle->value) == 0;")
             self._emit("#endif")
             self._emit("}")
-            self._emit("static bool mort_mutex_unlock(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL bool "
+                "mort_mutex_unlock(void* raw) {")
             self._emit("    if (raw == NULL) { return false; }")
             self._emit(
                 "    struct mort_mutex_handle* handle = "
@@ -765,7 +784,9 @@ class CodeGen:
         if self.used_atomics:
             self._emit(
                 "struct mort_atomic_i64_handle { _Atomic int64_t value; };")
-            self._emit("static void* mort_atomic_i64_create(int64_t value) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL void* "
+                "mort_atomic_i64_create(int64_t value) {")
             self._emit(
                 "    struct mort_atomic_i64_handle* handle = "
                 "(struct mort_atomic_i64_handle*)malloc(sizeof(*handle));")
@@ -773,13 +794,17 @@ class CodeGen:
             self._emit("    atomic_init(&handle->value, value);")
             self._emit("    return handle;")
             self._emit("}")
-            self._emit("static void mort_atomic_i64_destroy(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL void "
+                "mort_atomic_i64_destroy(void* raw) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
                 '"cannot destroy a null atomic"); }')
             self._emit("    free(raw);")
             self._emit("}")
-            self._emit("static int64_t mort_atomic_i64_load(void* raw) {")
+            self._emit(
+                "static MORT_CONCURRENCY_INTERNAL int64_t "
+                "mort_atomic_i64_load(void* raw) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
                 '"cannot load a null atomic"); }')
@@ -787,7 +812,8 @@ class CodeGen:
                 "    return atomic_load(&((struct mort_atomic_i64_handle*)raw)->value);")
             self._emit("}")
             self._emit(
-                "static void mort_atomic_i64_store(void* raw, int64_t value) {")
+                "static MORT_CONCURRENCY_INTERNAL void "
+                "mort_atomic_i64_store(void* raw, int64_t value) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
                 '"cannot store a null atomic"); }')
@@ -799,7 +825,8 @@ class CodeGen:
                     ("fetch_add", "atomic_fetch_add"),
                     ("fetch_sub", "atomic_fetch_sub")):
                 self._emit(
-                    f"static int64_t mort_atomic_i64_{name}("
+                    "static MORT_CONCURRENCY_INTERNAL int64_t "
+                    f"mort_atomic_i64_{name}("
                     "void* raw, int64_t value) {")
                 self._emit(
                     '    if (raw == NULL) { mort_concurrency_failure('
@@ -809,7 +836,8 @@ class CodeGen:
                     "&((struct mort_atomic_i64_handle*)raw)->value, value);")
                 self._emit("}")
             self._emit(
-                "static bool mort_atomic_i64_compare_exchange("
+                "static MORT_CONCURRENCY_INTERNAL bool "
+                "mort_atomic_i64_compare_exchange("
                 "void* raw, int64_t expected, int64_t desired) {")
             self._emit(
                 '    if (raw == NULL) { mort_concurrency_failure('
@@ -820,6 +848,8 @@ class CodeGen:
                 "&expected, desired);")
             self._emit("}")
             self._emit()
+        self._emit("#undef MORT_CONCURRENCY_INTERNAL")
+        self._emit()
 
     def _gen_network_helpers(self):
         if not self.used_network:
@@ -1288,6 +1318,97 @@ class CodeGen:
         self._emit("#endif")
         self._emit("}")
         self._emit(
+            "static MORT_NET_INTERNAL bool mort_net_socket_set_nonblocking("
+            "void* raw, bool enabled) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET) { return false; }")
+        self._emit("#ifdef _WIN32")
+        self._emit("    u_long mode = enabled ? 1UL : 0UL;")
+        self._emit("    return ioctlsocket(socket, FIONBIO, &mode) == 0;")
+        self._emit("#else")
+        self._emit("    int flags = fcntl(socket, F_GETFL, 0);")
+        self._emit("    if (flags < 0) { return false; }")
+        self._emit(
+            "    int next = enabled ? (flags | O_NONBLOCK) "
+            ": (flags & ~O_NONBLOCK);")
+        self._emit("    return fcntl(socket, F_SETFL, next) == 0;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL int32_t mort_net_socket_wait("
+            "void* raw, uint32_t events, int64_t timeout_millis) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET || (events & 3U) == 0U "
+            "|| timeout_millis < -1) { return -1; }")
+        self._emit(
+            "    int timeout = timeout_millis > 2147483647LL "
+            "? 2147483647 : (int)timeout_millis;")
+        self._emit("    int32_t ready = 0;")
+        self._emit("#ifdef _WIN32")
+        self._emit("    WSAPOLLFD descriptor;")
+        self._emit("    descriptor.fd = socket;")
+        self._emit("    descriptor.events = 0;")
+        self._emit("    descriptor.revents = 0;")
+        self._emit(
+            "    if ((events & 1U) != 0U) { "
+            "descriptor.events |= POLLRDNORM; }")
+        self._emit(
+            "    if ((events & 2U) != 0U) { "
+            "descriptor.events |= POLLWRNORM; }")
+        self._emit(
+            "    int result = WSAPoll(&descriptor, 1, timeout);")
+        self._emit("    if (result == SOCKET_ERROR) { return -1; }")
+        self._emit("    if (result == 0) { return 0; }")
+        self._emit(
+            "    if ((descriptor.revents & POLLRDNORM) != 0) { ready |= 1; }")
+        self._emit(
+            "    if ((descriptor.revents & POLLWRNORM) != 0) { ready |= 2; }")
+        self._emit(
+            "    if ((descriptor.revents & "
+            "(POLLERR | POLLHUP | POLLNVAL)) != 0) { ready |= 4; }")
+        self._emit("#else")
+        self._emit("    struct pollfd descriptor;")
+        self._emit("    descriptor.fd = socket;")
+        self._emit("    descriptor.events = 0;")
+        self._emit("    descriptor.revents = 0;")
+        self._emit(
+            "    if ((events & 1U) != 0U) { descriptor.events |= POLLIN; }")
+        self._emit(
+            "    if ((events & 2U) != 0U) { descriptor.events |= POLLOUT; }")
+        self._emit("    int result;")
+        self._emit("    do {")
+        self._emit("        result = poll(&descriptor, 1, timeout);")
+        self._emit("    } while (result < 0 && errno == EINTR);")
+        self._emit("    if (result < 0) { return -1; }")
+        self._emit("    if (result == 0) { return 0; }")
+        self._emit(
+            "    if ((descriptor.revents & POLLIN) != 0) { ready |= 1; }")
+        self._emit(
+            "    if ((descriptor.revents & POLLOUT) != 0) { ready |= 2; }")
+        self._emit(
+            "    if ((descriptor.revents & "
+            "(POLLERR | POLLHUP | POLLNVAL)) != 0) { ready |= 4; }")
+        self._emit("#endif")
+        self._emit("    return ready;")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL bool mort_net_last_error_would_block("
+            "void) {")
+        self._emit("#ifdef _WIN32")
+        self._emit("    return WSAGetLastError() == WSAEWOULDBLOCK;")
+        self._emit("#else")
+        self._emit("    return errno == EAGAIN || errno == EWOULDBLOCK;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
             "static MORT_NET_INTERNAL uint16_t "
             "mort_net_socket_local_port(void* raw) {")
         self._emit("    mort_native_socket socket = mort_socket_value(raw);")
@@ -1402,7 +1523,10 @@ class CodeGen:
                 self._emit("#include <windows.h>")
                 self._emit("#else")
                 self._emit("#include <arpa/inet.h>")
+                self._emit("#include <errno.h>")
+                self._emit("#include <fcntl.h>")
                 self._emit("#include <netdb.h>")
+                self._emit("#include <poll.h>")
                 self._emit("#include <sys/socket.h>")
                 self._emit("#include <unistd.h>")
                 self._emit("#endif")

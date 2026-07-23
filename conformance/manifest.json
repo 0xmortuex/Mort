@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.37.0",
+  "language_version": "0.38.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -113,6 +113,22 @@
       "mode": "run",
       "sources": ["cases/run/udp_loopback.mx"],
       "stdout": "4\n112\n111\n110\n103\n",
+      "exit": 0
+    },
+    {
+      "id": "async.nonblocking_readiness",
+      "section": "13.5",
+      "mode": "run",
+      "sources": ["cases/run/async_io.mx"],
+      "stdout": "5\n114\n101\n97\n100\n121\n",
+      "exit": 0
+    },
+    {
+      "id": "async.structured_task_group",
+      "section": "14",
+      "mode": "run",
+      "sources": ["cases/run/tasks.mx"],
+      "stdout": "2\n16\n0\n42\n",
       "exit": 0
     },
     {

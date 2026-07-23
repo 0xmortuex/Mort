@@ -1,0 +1,93 @@
+module std.task;
+
+type Callback = fn(*void) -> i64;
+
+resource struct TaskGroup {
+    handles: **void,
+    length: u64,
+    capacity: u64,
+    cancellation: *void,
+}
+
+pub fn new() -> TaskGroup {
+    let capacity: u64 = 4;
+    let handles = alloc(capacity * sizeof<*void>()) as **void;
+    let cancellation = atomic_i64_create(0);
+    assert(handles != null);
+    assert(cancellation != null);
+    return TaskGroup {
+        handles: handles,
+        length: 0,
+        capacity: capacity,
+        cancellation: cancellation,
+    };
+}
+
+fn reserve(group: *TaskGroup, capacity: u64) -> void {
+    if capacity <= (*group).capacity {
+        return;
+    }
+    let replacement = alloc(capacity * sizeof<*void>()) as **void;
+    assert(replacement != null);
+    for index: u64 in 0..(*group).length {
+        replacement[index] = (*group).handles[index];
+    }
+    free((*group).handles);
+    (*group).handles = replacement;
+    (*group).capacity = capacity;
+}
+
+pub fn spawn(
+    group: *TaskGroup,
+    callback: Callback,
+    context: *void
+) -> bool {
+    if cancelled(group) {
+        return false;
+    }
+    let handle = thread_spawn(callback, context);
+    if handle == null {
+        return false;
+    }
+    if (*group).length == (*group).capacity {
+        reserve(group, (*group).capacity * 2);
+    }
+    (*group).handles[(*group).length] = handle;
+    (*group).length += 1;
+    return true;
+}
+
+pub fn cancel(group: *TaskGroup) -> void {
+    atomic_i64_store((*group).cancellation, 1);
+}
+
+pub fn cancelled(group: *TaskGroup) -> bool {
+    return atomic_i64_load((*group).cancellation) != 0;
+}
+
+pub fn count(group: *TaskGroup) -> u64 {
+    return (*group).length;
+}
+
+pub fn join_all(group: *TaskGroup) -> i64 {
+    let total: i64 = 0;
+    for index: u64 in 0..(*group).length {
+        total += thread_join((*group).handles[index]);
+        (*group).handles[index] = null;
+    }
+    (*group).length = 0;
+    return total;
+}
+
+pub fn destroy(group: *TaskGroup) -> void {
+    if (*group).cancellation != null {
+        cancel(group);
+        join_all(group);
+        atomic_i64_destroy((*group).cancellation);
+        (*group).cancellation = null;
+    }
+    free((*group).handles);
+    (*group).handles = null;
+    (*group).length = 0;
+    (*group).capacity = 0;
+}

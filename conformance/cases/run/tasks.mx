@@ -1,0 +1,37 @@
+import std.task;
+
+struct Context {
+    group: *TaskGroup,
+    result: i64,
+}
+
+fn cooperative_worker(raw: *void) -> i64 {
+    let context = raw as *Context;
+    while !task.cancelled((*context).group) {
+        thread_sleep_millis(1);
+    }
+    return (*context).result;
+}
+
+fn structured_exit() -> i64 {
+    let group = task.new();
+    let context = Context { group: &group, result: 5 };
+    assert(task.spawn(&group, cooperative_worker, &context as *void));
+    return 42;
+}
+
+fn main() -> int {
+    let group = task.new();
+    let first = Context { group: &group, result: 7 };
+    let second = Context { group: &group, result: 9 };
+    assert(task.spawn(&group, cooperative_worker, &first as *void));
+    assert(task.spawn(&group, cooperative_worker, &second as *void));
+    print(task.count(&group));
+    task.cancel(&group);
+    assert(task.cancelled(&group));
+    print(task.join_all(&group));
+    print(task.count(&group));
+    assert(!task.spawn(&group, cooperative_worker, &first as *void));
+    print(structured_exit());
+    return 0;
+}

@@ -62,7 +62,7 @@ jobs:
       - name: Run the test suite
         run: python -m pytest tests/ -q
 
-      - name: Run the Mort 0.37 conformance suite
+      - name: Run the Mort 0.38 conformance suite
         run: python conformance/run.py --mortc mortc
 
       - name: Run adversarial front-end fuzzing
@@ -105,6 +105,8 @@ jobs:
             --sanitize address --sanitize undefined
           mortc examples/udp_loopback.mx --run -o /tmp/mort-udp-loopback \
             --sanitize address --sanitize undefined
+          mortc examples/async_io.mx --run -o /tmp/mort-async-io \
+            --sanitize address --sanitize undefined
 
   thread-sanitizer:
     name: Thread sanitizer
@@ -127,6 +129,8 @@ jobs:
       - name: Run synchronized concurrency under TSan and UBSan
         run: |
           mortc examples/concurrency.mx --run -o /tmp/mort-concurrency \
+            --sanitize thread --sanitize undefined
+          mortc examples/tasks.mx --run -o /tmp/mort-tasks \
             --sanitize thread --sanitize undefined
           if mortc tests/fixtures/data_race.mx --run -o /tmp/mort-race \
               --sanitize thread; then
