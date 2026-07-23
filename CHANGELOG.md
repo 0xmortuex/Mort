@@ -14,6 +14,9 @@ Mort's reliability and supply-chain hardening release.
   instead of being mistaken for literal branch names.
 - Excessively nested source now produces a controlled Mort diagnostic instead
   of exposing a Python `RecursionError`.
+- Freestanding compilation now always selects Zig's explicit x86-64
+  bare-metal target, instead of accidentally feeding x86 assembly to an ARM64
+  host compiler on macOS.
 - Hosted builds can enable address, undefined-behavior, and leak sanitizers
   from either CLI flags or `mort.toml`.
 - `MORT_CC` and `CC` can select a multi-argument C backend command explicitly.
@@ -47,13 +50,15 @@ Mort's reliability and supply-chain hardening release.
   MORT OS kernel build.
 - Dedicated Python 3.13 and 3.14 jobs cover current Python releases, and a
   Clang job executes representative generated programs under ASan and UBSan.
+- GitHub workflow dependencies use their current Node.js 24 action generations,
+  removing the platform's Node.js 20 deprecation warnings.
 - Release publication now requires the full test suite, 20,000 fuzz cases,
   a kernel build, an exact tag/version match, and an installed-wheel smoke test.
 - Structured valid-program fuzzing now spans control flow, arrays, structs,
   payload enums, tuples, and generics, with a permanent adversarial corpus.
 - A coverage-guided Atheris/libFuzzer target runs a seeded corpus on relevant
   pull requests and for 15 minutes every day, preserving minimized crashes.
-- 301 compiler, ownership, package-security, registry, native, LSP, and kernel
+- 302 compiler, ownership, package-security, registry, native, LSP, and kernel
   tests pass.
 
 ## 0.32.0 — 2026-07-23

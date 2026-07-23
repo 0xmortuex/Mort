@@ -433,18 +433,26 @@ def _compile_main(argv=None, test_mode=False):
 
     base = os.path.splitext(os.path.basename(args.files[0]))[0]
 
-    cc = find_c_compiler()
+    # Freestanding output is explicitly x86-64 and may contain x86 assembly.
+    # Always use Zig's cross compiler instead of a host compiler (notably the
+    # ARM64 compiler on current macOS runners).
+    cc = find_zig() if args.freestanding else find_c_compiler()
     if cc is None:
         out = args.output or (base + ".o" if args.freestanding else base)
         fallback = base + ".c"
         with open(fallback, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         if args.freestanding:
-            hint = f"gcc -ffreestanding -c {fallback} -o {out}"
+            hint = f"zig cc -target x86_64-freestanding-none -c {fallback} -o {out}"
         else:
             hint = f"gcc {fallback} -o {out}"
+        missing = (
+            "no Zig compiler found for the x86-64 freestanding target"
+            if args.freestanding
+            else "no C compiler (cc/gcc/clang/zig) found"
+        )
         print(
-            f"mortc: no C compiler (cc/gcc/clang) found on PATH.\n"
+            f"mortc: {missing}.\n"
             f"       Wrote generated C to {fallback!r} — compile it with e.g. "
             f"`{hint}`.",
             file=sys.stderr,

@@ -987,7 +987,7 @@ def test_print_banned_in_freestanding():
     assert "freestanding" in exc.value.msg
 
 
-@needs_cc
+@needs_zig
 def test_freestanding_object_builds():
     src_path = os.path.join(ROOT, "examples", "kernel.mx")
     with open(src_path, encoding="utf-8") as fh:
@@ -997,19 +997,38 @@ def test_freestanding_object_builds():
         obj = os.path.join(d, "k.o")
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
-        cmd = list(_CC)
-        if mortc.is_zig(_CC):
-            cmd += ["-target", "x86_64-freestanding-none"]
+        cmd = [*_ZIG, "-target", "x86_64-freestanding-none"]
         cmd += ["-ffreestanding", "-O2", "-std=c11", "-c", cfile, "-o", obj]
         subprocess.run(cmd, check=True)
         data = open(obj, "rb").read()
     assert len(data) > 0
-    # With the Zig backend we pin the exact bare-metal target, so assert the
-    # object really is a 64-bit x86-64 ELF (not just "some ELF").
-    if mortc.is_zig(_CC):
-        assert data[:4] == b"\x7fELF"                         # ELF magic
-        assert data[4] == 2                                   # ELFCLASS64
-        assert struct.unpack("<H", data[18:20])[0] == 0x3E    # EM_X86_64
+    # The backend pins the exact bare-metal target, so this must be a 64-bit
+    # x86-64 ELF rather than merely an object for the host architecture.
+    assert data[:4] == b"\x7fELF"                         # ELF magic
+    assert data[4] == 2                                   # ELFCLASS64
+    assert struct.unpack("<H", data[18:20])[0] == 0x3E    # EM_X86_64
+
+
+def test_freestanding_cli_always_uses_zig_cross_target(
+        tmp_path, monkeypatch):
+    source = tmp_path / "kernel.mx"
+    output = tmp_path / "kernel.o"
+    source.write_text("fn kmain() { asm(\"hlt\"); }", encoding="utf-8")
+    commands = []
+
+    def record(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(mortc, "find_zig", lambda: ["zig", "cc"])
+    monkeypatch.setattr(
+        mortc, "find_c_compiler",
+        lambda: pytest.fail("host compiler selected for freestanding build"))
+    monkeypatch.setattr(mortc.subprocess, "run", record)
+    assert mortc.main([
+        str(source), "--freestanding", "-o", str(output)]) == 0
+    assert commands[0][:4] == [
+        "zig", "cc", "-target", "x86_64-freestanding-none"]
 
 
 # ---------- Phase 4: the bootable kernel ----------
