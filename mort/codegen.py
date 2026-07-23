@@ -351,6 +351,7 @@ class CodeGen:
         self.used_inl = False
         self.used_outl = False
         self.used_println = False
+        self.used_print = False
         self.used_print_float = False
         self.used_assert = False
         self.used_alloc = False
@@ -504,7 +505,10 @@ class CodeGen:
                 or self.used_inl or self.used_outl):
             self._emit()
         if not self.freestanding:
-            self._emit('static void mort_print(int64_t v) { printf("%lld\\n", (long long)v); }')
+            if self.used_print:
+                self._emit(
+                    'static void mort_print(int64_t v) { '
+                    'printf("%lld\\n", (long long)v); }')
             if self.used_print_float:
                 self._emit(
                     'static void mort_print_float(double v) { printf("%.17g\\n", v); }')
@@ -985,14 +989,24 @@ class CodeGen:
                     self._emit(f"{keyword} ({comparison}) {{")
                     emitted_condition = True
                 self.indent += 1
-                for binding_index, binding_name, binding_type in zip(
-                        arm.binding_indices, arm.binding_names, arm.binding_types):
+                self.defer_scopes.append([])
+                for binding_index, binding_name, binding_type, destructor in zip(
+                        arm.binding_indices, arm.binding_names, arm.binding_types,
+                        arm.binding_destructors):
                     payload = f"{temporary}.data.v_{arm.variant_name}"
                     if arm.payload_arity > 1:
                         payload += f".f_{binding_index}"
                     self._emit(
                         f"{self._ct(binding_type)} m_{binding_name} = {payload};")
-                self._gen_scoped_statements(arm.body.stmts)
+                    if destructor is not None:
+                        live = f"mort_live_m_{binding_name}"
+                        self._emit(f"bool {live} = true;")
+                        self.defer_scopes[-1].append(
+                            ("resource", binding_name, destructor, live))
+                for statement in arm.body.stmts:
+                    self._gen_stmt(statement)
+                self._emit_defer_scopes(len(self.defer_scopes) - 1)
+                self.defer_scopes.pop()
                 self.indent -= 1
                 self._emit("}")
             self.indent -= 1
@@ -1279,6 +1293,8 @@ class CodeGen:
                 self.used_println = True
             elif e.name == "print" and e.args[0].type in ("f32", "f64"):
                 self.used_print_float = True
+            elif e.name == "print":
+                self.used_print = True
             elif e.name == "assert":
                 self.used_assert = True
             elif e.name == "alloc":

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.32.0 — 2026-07-23
+
+Mort's ownership-completion release.
+
+### Added
+
+- `match move value` consumes an owning tagged enum and transfers its active
+  resource payload into typed arm bindings.
+- Owning match bindings participate in the normal move checker and automatic
+  lexical destruction, including returns and propagated errors.
+- Resource bindings created inside a loop may move once per iteration.
+- Moving a resource declared outside a repeating loop remains a compile-time
+  error because later iterations could otherwise reuse moved storage.
+
+### Safety
+
+- Owning enum matches must enumerate every variant so the active payload always
+  has a defined destruction path.
+- An owning payload cannot be discarded with `_`; it must be bound, moved, or
+  destroyed.
+- Consuming an owning enum disables the source live flag, while the selected
+  arm owns exactly one extracted payload, preventing leaks and double drops.
+
+### Validation
+
+- Owning enum extraction and per-iteration loop moves compile under
+  `-Wall -Werror` and execute with exactly-once destruction.
+- 288 compiler, ownership, SemVer, registry, package, native, LSP, and kernel
+  tests pass.
+
 ## 0.31.0 — 2026-07-23
 
 Mort's semantic package ecosystem release.

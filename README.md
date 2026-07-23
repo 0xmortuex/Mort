@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.31)
+## The language (v0.32)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -120,6 +120,8 @@ C `main`, so the output is an ordinary native binary.
   moves, global resources, and destructive overwrites are compile-time errors.
   Ownership composes through ordinary structs, tuples, tagged-enum payloads,
   and fixed arrays with recursively generated reverse-order destructors.
+  `match move value` safely transfers an owning enum's active payload into its
+  arm binding, and resources created inside loops can move once per iteration.
 - **Portable standard modules:** environment access, process control, and
   generic integer math through `std.env`, `std.process`, and `std.math`, plus
   typed hosted file/time APIs through `std.fs` and `std.time`. Portable

@@ -238,6 +238,7 @@ class MatchArm(Node):
         self.binding_types = []
         self.binding_indices = []
         self.payload_arity = 0
+        self.binding_destructors = []
 
 
 class Match(Node):

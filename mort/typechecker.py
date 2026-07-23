@@ -954,6 +954,7 @@ class Checker:
             "kind": kind,
             "mutable": mutable,
             "moved": False,
+            "loop_depth": self.loop_depth,
         }
 
     def _local_binding(self, name):
@@ -1463,10 +1464,11 @@ class Checker:
 
         elif isinstance(s, A.Match):
             subject_type = self._check_expr(s.expr)
-            if self._needs_drop_type(subject_type):
+            owning_match = self._needs_drop_type(subject_type)
+            if owning_match and not isinstance(s.expr, A.Move):
                 self._error(
-                    "matching a resource-owning enum by value is not yet "
-                    "supported; inspect it through an owning wrapper",
+                    "matching a resource-owning enum transfers it; use "
+                    "'match move value'",
                     s,
                 )
             if (subject_type in self.structs or is_array(subject_type)
@@ -1482,6 +1484,12 @@ class Checker:
                 binding_names = []
                 binding_types = []
                 if arm.pattern is None:
+                    if owning_match:
+                        self._error(
+                            "an owning enum match must name every variant so "
+                            "its active payload can be destroyed",
+                            arm,
+                        )
                     if wildcard_seen:
                         self._error("match has more than one wildcard arm", arm)
                     if index != len(s.arms) - 1:
@@ -1530,11 +1538,25 @@ class Checker:
                         binding_types = [
                             expected_payloads[index] for index in binding_indices
                         ]
+                        for payload_index, payload_type in enumerate(
+                                expected_payloads):
+                            if (self._needs_drop_type(payload_type)
+                                    and arm.pattern.args[payload_index].name == "_"):
+                                self._error(
+                                    "an owning payload cannot be ignored with '_'; "
+                                    "bind it so it can be destroyed",
+                                    arm,
+                                )
                         arm.variant_name = variant_name
                         arm.binding_names = binding_names
                         arm.binding_types = binding_types
                         arm.binding_indices = binding_indices
                         arm.payload_arity = len(expected_payloads)
+                        arm.binding_destructors = [
+                            self._resource_destructor(binding_type, arm)
+                            if self._needs_drop_type(binding_type) else None
+                            for binding_type in binding_types
+                        ]
                         if len(binding_names) == 1:
                             arm.binding_name = binding_names[0]
                             arm.binding_type = binding_types[0]
@@ -1556,6 +1578,9 @@ class Checker:
                             "node": arm,
                             "used": False,
                             "kind": "match binding",
+                            "mutable": True,
+                            "moved": False,
+                            "loop_depth": self.loop_depth,
                         }
                         for binding_name in binding_names
                     }
@@ -1705,10 +1730,10 @@ class Checker:
                     f"move expects a resource binding, got {e.expr.name!r}", e)
             if binding.get("moved"):
                 self._error(f"resource {e.expr.name!r} was already moved", e)
-            if self.loop_depth:
+            if (self.loop_depth
+                    and binding.get("loop_depth", 0) < self.loop_depth):
                 self._error(
-                    "moving a resource from a loop is not yet allowed; "
-                    "move it before entering the loop",
+                    "cannot move a resource declared outside a repeating loop",
                     e,
                 )
             binding["used"] = True

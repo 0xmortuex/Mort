@@ -2071,6 +2071,60 @@ def test_resource_can_move_once_across_exclusive_match_arms():
     assert result.stdout == "42\n"
 
 
+@needs_cc
+def test_owning_enum_match_move_transfers_payload_to_arm():
+    src = (
+        "resource struct Leaf { label: *u8 } "
+        "fn destroy(value: *Leaf) -> void { println((*value).label); } "
+        "enum Owned { Some(Leaf), Empty } "
+        "fn consume(value: Owned) -> void { match move value { "
+        "Owned.Some(leaf) => { println(\"matched\"); }, "
+        "Owned.Empty => {} } } "
+        "fn main() -> int { let value: Owned = "
+        "Owned.Some(Leaf { label: \"destroyed\" }); "
+        "consume(move value); return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "owning_match.c")
+        exe = os.path.join(
+            d, "owning_match.exe" if os.name == "nt" else "owning_match")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "matched\ndestroyed\n"
+
+
+@needs_cc
+def test_loop_local_resources_can_move_each_iteration():
+    src = (
+        "resource struct Value { number: i64 } "
+        "fn destroy(value: *Value) -> void { print((*value).number); } "
+        "fn consume(value: Value) -> void {} "
+        "fn main() -> int { for index: i64 in 40..42 { "
+        "let value = Value { number: index }; consume(move value); } return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "loop_resource.c")
+        exe = os.path.join(
+            d, "loop_resource.exe" if os.name == "nt" else "loop_resource")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "40\n41\n"
+
+
 @pytest.mark.parametrize(
     ("source", "message"),
     [
