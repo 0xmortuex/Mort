@@ -1,0 +1,16 @@
+type Point = (i64, i64);
+
+fn swap<Left, Right>(value: (Left, Right)) -> (Right, Left) {
+    return (value.1, value.0);
+}
+
+fn main() -> int {
+    let point: Point = (20, 22);
+    point.0 += 1;
+    print(point.0 + point.1);
+
+    let swapped = swap((42, false));
+    assert(!swapped.0);
+    print(swapped.1);
+    return 0;
+}

@@ -113,6 +113,18 @@ class Lexer:
         return self.tokens
 
     def _number(self, line, col):
+        # A decimal immediately after member-access punctuation is a tuple
+        # index, not the start of a floating-point literal.  Keeping this
+        # decision in the lexer lets chained access such as ``matrix.0.1``
+        # become DOT, INT, DOT, INT instead of DOT, FLOAT(0.1).
+        if self.tokens and self.tokens[-1].type == T.DOT:
+            digits = ""
+            while self._peek().isdigit():
+                digits += self._advance()
+            if self._peek().isalpha() or self._peek() == "_":
+                raise MortError("tuple index must be a decimal integer", line, col)
+            self._add(T.INT, int(digits), line, col)
+            return
         # hex literal, e.g. 0xB8000
         if self._peek() == "0" and self._peek(1) in "xX":
             self._advance()

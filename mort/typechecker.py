@@ -177,6 +177,14 @@ def function_parts(t):
     return _split_type_list(t[3:close]), t[close + 3:]
 
 
+def tuple_parts(t):
+    """Return element types for a heterogeneous tuple type."""
+    if not isinstance(t, str) or not t.startswith("(") or not t.endswith(")"):
+        return None
+    elements = _split_type_list(t[1:-1])
+    return elements if len(elements) >= 2 else None
+
+
 def substitute_type(t, mapping):
     if t in mapping:
         return mapping[t]
@@ -196,6 +204,10 @@ def substitute_type(t, mapping):
             "fn(" + ",".join(substitute_type(item, mapping) for item in parameters)
             + ")->" + substitute_type(result, mapping)
         )
+    tuple_type = tuple_parts(t)
+    if tuple_type:
+        return "(" + ",".join(
+            substitute_type(item, mapping) for item in tuple_type) + ")"
     parts = generic_parts(t)
     if parts:
         base, args = parts
@@ -253,6 +265,9 @@ class Checker:
                 all(item != "void" and self._valid_type(item) for item in parameters)
                 and (result == "void" or self._valid_type(result))
             )
+        tuple_type = tuple_parts(t)
+        if tuple_type:
+            return all(item != "void" and self._valid_type(item) for item in tuple_type)
         if generic_parts(t):
             return self._instantiate_struct(t) or self._instantiate_enum(t)
         return (t in INT_TYPES or t in FLOAT_TYPES or t == "bool"
@@ -285,6 +300,11 @@ class Checker:
                     else self._resolve_alias_type(result, stack)
                 )
             )
+        tuple_type = tuple_parts(t)
+        if tuple_type:
+            return "(" + ",".join(
+                self._resolve_alias_type(item, stack) for item in tuple_type
+            ) + ")"
         parts = generic_parts(t)
         if parts:
             base, arguments = parts
@@ -344,6 +364,68 @@ class Checker:
 
         visit(self.program)
 
+    def _aggregate_value_dependencies(self, value_type):
+        """Nominal aggregates that must be complete to store value_type."""
+        value_type = self._resolve_alias_type(value_type)
+        if is_array(value_type):
+            element, _ = array_parts(value_type)
+            return self._aggregate_value_dependencies(element)
+        tuple_type = tuple_parts(value_type)
+        if tuple_type:
+            dependencies = set()
+            for item in tuple_type:
+                dependencies.update(self._aggregate_value_dependencies(item))
+            return dependencies
+        # Pointers, slices and function values have pointer-like C layouts and
+        # therefore permit recursive references.
+        if (is_ptr(value_type) or is_slice(value_type)
+                or function_parts(value_type)):
+            return set()
+        if value_type in self.structs or value_type in self.enums:
+            return {value_type}
+        return set()
+
+    def _validate_aggregate_cycles(self, roots=None, node=None):
+        graph = {}
+        for name, fields in self.structs.items():
+            if fields is not None:
+                graph[name] = set().union(*(
+                    self._aggregate_value_dependencies(field_type)
+                    for field_type in fields.values()
+                )) if fields else set()
+        for name, variants in self.enums.items():
+            if variants is not None:
+                payloads = [
+                    payload for payload in variants.values()
+                    if payload is not None
+                ]
+                graph[name] = set().union(*(
+                    self._aggregate_value_dependencies(payload)
+                    for payload in payloads
+                )) if payloads else set()
+
+        visiting = []
+        complete = set()
+
+        def visit(name):
+            if name in complete or name not in graph:
+                return
+            if name in visiting:
+                start = visiting.index(name)
+                cycle = visiting[start:] + [name]
+                self._error(
+                    "aggregate by-value cycle: " + " -> ".join(cycle),
+                    node or self._aggregate_declarations.get(name, self.program),
+                )
+            visiting.append(name)
+            for dependency in graph[name]:
+                visit(dependency)
+            visiting.pop()
+            complete.add(name)
+
+        for name in roots or graph:
+            visit(name)
+
     def _instantiate_struct(self, concrete_type):
         if concrete_type in self.structs:
             return True
@@ -372,6 +454,7 @@ class Checker:
         self.structs[concrete_type] = resolved
         self.program.structs.append(
             A.StructDecl(concrete_type, fields, template.line))
+        self._validate_aggregate_cycles([concrete_type], template)
         return True
 
     def _instantiate_enum(self, concrete_type):
@@ -413,6 +496,7 @@ class Checker:
         if hasattr(template, "filename"):
             concrete.filename = template.filename
         self.program.enums.append(concrete)
+        self._validate_aggregate_cycles([concrete_type], template)
         return True
 
     def _unify_generic_type(self, pattern, actual, generic_params, mapping):
@@ -458,6 +542,18 @@ class Checker:
                 )
                 and self._unify_generic_type(
                     pattern_result, actual_result, generic_params, mapping)
+            )
+        pattern_tuple = tuple_parts(pattern)
+        if pattern_tuple:
+            actual_tuple = tuple_parts(actual)
+            return (
+                actual_tuple is not None
+                and len(pattern_tuple) == len(actual_tuple)
+                and all(
+                    self._unify_generic_type(
+                        expected, found, generic_params, mapping)
+                    for expected, found in zip(pattern_tuple, actual_tuple)
+                )
             )
         pattern_parts = generic_parts(pattern)
         if pattern_parts:
@@ -559,6 +655,7 @@ class Checker:
         return concrete_symbol
 
     def check(self):
+        self._aggregate_declarations = {}
         for declaration in self.program.aliases:
             if (declaration.name in self.aliases or declaration.name in INT_TYPES
                     or declaration.name in FLOAT_TYPES
@@ -590,6 +687,7 @@ class Checker:
             self.enums[ed.name] = {
                 variant.name: variant.payload_type for variant in ed.variants
             }
+            self._aggregate_declarations[ed.name] = ed
 
         # 1. collect struct names first so fields may reference any struct
         #    (including recursively through pointers, e.g. `next: *Node`).
@@ -606,6 +704,7 @@ class Checker:
             if sd.name in self.structs or sd.name in self.enums or sd.name in self.aliases:
                 self._error(f"struct {sd.name!r} is already defined", sd)
             self.structs[sd.name] = None  # placeholder until fields validated
+            self._aggregate_declarations[sd.name] = sd
 
         # 2. validate each struct's fields
         for sd in list(self.program.structs):
@@ -630,6 +729,8 @@ class Checker:
                     self._error(
                         f"variant {ed.name}.{variant.name} has unknown payload type "
                         f"{variant.payload_type}", ed)
+
+        self._validate_aggregate_cycles()
 
         for declaration in self.program.aliases:
             if declaration.target == "void" or not self._valid_type(declaration.target):
@@ -763,6 +864,8 @@ class Checker:
             return self._is_const_init(expr.value)
         if isinstance(expr, A.ArrayLit):
             return all(self._is_const_init(el) for el in expr.elements)
+        if isinstance(expr, A.TupleLit):
+            return all(self._is_const_init(element) for element in expr.elements)
         if isinstance(expr, A.Var) and expr.resolved_function is not None:
             return True
         return bool(getattr(expr, "is_lit", False))  # int literal expression
@@ -1007,6 +1110,16 @@ class Checker:
         if (is_ptr(expected) or function_parts(expected)) and expr.type == "null":
             expr.type = expected
             return True
+        expected_tuple = tuple_parts(expected)
+        actual_tuple = tuple_parts(expr.type)
+        if expected_tuple and actual_tuple and isinstance(expr, A.TupleLit):
+            if len(expected_tuple) != len(expr.elements):
+                return False
+            if all(self._coerce(item_type, item)
+                   for item_type, item in zip(expected_tuple, expr.elements)):
+                expr.type = expected
+                return True
+            return False
         if expected in FLOAT_TYPES and isinstance(expr, A.FloatLit):
             if expected == "f32" and abs(expr.value) > F32_MAX:
                 self._error("floating-point literal does not fit in f32", expr)
@@ -1152,7 +1265,8 @@ class Checker:
         elif isinstance(s, A.Match):
             subject_type = self._check_expr(s.expr)
             if (subject_type in self.structs or is_array(subject_type)
-                    or is_slice(subject_type) or is_ptr(subject_type)):
+                    or is_slice(subject_type) or is_ptr(subject_type)
+                    or tuple_parts(subject_type)):
                 self._error(f"cannot match on a value of type {subject_type}", s)
             wildcard_seen = False
             enum_variants = set()
@@ -1307,6 +1421,9 @@ class Checker:
             return "bool"
         if isinstance(e, A.StrLit):
             return "*u8"  # a pointer to static, null-terminated bytes
+        if isinstance(e, A.TupleLit):
+            element_types = [self._check_expr(element) for element in e.elements]
+            return "(" + ",".join(element_types) + ")"
         if isinstance(e, A.Var):
             vt = self._lookup(e.name)
             if vt is not None:
@@ -1488,7 +1605,8 @@ class Checker:
                     self._error(f"operator '{op}' needs operands of the same type", e)
                 elif lt in self.structs or (
                         lt in self.enums
-                        and any(value is not None for value in self.enums[lt].values())):
+                        and any(value is not None for value in self.enums[lt].values())
+                ) or tuple_parts(lt):
                     self._error(f"cannot compare aggregate values with '{op}'", e)
                 return "bool"
             if op in ("&&", "||"):
@@ -1550,6 +1668,16 @@ class Checker:
                         f"variant {enum_name}.{e.field} requires a payload", e)
                 return enum_name
             ot = self._check_expr(e.obj)
+            tuple_type = tuple_parts(ot)
+            if tuple_type:
+                if not e.field.isdigit():
+                    self._error(f"tuple has no named field {e.field!r}", e)
+                index = int(e.field)
+                if not (0 <= index < len(tuple_type)):
+                    self._error(
+                        f"tuple index {index} is out of bounds for "
+                        f"{len(tuple_type)} elements", e)
+                return tuple_type[index]
             if is_slice(ot):
                 if e.field == "len":
                     return "u64"

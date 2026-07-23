@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.27.0 — 2026-07-23
+
+Mort's native tuple release.
+
+### Added
+
+- Heterogeneous tuple types such as `(i64, bool, *u8)` and tuple literals such
+  as `(42, true, "Mort")`.
+- Zero-based tuple field access and mutation with `value.0`, including chained
+  access such as `nested.0.1`.
+- Contextual tuple-literal coercion for annotated bindings, returns, function
+  arguments, arrays, struct fields, and globals.
+- Tuple composition through type aliases, generic inference and
+  monomorphization, callbacks, arrays, slices, pointers, and `sizeof<T>()`.
+
+### Code generation
+
+- Each concrete tuple receives one deterministic, reusable C11 struct layout.
+- Aggregate definitions are dependency ordered, so structs can contain tuples
+  by value and tuples can contain structs by value regardless of source order.
+- Tuple literals lower to typed C compound literals and retain left-to-right
+  `try` propagation semantics.
+
+### Validation
+
+- Nested, generic, mutable, aliased, global, callback, array, slice, and
+  struct-composed tuples compile under `-Wall -Werror` and execute natively.
+- Invalid arity, element types, fields, comparisons, matches, and `void`
+  elements receive compile-time diagnostics.
+- 254 compiler, tuple, error-propagation, callback, packaging, CLI, native,
+  LSP, package, and kernel tests pass.
+
 ## 0.26.0 — 2026-07-23
 
 Mort's general error-propagation release.

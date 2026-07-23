@@ -101,6 +101,19 @@ def _function_parts(t):
     return _split_type_list(t[3:close]), t[close + 3:]
 
 
+def _tuple_parts(t):
+    if not isinstance(t, str) or not t.startswith("(") or not t.endswith(")"):
+        return None
+    elements = _split_type_list(t[1:-1])
+    return elements if len(elements) >= 2 else None
+
+
+def _tuple_c_name(t):
+    # Keep structural tuple symbols in their own namespace so a legal user
+    # struct name can never collide with a compiler-generated tuple layout.
+    return "struct mort_tuple_" + _type_tag(t)
+
+
 def _c_symbol(name):
     return _type_tag(name.replace(".", "__"))
 
@@ -121,6 +134,8 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
             for item in parameters
         ) or "void"
         return f"{result_type} (*)({parameter_types})"
+    if _tuple_parts(t):
+        return _tuple_c_name(t)
     if _is_slice(t):
         return _slice_c_name(t)
     if t.startswith("*const "):
@@ -153,6 +168,7 @@ class CodeGen:
         self.lines = []
         self.indent = 0
         self.slice_types = self._collect_slice_types(program)
+        self.tuple_types = self._collect_tuple_types(program)
 
     @staticmethod
     def _collect_slice_types(program):
@@ -187,6 +203,71 @@ class CodeGen:
         visit([item for item in program.funcs if not item.generic_params])
         visit(program.tests)
         return sorted(found)
+
+    @staticmethod
+    def _collect_tuple_types(program):
+        found = set()
+        seen = set()
+
+        def visit_type(value):
+            tuple_type = _tuple_parts(value)
+            if tuple_type:
+                found.add(value)
+                for item in tuple_type:
+                    visit_type(item)
+                return
+            callable_type = _function_parts(value)
+            if callable_type:
+                parameters, result = callable_type
+                for item in parameters:
+                    visit_type(item)
+                visit_type(result)
+                return
+            if _is_array(value):
+                item, _ = _array_parts(value)
+                visit_type(item)
+                return
+            if _is_slice(value):
+                visit_type(_slice_elem(value))
+                return
+            if value.startswith("*const "):
+                visit_type(value[7:])
+                return
+            if value.startswith("*"):
+                visit_type(value[1:])
+                return
+            angle = value.find("<")
+            if angle != -1 and value.endswith(">"):
+                for item in _split_type_list(value[angle + 1:-1]):
+                    visit_type(item)
+
+        def visit(value):
+            if isinstance(value, str):
+                visit_type(value)
+                return
+            if value is None or isinstance(value, (int, bool)):
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    visit(key)
+                    visit(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    visit(item)
+                return
+            if hasattr(value, "__dict__") and id(value) not in seen:
+                seen.add(id(value))
+                for item in vars(value).values():
+                    visit(item)
+
+        visit(program.globals)
+        visit([item for item in program.structs if not item.generic_params])
+        visit([item for item in program.enums if not item.generic_params])
+        visit(program.externs)
+        visit([item for item in program.funcs if not item.generic_params])
+        visit(program.tests)
+        return sorted(found, key=lambda item: (item.count("("), item))
 
     def _ct(self, t):
         return c_type(
@@ -330,6 +411,10 @@ class CodeGen:
                 self._emit(f"struct mort_{_type_tag(enum.name)};")
         if self.payload_enum_names:
             self._emit()
+        if self.tuple_types:
+            for tuple_type in self.tuple_types:
+                self._emit(f"{_tuple_c_name(tuple_type)};")
+            self._emit()
         if self.slice_types:
             for slice_type in self.slice_types:
                 elem = _slice_elem(slice_type)
@@ -341,15 +426,17 @@ class CodeGen:
                 self._emit("    uint64_t length;")
                 self._emit("};")
                 self._emit()
-        if self.program.structs:
-            for s in self.program.structs:
-                if not s.generic_params:
-                    self._gen_struct(s)
-                    self._emit()
-        for enum in self.program.enums:
-            if not enum.generic_params and enum.name in self.payload_enum_names:
-                self._gen_enum(enum)
-                self._emit()
+        # Aggregates that contain each other by value must be fully defined in
+        # dependency order.  This supports both `struct S { pair: (i64,bool) }`
+        # and the reverse `(S,bool)` without relying on declaration order.
+        for kind, value in self._aggregate_definition_order():
+            if kind == "tuple":
+                self._gen_tuple(value)
+            elif kind == "struct":
+                self._gen_struct(value)
+            else:
+                self._gen_enum(value)
+            self._emit()
         # String literals live in mutable static storage, so the *u8 type they
         # carry is honest — writing through one is defined, not UB on a literal.
         if self.strings:
@@ -477,6 +564,72 @@ class CodeGen:
             self._emit(self._var_decl(fld.typ, "f_" + fld.name) + ";")
         self.indent -= 1
         self._emit("};")
+
+    def _gen_tuple(self, tuple_type):
+        self._emit(f"{_tuple_c_name(tuple_type)} {{")
+        self.indent += 1
+        for index, item_type in enumerate(_tuple_parts(tuple_type)):
+            self._emit(self._var_decl(item_type, f"f_{index}") + ";")
+        self.indent -= 1
+        self._emit("};")
+
+    def _aggregate_definition_order(self):
+        nodes = {}
+        for tuple_type in self.tuple_types:
+            nodes[("tuple", tuple_type)] = tuple_type
+        for struct in self.program.structs:
+            if not struct.generic_params:
+                nodes[("struct", struct.name)] = struct
+        for enum in self.program.enums:
+            if not enum.generic_params and enum.name in self.payload_enum_names:
+                nodes[("enum", enum.name)] = enum
+
+        def value_dependency(value_type):
+            if _is_array(value_type):
+                element, _ = _array_parts(value_type)
+                return value_dependency(element)
+            if _tuple_parts(value_type):
+                return {("tuple", value_type)}
+            if value_type in self.struct_names:
+                return {("struct", value_type)}
+            if value_type in self.payload_enum_names:
+                return {("enum", value_type)}
+            # Pointers, slices and callbacks only need forward declarations.
+            return set()
+
+        dependencies = {}
+        for key, value in nodes.items():
+            kind, _ = key
+            if kind == "tuple":
+                types = _tuple_parts(value)
+            elif kind == "struct":
+                types = [field.typ for field in value.fields]
+            else:
+                types = [
+                    variant.payload_type for variant in value.variants
+                    if variant.payload_type is not None
+                ]
+            dependencies[key] = set().union(
+                *(value_dependency(item) for item in types)) if types else set()
+
+        emitted = set()
+        result = []
+        remaining = list(nodes)
+        while remaining:
+            ready = [
+                key for key in remaining
+                if dependencies[key].issubset(emitted)
+            ]
+            if not ready:
+                # The checker normally prevents impossible by-value cycles.
+                # Preserve deterministic output if a malformed AST reaches
+                # codegen, allowing the C compiler to diagnose it.
+                ready = [remaining[0]]
+            for key in ready:
+                result.append((key[0], nodes[key]))
+                emitted.add(key)
+                remaining.remove(key)
+        return result
 
     def _gen_enum(self, enum):
         type_tag = _type_tag(enum.name)
@@ -786,6 +939,10 @@ class CodeGen:
             for _, value in expression.fields:
                 self._prepare_try_expr(value)
             return
+        if isinstance(expression, A.TupleLit):
+            for value in expression.elements:
+                self._prepare_try_expr(value)
+            return
         if isinstance(expression, A.FieldAccess):
             self._prepare_try_expr(expression.obj)
             return
@@ -880,6 +1037,11 @@ class CodeGen:
             inits = ", ".join(
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
             return f"(struct mort_{_type_tag(e.name)}){{ {inits} }}"
+        if isinstance(e, A.TupleLit):
+            inits = ", ".join(
+                f".f_{index} = {self._gen_expr(value)}"
+                for index, value in enumerate(e.elements))
+            return f"({_tuple_c_name(e.type)}){{ {inits} }}"
         if isinstance(e, A.FieldAccess):
             if e.resolved_function is not None:
                 if e.resolved_function in self.extern_names:
@@ -896,6 +1058,8 @@ class CodeGen:
             if _is_slice(e.obj.type):
                 field = "length" if e.field == "len" else e.field
                 return f"({self._gen_expr(e.obj)}).{field}"
+            if _tuple_parts(e.obj.type):
+                return f"({self._gen_expr(e.obj)}).f_{e.field}"
             return f"({self._gen_expr(e.obj)}).f_{e.field}"
         if isinstance(e, A.Index):
             index = self._gen_expr(e.index)

@@ -233,6 +233,83 @@ def test_function_pointer_types_support_c_callback_signatures():
 
 
 @needs_cc
+def test_tuples_aliases_generics_arrays_slices_and_struct_fields_run():
+    src = (
+        "type Pair = (i64, i64); "
+        "const ORIGIN: (i64, bool) = (40, true); "
+        "struct Wrapper { item: Pair } "
+        "struct Cell { value: i64 } "
+        "fn make() -> Pair { return (20, 22); } "
+        "fn first(value: (i64, bool)) -> i64 { return value.0; } "
+        "fn swap<A, B>(value: (A, B)) -> (B, A) { "
+        "return (value.1, value.0); } "
+        "fn main() -> int { "
+        "let point: Pair = make(); point.0 += 1; "
+        "print(point.0 + point.1); "
+        "let nested: ((i64, bool), u8) = ((40, true), 2); "
+        "print(nested.0.0 + nested.1 as i64); "
+        "let swapped = swap((42, false)); assert(!swapped.0); print(swapped.1); "
+        "let values: [(i64, bool); 2] = [(1, true), (41, false)]; "
+        "let view: [](i64, bool) = slice(&values[0], 2); "
+        "print(view[1].0 + 1); "
+        "let wrapper = Wrapper { item: (20, 22) }; "
+        "let cell_pair: (Cell, bool) = (Cell { value: 42 }, true); "
+        "let callback: fn((i64, bool)) -> i64 = first; "
+        "assert(sizeof<(i64, bool)>() > 0); "
+        "let mixed: (u8, bool, *u8) = (7, true, \"Mort\"); "
+        "print(ORIGIN.0 + 2); print(wrapper.item.0 + wrapper.item.1); "
+        "print(cell_pair.0.value); print(callback((42, true))); "
+        "print(mixed.0 as i64); println(mixed.2); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "struct mort_tuple__i64_i64" in c_source
+    assert ".f_0" in c_source and ".f_1" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "tuples.c")
+        exe = os.path.join(d, "tuples.exe" if os.name == "nt" else "tuples")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "43\n42\n42\n42\n42\n42\n42\n42\n7\nMort\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("fn main() -> int { let bad = (1,); return 0; }",
+         "tuple literals require at least two elements"),
+        ("fn main() -> int { let pair: (i64, bool) = (1, 2); return 0; }",
+         "type mismatch"),
+        ("fn main() -> int { let pair = (1, true); print(pair.2); return 0; }",
+         "tuple index 2 is out of bounds"),
+        ("fn main() -> int { let pair = (1, true); print(pair.name); return 0; }",
+         "tuple has no named field"),
+        ("fn main() -> int { let equal = (1, true) == (1, true); return 0; }",
+         "cannot compare aggregate values"),
+        ("fn main() -> int { let pair = (1, true); "
+         "match pair { _ => { print(1); } } return 0; }",
+         "cannot match on a value"),
+        ("fn main() -> int { let bad: (void, i64) = (1, 2); return 0; }",
+         "unknown type"),
+        ("struct Recursive { value: (Recursive, bool) } "
+         "fn main() -> int { return 0; }",
+         "aggregate by-value cycle"),
+        ("struct Left { right: Right } struct Right { left: Left } "
+         "fn main() -> int { return 0; }",
+         "aggregate by-value cycle"),
+    ],
+)
+def test_tuple_type_errors(source, message):
+    with pytest.raises(MortError, match=message):
+        c_of(source)
+
+
+@needs_cc
 def test_imported_public_function_can_be_used_as_callback_value():
     with tempfile.TemporaryDirectory() as d:
         helper = os.path.join(d, "math.mx")
@@ -2392,6 +2469,7 @@ EXPECTED = {
     "defer.mx": "inner cleanup\nouter cleanup\n42\n",
     "collections.mx": "42\n42\n",
     "floats.mx": "42.5\n",
+    "tuples.mx": "43\n42\n",
 }
 
 

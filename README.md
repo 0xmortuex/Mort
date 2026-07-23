@@ -68,12 +68,16 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.26)
+## The language (v0.27)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
 - **Type aliases:** representation-transparent names such as
   `type UserId = u64;`, including aliases of nested generic types.
+- **Tuples:** typed heterogeneous values such as `(i64, bool, *u8)`, created
+  with `(42, true, "Mort")` and accessed or mutated by zero-based fields such
+  as `value.0`. Tuples compose with aliases, generics, callbacks, structs,
+  globals, arrays, slices, pointers, and `sizeof<T>()`.
 - **Strings:** string literals `"hi"` are `*u8` — a pointer to static,
   NUL-terminated bytes, with `len(text)` and indexed access.
 - **Arrays:** fixed-size `[T; N]` with literal (`[1, 2, 3]`) or repeat

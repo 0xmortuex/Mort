@@ -244,6 +244,22 @@ class Parser:
             self._expect(T.ARROW, "'->'")
             result = self._type_name()
             return f"fn({','.join(parameters)})->{result}"
+        if self._at(T.LPAREN):
+            line = self._advance().line
+            elements = [self._type_name()]
+            if not self._at(T.COMMA):
+                raise MortError(
+                    "tuple types require at least two elements", line)
+            while self._at(T.COMMA):
+                self._advance()
+                if self._at(T.RPAREN):
+                    break
+                elements.append(self._type_name())
+            self._expect(T.RPAREN, "')'")
+            if len(elements) < 2:
+                raise MortError(
+                    "tuple types require at least two elements", line)
+            return "(" + ",".join(elements) + ")"
         # pointer type: *T
         if self._at(T.STAR):
             self._advance()
@@ -651,7 +667,10 @@ class Parser:
                 expr = A.Call(name, args, lp.line)
             elif self._at(T.DOT):
                 dot = self._advance()
-                field = self._expect(T.IDENT, "field name").value
+                if self._at(T.INT):
+                    field = str(self._advance().value)
+                else:
+                    field = self._expect(T.IDENT, "field name").value
                 expr = A.FieldAccess(expr, field, dot.line)
             elif self._at(T.LBRACKET):
                 lb = self._advance()
@@ -731,12 +750,25 @@ class Parser:
             self._advance()
             return A.Var(t.value, t.line)
         if t.type == T.LPAREN:
-            self._advance()
+            line = self._advance().line
             # inside parentheses, struct literals are unambiguous again
             saved = self._no_struct_lit
             self._no_struct_lit = False
             try:
-                e = self._expression()
+                first = self._expression()
+                if self._at(T.COMMA):
+                    elements = [first]
+                    while self._at(T.COMMA):
+                        self._advance()
+                        if self._at(T.RPAREN):
+                            break
+                        elements.append(self._expression())
+                    if len(elements) < 2:
+                        raise MortError(
+                            "tuple literals require at least two elements", line)
+                    e = A.TupleLit(elements, line)
+                else:
+                    e = first
             finally:
                 self._no_struct_lit = saved
             self._expect(T.RPAREN, "')'")

@@ -344,6 +344,13 @@ class StructLit(Node):
         self.line = line
 
 
+class TupleLit(Node):
+    def __init__(self, elements, line):
+        super().__init__()
+        self.elements = elements
+        self.line = line
+
+
 class FieldAccess(Node):
     def __init__(self, obj, field, line):
         super().__init__()
