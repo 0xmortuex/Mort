@@ -800,6 +800,76 @@ def test_cross_platform_threads_mutexes_and_atomics_run():
     assert result.stdout == "2000\n2000\n2000\n2000\n5\n7\n9\n11\n"
 
 
+def test_network_builtins_are_typed_and_hosted_only():
+    c_source = c_of(
+        "fn main() -> int { let listener = net_tcp_listen(\"127.0.0.1\", 0, 1); "
+        "let port = net_socket_local_port(listener); print(port); "
+        "net_socket_close(listener); return 0; }"
+    )
+    assert "#define _POSIX_C_SOURCE 200809L" in c_source
+    assert "MORT_REQUIRES_PTHREAD" not in c_source
+    assert "MORT_REQUIRES_WINSOCK" in c_source
+    assert "getaddrinfo" in c_source
+    assert "mort_net_tcp_listen" in c_source
+    with pytest.raises(MortError, match="networking is not available"):
+        mortc.compile_to_c(
+            "fn kmain() { net_tcp_connect(\"localhost\", 80); }",
+            freestanding=True,
+        )
+    with pytest.raises(MortError, match="buffer must be"):
+        c_of(
+            "fn main() -> int { let socket: *void = null; "
+            "let value: i64 = 0; net_socket_send(socket, &value, 8); return 0; }"
+        )
+
+
+@needs_cc
+def test_network_only_program_compiles_under_strict_c11():
+    source = (
+        "fn main() -> int { "
+        "let listener = net_tcp_listen(\"127.0.0.1\", 0, 1); "
+        "assert(listener != null); net_socket_close(listener); return 0; }"
+    )
+    c_source = mortc.compile_to_c(source)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "network_only.c")
+        exe = os.path.join(d, "network_only.exe" if os.name == "nt" else "network_only")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        if os.name == "nt":
+            command.append("-lws2_32")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+@needs_cc
+def test_cross_platform_tcp_dns_loopback_runs():
+    source = os.path.join(ROOT, "examples", "tcp_loopback.mx")
+    c_source = mortc.compile_files_to_c([source])
+    assert "getaddrinfo" in c_source
+    assert "pthread_create" in c_source
+    assert "CreateThread" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "tcp_loopback.c")
+        exe = os.path.join(d, "tcp_loopback.exe" if os.name == "nt" else "tcp_loopback")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        command = [
+            *_CC, cfile, "-o", exe, "-O2", "-std=c11",
+            "-Wall", "-Wextra", "-Werror",
+        ]
+        command.append("-lws2_32" if os.name == "nt" else "-pthread")
+        subprocess.run(command, check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "4\n112\n111\n110\n103\n"
+
+
 def test_global_variable_codegen():
     c = c_of("let counter: i64 = 0; fn main() -> int { counter = counter + 5; print(counter); return 0; }")
     assert "static int64_t m_counter = 0;" in c
@@ -2163,6 +2233,7 @@ def test_packaging_version_matches_compiler_version():
     assert f'version = "{mortc.__version__}"' in project_text
     assert 'mortc = "mortc:main"' in project_text
     assert "std/random.mx" in project_text
+    assert "std/net.mx" in project_text
     with open(
             os.path.join(ROOT, "conformance", "manifest.json"),
             encoding="utf-8") as handle:

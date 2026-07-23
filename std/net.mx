@@ -1,0 +1,78 @@
+module std.net;
+
+resource struct Socket {
+    handle: *void,
+}
+
+pub fn tcp_connect(host: *u8, port: u16) -> Socket {
+    let handle = net_tcp_connect(host, port);
+    assert(handle != null);
+    return Socket { handle: handle };
+}
+
+pub fn tcp_listen(host: *u8, port: u16, backlog: u32) -> Socket {
+    let handle = net_tcp_listen(host, port, backlog);
+    assert(handle != null);
+    return Socket { handle: handle };
+}
+
+pub fn accept(listener: *Socket) -> Socket {
+    let handle = net_tcp_accept((*listener).handle);
+    assert(handle != null);
+    return Socket { handle: handle };
+}
+
+pub fn send(socket: *Socket, buffer: *const u8, length: u64) -> i64 {
+    return net_socket_send((*socket).handle, buffer, length);
+}
+
+pub fn send_all(socket: *Socket, buffer: *const u8, length: u64) -> bool {
+    let sent: u64 = 0;
+    while sent < length {
+        let amount = net_socket_send(
+            (*socket).handle,
+            &buffer[sent],
+            length - sent
+        );
+        if amount <= 0 {
+            return false;
+        }
+        sent += amount as u64;
+    }
+    return true;
+}
+
+pub fn receive(socket: *Socket, buffer: *u8, length: u64) -> i64 {
+    return net_socket_recv((*socket).handle, buffer, length);
+}
+
+pub fn receive_exact(socket: *Socket, buffer: *u8, length: u64) -> bool {
+    let received: u64 = 0;
+    while received < length {
+        let amount = net_socket_recv(
+            (*socket).handle,
+            &buffer[received],
+            length - received
+        );
+        if amount <= 0 {
+            return false;
+        }
+        received += amount as u64;
+    }
+    return true;
+}
+
+pub fn shutdown(socket: *Socket) -> bool {
+    return net_socket_shutdown((*socket).handle);
+}
+
+pub fn local_port(socket: *Socket) -> u16 {
+    return net_socket_local_port((*socket).handle);
+}
+
+pub fn destroy(socket: *Socket) -> void {
+    if (*socket).handle != null {
+        net_socket_close((*socket).handle);
+        (*socket).handle = null;
+    }
+}

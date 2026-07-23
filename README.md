@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-311%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-314%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -75,9 +75,9 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.35)
+## The language (v0.36)
 
-Mort 0.35 has a
+Mort 0.36 has a
 [versioned normative language specification](docs/language-specification.md)
 and a black-box [executable conformance suite](conformance/README.md). Run
 `mortc --language-version` to print the implemented language contract.
@@ -144,6 +144,10 @@ and a black-box [executable conformance suite](conformance/README.md). Run
   supplies sequentially consistent atomic load/store, exchange, fetch
   arithmetic, and compare-exchange. Mort specifies spawn/join and mutex
   happens-before edges plus a concrete data-race rule.
+- **TCP and DNS:** move-only `std.net.Socket` resources provide blocking TCP
+  connects, listeners, accepts, partial and complete byte transfers, shutdown,
+  and automatic closure across Windows, Linux, and macOS. Host-name resolution
+  supports eligible IPv4 and IPv6 addresses through the native resolver.
 - **Typed allocation:** `sizeof<T>()` supplies the portable byte size of any
   concrete Mort type.
 - **Error propagation:** `try operation()` unwraps `Result.Ok` or returns a

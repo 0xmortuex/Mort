@@ -821,6 +821,292 @@ class CodeGen:
             self._emit("}")
             self._emit()
 
+    def _gen_network_helpers(self):
+        if not self.used_network:
+            return
+
+        self._emit("#if defined(__GNUC__) || defined(__clang__)")
+        self._emit("#define MORT_NET_INTERNAL __attribute__((unused))")
+        self._emit("#else")
+        self._emit("#define MORT_NET_INTERNAL")
+        self._emit("#endif")
+        self._emit("#ifdef _WIN32")
+        self._emit("typedef SOCKET mort_native_socket;")
+        self._emit("#define MORT_INVALID_SOCKET INVALID_SOCKET")
+        self._emit(
+            "static MORT_NET_INTERNAL INIT_ONCE "
+            "mort_wsa_once = INIT_ONCE_STATIC_INIT;")
+        self._emit(
+            "static MORT_NET_INTERNAL BOOL CALLBACK mort_wsa_startup("
+            "PINIT_ONCE once, PVOID parameter, PVOID* context) {")
+        self._emit("    (void)once; (void)parameter; (void)context;")
+        self._emit("    WSADATA data;")
+        self._emit("    return WSAStartup(MAKEWORD(2, 2), &data) == 0;")
+        self._emit("}")
+        self._emit("static MORT_NET_INTERNAL bool mort_net_init(void) {")
+        self._emit(
+            "    return InitOnceExecuteOnce("
+            "&mort_wsa_once, mort_wsa_startup, NULL, NULL) != 0;")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL void mort_native_socket_close("
+            "mort_native_socket socket) {")
+        self._emit("    closesocket(socket);")
+        self._emit("}")
+        self._emit("#else")
+        self._emit("typedef int mort_native_socket;")
+        self._emit("#define MORT_INVALID_SOCKET (-1)")
+        self._emit(
+            "static MORT_NET_INTERNAL bool mort_net_init(void) { return true; }")
+        self._emit(
+            "static MORT_NET_INTERNAL void mort_native_socket_close("
+            "mort_native_socket socket) {")
+        self._emit("    close(socket);")
+        self._emit("}")
+        self._emit("#endif")
+        self._emit("struct mort_socket_handle { mort_native_socket socket; };")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL void mort_socket_disable_sigpipe("
+            "mort_native_socket socket) {")
+        self._emit("#if !defined(_WIN32) && defined(SO_NOSIGPIPE)")
+        self._emit("    int enabled = 1;")
+        self._emit(
+            "    (void)setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, "
+            "&enabled, sizeof(enabled));")
+        self._emit("#else")
+        self._emit("    (void)socket;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL void* mort_socket_wrap("
+            "mort_native_socket socket) {")
+        self._emit(
+            "    struct mort_socket_handle* handle = "
+            "(struct mort_socket_handle*)malloc(sizeof(*handle));")
+        self._emit("    if (handle == NULL) {")
+        self._emit("        mort_native_socket_close(socket);")
+        self._emit("        return NULL;")
+        self._emit("    }")
+        self._emit("    mort_socket_disable_sigpipe(socket);")
+        self._emit("    handle->socket = socket;")
+        self._emit("    return handle;")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL mort_native_socket "
+            "mort_socket_value(void* raw) {")
+        self._emit(
+            "    return raw == NULL ? MORT_INVALID_SOCKET "
+            ": ((struct mort_socket_handle*)raw)->socket;")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL void* mort_net_tcp_connect("
+            "uint8_t* host, uint16_t port) {")
+        self._emit("    if (host == NULL || !mort_net_init()) { return NULL; }")
+        self._emit("    char service[6];")
+        self._emit(
+            '    (void)snprintf(service, sizeof(service), "%u", '
+            "(unsigned int)port);")
+        self._emit("    struct addrinfo hints = {0};")
+        self._emit("    hints.ai_family = AF_UNSPEC;")
+        self._emit("    hints.ai_socktype = SOCK_STREAM;")
+        self._emit("    hints.ai_protocol = IPPROTO_TCP;")
+        self._emit("    struct addrinfo* addresses = NULL;")
+        self._emit(
+            "    if (getaddrinfo((const char*)host, service, &hints, "
+            "&addresses) != 0) { return NULL; }")
+        self._emit("    mort_native_socket connected = MORT_INVALID_SOCKET;")
+        self._emit(
+            "    for (struct addrinfo* address = addresses; "
+            "address != NULL; address = address->ai_next) {")
+        self._emit(
+            "        mort_native_socket candidate = socket("
+            "address->ai_family, address->ai_socktype, address->ai_protocol);")
+        self._emit(
+            "        if (candidate == MORT_INVALID_SOCKET) { continue; }")
+        self._emit(
+            "        if (connect(candidate, address->ai_addr, "
+            "(int)address->ai_addrlen) == 0) {")
+        self._emit("            connected = candidate;")
+        self._emit("            break;")
+        self._emit("        }")
+        self._emit("        mort_native_socket_close(candidate);")
+        self._emit("    }")
+        self._emit("    freeaddrinfo(addresses);")
+        self._emit(
+            "    return connected == MORT_INVALID_SOCKET "
+            "? NULL : mort_socket_wrap(connected);")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL void* mort_net_tcp_listen("
+            "uint8_t* host, uint16_t port, uint32_t backlog) {")
+        self._emit("    if (host == NULL || !mort_net_init()) { return NULL; }")
+        self._emit("    char service[6];")
+        self._emit(
+            '    (void)snprintf(service, sizeof(service), "%u", '
+            "(unsigned int)port);")
+        self._emit("    struct addrinfo hints = {0};")
+        self._emit("    hints.ai_family = AF_UNSPEC;")
+        self._emit("    hints.ai_socktype = SOCK_STREAM;")
+        self._emit("    hints.ai_protocol = IPPROTO_TCP;")
+        self._emit("    hints.ai_flags = AI_PASSIVE;")
+        self._emit("    struct addrinfo* addresses = NULL;")
+        self._emit(
+            "    if (getaddrinfo((const char*)host, service, &hints, "
+            "&addresses) != 0) { return NULL; }")
+        self._emit("    mort_native_socket listener = MORT_INVALID_SOCKET;")
+        self._emit(
+            "    for (struct addrinfo* address = addresses; "
+            "address != NULL; address = address->ai_next) {")
+        self._emit(
+            "        mort_native_socket candidate = socket("
+            "address->ai_family, address->ai_socktype, address->ai_protocol);")
+        self._emit(
+            "        if (candidate == MORT_INVALID_SOCKET) { continue; }")
+        self._emit("#ifdef _WIN32")
+        self._emit("        BOOL reuse = TRUE;")
+        self._emit(
+            "        (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, "
+            "(const char*)&reuse, (int)sizeof(reuse));")
+        self._emit("#else")
+        self._emit("        int reuse = 1;")
+        self._emit(
+            "        (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, "
+            "&reuse, sizeof(reuse));")
+        self._emit("#endif")
+        self._emit(
+            "        if (bind(candidate, address->ai_addr, "
+            "(int)address->ai_addrlen) == 0) {")
+        self._emit(
+            "            int queue = backlog > 2147483647U "
+            "? 2147483647 : (int)backlog;")
+        self._emit("            if (listen(candidate, queue) == 0) {")
+        self._emit("                listener = candidate;")
+        self._emit("                break;")
+        self._emit("            }")
+        self._emit("        }")
+        self._emit("        mort_native_socket_close(candidate);")
+        self._emit("    }")
+        self._emit("    freeaddrinfo(addresses);")
+        self._emit(
+            "    return listener == MORT_INVALID_SOCKET "
+            "? NULL : mort_socket_wrap(listener);")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL void* mort_net_tcp_accept(void* raw) {")
+        self._emit("    mort_native_socket listener = mort_socket_value(raw);")
+        self._emit(
+            "    if (listener == MORT_INVALID_SOCKET) { return NULL; }")
+        self._emit(
+            "    mort_native_socket accepted = accept(listener, NULL, NULL);")
+        self._emit(
+            "    return accepted == MORT_INVALID_SOCKET "
+            "? NULL : mort_socket_wrap(accepted);")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL void mort_net_socket_close(void* raw) {")
+        self._emit("    if (raw == NULL) { return; }")
+        self._emit(
+            "    struct mort_socket_handle* handle = "
+            "(struct mort_socket_handle*)raw;")
+        self._emit("    mort_native_socket_close(handle->socket);")
+        self._emit("    free(handle);")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL int64_t mort_net_socket_send("
+            "void* raw, const uint8_t* buffer, uint64_t length) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET || buffer == NULL) "
+            "{ return -1; }")
+        self._emit(
+            "    int amount = length > 2147483647ULL "
+            "? 2147483647 : (int)length;")
+        self._emit("#ifdef _WIN32")
+        self._emit(
+            "    int result = send(socket, (const char*)buffer, amount, 0);")
+        self._emit("    return result == SOCKET_ERROR ? -1 : (int64_t)result;")
+        self._emit("#else")
+        self._emit("    int flags = 0;")
+        self._emit("#ifdef MSG_NOSIGNAL")
+        self._emit("    flags = MSG_NOSIGNAL;")
+        self._emit("#endif")
+        self._emit(
+            "    ssize_t result = send(socket, buffer, (size_t)amount, flags);")
+        self._emit("    return result < 0 ? -1 : (int64_t)result;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL int64_t mort_net_socket_recv("
+            "void* raw, uint8_t* buffer, uint64_t length) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET || buffer == NULL) "
+            "{ return -1; }")
+        self._emit(
+            "    int amount = length > 2147483647ULL "
+            "? 2147483647 : (int)length;")
+        self._emit("#ifdef _WIN32")
+        self._emit("    int result = recv(socket, (char*)buffer, amount, 0);")
+        self._emit("    return result == SOCKET_ERROR ? -1 : (int64_t)result;")
+        self._emit("#else")
+        self._emit(
+            "    ssize_t result = recv(socket, buffer, (size_t)amount, 0);")
+        self._emit("    return result < 0 ? -1 : (int64_t)result;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit()
+
+        self._emit(
+            "static MORT_NET_INTERNAL bool mort_net_socket_shutdown(void* raw) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET) { return false; }")
+        self._emit("#ifdef _WIN32")
+        self._emit("    return shutdown(socket, SD_BOTH) == 0;")
+        self._emit("#else")
+        self._emit("    return shutdown(socket, SHUT_RDWR) == 0;")
+        self._emit("#endif")
+        self._emit("}")
+        self._emit(
+            "static MORT_NET_INTERNAL uint16_t "
+            "mort_net_socket_local_port(void* raw) {")
+        self._emit("    mort_native_socket socket = mort_socket_value(raw);")
+        self._emit(
+            "    if (socket == MORT_INVALID_SOCKET) { return 0; }")
+        self._emit("    struct sockaddr_storage address;")
+        self._emit("#ifdef _WIN32")
+        self._emit("    int length = (int)sizeof(address);")
+        self._emit("#else")
+        self._emit("    socklen_t length = (socklen_t)sizeof(address);")
+        self._emit("#endif")
+        self._emit(
+            "    if (getsockname(socket, (struct sockaddr*)&address, "
+            "&length) != 0) { return 0; }")
+        self._emit("    if (address.ss_family == AF_INET) {")
+        self._emit(
+            "        return ntohs(((struct sockaddr_in*)&address)->sin_port);")
+        self._emit("    }")
+        self._emit("#ifdef AF_INET6")
+        self._emit("    if (address.ss_family == AF_INET6) {")
+        self._emit(
+            "        return ntohs(((struct sockaddr_in6*)&address)->sin6_port);")
+        self._emit("    }")
+        self._emit("#endif")
+        self._emit("    return 0;")
+        self._emit("}")
+        self._emit("#undef MORT_NET_INTERNAL")
+        self._emit()
+
     def generate(self):
         self.strings = []       # raw string-literal values, index = id
         self.used_inb = False   # set if a port-I/O builtin is generated, per helper
@@ -842,6 +1128,7 @@ class CodeGen:
         self.used_threads = False
         self.used_mutexes = False
         self.used_atomics = False
+        self.used_network = False
         self.used_int_helpers = set()
         self.match_id = 0
         self.try_id = 0
@@ -875,10 +1162,12 @@ class CodeGen:
         self.lines = saved
 
         self._emit("// Generated by the Mort compiler -- do not edit by hand.")
-        if not self.freestanding and (self.used_threads or self.used_mutexes):
+        if not self.freestanding and (
+                self.used_threads or self.used_mutexes or self.used_network):
             self._emit("#ifndef _WIN32")
             self._emit("#define _POSIX_C_SOURCE 200809L")
-            self._emit("#define MORT_REQUIRES_PTHREAD 1")
+            if self.used_threads or self.used_mutexes:
+                self._emit("#define MORT_REQUIRES_PTHREAD 1")
             self._emit("#endif")
         # <stdint.h>/<stdbool.h> are freestanding-safe; <stdio.h> is not.
         if not self.freestanding:
@@ -886,14 +1175,32 @@ class CodeGen:
             if (self.used_assert or self.used_alloc or self.used_free
                     or self.used_bounds
                     or self.used_threads or self.used_mutexes or self.used_atomics
+                    or self.used_network
                     or any(op in ("div", "rem", "shift_count", "float_cast")
                            for op, _ in self.used_int_helpers)):
                 self._emit("#include <stdlib.h>")
             if self.used_time:
                 self._emit("#include <time.h>")
+            if self.used_network:
+                self._emit("#ifdef _WIN32")
+                self._emit("#ifndef WIN32_LEAN_AND_MEAN")
+                self._emit("#define WIN32_LEAN_AND_MEAN")
+                self._emit("#endif")
+                self._emit("#define MORT_REQUIRES_WINSOCK 1")
+                self._emit("#include <winsock2.h>")
+                self._emit("#include <ws2tcpip.h>")
+                self._emit("#include <windows.h>")
+                self._emit("#else")
+                self._emit("#include <arpa/inet.h>")
+                self._emit("#include <netdb.h>")
+                self._emit("#include <sys/socket.h>")
+                self._emit("#include <unistd.h>")
+                self._emit("#endif")
             if self.used_threads or self.used_mutexes:
                 self._emit("#ifdef _WIN32")
+                self._emit("#ifndef WIN32_LEAN_AND_MEAN")
                 self._emit("#define WIN32_LEAN_AND_MEAN")
+                self._emit("#endif")
                 self._emit("#include <windows.h>")
                 self._emit("#else")
                 self._emit("#include <errno.h>")
@@ -1011,6 +1318,7 @@ class CodeGen:
             self._emit()
         self._gen_integer_helpers()
         self._gen_concurrency_helpers()
+        self._gen_network_helpers()
         if not self.freestanding:
             if self.used_print:
                 self._emit(
@@ -1857,6 +2165,8 @@ class CodeGen:
                 self.used_mutexes = True
             elif e.name.startswith("atomic_i64_"):
                 self.used_atomics = True
+            elif e.name.startswith("net_"):
+                self.used_network = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
@@ -1887,7 +2197,8 @@ class CodeGen:
             elif (e.name in (
                     "thread_spawn", "thread_join", "thread_sleep_millis",
                     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock")
-                    or e.name.startswith("atomic_i64_")):
+                    or e.name.startswith("atomic_i64_")
+                    or e.name.startswith("net_")):
                 name = f"mort_{e.name}"
             elif (e.resolved_name or e.name) in self.extern_names:
                 name = e.resolved_name or e.name

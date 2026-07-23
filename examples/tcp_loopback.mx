@@ -1,0 +1,45 @@
+import std.net;
+import std.thread;
+
+struct ServerContext {
+    listener: *Socket,
+}
+
+fn serve(raw: *void) -> i64 {
+    let context = raw as *ServerContext;
+    let client = net.accept((*context).listener);
+    let request: [u8; 4] = [0; 4];
+    if !net.receive_exact(&client, &request[0], 4) {
+        return 0 - 1;
+    }
+    if request[0] != 'p' || request[1] != 'i'
+            || request[2] != 'n' || request[3] != 'g' {
+        return 0 - 1;
+    }
+    if !net.send_all(&client, "pong", 4) {
+        return 0 - 1;
+    }
+    return 4;
+}
+
+fn main() -> int {
+    let listener = net.tcp_listen("127.0.0.1", 0, 8);
+    let port = net.local_port(&listener);
+    assert(port != 0);
+
+    let context = ServerContext { listener: &listener };
+    let server = thread.spawn(serve, &context as *void);
+
+    let client = net.tcp_connect("localhost", port);
+    assert(net.send_all(&client, "ping", 4));
+    let response: [u8; 4] = [0; 4];
+    assert(net.receive_exact(&client, &response[0], 4));
+    let served = thread.join(&server);
+
+    print(served);
+    print(response[0]);
+    print(response[1]);
+    print(response[2]);
+    print(response[3]);
+    return 0;
+}

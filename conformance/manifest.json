@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.35.0",
+  "language_version": "0.36.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -97,6 +97,14 @@
       "mode": "run",
       "sources": ["cases/run/concurrency.mx"],
       "stdout": "2000\n2000\n2000\n2000\n5\n7\n9\n11\n",
+      "exit": 0
+    },
+    {
+      "id": "network.tcp_dns_loopback",
+      "section": "13",
+      "mode": "run",
+      "sources": ["cases/run/tcp_loopback.mx"],
+      "stdout": "4\n112\n111\n110\n103\n",
       "exit": 0
     },
     {

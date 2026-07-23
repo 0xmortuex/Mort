@@ -1,18 +1,18 @@
-# Mort Language Specification 0.35
+# Mort Language Specification 0.36
 
 Status: Normative  
-Language version: 0.35.0
+Language version: 0.36.0
 Document revision: 1  
 Last updated: 2026-07-23
 
-This document defines the source language accepted by a conforming Mort 0.35
+This document defines the source language accepted by a conforming Mort 0.36
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.35 program.
+Implementation extensions must not change the meaning of a valid 0.36 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.35.
+the programmer's responsibility in Mort 0.36.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.35 does not specify the relative evaluation order of ordinary binary
+Mort 0.36 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.35 does not promise identical
+and shifts are not defined for floats. Mort 0.36 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.35's safety guarantees.
+are outside Mort 0.36's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.35's reference implementation emits C11, but C is not part of the
+Mort 0.36's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -555,7 +555,7 @@ produce a controlled concurrency failure.
 `std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
 creation failure to an assertion failure. `thread.join(&value)` joins early and
 marks the wrapper empty; otherwise its destructor joins automatically. Thus a
-live `Thread` cannot be silently detached in Mort 0.35.
+live `Thread` cannot be silently detached in Mort 0.36.
 
 The context pointer and every object reachable through it must remain valid
 until the thread has been joined. Raw pointers do not acquire lifetime
@@ -615,6 +615,88 @@ ThreadSanitizer is a verification aid, not a replacement for this rule.
 Conforming implementations should provide a race-detection build mode when the
 target toolchain supports one.
 
+## 13. Hosted networking
+
+Networking is available only in the hosted profile. Mort 0.36 specifies
+blocking TCP streams and host-name resolution through the portable `std.net`
+module. The `net_*` builtins are reserved implementation interfaces.
+
+Network payloads are byte sequences. This version does not implicitly decode
+text, frame messages, encrypt traffic, or convert application integers to
+network byte order.
+
+### 13.1 Socket ownership
+
+`std.net.Socket` is a move-only resource containing one opaque native socket
+handle. Its destructor closes a live handle exactly once. `net.destroy`
+may close it early and marks the wrapper empty. A socket must not be used after
+it is moved, destroyed, or closed.
+
+The backing `net_socket_close` operation accepts `null` as a no-op. Any other
+invalid raw handle is outside the safety guarantees of the public module.
+Socket closure releases the native handle but does not guarantee that pending
+data has reached its peer.
+
+### 13.2 Name resolution, connections, and listeners
+
+`net.tcp_connect(host, port)` resolves the NUL-terminated UTF-8-compatible host
+byte string using the operating system's name service. It tries suitable IPv4
+and IPv6 TCP addresses until one connects. Resolution or connection failure is
+converted to a controlled assertion failure by the public wrapper.
+
+`net.tcp_listen(host, port, backlog)` resolves and binds the requested local
+host, enables address reuse where the platform supports it, and starts a TCP
+listener. Port zero asks the host to choose an available ephemeral port.
+`net.local_port(&socket)` returns the bound port in host integer order, or zero
+when it cannot be queried. Listener creation failure is a controlled assertion
+failure.
+
+`net.accept(&listener)` blocks until it accepts one connection. Failure is a
+controlled assertion failure. Connecting to `"localhost"` must use host-name
+resolution; portable programs must not assume whether IPv4 or IPv6 is selected.
+
+The `host` pointer and its terminating zero byte must remain readable for the
+duration of `tcp_connect` or `tcp_listen`.
+
+### 13.3 Stream I/O
+
+`net.send(&socket, buffer, length)` and `net.receive(&socket, buffer, length)`
+are blocking byte-stream operations. A positive result is the number of bytes
+transferred and may be less than `length`. A send or receive failure returns
+`-1`. A receive result of zero indicates an orderly peer close, except that a
+zero-length request also returns zero.
+
+`net.send_all` repeats sends until exactly `length` bytes have been accepted by
+the host socket or an operation returns zero or `-1`. `net.receive_exact`
+similarly repeats receives. They return `true` only after transferring the
+entire requested length. A successful send does not imply remote processing or
+durable storage.
+
+The buffer must remain valid for the complete operation and must contain at
+least `length` readable bytes for sending or writable bytes for receiving.
+Mort suppresses process termination from a broken-pipe signal where the target
+socket API permits it and reports the send as a failure instead.
+
+`net.shutdown(&socket)` requests shutdown in both directions and reports
+whether the host accepted the request. It does not release ownership; the
+socket must still be destroyed.
+
+### 13.4 Concurrency and portability
+
+Blocking name resolution and socket calls may suspend the calling thread for
+an operating-system-defined duration. Mort 0.36 does not define timeouts,
+non-blocking mode, cancellation, readiness polling, or fairness.
+
+Distinct sockets may be used by distinct threads. Portable programs must
+synchronize concurrent operations on the same `Socket` wrapper and keep the
+wrapper alive until all such operations finish. The concurrency happens-before
+and data-race rules in Section 12 apply to socket buffers and wrapper storage.
+
+Conforming hosted implementations must provide these TCP and DNS operations on
+Windows, Linux, and macOS. Resolver policy, address ordering, firewall behavior,
+interface availability, routing, and failures beyond the process boundary are
+host environment properties rather than deterministic language behavior.
+
 ## Appendix A. Compatibility
 
 The language version uses semantic versioning:
@@ -629,10 +711,10 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.35: checked borrows and
+The following are intentionally not defined by Mort 0.36: checked borrows and
 lifetimes, thread cancellation, detached threads, condition variables,
 read/write locks, atomics other than sequentially consistent `i64`,
-asynchronous tasks, exceptions, reflection, dynamic loading, stable binary
-package ABI, Unicode text semantics, and WebAssembly/mobile platform profiles.
-Their absence is not permission for an implementation to assign new meaning to
-currently valid syntax.
+asynchronous tasks, UDP, HTTP, TLS, WebSocket, exceptions, reflection, dynamic
+loading, stable binary package ABI, Unicode text semantics, and
+WebAssembly/mobile platform profiles. Their absence is not permission for an
+implementation to assign new meaning to currently valid syntax.

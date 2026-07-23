@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.36.0 - 2026-07-23
+
+Mort's portable TCP and DNS foundation release.
+
+### Added
+
+- Cross-platform hosted TCP connects, listeners, accepts, shutdown, partial
+  sends and receives, and bound-port queries use WinSock on Windows and the
+  POSIX socket API on Linux/macOS.
+- Host-name resolution uses the native resolver and tries eligible IPv4 and
+  IPv6 addresses.
+- Move-only `std.net.Socket` resources close native handles automatically and
+  provide `send_all` and `receive_exact` loops for complete byte transfers.
+- `examples/tcp_loopback.mx` runs a threaded ping/pong exchange through
+  `"localhost"` and an operating-system-assigned ephemeral port.
+
+### Semantics and validation
+
+- The Mort 0.36 specification defines socket ownership, TCP stream behavior,
+  partial transfers, end-of-stream, shutdown, buffer lifetimes, concurrency,
+  error signaling, and host-environment portability boundaries.
+- A black-box TCP/DNS loopback case runs in the conformance matrix on Windows,
+  Linux, and ARM64 macOS without requiring public internet access.
+- Networking-only generated C compiles under strict C11 warnings without an
+  accidental pthread dependency, and Windows builds link WinSock
+  automatically.
+- Representative TCP code runs under AddressSanitizer and
+  UndefinedBehaviorSanitizer in CI.
+- The full regression suite contains 314 tests, and all 21 Mort 0.36
+  conformance cases pass through the public compiler CLI.
+
 ## 0.35.0 - 2026-07-23
 
 Mort's hosted-concurrency release.
