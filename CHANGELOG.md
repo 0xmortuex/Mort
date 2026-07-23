@@ -52,6 +52,9 @@ Mort's reliability and supply-chain hardening release.
   Clang job executes representative generated programs under ASan and UBSan.
 - GitHub workflow dependencies use their current Node.js 24 action generations,
   removing the platform's Node.js 20 deprecation warnings.
+- The complete matrix is green on Linux, Windows, and ARM64 macOS; the macOS
+  job also proves the x86-64 freestanding cross-target rather than a host
+  architecture object.
 - Release publication now requires the full test suite, 20,000 fuzz cases,
   a kernel build, an exact tag/version match, and an installed-wheel smoke test.
 - Structured valid-program fuzzing now spans control flow, arrays, structs,

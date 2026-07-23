@@ -52,7 +52,9 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Package metadata supports Python 3.10 through the current stable 3.14.
 - [x] CI is configured for Linux, Windows, and macOS with a portable Zig C
   backend, native tests, fuzzing, and a kernel build gate.
-- [ ] Every configured operating-system job is green for the current release.
+- [x] Linux, Windows, and ARM64 macOS are green for the current release,
+  including native execution, fuzzing, packaging, and the x86-64 kernel build
+  ([CI evidence](https://github.com/0xmortuex/Mort/actions/runs/30008546913)).
 - [x] Python 3.13 and 3.14 have dedicated Linux CI jobs.
 - [ ] Native ARM64 Linux and macOS targets have end-to-end test coverage.
 - [ ] WebAssembly, Android, and iOS have supported targets and platform APIs.
