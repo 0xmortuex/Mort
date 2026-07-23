@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.30.0 — 2026-07-23
+
+Mort's compositional ownership release.
+
+### Added
+
+- Ordinary structs, heterogeneous tuples, payload enums, and fixed arrays now
+  become move-only automatically when they contain resource-owning values.
+- The compiler synthesizes typed recursive drop helpers for every concrete
+  owning composite.
+- Composite destruction walks fields and array elements in reverse order and
+  switches on enum tags to destroy only the active payload.
+- Move dataflow now treats exhaustive match arms as mutually exclusive, just
+  like `if`/`else` branches.
+
+### Safety
+
+- Resource-containing composites require explicit `move` for transfers and
+  receive the same use-after-move, double-move, overwrite, loop, and global
+  diagnostics as direct resource structs.
+- Generated drop helpers are dependency declared and call user destructors
+  through checked prototypes.
+- Matching an owning enum by value is rejected until ownership-preserving
+  payload extraction is explicit, preventing hidden tagged-union copies.
+
+### Validation
+
+- Nested direct resources inside structs, tuples, tagged enum payloads, and
+  arrays compile under `-Wall -Werror` and destroy in exact reverse order.
+- Exclusive `if` and exhaustive-match branches can each transfer the same
+  incoming resource exactly once.
+- 271 compiler, ownership, enum, tuple, error-propagation, callback, packaging,
+  CLI, native, LSP, package, and kernel tests pass.
+
 ## 0.29.0 — 2026-07-23
 
 Mort's first ownership and automatic-resource-management release.

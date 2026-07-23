@@ -1880,6 +1880,74 @@ def test_resource_can_move_once_across_exclusive_branches():
     assert result.stdout == "42\n"
 
 
+@needs_cc
+def test_resources_compose_through_structs_tuples_enums_and_arrays():
+    src = (
+        "resource struct Leaf { label: *u8 } "
+        "fn destroy(value: *Leaf) -> void { println((*value).label); } "
+        "struct Pair { left: Leaf, right: Leaf } "
+        "enum MaybeLeaf { Some(Leaf), None } "
+        "fn main() -> int { "
+        "let pair = Pair { left: Leaf { label: \"pair-left\" }, "
+        "right: Leaf { label: \"pair-right\" } }; "
+        "let tuple = (Leaf { label: \"tuple-left\" }, "
+        "Leaf { label: \"tuple-right\" }); "
+        "let maybe: MaybeLeaf = MaybeLeaf.Some(Leaf { label: \"enum\" }); "
+        "let array: [Leaf; 2] = [Leaf { label: \"array-left\" }, "
+        "Leaf { label: \"array-right\" }]; "
+        "print(42); return 0; }"
+    )
+    c_source = c_of(src)
+    assert "mort_drop_Pair" in c_source
+    assert "mort_drop__Leaf_Leaf" in c_source
+    assert "mort_drop_MaybeLeaf" in c_source
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "resource_composites.c")
+        exe = os.path.join(
+            d, "resource_composites.exe" if os.name == "nt"
+            else "resource_composites")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == (
+        "42\narray-right\narray-left\nenum\n"
+        "tuple-right\ntuple-left\npair-right\npair-left\n"
+    )
+
+
+@needs_cc
+def test_resource_can_move_once_across_exclusive_match_arms():
+    src = (
+        "enum Choice { Left, Right } "
+        "resource struct Value { number: i64 } "
+        "fn destroy(value: *Value) -> void { print((*value).number); } "
+        "fn consume(value: Value) -> void {} "
+        "fn main() -> int { let value = Value { number: 42 }; "
+        "let choice: Choice = Choice.Left; match choice { "
+        "Choice.Left => { consume(move value); }, "
+        "Choice.Right => { consume(move value); } } return 0; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "resource_match.c")
+        exe = os.path.join(
+            d, "resource_match.exe" if os.name == "nt" else "resource_match")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+
+
 @pytest.mark.parametrize(
     ("source", "message"),
     [

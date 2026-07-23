@@ -68,7 +68,7 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.29)
+## The language (v0.30)
 
 - **Types:** `bool`, `int` (alias for `i64`), fixed-width integers, `f32`/`f64`,
   C-ABI integer types (`c_int`, `c_size`, etc.), structs, and enums.
@@ -118,6 +118,8 @@ C `main`, so the output is an ordinary native binary.
   automatically in reverse order on every lexical exit. Transfers use explicit
   `move value`; implicit copies, use-after-move, double moves, unsafe loop
   moves, global resources, and destructive overwrites are compile-time errors.
+  Ownership composes through ordinary structs, tuples, tagged-enum payloads,
+  and fixed arrays with recursively generated reverse-order destructors.
 - **Portable standard modules:** environment access, process control, and
   generic integer math through `std.env`, `std.process`, and `std.math`, plus
   typed hosted file/time APIs through `std.fs` and `std.time`. Portable
@@ -376,9 +378,11 @@ test "addition" {
   `Result<T,E>`, `try`, and reusable `Vec`, `Map`, and slice algorithms.
 - [x] **Phase 10a — Portable dependencies and cleanup:** cached Git packages,
   commit-pinned portable lockfiles, and return-safe function-scoped `defer`.
-- [ ] **Phase 10b — Ownership and remote ecosystem:** move checking, automatic
-  destructors, semantic-version solving, a public package registry, and offline
-  mirrors.
+- [x] **Phase 10b — Ownership:** resource contracts, move checking,
+  branch-aware ownership dataflow, automatic destructors, and recursive cleanup
+  for structs, tuples, tagged-enum payloads, and arrays.
+- [ ] **Phase 10c — Remote ecosystem:** semantic-version solving, a public
+  package registry, and offline mirrors.
 
 ## License
 

@@ -114,6 +114,10 @@ def _tuple_c_name(t):
     return "struct mort_tuple_" + _type_tag(t)
 
 
+def _drop_c_name(t):
+    return "mort_drop_" + _type_tag(t)
+
+
 def _c_symbol(name):
     return _type_tag(name.replace(".", "__"))
 
@@ -169,6 +173,7 @@ class CodeGen:
         self.indent = 0
         self.slice_types = self._collect_slice_types(program)
         self.tuple_types = self._collect_tuple_types(program)
+        self.drop_destructors = getattr(program, "drop_destructors", {})
 
     @staticmethod
     def _collect_slice_types(program):
@@ -437,6 +442,27 @@ class CodeGen:
             else:
                 self._gen_enum(value)
             self._emit()
+        generated_drops = [
+            typ for typ, symbol in self.drop_destructors.items()
+            if symbol.startswith("$drop$")
+        ]
+        if generated_drops:
+            direct_symbols = {
+                symbol for symbol in self.drop_destructors.values()
+                if not symbol.startswith("$drop$")
+            }
+            for function in self.program.funcs:
+                if (not function.generic_params
+                        and function.symbol_name in direct_symbols):
+                    self._emit(self._signature(function) + ";")
+            if direct_symbols:
+                self._emit()
+            for typ in generated_drops:
+                self._emit(self._drop_signature(typ) + ";")
+            self._emit()
+            for typ in generated_drops:
+                self._gen_drop_helper(typ)
+                self._emit()
         # String literals live in mutable static storage, so the *u8 type they
         # carry is honest — writing through one is defined, not UB on a literal.
         if self.strings:
@@ -564,6 +590,71 @@ class CodeGen:
             self._emit(self._var_decl(fld.typ, "f_" + fld.name) + ";")
         self.indent -= 1
         self._emit("};")
+
+    def _drop_signature(self, typ):
+        if _is_array(typ):
+            element, count = _array_parts(typ)
+            return (
+                f"static void {_drop_c_name(typ)}"
+                f"({self._ct(element)} (*value)[{count}])"
+            )
+        return f"static void {_drop_c_name(typ)}({self._ct(typ)}* value)"
+
+    def _drop_call(self, typ, address):
+        symbol = self.drop_destructors[typ]
+        name = (
+            _drop_c_name(typ)
+            if symbol.startswith("$drop$")
+            else f"mort_{_c_symbol(symbol)}"
+        )
+        return f"{name}({address});"
+
+    def _gen_drop_helper(self, typ):
+        self._emit(self._drop_signature(typ) + " {")
+        self.indent += 1
+        if _is_array(typ):
+            element, count = _array_parts(typ)
+            self._emit(
+                f"for (uint64_t i = {count}; i > 0; --i) {{")
+            self.indent += 1
+            self._emit(self._drop_call(element, "&(*value)[i - 1]"))
+            self.indent -= 1
+            self._emit("}")
+        elif _tuple_parts(typ):
+            for index, element in reversed(list(enumerate(_tuple_parts(typ)))):
+                if element in self.drop_destructors:
+                    self._emit(self._drop_call(element, f"&value->f_{index}"))
+        elif typ in self.struct_names:
+            declaration = next(
+                item for item in self.program.structs
+                if item.name == typ and not item.generic_params
+            )
+            for field in reversed(declaration.fields):
+                if field.typ in self.drop_destructors:
+                    self._emit(self._drop_call(
+                        field.typ, f"&value->f_{field.name}"))
+        elif typ in self.payload_enum_names:
+            declaration = next(
+                item for item in self.program.enums
+                if item.name == typ and not item.generic_params
+            )
+            enum_tag = _type_tag(typ)
+            self._emit("switch (value->tag) {")
+            self.indent += 1
+            for variant in declaration.variants:
+                payload = variant.payload_type
+                if payload in self.drop_destructors:
+                    self._emit(f"case MORT_{enum_tag}_{variant.name}:")
+                    self.indent += 1
+                    self._emit(self._drop_call(
+                        payload, f"&value->data.v_{variant.name}"))
+                    self._emit("break;")
+                    self.indent -= 1
+            self._emit("default: break;")
+            self.indent -= 1
+            self._emit("}")
+        self.indent -= 1
+        self._emit("}")
 
     def _gen_tuple(self, tuple_type):
         self._emit(f"{_tuple_c_name(tuple_type)} {{")
@@ -702,8 +793,13 @@ class CodeGen:
             for expression in reversed(scope):
                 if isinstance(expression, tuple) and expression[0] == "resource":
                     _, name, destructor, live = expression
+                    destructor_name = (
+                        _drop_c_name(destructor[6:])
+                        if destructor.startswith("$drop$")
+                        else f"mort_{_c_symbol(destructor)}"
+                    )
                     self._emit(
-                        f"if ({live}) {{ mort_{_c_symbol(destructor)}(&m_{name}); }}")
+                        f"if ({live}) {{ {destructor_name}(&m_{name}); }}")
                 else:
                     self._emit(self._gen_expr(expression) + ";")
 

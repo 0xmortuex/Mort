@@ -672,6 +672,7 @@ class Checker:
         return concrete_symbol
 
     def check(self):
+        self.program.drop_destructors = {}
         self._aggregate_declarations = {}
         for declaration in self.program.aliases:
             if (declaration.name in self.aliases or declaration.name in INT_TYPES
@@ -864,7 +865,7 @@ class Checker:
                 g.var_type = g.decl_type
             else:
                 g.var_type = t
-            if self._is_resource_type(g.var_type):
+            if self._needs_drop_type(g.var_type):
                 self._error(
                     "resource globals are not supported because their process "
                     "shutdown order is undefined; create the resource in main",
@@ -988,7 +989,37 @@ class Checker:
         base = parts[0] if parts else typ
         return base in self.resource_struct_names
 
+    def _needs_drop_type(self, typ, seen=None):
+        if self._is_resource_type(typ):
+            return True
+        seen = set() if seen is None else seen
+        if typ in seen:
+            return False
+        seen.add(typ)
+        if is_array(typ):
+            element, _ = array_parts(typ)
+            return self._needs_drop_type(element, seen)
+        tuple_type = tuple_parts(typ)
+        if tuple_type:
+            return any(self._needs_drop_type(item, seen) for item in tuple_type)
+        if typ in self.structs and self.structs[typ] is not None:
+            return any(
+                self._needs_drop_type(item, seen)
+                for item in self.structs[typ].values()
+            )
+        if typ in self.enums and self.enums[typ] is not None:
+            return any(
+                payload is not None and self._needs_drop_type(payload, seen)
+                for payload in self.enums[typ].values()
+            )
+        return False
+
     def _resource_destructor(self, typ, node):
+        if not self._is_resource_type(typ):
+            symbol = "$drop$" + typ
+            self.program.drop_destructors[typ] = symbol
+            self._register_nested_drop_types(typ, node)
+            return symbol
         parts = generic_parts(typ)
         base = parts[0] if parts else typ
         symbol = self.resource_destructor_templates[base]
@@ -998,10 +1029,28 @@ class Checker:
             symbol = self._instantiate_function(
                 symbol, dict(zip(template.generic_params, arguments)), node)
             self.destructor_symbols.add(symbol)
+        self.program.drop_destructors[typ] = symbol
         return symbol
 
+    def _register_nested_drop_types(self, typ, node):
+        children = []
+        if is_array(typ):
+            children = [array_parts(typ)[0]]
+        elif tuple_parts(typ):
+            children = tuple_parts(typ)
+        elif typ in self.structs and self.structs[typ] is not None:
+            children = list(self.structs[typ].values())
+        elif typ in self.enums and self.enums[typ] is not None:
+            children = [
+                payload for payload in self.enums[typ].values()
+                if payload is not None
+            ]
+        for child in children:
+            if self._needs_drop_type(child):
+                self._resource_destructor(child, node)
+
     def _require_explicit_move(self, expected, expr):
-        if (self._is_resource_type(expected) and isinstance(expr, A.Var)):
+        if (self._needs_drop_type(expected) and isinstance(expr, A.Var)):
             self._error(
                 f"resource {expr.name!r} must be transferred with "
                 f"'move {expr.name}'",
@@ -1073,9 +1122,6 @@ class Checker:
                     self._error(f"array element expects {elem}, got {el.type}", node)
 
         expr.type = f"[{elem};{size}]"
-        if self._is_resource_type(elem):
-            self._error(
-                "resource values cannot be stored directly in arrays yet", node)
         return expr.type
 
     def _check_fn(self, f):
@@ -1088,7 +1134,7 @@ class Checker:
         self.block_depth = 0
         for p in f.params:
             self._declare(p.name, p.typ, f, kind="parameter")
-            if self._is_resource_type(p.typ):
+            if self._needs_drop_type(p.typ):
                 p.destructor_symbol = self._resource_destructor(p.typ, f)
         for s in f.body.stmts:
             self._check_stmt(s)
@@ -1280,6 +1326,9 @@ class Checker:
             if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
                 self._declare(s.name, s.var_type, s, mutable=s.mutable)
+                if self._needs_drop_type(s.var_type):
+                    s.destructor_symbol = self._resource_destructor(
+                        s.var_type, s)
                 return
             t = self._check_expr(s.expr)
             if t == "void":
@@ -1301,7 +1350,7 @@ class Checker:
                 s.var_type = t
             self._require_explicit_move(s.var_type, s.expr)
             self._declare(s.name, s.var_type, s, mutable=s.mutable)
-            if self._is_resource_type(s.var_type):
+            if self._needs_drop_type(s.var_type):
                 s.destructor_symbol = self._resource_destructor(s.var_type, s)
 
         elif isinstance(s, A.Assign):
@@ -1318,7 +1367,7 @@ class Checker:
                 self._error("cannot assign through a const slice", s)
             if is_array(tt):
                 self._error("cannot assign to a whole array; assign elements via a[i]", s)
-            if self._is_resource_type(tt):
+            if self._needs_drop_type(tt):
                 self._error(
                     "cannot overwrite a resource binding; destroy it and "
                     "create a new binding",
@@ -1414,13 +1463,22 @@ class Checker:
 
         elif isinstance(s, A.Match):
             subject_type = self._check_expr(s.expr)
+            if self._needs_drop_type(subject_type):
+                self._error(
+                    "matching a resource-owning enum by value is not yet "
+                    "supported; inspect it through an owning wrapper",
+                    s,
+                )
             if (subject_type in self.structs or is_array(subject_type)
                     or is_slice(subject_type) or is_ptr(subject_type)
                     or tuple_parts(subject_type)):
                 self._error(f"cannot match on a value of type {subject_type}", s)
             wildcard_seen = False
             enum_variants = set()
+            before_arms = self._move_snapshot()
+            arm_move_states = []
             for index, arm in enumerate(s.arms):
+                self._restore_move_snapshot(before_arms)
                 binding_names = []
                 binding_types = []
                 if arm.pattern is None:
@@ -1509,6 +1567,10 @@ class Checker:
                     self._finish_binding_scope()
                     self.scopes.pop()
                     self.binding_scopes.pop()
+                arm_move_states.append(self._move_snapshot())
+            self._restore_move_snapshot(before_arms)
+            if arm_move_states:
+                self._merge_move_snapshots(*arm_move_states)
             if subject_type in self.enums:
                 missing = set(self.enums[subject_type]) - enum_variants
                 if missing and not wildcard_seen:
@@ -1605,9 +1667,6 @@ class Checker:
             return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.TupleLit):
             element_types = [self._check_expr(element) for element in e.elements]
-            if any(self._is_resource_type(item) for item in element_types):
-                self._error(
-                    "resource values cannot be stored directly in tuples yet", e)
             for element_type, element in zip(element_types, e.elements):
                 self._require_explicit_move(element_type, element)
             return "(" + ",".join(element_types) + ")"
@@ -1641,7 +1700,7 @@ class Checker:
             if not isinstance(e.expr, A.Var):
                 self._error("move expects a local resource binding", e)
             typ, binding = self._local_binding(e.expr.name)
-            if typ is None or binding is None or not self._is_resource_type(typ):
+            if typ is None or binding is None or not self._needs_drop_type(typ):
                 self._error(
                     f"move expects a resource binding, got {e.expr.name!r}", e)
             if binding.get("moved"):
@@ -2267,7 +2326,7 @@ class Checker:
                 and isinstance(e.args[0].operand, A.Var)):
             binding_name = e.args[0].operand.name
             binding_type, binding = self._local_binding(binding_name)
-            if binding is not None and self._is_resource_type(binding_type):
+            if binding is not None and self._needs_drop_type(binding_type):
                 e.destroys_binding = binding_name
                 e.deferred_destroy = self.checking_defer
                 if not self.checking_defer:
