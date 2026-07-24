@@ -1,0 +1,21 @@
+// Print primes below 30 — exercises globals, nested loops, %, and bool logic.
+const LIMIT: int = 30;
+
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false; }
+    let d = 2;
+    while d * d <= n {
+        if n % d == 0 { return false; }
+        d = d + 1;
+    }
+    return true;
+}
+
+fn main() -> int {
+    let n = 2;
+    while n < LIMIT {
+        if is_prime(n) { println(n); }
+        n = n + 1;
+    }
+    return 0;
+}
