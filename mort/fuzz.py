@@ -3,18 +3,17 @@ import random
 
 from .errors import MortError
 
-
 _CORPUS = [
     "fn main() -> int { return 0; }",
     "fn main() -> int { let value: i64 = 42; print(value); return 0; }",
     "struct Pair<T> { left: T, right: T } fn main() -> int { return 0; }",
-    "enum State { Ready, Done } fn main() -> int { let s = State.Ready; "
-    "match s { State.Ready => {}, State.Done => {} } return 0; }",
-    "fn main() -> int { let values: [i64; 3] = [1, 2, 3]; "
-    "return values[1] as int; }",
-    "enum Value { None, Number(i64) } fn main() -> int { "
+    ("enum State { Ready, Done } fn main() -> int { let s = State.Ready; "
+    "match s { State.Ready => {}, State.Done => {} } return 0; }"),
+    ("fn main() -> int { let values: [i64; 3] = [1, 2, 3]; "
+    "return values[1] as int; }"),
+    ("enum Value { None, Number(i64) } fn main() -> int { "
     "let value = Value.Number(42); match value { Value.None => {}, "
-    "Value.Number(number) => { print(number); } } return 0; }",
+    "Value.Number(number) => { print(number); } } return 0; }"),
 ]
 
 _ADVERSARIAL = [

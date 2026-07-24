@@ -11,8 +11,8 @@ the other operand of a binary op). Everything else needs an explicit ``as`` cast
 """
 import copy
 
-from .errors import MortError, MortWarning
 from . import mort_ast as A
+from .errors import MortError, MortWarning
 
 INT_TYPES = {
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -346,13 +346,9 @@ class Checker:
             seen.add(id(value))
             if isinstance(value, A.TypeAliasDecl):
                 value.target = self._resolve_alias_type(value.target)
-            elif isinstance(value, A.FnDecl):
+            elif isinstance(value, (A.FnDecl, A.ExternFnDecl)):
                 value.ret = self._resolve_alias_type(value.ret)
-            elif isinstance(value, A.ExternFnDecl):
-                value.ret = self._resolve_alias_type(value.ret)
-            elif isinstance(value, A.Param):
-                value.typ = self._resolve_alias_type(value.typ)
-            elif isinstance(value, A.StructField):
+            elif isinstance(value, (A.Param, A.StructField)):
                 value.typ = self._resolve_alias_type(value.typ)
             elif isinstance(value, A.EnumVariant) and value.payload_types:
                 value.payload_types = [
@@ -362,9 +358,7 @@ class Checker:
                     value.payload_types[0] if len(value.payload_types) == 1
                     else "(" + ",".join(value.payload_types) + ")"
                 )
-            elif isinstance(value, A.Let) and value.decl_type is not None:
-                value.decl_type = self._resolve_alias_type(value.decl_type)
-            elif isinstance(value, A.For) and value.decl_type is not None:
+            elif isinstance(value, A.Let) and value.decl_type is not None or isinstance(value, A.For) and value.decl_type is not None:
                 value.decl_type = self._resolve_alias_type(value.decl_type)
             elif isinstance(value, A.Cast):
                 value.target_type = self._resolve_alias_type(value.target_type)
@@ -614,15 +608,11 @@ class Checker:
                 value.ret = substitute_type(value.ret, mapping)
             elif isinstance(value, A.Param):
                 value.typ = substitute_type(value.typ, mapping)
-            elif isinstance(value, A.Let) and value.decl_type is not None:
-                value.decl_type = substitute_type(value.decl_type, mapping)
-            elif isinstance(value, A.For) and value.decl_type is not None:
+            elif isinstance(value, A.Let) and value.decl_type is not None or isinstance(value, A.For) and value.decl_type is not None:
                 value.decl_type = substitute_type(value.decl_type, mapping)
             elif isinstance(value, A.Cast):
                 value.target_type = substitute_type(value.target_type, mapping)
-            elif isinstance(value, A.StructLit):
-                value.name = substitute_type(value.name, mapping)
-            elif isinstance(value, A.Var) and generic_parts(value.name):
+            elif isinstance(value, A.StructLit) or isinstance(value, A.Var) and generic_parts(value.name):
                 value.name = substitute_type(value.name, mapping)
             elif isinstance(value, A.Call):
                 value.type_args = [
@@ -1171,9 +1161,10 @@ class Checker:
                     else_returns = self._block_always_returns(statement.els)
                 if then_returns and else_returns:
                     return True
-            if isinstance(statement, A.Match) and statement.exhaustive:
-                if all(self._block_always_returns(arm.body) for arm in statement.arms):
-                    return True
+            if (isinstance(statement, A.Match) and statement.exhaustive
+                    and all(self._block_always_returns(arm.body)
+                            for arm in statement.arms)):
+                return True
             if (isinstance(statement, A.While)
                     and isinstance(statement.cond, A.BoolLit)
                     and statement.cond.value
@@ -1196,16 +1187,16 @@ class Checker:
             elif isinstance(statement, A.If):
                 if self._block_breaks_current_loop(statement.then):
                     return True
-                if isinstance(statement.els, A.Block):
-                    if self._block_breaks_current_loop(statement.els):
-                        return True
-                elif isinstance(statement.els, A.If):
-                    if self._if_breaks_current_loop(statement.els):
-                        return True
-            elif isinstance(statement, A.Match):
-                if any(self._block_breaks_current_loop(arm.body)
-                       for arm in statement.arms):
+                if (isinstance(statement.els, A.Block)
+                        and self._block_breaks_current_loop(statement.els)):
                     return True
+                if (isinstance(statement.els, A.If)
+                        and self._if_breaks_current_loop(statement.els)):
+                    return True
+            elif (isinstance(statement, A.Match)
+                    and any(self._block_breaks_current_loop(arm.body)
+                            for arm in statement.arms)):
+                return True
         return False
 
     def _if_breaks_current_loop(self, statement):
@@ -1318,10 +1309,10 @@ class Checker:
                 self._error("floating-point literal does not fit in f32", expr)
             expr.type = expected
             return True
-        if is_const_ptr(expected) and is_ptr(expr.type):
-            if pointee(expected) == pointee(expr.type):
-                expr.type = expected
-                return True
+        if (is_const_ptr(expected) and is_ptr(expr.type)
+                and pointee(expected) == pointee(expr.type)):
+            expr.type = expected
+            return True
         if expected in INT_TYPES and expr.is_lit:
             value = self._const_value(expr)
             if value is not None:
@@ -1661,12 +1652,11 @@ class Checker:
                 for item in value:
                     if isinstance(item, A.Node) and Checker._contains_try(item):
                         return True
-                    if isinstance(item, tuple):
-                        if any(
-                                isinstance(part, A.Node)
-                                and Checker._contains_try(part)
-                                for part in item):
-                            return True
+                    if isinstance(item, tuple) and any(
+                            isinstance(part, A.Node)
+                            and Checker._contains_try(part)
+                            for part in item):
+                        return True
         return False
 
     def _check_expr(self, e):
@@ -1684,8 +1674,7 @@ class Checker:
         return (
             isinstance(e, A.Var)
             or (isinstance(e, A.Unary) and e.op == "*")
-            or isinstance(e, A.FieldAccess)
-            or isinstance(e, A.Index)
+            or isinstance(e, (A.FieldAccess, A.Index))
         )
 
     def _infer(self, e):

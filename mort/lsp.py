@@ -8,9 +8,8 @@ from urllib.parse import unquote, urlparse
 from .errors import MortError
 from .formatter import format_source
 from .lexer import Lexer
-from .parser import Parser, FIXED_INT_TYPES, FLOAT_TYPES
+from .parser import FIXED_INT_TYPES, FLOAT_TYPES, Parser
 from .tokens import KEYWORDS
-
 
 _BUILTINS = {
     "alloc": "fn alloc(size: u64) -> *void",

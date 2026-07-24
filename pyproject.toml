@@ -34,7 +34,11 @@ mortc = "mortc:main"
 dev = [
     "build>=1.2",
     "pytest>=8",
-    "ruff>=0.15",
+    # Exact pin: ruff's default rule set changes between minor versions and
+    # CI lints with defaults, so a floating version can break CI overnight
+    # with no code change (it did on 2026-07-24, 0.15 -> 0.16). Bump
+    # deliberately, fixing new findings in the same commit.
+    "ruff==0.16.0",
     "ziglang",
 ]
 

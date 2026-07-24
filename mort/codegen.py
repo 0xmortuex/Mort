@@ -2265,12 +2265,11 @@ class CodeGen:
                 for item in value:
                     if isinstance(item, A.Node) and CodeGen._contains_try(item):
                         return True
-                    if isinstance(item, tuple):
-                        if any(
-                                isinstance(part, A.Node)
-                                and CodeGen._contains_try(part)
-                                for part in item):
-                            return True
+                    if isinstance(item, tuple) and any(
+                            isinstance(part, A.Node)
+                            and CodeGen._contains_try(part)
+                            for part in item):
+                        return True
         return False
 
     def _prepare_try_expr(self, expression):
@@ -2423,7 +2422,7 @@ class CodeGen:
             return self._gen_cast(e)
         if isinstance(e, A.Try):
             if e.temp_name is None:  # pragma: no cover - checker/codegen invariant
-                raise Exception("try expression was not prepared before generation")
+                raise AssertionError("try expression was not prepared before generation")
             return e.temp_name
         if isinstance(e, A.Move):
             return (
@@ -2615,4 +2614,4 @@ class CodeGen:
             if destroyed is not None and not getattr(e, "deferred_destroy", False):
                 return f"({call}, mort_live_m_{destroyed} = false)"
             return call
-        raise Exception("unreachable: cannot generate expression")  # pragma: no cover
+        raise AssertionError("unreachable: cannot generate expression")  # pragma: no cover

@@ -19,9 +19,9 @@ Grammar (informal):
 Precedence (low -> high):
     || , && , == != , < > <= >= , + - , * / % , unary ! - , call , primary
 """
-from .tokens import T, Token
-from .errors import MortError
 from . import mort_ast as A
+from .errors import MortError
+from .tokens import T, Token
 
 FIXED_INT_TYPES = {
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -544,8 +544,7 @@ class Parser:
         return (
             isinstance(e, A.Var)
             or (isinstance(e, A.Unary) and e.op == "*")
-            or isinstance(e, A.FieldAccess)
-            or isinstance(e, A.Index)
+            or isinstance(e, (A.FieldAccess, A.Index))
         )
 
     # ----- expressions -----

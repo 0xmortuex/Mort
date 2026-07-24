@@ -140,7 +140,7 @@ def _resolve_git_semver_tag(url, constraint):
     for line in output.splitlines():
         reference = line.split("\t", 1)[-1]
         tag = reference.rsplit("/", 1)[-1]
-        version = tag[1:] if tag.startswith("v") else tag
+        version = tag.removeprefix("v")
         try:
             parse_semver(version)
         except ProjectError:
@@ -155,7 +155,7 @@ def _resolve_cached_git_semver_tag(root, constraint):
         ["tag", "--list"], root, "failed to list cached Git versions")
     tags = {}
     for tag in output.splitlines():
-        version = tag[1:] if tag.startswith("v") else tag
+        version = tag.removeprefix("v")
         try:
             parse_semver(version)
         except ProjectError:

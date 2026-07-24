@@ -24,14 +24,14 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mort.lexer import Lexer          # noqa: E402
-from mort.parser import Parser        # noqa: E402
-from mort.typechecker import Checker  # noqa: E402
-from mort.codegen import CodeGen      # noqa: E402
-from mort.errors import MortError     # noqa: E402
-from mort.mort_ast import Node, Program  # noqa: E402
-from mort import __language_version__, __version__  # noqa: E402
-from mort.project import (           # noqa: E402
+from mort import __language_version__, __version__
+from mort.codegen import CodeGen
+from mort.errors import MortError
+from mort.formatter import format_file
+from mort.lexer import Lexer
+from mort.mort_ast import Node, Program
+from mort.parser import Parser
+from mort.project import (
     ProjectError,
     add_git_dependency,
     add_path_dependency,
@@ -42,8 +42,7 @@ from mort.project import (           # noqa: E402
     resolve_tests,
     write_lockfile,
 )
-from mort.formatter import format_file  # noqa: E402
-
+from mort.typechecker import Checker
 
 _SOURCE_STDLIB_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "std")
@@ -492,20 +491,21 @@ def _compile_main(argv=None, test_mode=False):
         sanitizers = ",".join(dict.fromkeys(args.sanitize))
         cmd += [f"-fsanitize={sanitizers}", "-fno-omit-frame-pointer"]
 
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".c", delete=False, encoding="utf-8")
-    try:
+    # delete=False + closed by the ``with``: Windows cannot reopen a
+    # still-open temp file. Unlinked in the finally below.
+    with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False,
+                                     encoding="utf-8") as tmp:
         tmp.write(c_source)
-        tmp.close()
-        try:
-            link_args = [*args.link, *(f"-l{name}" for name in args.library)]
-            if os.name == "nt" and "MORT_REQUIRES_WINSOCK" in c_source:
-                link_args.append("-lws2_32")
-            if os.name == "nt" and "MORT_REQUIRES_BCRYPT" in c_source:
-                link_args.append("-lbcrypt")
-            subprocess.run([*cmd, tmp.name, *link_args, "-o", out], check=True)
-        except subprocess.CalledProcessError:
-            print("mortc: the C backend failed to compile the generated code", file=sys.stderr)
-            return 1
+    try:
+        link_args = [*args.link, *(f"-l{name}" for name in args.library)]
+        if os.name == "nt" and "MORT_REQUIRES_WINSOCK" in c_source:
+            link_args.append("-lws2_32")
+        if os.name == "nt" and "MORT_REQUIRES_BCRYPT" in c_source:
+            link_args.append("-lbcrypt")
+        subprocess.run([*cmd, tmp.name, *link_args, "-o", out], check=True)
+    except subprocess.CalledProcessError:
+        print("mortc: the C backend failed to compile the generated code", file=sys.stderr)
+        return 1
     finally:
         os.unlink(tmp.name)
 
@@ -514,7 +514,7 @@ def _compile_main(argv=None, test_mode=False):
 
     if args.run:
         exe = os.path.abspath(out)
-        result = subprocess.run([exe])
+        result = subprocess.run([exe], check=False)
         return result.returncode
     return 0
 
@@ -565,7 +565,7 @@ def _project_build(start, run=False):
             and os.path.isfile(project["output"])):
         print(f"mortc: build cache hit ({project['output']})")
         if run:
-            return subprocess.run([project["output"]]).returncode
+            return subprocess.run([project["output"]], check=False).returncode
         return 0
     result = _compile_main(_project_args(
         project, project["sources"], project["output"], run=False))
@@ -580,13 +580,13 @@ def _project_build(start, run=False):
         }, handle, indent=2, sort_keys=True)
         handle.write("\n")
     if run:
-        return subprocess.run([project["output"]]).returncode
+        return subprocess.run([project["output"]], check=False).returncode
     return 0
 
 
 def _project_fingerprint(project):
     digest = hashlib.sha256()
-    digest.update(f"mort:{__version__}\0".encode("utf-8"))
+    digest.update(f"mort:{__version__}\0".encode())
     configuration = {
         key: project[key]
         for key in (
@@ -631,7 +631,7 @@ def _project_fingerprint(project):
                         break
                     digest.update(chunk)
         except OSError as error:
-            digest.update(f"missing:{error}".encode("utf-8"))
+            digest.update(f"missing:{error}".encode())
         digest.update(b"\0")
     return digest.hexdigest()
 

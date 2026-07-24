@@ -131,7 +131,7 @@ KEYWORDS = {
 
 
 class Token:
-    __slots__ = ("type", "value", "line", "col")
+    __slots__ = ("col", "line", "type", "value")
 
     def __init__(self, type, value, line, col):
         self.type = type
