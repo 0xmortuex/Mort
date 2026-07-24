@@ -8,13 +8,17 @@ Two layers:
 
 Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
+import hashlib
 import io
 import json
 import os
+import socket
+import ssl
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -889,6 +893,204 @@ def test_secure_random_builtin_is_typed_and_hosted_only():
             "fn main() -> int { let value: u64 = 0; "
             "secure_random_fill(&value, 8); return 0; }"
         )
+
+
+def test_tls_builtins_are_typed_verified_and_hosted_only():
+    c_source = c_of(
+        "fn main() -> int { "
+        "let handle = tls_client_connect(\"localhost\", 443); "
+        "let bytes: [u8; 4] = [0; 4]; "
+        "tls_send(handle, &bytes[0] as *const u8, 4); "
+        "tls_recv(handle, &bytes[0], 4); "
+        "print(tls_protocol_version(handle)); tls_close(handle); return 0; }"
+    )
+    assert "MORT_REQUIRES_TLS" in c_source
+    assert "mort_tls_client_connect" in c_source
+    assert "mort_tls_send" in c_source
+    assert "mort_tls_recv" in c_source
+    with pytest.raises(MortError, match="TLS is not available"):
+        mortc.compile_to_c(
+            "fn kmain() { tls_client_connect(\"localhost\", 443); }",
+            freestanding=True,
+        )
+    with pytest.raises(MortError, match="CA buffer must be"):
+        c_of(
+            "fn main() -> int { let wrong: u64 = 0; "
+            "tls_client_connect_with_ca("
+            "\"localhost\", 443, &wrong, 8); return 0; }"
+        )
+    with pytest.raises(MortError, match="buffer must be"):
+        c_of(
+            "fn main() -> int { let handle: *void = null; let wrong: u64 = 0; "
+            "tls_recv(handle, &wrong, 8); return 0; }"
+        )
+
+
+def _start_test_tls_server(
+        certfile, keyfile, expected=b"ping", response=b"pong"):
+    ready = threading.Event()
+    state = {"port": None, "error": None}
+
+    def serve():
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(certfile, keyfile)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(180)
+                state["port"] = listener.getsockname()[1]
+                ready.set()
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(30)
+                    try:
+                        with context.wrap_socket(
+                                connection, server_side=True) as secured:
+                            request = secured.recv(4096)
+                            if request.startswith(expected):
+                                secured.sendall(response)
+                    except (ssl.SSLError, ConnectionError, OSError):
+                        pass
+        except (OSError, ssl.SSLError, ValueError) as error:  # pragma: no cover
+            state["error"] = error
+            ready.set()
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    assert ready.wait(10), "TLS test server did not start"
+    if state["error"] is not None:
+        raise state["error"]
+    return state["port"], worker, state
+
+
+def _tls_test_source(port, ca_pem=None):
+    connection = (
+        f'tls.connect("127.0.0.1", {port})'
+        if ca_pem is None
+        else (
+            "tls.connect_with_ca("
+            f'"127.0.0.1", {port}, {json.dumps(ca_pem)} as *const u8, '
+            f"{len(ca_pem.encode('utf-8'))})"
+        )
+    )
+    return (
+        "import std.tls; "
+        "fn main() -> int { "
+        f"let stream = {connection}; "
+        'let request = "ping"; '
+        "assert(tls.send_all(&stream, request as *const u8, 4)); "
+        "let response: [u8; 4] = [0; 4]; "
+        "assert(tls.receive_exact(&stream, &response[0], 4)); "
+        "print(tls.protocol_version(&stream)); "
+        "print(response[0]); print(response[1]); "
+        "print(response[2]); print(response[3]); return 0; }"
+    )
+
+
+@needs_cc
+def test_verified_tls_loopback_and_fail_closed_validation(monkeypatch):
+    fixtures = Path(ROOT) / "tests" / "fixtures" / "tls"
+    ca_pem = (fixtures / "ca-cert.pem").read_text(encoding="ascii")
+    sanitizer_args = []
+    configured_sanitizers = os.environ.get("MORT_TLS_TEST_SANITIZERS", "")
+    for sanitizer in filter(None, configured_sanitizers.split(",")):
+        sanitizer_args += ["--sanitize", sanitizer]
+    with tempfile.TemporaryDirectory() as directory:
+        monkeypatch.setenv("MORT_CACHE_DIR", os.path.join(directory, "cache"))
+
+        port, server, state = _start_test_tls_server(
+            fixtures / "server-cert.pem", fixtures / "server-key.pem")
+        source = os.path.join(directory, "valid.mx")
+        output = os.path.join(
+            directory, "valid.exe" if os.name == "nt" else "valid")
+        Path(source).write_text(_tls_test_source(port, ca_pem), encoding="utf-8")
+        assert mortc._compile_main(
+            [source, "-o", output, *sanitizer_args]) == 0
+        result = subprocess.run(
+            [output], check=False, capture_output=True, text=True, timeout=30)
+        server.join(10)
+        assert state["error"] is None
+        assert not server.is_alive()
+        assert result.returncode == 0, result.stderr
+        assert result.stdout in (
+            "12\n112\n111\n110\n103\n",
+            "13\n112\n111\n110\n103\n",
+        )
+
+        http_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 4\r\n"
+            b"Connection: close\r\n\r\nMort"
+        )
+        port, server, state = _start_test_tls_server(
+            fixtures / "server-cert.pem",
+            fixtures / "server-key.pem",
+            expected=b"GET / HTTP/1.1\r\n",
+            response=http_response,
+        )
+        source = os.path.join(directory, "https.mx")
+        output = os.path.join(
+            directory, "https.exe" if os.name == "nt" else "https")
+        https_source = (
+            "import std.http; import std.https; "
+            "fn main() -> int { let response: [u8; 512] = [0; 512]; "
+            f"let roots = {json.dumps(ca_pem)}; "
+            "let length = https.get_with_ca("
+            f'"127.0.0.1", {port}, "/", &response[0], 512, '
+            "roots as *const u8, len(roots)); "
+            "assert(length > 0); "
+            "let offset = http.find_header_end("
+            "&response[0] as *const u8, length as u64); "
+            "print(http.status_code("
+            "&response[0] as *const u8, length as u64)); "
+            "print(response[offset as u64]); "
+            "print(response[offset as u64 + 1]); "
+            "print(response[offset as u64 + 2]); "
+            "print(response[offset as u64 + 3]); return 0; }"
+        )
+        Path(source).write_text(https_source, encoding="utf-8")
+        assert mortc._compile_main(
+            [source, "-o", output, *sanitizer_args]) == 0
+        result = subprocess.run(
+            [output], check=False, capture_output=True, text=True, timeout=30)
+        server.join(10)
+        assert state["error"] is None
+        assert not server.is_alive()
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "200\n77\n111\n114\n116\n"
+
+        port, server, state = _start_test_tls_server(
+            fixtures / "wrong-host-cert.pem",
+            fixtures / "wrong-host-key.pem",
+        )
+        source = os.path.join(directory, "wrong-host.mx")
+        output = os.path.join(
+            directory, "wrong-host.exe" if os.name == "nt" else "wrong-host")
+        Path(source).write_text(_tls_test_source(port, ca_pem), encoding="utf-8")
+        assert mortc._compile_main(
+            [source, "-o", output, *sanitizer_args]) == 0
+        result = subprocess.run(
+            [output], check=False, capture_output=True, text=True, timeout=30)
+        server.join(10)
+        assert state["error"] is None
+        assert result.returncode != 0
+
+        port, server, state = _start_test_tls_server(
+            fixtures / "server-cert.pem", fixtures / "server-key.pem")
+        source = os.path.join(directory, "untrusted.mx")
+        output = os.path.join(
+            directory, "untrusted.exe" if os.name == "nt" else "untrusted")
+        Path(source).write_text(_tls_test_source(port), encoding="utf-8")
+        assert mortc._compile_main(
+            [source, "-o", output, *sanitizer_args]) == 0
+        result = subprocess.run(
+            [output], check=False, capture_output=True, text=True, timeout=30)
+        server.join(10)
+        assert state["error"] is None
+        assert result.returncode != 0
 
 
 @needs_cc
@@ -2409,6 +2611,8 @@ def test_std_and_doctor_commands_report_installed_toolchain(capsys):
     assert f"Mort {mortc.__version__}" in doctor.out
     assert "Standard library:" in doctor.out
     assert "C backend:" in doctor.out
+    assert "TLS backend: Mbed TLS 3.6.6" in doctor.out
+    assert "payloads verified" in doctor.out
 
 
 def test_configured_c_backend_and_sanitizer_flags(
@@ -2445,6 +2649,34 @@ def test_configured_c_backend_and_sanitizer_flags(
     assert "cannot be combined" in capsys.readouterr().err
 
 
+def test_zig_backend_uses_writable_mort_owned_caches(
+        tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("MORT_CACHE_DIR", str(cache))
+    monkeypatch.delenv("ZIG_GLOBAL_CACHE_DIR", raising=False)
+    monkeypatch.delenv("ZIG_LOCAL_CACHE_DIR", raising=False)
+    environment = mortc.compiler_environment(["zig", "cc"])
+    assert environment["ZIG_GLOBAL_CACHE_DIR"] == str(cache / "zig" / "global")
+    assert environment["ZIG_LOCAL_CACHE_DIR"] == str(cache / "zig" / "local")
+    assert (cache / "zig" / "global").is_dir()
+    assert (cache / "zig" / "local").is_dir()
+
+    source = tmp_path / "main.mx"
+    output = tmp_path / "main"
+    source.write_text("fn main() -> int { return 0; }", encoding="utf-8")
+    calls = []
+
+    def record(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(mortc, "find_c_compiler", lambda: ["zig", "cc"])
+    monkeypatch.setattr(mortc.subprocess, "run", record)
+    assert mortc.main([str(source), "-o", str(output)]) == 0
+    assert calls[0][1]["env"]["ZIG_GLOBAL_CACHE_DIR"] == str(
+        cache / "zig" / "global")
+
+
 def test_packaging_version_matches_compiler_version():
     with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as handle:
         project_text = handle.read()
@@ -2454,8 +2686,25 @@ def test_packaging_version_matches_compiler_version():
     assert "std/net.mx" in project_text
     assert "std/task.mx" in project_text
     assert "std/http.mx" in project_text
+    assert "std/https.mx" in project_text
     assert "std/crypto.mx" in project_text
+    assert "std/tls.mx" in project_text
     assert "std/websocket.mx" in project_text
+    assert "vendor/mbedtls-3.6.6.tar.bz2" not in project_text
+    assert '"vendor/*"' in project_text
+    vendor = Path(ROOT) / "mort" / "vendor"
+    assert hashlib.sha256(
+        (vendor / "mbedtls-3.6.6.tar.bz2").read_bytes()
+    ).hexdigest() == (
+        "8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a"
+    )
+    assert hashlib.sha256(
+        (vendor / "cacert.pem").read_bytes()
+    ).hexdigest() == (
+        "bbc7e9c01d7551bb8a159b5dedd989b8ee3ce105aff522b68eb1b01bf854cab0"
+    )
+    assert (vendor / "MBEDTLS-LICENSE").is_file()
+    assert (vendor / "CERTIFI-LICENSE").is_file()
     with open(
             os.path.join(ROOT, "conformance", "manifest.json"),
             encoding="utf-8") as handle:

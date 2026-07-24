@@ -1,0 +1,120 @@
+module std.https;
+
+import std.http;
+import std.tls;
+import std.vec;
+
+pub fn write_request(
+    stream: *Stream,
+    method: *u8,
+    target: *u8,
+    host: *u8,
+    body: *const u8,
+    body_length: u64
+) -> bool {
+    let message = vec.new<u8>();
+    if !http.build_request(
+            &message, method, target, host, body, body_length) {
+        return false;
+    }
+    return tls.send_all(
+        stream,
+        (*(&message)).data as *const u8,
+        (*(&message)).length
+    );
+}
+
+pub fn read_message(
+    stream: *Stream,
+    buffer: *u8,
+    capacity: u64
+) -> i64 {
+    if buffer == null || capacity == 0 {
+        return 0 - 1;
+    }
+    let total: u64 = 0;
+    let expected: i64 = 0 - 1;
+    while total < capacity {
+        let amount = tls.receive(
+            stream,
+            &buffer[total],
+            capacity - total
+        );
+        if amount < 0 {
+            return 0 - 1;
+        }
+        if amount == 0 {
+            if expected >= 0 && total >= expected as u64 {
+                return expected;
+            }
+            return 0 - 1;
+        }
+        total += amount as u64;
+        if expected < 0 {
+            let header_end = http.find_header_end(
+                buffer as *const u8,
+                total
+            );
+            if header_end >= 0 {
+                expected = http.framed_length(
+                    buffer as *const u8,
+                    total
+                );
+                if expected < 0 || expected as u64 > capacity {
+                    return 0 - 1;
+                }
+            }
+        }
+        if expected >= 0 && total >= expected as u64 {
+            return expected;
+        }
+    }
+    return 0 - 1;
+}
+
+pub fn get(
+    host: *u8,
+    port: u16,
+    target: *u8,
+    buffer: *u8,
+    capacity: u64
+) -> i64 {
+    let stream = tls.connect(host, port);
+    if !write_request(
+            &stream,
+            "GET",
+            target,
+            host,
+            null,
+            0) {
+        return 0 - 1;
+    }
+    return read_message(&stream, buffer, capacity);
+}
+
+pub fn get_with_ca(
+    host: *u8,
+    port: u16,
+    target: *u8,
+    buffer: *u8,
+    capacity: u64,
+    ca_data: *const u8,
+    ca_length: u64
+) -> i64 {
+    let stream = tls.connect_with_ca(
+        host,
+        port,
+        ca_data,
+        ca_length
+    );
+    if !write_request(
+            &stream,
+            "GET",
+            target,
+            host,
+            null,
+            0) {
+        return 0 - 1;
+    }
+    return read_message(&stream, buffer, capacity);
+}

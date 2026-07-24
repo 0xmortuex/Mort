@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-321%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-330%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
@@ -75,9 +75,9 @@ lowers each Mort function to a `mort_<name>` C function (so a Mort program can
 never clash with a C standard-library symbol). Your `main` is wrapped by a real
 C `main`, so the output is an ordinary native binary.
 
-## The language (v0.40)
+## The language (v0.41)
 
-Mort 0.40 has a
+Mort 0.41 has a
 [versioned normative language specification](docs/language-specification.md)
 and a black-box [executable conformance suite](conformance/README.md). Run
 `mortc --language-version` to print the implemented language contract.
@@ -158,7 +158,13 @@ and a black-box [executable conformance suite](conformance/README.md). Run
 - **Bounded HTTP/1.1:** `std.http` writes injection-checked requests and
   responses, parses status and unambiguous `Content-Length` framing, rejects
   transfer-encoding conflicts, and reads one caller-bounded close-delimited
-  message. Cleartext HTTP is kept explicitly separate from future TLS support.
+  message. Cleartext HTTP is kept explicitly separate from authenticated
+  HTTPS.
+- **Verified TLS and HTTPS:** move-only `std.tls.Stream` resources negotiate
+  TLS 1.2/1.3 with mandatory certificate-chain, validity-time, and hostname/IP
+  verification. `std.https` applies the bounded HTTP/1.1 subset over TLS.
+  Default Mozilla roots and Mbed TLS 3.6.6 LTS are checksum-pinned; private
+  services can provide explicit CA roots without disabling verification.
 - **Secure random:** `std.crypto` fills buffers from the operating-system
   CSPRNG and provides secure random `u64` values without falling back to clocks
   or deterministic generators.
@@ -442,6 +448,9 @@ test "addition" {
   caches, bounded and schema-validated registry indexes, dependency-root
   confinement, controlled deep-nesting diagnostics, structured adversarial
   fuzzing, cross-platform CI, and release-blocking validation.
+- [x] **Phase 10e — Secure network clients:** OS-backed CSPRNG, bounded
+  HTTP/1.1 and RFC 6455 WebSocket framing, verified TLS 1.2/1.3 client streams,
+  and bounded HTTPS with cross-platform fail-closed loopback gates.
 
 ## License
 

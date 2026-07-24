@@ -1518,6 +1518,7 @@ class CodeGen:
         self.used_atomics = False
         self.used_network = False
         self.used_secure_random = False
+        self.used_tls = False
         self.used_int_helpers = set()
         self.match_id = 0
         self.try_id = 0
@@ -1615,6 +1616,24 @@ class CodeGen:
         self._emit("#include <stdbool.h>")
         self._emit("#include <stddef.h>")
         self._emit()
+        if self.used_tls:
+            self._emit("#define MORT_REQUIRES_TLS 1")
+            self._emit(
+                "void* mort_tls_client_connect("
+                "const uint8_t* hostname, uint16_t port);")
+            self._emit(
+                "void* mort_tls_client_connect_with_ca("
+                "const uint8_t* hostname, uint16_t port, "
+                "const uint8_t* ca_data, uint64_t ca_length);")
+            self._emit(
+                "int64_t mort_tls_send("
+                "void* handle, const uint8_t* buffer, uint64_t length);")
+            self._emit(
+                "int64_t mort_tls_recv("
+                "void* handle, uint8_t* buffer, uint64_t length);")
+            self._emit("uint16_t mort_tls_protocol_version(void* handle);")
+            self._emit("void mort_tls_close(void* handle);")
+            self._emit()
         for enum in self.program.enums:
             if not enum.generic_params and enum.name not in self.payload_enum_names:
                 self._gen_enum(enum)
@@ -2571,6 +2590,8 @@ class CodeGen:
                 self.used_network = True
             elif e.name == "secure_random_fill":
                 self.used_secure_random = True
+            elif e.name.startswith("tls_"):
+                self.used_tls = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
@@ -2603,7 +2624,8 @@ class CodeGen:
                     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock")
                     or e.name.startswith("atomic_i64_")
                     or e.name.startswith("net_")
-                    or e.name == "secure_random_fill"):
+                    or e.name == "secure_random_fill"
+                    or e.name.startswith("tls_")):
                 name = f"mort_{e.name}"
             elif (e.resolved_name or e.name) in self.extern_names:
                 name = e.resolved_name or e.name

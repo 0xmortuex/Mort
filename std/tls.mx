@@ -1,0 +1,90 @@
+module std.tls;
+
+resource struct Stream {
+    handle: *void,
+}
+
+pub fn connect(hostname: *u8, port: u16) -> Stream {
+    let handle = tls_client_connect(hostname, port);
+    assert(handle != null);
+    return Stream { handle: handle };
+}
+
+pub fn connect_with_ca(
+    hostname: *u8,
+    port: u16,
+    ca_data: *const u8,
+    ca_length: u64
+) -> Stream {
+    let handle = tls_client_connect_with_ca(
+        hostname,
+        port,
+        ca_data,
+        ca_length
+    );
+    assert(handle != null);
+    return Stream { handle: handle };
+}
+
+pub fn send(
+    stream: *Stream,
+    buffer: *const u8,
+    length: u64
+) -> i64 {
+    return tls_send((*stream).handle, buffer, length);
+}
+
+pub fn send_all(
+    stream: *Stream,
+    buffer: *const u8,
+    length: u64
+) -> bool {
+    let sent: u64 = 0;
+    while sent < length {
+        let amount = tls_send(
+            (*stream).handle,
+            &buffer[sent],
+            length - sent
+        );
+        if amount <= 0 {
+            return false;
+        }
+        sent += amount as u64;
+    }
+    return true;
+}
+
+pub fn receive(stream: *Stream, buffer: *u8, length: u64) -> i64 {
+    return tls_recv((*stream).handle, buffer, length);
+}
+
+pub fn receive_exact(
+    stream: *Stream,
+    buffer: *u8,
+    length: u64
+) -> bool {
+    let received: u64 = 0;
+    while received < length {
+        let amount = tls_recv(
+            (*stream).handle,
+            &buffer[received],
+            length - received
+        );
+        if amount <= 0 {
+            return false;
+        }
+        received += amount as u64;
+    }
+    return true;
+}
+
+pub fn protocol_version(stream: *Stream) -> u16 {
+    return tls_protocol_version((*stream).handle);
+}
+
+pub fn destroy(stream: *Stream) -> void {
+    if (*stream).handle != null {
+        tls_close((*stream).handle);
+        (*stream).handle = null;
+    }
+}

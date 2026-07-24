@@ -1,0 +1,25 @@
+import std.tls;
+
+fn main() -> int {
+    let stream = tls.connect("example.com", 443);
+    let request = "HEAD / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+    assert(tls.send_all(
+        &stream,
+        request as *const u8,
+        len(request)
+    ));
+
+    let response: [u8; 1024] = [0; 1024];
+    let received = tls.receive(&stream, &response[0], 1024);
+    assert(received >= 12);
+    assert(response[0] == 'H');
+    assert(response[1] == 'T');
+    assert(response[2] == 'T');
+    assert(response[3] == 'P');
+
+    print(tls.protocol_version(&stream));
+    print(response[9]);
+    print(response[10]);
+    print(response[11]);
+    return 0;
+}

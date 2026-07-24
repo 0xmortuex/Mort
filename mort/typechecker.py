@@ -41,6 +41,8 @@ BUILTIN_NAMES = {
     "net_socket_set_nonblocking", "net_socket_wait",
     "net_last_error_would_block",
     "secure_random_fill",
+    "tls_client_connect", "tls_client_connect_with_ca", "tls_send", "tls_recv",
+    "tls_protocol_version", "tls_close",
     "outb", "inb", "outw", "inw", "outl", "inl",
 }
 C_KEYWORDS = {
@@ -2389,6 +2391,67 @@ class Checker:
                     "secure_random_fill length must be u64, "
                     f"got {e.args[1].type}", e)
             return "bool"
+        if e.name == "tls_client_connect":
+            if self.freestanding:
+                self._error("TLS is not available in freestanding mode", e)
+            if len(e.args) != 2:
+                self._error("tls_client_connect expects hostname and port", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("*u8", e.args[0]):
+                self._error(
+                    "tls_client_connect hostname must be *u8, "
+                    f"got {e.args[0].type}", e)
+            self._check_expr(e.args[1])
+            if not self._coerce("u16", e.args[1]):
+                self._error(
+                    "tls_client_connect port must be u16, "
+                    f"got {e.args[1].type}", e)
+            return "*void"
+        if e.name == "tls_client_connect_with_ca":
+            if self.freestanding:
+                self._error("TLS is not available in freestanding mode", e)
+            if len(e.args) != 4:
+                self._error(
+                    "tls_client_connect_with_ca expects hostname, port, CA "
+                    "buffer, and CA length", e)
+            expected = ("*u8", "u16", "*const u8", "u64")
+            labels = ("hostname", "port", "CA buffer", "CA length")
+            for argument, expected_type, label in zip(
+                    e.args, expected, labels, strict=True):
+                self._check_expr(argument)
+                if not self._coerce(expected_type, argument):
+                    self._error(
+                        f"tls_client_connect_with_ca {label} must be "
+                        f"{expected_type}, got {argument.type}", e)
+            return "*void"
+        if e.name in ("tls_protocol_version", "tls_close"):
+            if self.freestanding:
+                self._error("TLS is not available in freestanding mode", e)
+            if len(e.args) != 1:
+                self._error(f"{e.name} expects one TLS handle", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(f"{e.name} handle must be *void, got {handle}", e)
+            return "u16" if e.name == "tls_protocol_version" else "void"
+        if e.name in ("tls_send", "tls_recv"):
+            if self.freestanding:
+                self._error("TLS is not available in freestanding mode", e)
+            if len(e.args) != 3:
+                self._error(f"{e.name} expects handle, buffer, and length", e)
+            handle = self._check_expr(e.args[0])
+            if handle != "*void":
+                self._error(f"{e.name} handle must be *void, got {handle}", e)
+            self._check_expr(e.args[1])
+            buffer_type = "*const u8" if e.name == "tls_send" else "*u8"
+            if not self._coerce(buffer_type, e.args[1]):
+                self._error(
+                    f"{e.name} buffer must be {buffer_type}, "
+                    f"got {e.args[1].type}", e)
+            self._check_expr(e.args[2])
+            if not self._coerce("u64", e.args[2]):
+                self._error(
+                    f"{e.name} length must be u64, got {e.args[2].type}", e)
+            return "i64"
         if e.name in ("net_socket_send", "net_socket_recv"):
             if self.freestanding:
                 self._error("networking is not available in freestanding mode", e)

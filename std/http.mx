@@ -277,8 +277,8 @@ pub fn framed_length(data: *const u8, length: u64) -> i64 {
     return header_end + payload_length;
 }
 
-pub fn write_request(
-    socket: *Socket,
+pub fn build_request(
+    output: *Vec<u8>,
     method: *u8,
     target: *u8,
     host: *u8,
@@ -287,19 +287,35 @@ pub fn write_request(
 ) -> bool {
     if !safe_token(method) || !safe_field(target, false)
             || !safe_field(host, false)
-            || (body_length > 0 && body == null) {
+            || (body_length > 0 && body == null)
+            || (*output).length != 0 {
         return false;
     }
+    append_text(output, method);
+    append_text(output, " ");
+    append_text(output, target);
+    append_text(output, " HTTP/1.1\r\nHost: ");
+    append_text(output, host);
+    append_text(output, "\r\nContent-Length: ");
+    append_decimal(output, body_length);
+    append_text(output, "\r\nConnection: close\r\n\r\n");
+    append_bytes(output, body, body_length);
+    return true;
+}
+
+pub fn write_request(
+    socket: *Socket,
+    method: *u8,
+    target: *u8,
+    host: *u8,
+    body: *const u8,
+    body_length: u64
+) -> bool {
     let message = vec.new<u8>();
-    append_text(&message, method);
-    append_text(&message, " ");
-    append_text(&message, target);
-    append_text(&message, " HTTP/1.1\r\nHost: ");
-    append_text(&message, host);
-    append_text(&message, "\r\nContent-Length: ");
-    append_decimal(&message, body_length);
-    append_text(&message, "\r\nConnection: close\r\n\r\n");
-    append_bytes(&message, body, body_length);
+    if !build_request(
+            &message, method, target, host, body, body_length) {
+        return false;
+    }
     return net.send_all(
         socket,
         (*(&message)).data as *const u8,

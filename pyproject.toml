@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mort-lang"
-version = "0.40.0"
+version = "0.41.0"
 description = "The Mort statically typed systems programming language"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,8 +48,13 @@ Repository = "https://github.com/0xmortuex/Mort"
 Issues = "https://github.com/0xmortuex/Mort/issues"
 
 [tool.setuptools]
-packages = ["mort"]
+packages = ["mort", "mort.vendor"]
 py-modules = ["mortc"]
+
+[tool.setuptools.package-data]
+mort = [
+    "vendor/*",
+]
 
 [tool.setuptools.data-files]
 mort-stdlib = [
@@ -60,6 +65,7 @@ mort-stdlib = [
     "std/env.mx",
     "std/fs.mx",
     "std/http.mx",
+    "std/https.mx",
     "std/map.mx",
     "std/math.mx",
     "std/memory.mx",
@@ -74,6 +80,7 @@ mort-stdlib = [
     "std/task.mx",
     "std/time.mx",
     "std/thread.mx",
+    "std/tls.mx",
     "std/vec.mx",
     "std/websocket.mx",
 ]

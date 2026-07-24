@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "language": "Mort",
-  "language_version": "0.40.0",
+  "language_version": "0.41.0",
   "cases": [
     {
       "id": "hosted.hello",
@@ -154,6 +154,12 @@
       "sources": ["cases/run/websocket_loopback.mx"],
       "stdout": "4\n1\n4\n112\n111\n110\n103\n",
       "exit": 0
+    },
+    {
+      "id": "tls.verified_client_contract",
+      "section": "18",
+      "mode": "check",
+      "sources": ["cases/check/tls_client.mx"]
     },
     {
       "id": "diagnostic.type_mismatch",

@@ -68,6 +68,7 @@ jobs:
           release-check/bin/mortc --version
           release-check/bin/mortc doctor
           release-check/bin/mortc std
+          release-check/bin/mortc examples/https_client.mx --check
 
       - name: Publish GitHub release
         env:

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.41.0 - 2026-07-25
+
+Mort's verified TLS and bounded HTTPS release.
+
+### Added
+
+- `std.tls` provides blocking, move-only TLS 1.2/1.3 client streams with
+  partial/full sends, bounded receives, protocol-version reporting, close
+  notification, and deterministic native cleanup.
+- Every successful handshake requires a trusted certificate chain, valid
+  certificate time, and matching DNS name or IP address. There is no insecure
+  verification switch.
+- `tls.connect` uses a pinned Mozilla root set; `connect_with_ca` supports
+  private services with explicit PEM roots while retaining all identity and
+  chain checks.
+- `std.https` applies Mort's injection-safe, caller-bounded HTTP/1.1 subset
+  over verified TLS, including default-root and private-CA `GET` helpers.
+- `examples/https_client.mx` demonstrates an authenticated HTTPS request.
+
+### Security, portability, and validation
+
+- The compiler ships the official Mbed TLS 3.6.6 LTS archive and certifi
+  2026.6.17 root set, verifies their published SHA-256 digests before
+  extraction, and compiles a native backend only when TLS is used.
+- TLS builds are cached by compiler identity, platform, architecture,
+  sanitizer flags, integration-source hash, TLS-source hash, and CA hash.
+- Zig compilation uses writable Mort-owned global/local caches, honors
+  `MORT_CACHE_DIR`, and falls back to the operating-system temporary directory
+  when the conventional user cache is unavailable.
+- Selective archive extraction rejects links and unsafe paths. Upstream
+  licenses and version/checksum provenance are shipped with every package.
+- A local certificate fixture proves successful TLS and bounded HTTPS,
+  hostname mismatch rejection, and untrusted-chain rejection without relying
+  on public network services. The same path runs on Windows, Linux, macOS,
+  AddressSanitizer, and UndefinedBehaviorSanitizer.
+- The full regression suite contains 330 tests, and all 28 Mort 0.41
+  conformance cases pass through the public compiler CLI.
+
 ## 0.40.0 - 2026-07-23
 
 Mort's secure-random and bounded WebSocket release.

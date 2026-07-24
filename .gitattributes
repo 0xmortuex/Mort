@@ -1,0 +1,4 @@
+# Preserve byte-identical security payloads on every checkout.
+mort/vendor/*.pem text eol=lf
+mort/vendor/*.tar.bz2 binary
+tests/fixtures/tls/*.pem text eol=lf

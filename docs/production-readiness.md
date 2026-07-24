@@ -24,7 +24,7 @@ only when an automated gate or named artifact provides repeatable evidence.
   UBSan with leak detection enabled.
 - [ ] Differential and metamorphic tests cover optimization levels and multiple
   C backends.
-- [x] Mort 0.40 has a versioned
+- [x] Mort 0.41 has a versioned
   [normative specification](language-specification.md) and a black-box
   [executable conformance suite](../conformance/README.md), gated on Linux,
   Windows, macOS, and releases.
@@ -35,6 +35,9 @@ only when an automated gate or named artifact provides repeatable evidence.
 
 - [x] Lockfiles include versions, Git revisions, manifest hashes, and portable
   package-content hashes.
+- [x] Vendored TLS sources and the default CA bundle are versioned,
+  SHA-256-pinned, verified before extraction, license-attributed, and isolated
+  behind a cache key that includes their content and compiler identity.
 - [x] Existing Git caches refresh and detach at the revision requested by the
   manifest rather than silently reusing stale content.
 - [x] Cached repositories must have the expected origin and no local changes.
@@ -70,7 +73,7 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Hosted native and x86 freestanding compilation.
 - [ ] Borrowed-reference lifetimes prevent dangling pointers without requiring
   raw-pointer discipline.
-- [x] Mort 0.40 defines thread-safety and data-race rules and provides
+- [x] Mort 0.41 defines thread-safety and data-race rules and provides
   cross-platform threads, joins, mutexes, sequentially consistent `AtomicI64`,
   synchronized conformance coverage, and positive/negative ThreadSanitizer
   gates.
@@ -87,7 +90,10 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] First-party bounded RFC 6455 WebSocket upgrades and frames with
   OS-random client keys/masks, strict framing, UTF-8 and close-code validation,
   loopback conformance coverage, and sanitizer gates.
-- [ ] First-party TLS with certificate and hostname verification.
+- [x] First-party blocking TLS 1.2/1.3 clients with mandatory certificate-chain,
+  validity-time, and hostname/IP verification, default checksum-pinned Mozilla
+  roots, explicit private CA roots, bounded transfers, automatic cleanup,
+  bounded HTTPS, and cross-platform success/mismatch/untrusted loopback gates.
 - [x] Operating-system cryptographic random bytes on Windows, Linux, and
   macOS, with no deterministic fallback.
 - [ ] Unicode text, locale, regular-expression, serialization, compression,

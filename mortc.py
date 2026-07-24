@@ -42,6 +42,14 @@ from mort.project import (
     resolve_tests,
     write_lockfile,
 )
+from mort.tls_backend import (
+    CA_BUNDLE_VERSION,
+    MBEDTLS_VERSION,
+    TlsBackendError,
+    compiler_environment,
+    ensure_tls_backend,
+    verify_tls_payloads,
+)
 from mort.typechecker import Checker
 
 _SOURCE_STDLIB_DIR = os.path.join(
@@ -491,18 +499,48 @@ def _compile_main(argv=None, test_mode=False):
         sanitizers = ",".join(dict.fromkeys(args.sanitize))
         cmd += [f"-fsanitize={sanitizers}", "-fno-omit-frame-pointer"]
 
+    try:
+        backend_environment = compiler_environment(cc)
+    except TlsBackendError as error:
+        print(f"mortc: {error}", file=sys.stderr)
+        return 1
+
+    tls_archive = None
+    if not args.freestanding and "MORT_REQUIRES_TLS" in c_source:
+        tls_flags = []
+        if args.debug:
+            tls_flags.append("-g")
+        if args.sanitize:
+            tls_flags += [
+                f"-fsanitize={sanitizers}",
+                "-fno-omit-frame-pointer",
+            ]
+        try:
+            tls_archive = ensure_tls_backend(cc, tls_flags)
+        except TlsBackendError as error:
+            print(f"mortc: {error}", file=sys.stderr)
+            return 1
+
     # delete=False + closed by the ``with``: Windows cannot reopen a
     # still-open temp file. Unlinked in the finally below.
-    with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False,
-                                     encoding="utf-8") as tmp:
+    with tempfile.NamedTemporaryFile(
+            "w", suffix=".c", delete=False, encoding="utf-8") as tmp:
         tmp.write(c_source)
     try:
         link_args = [*args.link, *(f"-l{name}" for name in args.library)]
+        if tls_archive is not None:
+            link_args.append(tls_archive)
         if os.name == "nt" and "MORT_REQUIRES_WINSOCK" in c_source:
             link_args.append("-lws2_32")
         if os.name == "nt" and "MORT_REQUIRES_BCRYPT" in c_source:
             link_args.append("-lbcrypt")
-        subprocess.run([*cmd, tmp.name, *link_args, "-o", out], check=True)
+        if os.name == "nt" and "MORT_REQUIRES_TLS" in c_source:
+            link_args += ["-lws2_32", "-lbcrypt"]
+        subprocess.run(
+            [*cmd, tmp.name, *link_args, "-o", out],
+            check=True,
+            env=backend_environment,
+        )
     except subprocess.CalledProcessError:
         print("mortc: the C backend failed to compile the generated code", file=sys.stderr)
         return 1
@@ -731,6 +769,15 @@ def main(argv=None):
         print(f"Standard library: {STDLIB_DIR} ({len(modules)} modules)")
         print("C backend: " + (" ".join(compiler) if compiler else "not found"))
         print("Freestanding backend: " + (" ".join(zig) if zig else "not found"))
+        try:
+            verify_tls_payloads()
+        except TlsBackendError as error:
+            print(f"TLS backend: invalid ({error})")
+            return 1
+        print(
+            f"TLS backend: Mbed TLS {MBEDTLS_VERSION} + "
+            f"{CA_BUNDLE_VERSION} (payloads verified)"
+        )
         if not modules:
             print("mortc: standard library is missing", file=sys.stderr)
             return 1

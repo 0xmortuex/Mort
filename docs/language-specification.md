@@ -1,18 +1,18 @@
-# Mort Language Specification 0.40
+# Mort Language Specification 0.41
 
 Status: Normative  
-Language version: 0.40.0
+Language version: 0.41.0
 Document revision: 1  
-Last updated: 2026-07-23
+Last updated: 2026-07-25
 
-This document defines the source language accepted by a conforming Mort 0.40
+This document defines the source language accepted by a conforming Mort 0.41
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
 conformance cases.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
-Implementation extensions must not change the meaning of a valid 0.40 program.
+Implementation extensions must not change the meaning of a valid 0.41 program.
 
 ## 1. Conformance
 
@@ -247,7 +247,7 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.40.
+the programmer's responsibility in Mort 0.41.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -370,7 +370,7 @@ Every expression is evaluated at most once except an array repeat initializer:
 the left value is `true`. `||` evaluates its left operand first and evaluates
 the right operand only when the left value is `false`.
 
-Mort 0.40 does not specify the relative evaluation order of ordinary binary
+Mort 0.41 does not specify the relative evaluation order of ordinary binary
 operands, call arguments, aggregate fields, or array elements. Each such
 subexpression is evaluated before the containing operation completes. Programs
 whose result depends on that relative order are non-portable.
@@ -425,7 +425,7 @@ fixed-width integer cannot trigger backend conversion undefined behavior.
 
 Floating arithmetic uses the selected IEEE type and target default
 round-to-nearest behavior. `/` follows IEEE division. `%`, bitwise operators,
-and shifts are not defined for floats. Mort 0.40 does not promise identical
+and shifts are not defined for floats. Mort 0.41 does not promise identical
 NaN payloads or exceptional-status flags across targets.
 
 ### 7.3 Calls and builtins
@@ -517,12 +517,12 @@ standard error exists.
 
 Raw pointer misuse, invalid inline assembly, an incompatible foreign symbol,
 data races in foreign code, and violations explicitly delegated to a native API
-are outside Mort 0.40's safety guarantees.
+are outside Mort 0.41's safety guarantees.
 
 ## 11. Implementation limits and portability
 
 An implementation must document supported targets and backend prerequisites.
-Mort 0.40's reference implementation emits C11, but C is not part of the
+Mort 0.41's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
 Portable Mort source must not depend on:
@@ -555,7 +555,7 @@ produce a controlled concurrency failure.
 `std.thread.Thread` is a move-only resource wrapper. `thread.spawn` converts
 creation failure to an assertion failure. `thread.join(&value)` joins early and
 marks the wrapper empty; otherwise its destructor joins automatically. Thus a
-live `Thread` cannot be silently detached in Mort 0.40.
+live `Thread` cannot be silently detached in Mort 0.41.
 
 The context pointer and every object reachable through it must remain valid
 until the thread has been joined. Raw pointers do not acquire lifetime
@@ -617,7 +617,7 @@ target toolchain supports one.
 
 ## 13. Hosted networking
 
-Networking is available only in the hosted profile. Mort 0.40 specifies
+Networking is available only in the hosted profile. Mort 0.41 specifies
 blocking TCP streams, UDP datagrams, and host-name resolution through the
 portable `std.net` module. The `net_*` builtins are reserved implementation
 interfaces.
@@ -823,7 +823,8 @@ authenticated HTTPS are distinct protocols.
 
 ### 15.1 Message writing
 
-`http.write_request` writes:
+`http.build_request` serializes into an initially empty `Vec<u8>`, and
+`http.write_request` sends the same serialization over a socket:
 
 1. a caller-provided method and request target;
 2. an HTTP/1.1 `Host` header;
@@ -833,9 +834,9 @@ authenticated HTTPS are distinct protocols.
 
 The method must be a nonempty HTTP token. The target and host must be nonempty
 and contain no whitespace, control characters, carriage return, or line feed.
-Invalid inputs, a null nonempty body, or a socket write failure return `false`
-without claiming success. These checks prevent caller data from injecting
-additional header lines.
+Invalid inputs, a nonempty output vector, a null nonempty body, or a socket
+write failure return `false` without claiming success. These checks prevent
+caller data from injecting additional header lines.
 
 `http.write_response` similarly writes an HTTP/1.1 status line, one
 `Content-Length`, a `Content-Type`, `Connection: close`, and the exact body.
@@ -880,9 +881,10 @@ send one message per `Connection: close` connection and must not pipeline.
 `http.get(host, port, target, buffer, capacity)` opens a TCP connection, writes
 a bodyless `GET`, reads one bounded response, and closes the socket at scope
 exit. It returns the message length or `-1`. The caller chooses the port;
-`http.get` does not perform TLS or infer schemes.
+`http.get` does not perform TLS or infer schemes. Verified HTTPS is a separate
+hosted API defined in Section 18.
 
-Mort 0.40 does not define chunked transfer coding, informational-response
+Mort 0.41 does not define chunked transfer coding, informational-response
 chains, persistent connections, pipelining, trailers, multipart parsing,
 content decoding, redirects, cookies, authentication, proxies, URI parsing,
 cache policy, or HTTP/2 and HTTP/3. Applications must not silently treat this
@@ -915,8 +917,9 @@ or copying it into unprotected storage.
 
 The hosted `std.websocket` module implements the RFC 6455 HTTP/1.1 upgrade and
 single-frame data/control messages over an established `std.net.Socket`.
-`ws://` is cleartext. `wss://` additionally requires TLS and is not provided by
-this version.
+`ws://` is cleartext. Mort provides a verified TLS client separately, but this
+WebSocket API does not adapt its `Socket` parameter to a TLS stream and
+therefore does not itself provide `wss://`.
 
 ### 17.1 Handshake
 
@@ -966,10 +969,82 @@ is consumed, the connection is no longer synchronized and must be closed.
 
 ### 17.3 Scope
 
-Mort 0.40 does not define fragmented messages, continuation frames, negotiated
+Mort 0.41 does not define fragmented messages, continuation frames, negotiated
 extensions, per-message compression, subprotocol selection, automatic
 ping/pong handling, automatic close replies, reconnect policy, multiplexing,
 or `wss://`. Applications explicitly drive control frames and close handling.
+
+## 18. Verified client TLS and HTTPS
+
+TLS is available only in the hosted profile. The `std.tls` module provides a
+blocking, move-only client stream. A successful connection authenticates the
+server certificate chain, checks certificate validity time, verifies the
+requested DNS name or IP address, sends that same name as SNI when applicable,
+and negotiates TLS 1.2 or TLS 1.3. Verification is mandatory; this API has no
+option to accept an untrusted certificate or skip identity matching.
+
+The reference backend is checksum-pinned Mbed TLS 3.6.6 LTS. Its default trust
+set is the checksum-pinned Mozilla CA bundle from certifi 2026.6.17. The
+compiler verifies both upstream payload hashes before a one-time native build,
+caches the result by compiler, platform, architecture, and build flags, and
+links it only when TLS is used. Updating either security payload changes the
+cache identity.
+
+### 18.1 Connections and trust
+
+`tls.connect(hostname, port)` performs DNS resolution, TCP connection, and the
+verified TLS handshake, returning a `Stream`. `hostname` must be non-null,
+nonempty, and NUL-terminated, and `port` must be nonzero. Failure produces a
+controlled assertion in the standard wrapper; the lower-level
+`tls_client_connect` builtin returns null.
+
+`tls.connect_with_ca(hostname, port, ca_data, ca_length)` has identical
+verification rules but replaces the default roots for that connection with
+the caller-provided PEM CA set. The buffer must be non-null and nonempty.
+Malformed roots, an incomplete or untrusted chain, an expired or not-yet-valid
+certificate, an unsuitable certificate, or a hostname/IP mismatch must fail
+the handshake. The custom-root API is for private services and tests; it is not
+an insecure-verification switch.
+
+Certificate-time checks depend on an accurate host clock. The embedded Mozilla
+roots are a release snapshot, so applications must update Mort and rebuild TLS
+programs when trust-store security updates are published.
+
+### 18.2 Transfers and cleanup
+
+`tls.send(stream, buffer, length)` and
+`tls.receive(stream, buffer, capacity)` perform one blocking TLS transfer and
+return the accepted byte count. Positive transfers may be partial. A zero
+receive means an authenticated TLS close notification. `-1` means a transport
+or TLS failure, including an unauthenticated TCP end that could truncate the
+secured stream. A null buffer is valid only for zero length. `send_all` and
+`receive_exact` loop until the full caller-selected length is transferred or
+an error/end occurs.
+
+Every receive is bounded by the caller's capacity. `tls.protocol_version`
+returns `12` or `13` for the negotiated TLS version and zero for no recognized
+active version. A `Stream` is a move-only resource. Its destructor attempts a
+TLS close notification, closes the TCP socket, clears cryptographic state, and
+releases all native allocations.
+
+### 18.3 Bounded HTTPS
+
+`std.https` combines `std.tls` with the bounded HTTP/1.1 rules from Section 15.
+`https.get` uses the default verified roots; `https.get_with_ca` uses explicit
+roots. Both serialize an injection-checked `GET`, require unambiguous
+`Content-Length` framing, read no more than the caller's response capacity,
+and close the TLS stream at lexical scope exit.
+
+`https.write_request` and `https.read_message` expose the corresponding
+operations on an established TLS stream. They retain the HTTP subset's
+`Connection: close` and one-message restrictions.
+
+Mort 0.41 does not define TLS servers, mutual TLS, application-controlled
+cipher suites, ALPN, certificate pinning, revocation policy, session
+resumption controls, early data, nonblocking TLS, key logging, QUIC, HTTP/2,
+HTTP/3, or a WebSocket-over-TLS adapter. Applications needing those facilities
+must use a reviewed native library through C interoperability and must not
+weaken the verification guarantees of `std.tls`.
 
 ## Appendix A. Compatibility
 
@@ -985,10 +1060,10 @@ before removal unless retaining them would be a demonstrated security issue.
 
 ## Appendix B. Reserved future work
 
-The following are intentionally not defined by Mort 0.40: checked borrows and
+The following are intentionally not defined by Mort 0.41: checked borrows and
 lifetimes, thread cancellation, detached threads, condition variables,
 read/write locks, atomics other than sequentially consistent `i64`,
-language-level `async`/`await` syntax, TLS, exceptions,
+language-level `async`/`await` syntax, TLS servers, mutual TLS, exceptions,
 reflection, dynamic loading, stable binary package ABI, Unicode text
 semantics, and WebAssembly/mobile platform profiles. Their absence is not
 permission for an implementation to assign new meaning to currently valid
