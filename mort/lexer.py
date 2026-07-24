@@ -1,8 +1,8 @@
 """Lexer: turns Mort source text into a flat list of tokens."""
 import math
 
-from .tokens import Token, T, KEYWORDS
 from .errors import MortError
+from .tokens import KEYWORDS, T, Token
 
 _TWO_CHAR = {
     "->": T.ARROW,
@@ -221,6 +221,8 @@ class Lexer:
             raise MortError("empty or unterminated character literal", line, col)
         if self._peek() == "\\":
             self._advance()
+            if self._peek() in ("\0", "\n"):
+                raise MortError("empty or unterminated character literal", line, col)
             escape = self._advance()
             escapes = {
                 "n": 10, "r": 13, "t": 9, "0": 0,
@@ -256,6 +258,8 @@ class Lexer:
                 raise MortError("unterminated string literal", line, col)
             if c == "\\":  # keep the escape pair as-is (e.g. \n, \", \\)
                 raw += self._advance()
+                if self._peek() == "\0":
+                    raise MortError("unterminated string literal", line, col)
                 raw += self._advance()
                 continue
             if c == '"':

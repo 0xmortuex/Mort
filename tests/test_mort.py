@@ -8,11 +8,11 @@ Two layers:
 
 Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
-import os
-import json
 import io
-import subprocess
+import json
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -22,18 +22,11 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from mort.errors import MortError            # noqa: E402
-import mortc                                 # noqa: E402
-from mort.project import (                                  # noqa: E402
-    ProjectError,
-    load_manifest,
-    parse_semver,
-    resolve_project,
-    select_semver,
-    semver_satisfies,
-)
-from mort.formatter import format_source                 # noqa: E402
-from mort.lsp import (                                   # noqa: E402
+import mortc
+from mort.errors import MortError
+from mort.formatter import format_source
+from mort.fuzz import run_fuzz
+from mort.lsp import (
     Server,
     completion_items,
     diagnostics_for_document,
@@ -41,7 +34,14 @@ from mort.lsp import (                                   # noqa: E402
     hover_for_document,
     signature_help,
 )
-from mort.fuzz import run_fuzz                          # noqa: E402
+from mort.project import (
+    ProjectError,
+    load_manifest,
+    parse_semver,
+    resolve_project,
+    select_semver,
+    semver_satisfies,
+)
 
 
 def c_of(src):
@@ -93,7 +93,7 @@ def test_const_local_and_global_bindings_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -116,7 +116,7 @@ def test_float_literals_arithmetic_casts_and_output_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42.5\n3.5\n42\n"
 
@@ -138,7 +138,7 @@ def test_extended_literals_null_and_nested_block_comments_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n42\n65\n10\n"
 
@@ -150,11 +150,23 @@ def test_extended_literals_null_and_nested_block_comments_run():
         "fn main() -> int { let bad = 'ab'; return 0; }",
         "fn main() -> int { let bad = 0b102; return 0; }",
         "fn main() -> int { let bad = 1__000; return 0; }",
+        'fn main() -> int { let s = "\\',
+        "fn main() -> int { let c = '\\",
     ],
 )
 def test_malformed_extended_literals_are_rejected(source):
     with pytest.raises(MortError):
         c_of(source)
+
+
+def test_fuzzer_crash_escape_at_eof_is_a_diagnostic():
+    # Regression for the 2026-07-24 Atheris finding: source ending inside a
+    # string escape walked the lexer past end-of-input (IndexError) instead
+    # of raising a MortError diagnostic.
+    crash = ('enum Value<T> {Empty, O,"""""8888'
+             "�����nfn ma8888:888888888888in\\")
+    with pytest.raises(MortError):
+        c_of(crash)
 
 
 @pytest.mark.parametrize(
@@ -193,7 +205,7 @@ def test_compound_assignments_run_and_preserve_lvalue_evaluation():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "22\n15\n1\n"
 
@@ -229,7 +241,7 @@ def test_function_values_callbacks_and_generic_higher_order_calls_run():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n42\n42\n42\n"
 
@@ -285,7 +297,7 @@ def test_tuples_aliases_generics_arrays_slices_and_struct_fields_run():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "43\n42\n42\n42\n42\n42\n42\n42\n7\nMort\n"
 
@@ -303,16 +315,16 @@ def test_tuples_aliases_generics_arrays_slices_and_struct_fields_run():
          "tuple has no named field"),
         ("fn main() -> int { let equal = (1, true) == (1, true); return 0; }",
          "cannot compare aggregate values"),
-        ("fn main() -> int { let pair = (1, true); "
-         "match pair { _ => { print(1); } } return 0; }",
+        (("fn main() -> int { let pair = (1, true); "
+         "match pair { _ => { print(1); } } return 0; }"),
          "cannot match on a value"),
         ("fn main() -> int { let bad: (void, i64) = (1, 2); return 0; }",
          "unknown type"),
-        ("struct Recursive { value: (Recursive, bool) } "
-         "fn main() -> int { return 0; }",
+        (("struct Recursive { value: (Recursive, bool) } "
+         "fn main() -> int { return 0; }"),
          "aggregate by-value cycle"),
-        ("struct Left { right: Right } struct Right { left: Left } "
-         "fn main() -> int { return 0; }",
+        (("struct Left { right: Right } struct Right { left: Left } "
+         "fn main() -> int { return 0; }"),
          "aggregate by-value cycle"),
     ],
 )
@@ -345,7 +357,7 @@ def test_imported_public_function_can_be_used_as_callback_value():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -354,8 +366,8 @@ def test_imported_public_function_can_be_used_as_callback_value():
     ("source", "message"),
     [
         (
-            "fn add(a: i64, b: i64) -> i64 { return a + b; } "
-            "fn main() -> int { let callback = add; callback(1); return 0; }",
+            ("fn add(a: i64, b: i64) -> i64 { return a + b; } "
+            "fn main() -> int { let callback = add; callback(1); return 0; }"),
             "expects 2 argument",
         ),
         (
@@ -363,13 +375,13 @@ def test_imported_public_function_can_be_used_as_callback_value():
             "is not callable",
         ),
         (
-            "fn identity<T>(value: T) -> T { return value; } "
-            "fn main() -> int { let callback = identity; return 0; }",
+            ("fn identity<T>(value: T) -> T { return value; } "
+            "fn main() -> int { let callback = identity; return 0; }"),
             "cannot be used directly as a value",
         ),
         (
-            "fn signed(value: i64) -> i64 { return value; } "
-            "fn main() -> int { let callback: fn(u64) -> u64 = signed; return 0; }",
+            ("fn signed(value: i64) -> i64 { return value; } "
+            "fn main() -> int { let callback: fn(u64) -> u64 = signed; return 0; }"),
             "type mismatch",
         ),
     ],
@@ -442,7 +454,7 @@ def test_type_aliases_resolve_through_structs_generics_and_variants():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n42\n"
 
@@ -525,7 +537,7 @@ def test_numeric_casts_have_defined_fixed_width_semantics_under_ubsan():
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
             *_UBSAN_FLAGS,
         ], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert result.stdout == "-128\n-1\n127\n-128\n"
@@ -546,7 +558,7 @@ def test_out_of_range_float_to_integer_cast_is_a_controlled_failure():
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
             *_UBSAN_FLAGS,
         ], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "floating-point to integer cast out of range" in result.stderr
     assert "Mort line 1" in result.stderr
@@ -578,7 +590,7 @@ def test_narrow_width_semantics():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "254\n0\n44\n"
 
 
@@ -615,7 +627,7 @@ def test_fixed_width_runtime_integer_semantics_are_defined_under_ubsan():
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
             *_UBSAN_FLAGS,
         ], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert result.stdout == (
@@ -647,7 +659,7 @@ def test_runtime_integer_zero_divisor_is_a_controlled_failure(operator, message)
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
             *_UBSAN_FLAGS,
         ], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert message in result.stderr
     assert "Mort line 1" in result.stderr
@@ -669,7 +681,7 @@ def test_runtime_negative_shift_count_is_a_controlled_failure():
             *_CC, cfile, "-o", exe, "-O2", "-std=c11",
             *_UBSAN_FLAGS,
         ], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "negative integer shift count at Mort line 1" in result.stderr
     assert "runtime error" not in result.stderr
@@ -795,7 +807,7 @@ def test_cross_platform_threads_mutexes_and_atomics_run():
         if os.name != "nt":
             command.append("-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "2000\n2000\n2000\n2000\n5\n7\n9\n11\n"
 
@@ -886,7 +898,7 @@ def test_network_only_program_compiles_under_strict_c11():
         if os.name == "nt":
             command.append("-lws2_32")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
 
 
@@ -908,7 +920,7 @@ def test_cross_platform_tcp_dns_loopback_runs():
         ]
         command.append("-lws2_32" if os.name == "nt" else "-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n112\n111\n110\n103\n"
 
@@ -933,7 +945,7 @@ def test_cross_platform_udp_dns_loopback_runs():
         if os.name == "nt":
             command.append("-lws2_32")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n112\n111\n110\n103\n"
 
@@ -957,7 +969,7 @@ def test_cross_platform_nonblocking_readiness_runs():
         ]
         command.append("-lws2_32" if os.name == "nt" else "-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "5\n114\n101\n97\n100\n121\n"
 
@@ -981,7 +993,7 @@ def test_structured_task_group_cancels_and_joins():
         if os.name != "nt":
             command.append("-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "2\n16\n0\n42\n"
 
@@ -1005,7 +1017,7 @@ def test_bounded_http11_loopback_and_framing_validation():
         ]
         command.append("-lws2_32" if os.name == "nt" else "-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n200\n4\n77\n111\n114\n116\n"
 
@@ -1027,7 +1039,7 @@ def test_os_secure_random_runs_under_strict_c():
         if os.name == "nt":
             command.append("-lbcrypt")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "32\n"
 
@@ -1057,7 +1069,7 @@ def test_websocket_rfc6455_loopback_and_frame_validation():
         else:
             command.append("-pthread")
         subprocess.run(command, check=True)
-        result = subprocess.run([exe], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "4\n1\n4\n112\n111\n110\n103\n"
 
@@ -1086,7 +1098,7 @@ def test_global_shared_across_functions():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "12\n"
 
 
@@ -1175,7 +1187,7 @@ def test_shift_width_semantics():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "8\n0\n1048576\n"
 
 
@@ -1197,7 +1209,7 @@ def test_extreme_shift_literals_run_and_are_clean():
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11",
                         "-Wall", "-Werror"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "4294967295\n-9223372036854775808\n"
 
 
@@ -1217,7 +1229,7 @@ def test_bitwise_runs():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "255\n48\n32\n15\n"
 
 
@@ -1258,7 +1270,7 @@ def test_for_loop_runs():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "30\n"
 
 
@@ -1283,7 +1295,7 @@ def test_ranges_cache_bounds_and_inclusive_max_is_overflow_safe():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "3\n1\n255\n0\n"
 
@@ -1303,7 +1315,7 @@ def test_loop_statement_runs_with_break_and_continue():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "8\n"
 
@@ -1348,7 +1360,7 @@ def test_array_sum_runs():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "85\n"
 
 
@@ -1413,7 +1425,7 @@ def test_string_literal_runs():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "65\n66\n"
 
 
@@ -1465,7 +1477,8 @@ def test_freestanding_object_builds():
         cmd = [*_ZIG, "-target", "x86_64-freestanding-none"]
         cmd += ["-ffreestanding", "-O2", "-std=c11", "-c", cfile, "-o", obj]
         subprocess.run(cmd, check=True)
-        data = open(obj, "rb").read()
+        with open(obj, "rb") as fh:
+            data = fh.read()
     assert len(data) > 0
     # The backend pins the exact bare-metal target, so this must be a 64-bit
     # x86-64 ELF rather than merely an object for the host architecture.
@@ -1502,7 +1515,7 @@ def test_freestanding_cli_always_uses_zig_cross_target(
 def test_kernel_builds_multiboot_elf():
     build_py = os.path.join(ROOT, "kernel", "build.py")
     r = subprocess.run([sys.executable, build_py, "check"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stderr
     assert "multiboot ELF" in r.stdout
 
@@ -1582,7 +1595,7 @@ def test_std_cli_module_runs():
              "--std", "string", "--run", "-o", exe],
             capture_output=True,
             text=True,
-        )
+        check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.endswith("4\n1\n")
 
@@ -1678,7 +1691,7 @@ def test_namespaced_module_alias_and_pub_visibility_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "42\n"
 
 
@@ -2070,7 +2083,7 @@ def test_typed_slices_and_owned_strings_run():
             with open(cfile, "w", encoding="utf-8") as fh:
                 fh.write(c_source)
             subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-            outputs.append(subprocess.run([exe], capture_output=True, text=True))
+            outputs.append(subprocess.run([exe], capture_output=True, text=True, check=False))
     assert outputs[0].stdout == "42\n"
     assert outputs[1].stdout == "Mort language\n"
 
@@ -2148,7 +2161,7 @@ def test_first_class_test_blocks_run_with_project_code():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
 
 
@@ -2453,7 +2466,7 @@ def test_extern_function_links_and_runs(capsys):
                 "fn main() -> int { print(triple(14)); return 0; }"
             )
         assert mortc.main([main_mx, "--link", helper_o, "-o", exe]) == 0
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "42\n"
     assert "mortc: wrote" in capsys.readouterr().out
 
@@ -2475,7 +2488,7 @@ def test_break_and_continue_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "13\n"
 
 
@@ -2495,7 +2508,7 @@ def test_hosted_runtime_string_assert_and_allocation():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "A\n"
 
@@ -2519,7 +2532,7 @@ def test_len_and_runtime_array_bounds_checks():
             with open(cfile, "w", encoding="utf-8") as fh:
                 fh.write(source)
             subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-            results.append(subprocess.run([exe], capture_output=True, text=True))
+            results.append(subprocess.run([exe], capture_output=True, text=True, check=False))
     assert results[0].stdout == "3\n4\n2\n"
     assert results[1].returncode != 0
     assert "index out of bounds" in results[1].stderr
@@ -2545,7 +2558,7 @@ def test_typed_slice_index_object_is_evaluated_once():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "42\n1\n"
 
@@ -2572,7 +2585,7 @@ def test_enum_and_exhaustive_match_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "1\n"
 
 
@@ -2597,7 +2610,7 @@ def test_payload_enum_destructuring_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "42\n"
 
 
@@ -2637,7 +2650,7 @@ def test_multi_payload_enums_generic_construction_and_destructuring_run():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n42\n42\n42\n"
 
@@ -2645,23 +2658,23 @@ def test_multi_payload_enums_generic_construction_and_destructuring_run():
 @pytest.mark.parametrize(
     ("source", "message"),
     [
-        ("enum Pair { Value(i64, bool) } fn main() -> int { "
-         "let value: Pair = Pair.Value(1); return 0; }",
+        (("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value: Pair = Pair.Value(1); return 0; }"),
          "expects 2 payloads"),
-        ("enum Pair { Value(i64, bool) } fn main() -> int { "
-         "let value: Pair = Pair.Value(true, false); return 0; }",
+        (("enum Pair { Value(i64, bool) } fn main() -> int { "
+         "let value: Pair = Pair.Value(true, false); return 0; }"),
          "payload 1 of Pair.Value expects i64"),
-        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+        (("enum Pair { Value(i64, bool) } fn main() -> int { "
          "let value = Pair.Value(1, true); match value { "
-         "Pair.Value(item) => { print(item); } } return 0; }",
+         "Pair.Value(item) => { print(item); } } return 0; }"),
          "require 2 binding names"),
-        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+        (("enum Pair { Value(i64, bool) } fn main() -> int { "
          "let value = Pair.Value(1, true); match value { "
-         "Pair.Value(left, left) => { print(left); } } return 0; }",
+         "Pair.Value(left, left) => { print(left); } } return 0; }"),
          "must have unique names"),
-        ("enum Pair { Value(i64, bool) } fn main() -> int { "
+        (("enum Pair { Value(i64, bool) } fn main() -> int { "
          "let value = Pair.Value(1, true); match value { "
-         "Pair.Value(left, 1) => { print(left); } } return 0; }",
+         "Pair.Value(left, 1) => { print(left); } } return 0; }"),
          "require 2 binding names"),
     ],
 )
@@ -2696,7 +2709,7 @@ def test_resource_struct_explicit_moves_run():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -2724,7 +2737,7 @@ def test_resource_structs_destroy_automatically_on_nested_return():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "inner\nouter\n42\n"
 
@@ -2751,7 +2764,7 @@ def test_resource_can_move_once_across_exclusive_branches():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -2788,7 +2801,7 @@ def test_resources_compose_through_structs_tuples_enums_and_arrays():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == (
         "42\narray-right\narray-left\nenum\n"
@@ -2819,7 +2832,7 @@ def test_resource_can_move_once_across_exclusive_match_arms():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -2848,7 +2861,7 @@ def test_owning_enum_match_move_transfers_payload_to_arm():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "matched\ndestroyed\n"
 
@@ -2873,7 +2886,7 @@ def test_loop_local_resources_can_move_each_iteration():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "40\n41\n"
 
@@ -2881,27 +2894,27 @@ def test_loop_local_resources_can_move_each_iteration():
 @pytest.mark.parametrize(
     ("source", "message"),
     [
-        ("resource struct Handle { value: i64 } "
-         "fn main() -> int { return 0; }",
+        (("resource struct Handle { value: i64 } "
+         "fn main() -> int { return 0; }"),
          "requires exactly one fn destroy"),
-        ("resource struct Handle { value: i64 } "
+        (("resource struct Handle { value: i64 } "
          "fn destroy(value: Handle) -> void {} "
-         "fn main() -> int { return 0; }",
+         "fn main() -> int { return 0; }"),
          "requires exactly one fn destroy"),
-        ("resource struct Handle { value: i64 } "
+        (("resource struct Handle { value: i64 } "
          "fn destroy(value: *Handle) -> void {} "
          "fn main() -> int { let first = Handle { value: 1 }; "
-         "let second = first; return 0; }",
+         "let second = first; return 0; }"),
          "must be transferred with 'move first'"),
-        ("resource struct Handle { value: i64 } "
+        (("resource struct Handle { value: i64 } "
          "fn destroy(value: *Handle) -> void {} "
          "fn main() -> int { let first = Handle { value: 1 }; "
-         "let second = move first; print(first.value); return 0; }",
+         "let second = move first; print(first.value); return 0; }"),
          "use of moved resource"),
-        ("resource struct Handle { value: i64 } "
+        (("resource struct Handle { value: i64 } "
          "fn destroy(value: *Handle) -> void {} "
          "fn main() -> int { let first = Handle { value: 1 }; "
-         "let second = move first; let third = move first; return 0; }",
+         "let second = move first; let third = move first; return 0; }"),
          "already moved"),
     ],
 )
@@ -2927,7 +2940,7 @@ def test_generic_struct_monomorphization_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "42\n"
 
 
@@ -2961,7 +2974,7 @@ def test_generic_function_inference_and_monomorphization_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "1\n42\n21\n"
 
@@ -2970,28 +2983,28 @@ def test_generic_function_inference_and_monomorphization_run():
     ("source", "message"),
     [
         (
-            "fn same<T>(left: T, right: T) -> T { return left; } "
-            "fn main() -> int { let value = same(1, true); return 0; }",
+            ("fn same<T>(left: T, right: T) -> T { return left; } "
+            "fn main() -> int { let value = same(1, true); return 0; }"),
             "cannot consistently infer generic type",
         ),
         (
-            "fn make<T>() -> T { return 1; } "
-            "fn main() -> int { let value = make(); return 0; }",
+            ("fn make<T>() -> T { return 1; } "
+            "fn main() -> int { let value = make(); return 0; }"),
             "cannot infer generic parameter(s) T",
         ),
         (
-            "fn bad<T, T>(value: T) -> T { return value; } "
-            "fn main() -> int { return 0; }",
+            ("fn bad<T, T>(value: T) -> T { return value; } "
+            "fn main() -> int { return 0; }"),
             "has a duplicate generic parameter",
         ),
         (
-            "fn id<T>(value: T) -> T { return value; } "
-            "fn main() -> int { let value = id<i64, u8>(1); return 0; }",
+            ("fn id<T>(value: T) -> T { return value; } "
+            "fn main() -> int { let value = id<i64, u8>(1); return 0; }"),
             "expects 1 type argument(s), got 2",
         ),
         (
-            "fn id(value: i64) -> i64 { return value; } "
-            "fn main() -> int { return id<i64>(1); }",
+            ("fn id(value: i64) -> i64 { return value; } "
+            "fn main() -> int { return id<i64>(1); }"),
             "is not generic and cannot take type arguments",
         ),
     ],
@@ -3029,7 +3042,7 @@ def test_generic_vec_grows_indexes_and_cleans_up():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -3062,7 +3075,7 @@ def test_generic_map_grows_updates_and_looks_up():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -3088,7 +3101,7 @@ def test_portable_env_process_and_generic_math_modules():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "42\n"
 
@@ -3122,7 +3135,7 @@ def test_portable_file_and_time_modules():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "Mort\n"
 
@@ -3159,7 +3172,7 @@ def test_portable_random_and_byte_slice_modules():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout.strip().isdigit()
 
@@ -3190,7 +3203,7 @@ def test_generic_slice_algorithm_module():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "6\n1\n"
 
@@ -3227,7 +3240,7 @@ def test_generic_option_and_result_enums_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "42\n42\n"
 
 
@@ -3239,18 +3252,18 @@ def test_generic_option_and_result_enums_run():
             "must have at least one variant",
         ),
         (
-            "enum Duplicate<T> { Value(T), Value(T) } "
-            "fn main() -> int { return 0; }",
+            ("enum Duplicate<T> { Value(T), Value(T) } "
+            "fn main() -> int { return 0; }"),
             "has a duplicate variant",
         ),
         (
-            "enum Box<T> { Value(Missing) } fn use(value: Box<i64>) -> void {} "
-            "fn main() -> int { return 0; }",
+            ("enum Box<T> { Value(Missing) } fn use(value: Box<i64>) -> void {} "
+            "fn main() -> int { return 0; }"),
             "has unknown payload type Missing",
         ),
         (
-            "enum Loop<T> { More(Loop<T>), Done } "
-            "fn use(value: Loop<i64>) -> void {} fn main() -> int { return 0; }",
+            ("enum Loop<T> { More(Loop<T>), Done } "
+            "fn use(value: Loop<i64>) -> void {} fn main() -> int { return 0; }"),
             "cannot contain itself by value",
         ),
     ],
@@ -3288,7 +3301,7 @@ def test_result_try_propagates_success_and_error():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == (
         "inner cleanup\nouter cleanup\n42\n"
@@ -3304,17 +3317,17 @@ def test_result_try_propagates_success_and_error():
             "try expects a Result<Value, Error> expression",
         ),
         (
-            "import std.result; fn get() -> Result<i64, *u8> { "
+            ("import std.result; fn get() -> Result<i64, *u8> { "
             "return Result<i64, *u8>.Ok(1); } "
-            "fn main() -> int { return try get(); }",
+            "fn main() -> int { return try get(); }"),
             "try requires the enclosing function to return Result",
         ),
         (
-            "import std.result; fn get() -> Result<i64, *u8> { "
+            ("import std.result; fn get() -> Result<i64, *u8> { "
             "return Result<i64, *u8>.Ok(1); } "
             "fn convert() -> Result<i64, i64> { let value = try get(); "
             "return Result<i64, i64>.Ok(value); } "
-            "fn main() -> int { return 0; }",
+            "fn main() -> int { return 0; }"),
             "try error type *u8 does not match return error type i64",
         ),
     ],
@@ -3380,7 +3393,7 @@ def test_try_operates_in_eager_expression_and_loop_contexts():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "cleanup\n47\ncleanup\nbad\n"
 
@@ -3389,10 +3402,10 @@ def test_try_operates_in_eager_expression_and_loop_contexts():
     ("source", "message"),
     [
         (
-            "import std.result; fn get() -> Result<i64, *u8> { "
+            ("import std.result; fn get() -> Result<i64, *u8> { "
             "return Result<i64, *u8>.Ok(1); } "
             "fn check() -> Result<i64, *u8> { defer print(try get()); "
-            "return Result<i64, *u8>.Ok(0); } fn main() -> int { return 0; }",
+            "return Result<i64, *u8>.Ok(0); } fn main() -> int { return 0; }"),
             "try is not allowed inside defer",
         ),
     ],
@@ -3437,7 +3450,7 @@ def test_try_preserves_short_circuit_evaluation():
             [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
             check=True,
         )
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "0\n1\ncalled\n"
 
@@ -3457,7 +3470,7 @@ def test_defer_runs_on_function_return():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "cleanup\n42\n"
 
 
@@ -3479,7 +3492,7 @@ def test_lexical_defer_cleans_up_return_break_and_continue():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == (
         "iteration\niteration\nevaluate\ninner-return\nouter-return\n42\n"
@@ -3501,7 +3514,7 @@ def test_c_abi_types_and_const_pointer_run():
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == "4\n"
 
 
@@ -3523,16 +3536,16 @@ def test_c_abi_types_and_const_pointer_run():
     ("fn main() -> int { let b = true; let x = b as i32; return 0; }", "cannot cast"),
     ("fn main() -> int { let value = 1.5 + 1; return 0; }",
      "cannot mix integer and float operands"),
-    ("fn main() -> int { let left: f32 = 1.0; let right: f64 = 2.0; "
-     "let value = left + right; return 0; }", "mismatched float types"),
+    (("fn main() -> int { let left: f32 = 1.0; let right: f64 = 2.0; "
+     "let value = left + right; return 0; }"), "mismatched float types"),
     ("fn main() -> int { let value = 5.0 % 2.0; return 0; }",
      "operator '%' is not defined for floats"),
-    ("type First = Second; type Second = First; "
-     "fn main() -> int { return 0; }", "cyclic type alias"),
+    (("type First = Second; type Second = First; "
+     "fn main() -> int { return 0; }"), "cyclic type alias"),
     ("type Missing = Nope; fn main() -> int { return 0; }",
      "type alias 'Missing' has invalid target Nope"),
-    ("type Value = i64; struct Value { item: i64 } "
-     "fn main() -> int { return 0; }", "struct 'Value' is already defined"),
+    (("type Value = i64; struct Value { item: i64 } "
+     "fn main() -> int { return 0; }"), "struct 'Value' is already defined"),
     ("fn main() -> int { let p: *i32 = 0 as *i32; print(p); return 0; }",
      "print expects an integer"),
     ("struct P { x: i64 } fn main() -> int { let p: P = P { x: 1, y: 2 }; return 0; }",
@@ -3600,33 +3613,33 @@ def test_c_abi_types_and_const_pointer_run():
     ("fn main() -> int { assert(1); return 0; }", "assert expects a bool"),
     ("fn main() -> int { let a: [u8; 2] = [1, 2]; print(a[2] as i64); return 0; }",
      "out of bounds for length 2"),
-    ("enum State { A, B } fn main() -> int { let s: State = State.A; "
-     "match s { State.A => { print(1); } } return 0; }", "non-exhaustive match"),
+    (("enum State { A, B } fn main() -> int { let s: State = State.A; "
+     "match s { State.A => { print(1); } } return 0; }"), "non-exhaustive match"),
     ("enum State { A } fn main() -> int { let s: State = State.Nope; return 0; }",
      "has no variant"),
-    ("enum Value { Some(i64), None } fn main() -> int { "
-     "let value: Value = Value.Some(); return 0; }", "expects 1 payload"),
-    ("enum Value { Some(i64), None } fn main() -> int { "
+    (("enum Value { Some(i64), None } fn main() -> int { "
+     "let value: Value = Value.Some(); return 0; }"), "expects 1 payload"),
+    (("enum Value { Some(i64), None } fn main() -> int { "
      "let value: Value = Value.Some(1); match value { "
-     "Value.Some(1) => { print(1); }, Value.None => { print(0); } } return 0; }",
+     "Value.Some(1) => { print(1); }, Value.None => { print(0); } } return 0; }"),
      "payload match patterns require one binding name"),
-    ("struct Box<T> { value: T } fn main() -> int { "
-     "let box: Box<i64, u8> = 0; return 0; }", "unknown type"),
+    (("struct Box<T> { value: T } fn main() -> int { "
+     "let box: Box<i64, u8> = 0; return 0; }"), "unknown type"),
     ("fn main() -> int { let p: *const u8 = \"Mort\"; p[0] = 0; return 0; }",
      "cannot assign through a const pointer"),
     ("fn main() -> int { const value = 1; value = 2; return 0; }",
      "cannot assign to const binding 'value'"),
-    ("struct Point { x: i64 } fn main() -> int { "
-     "const point = Point { x: 1 }; point.x = 2; return 0; }",
+    (("struct Point { x: i64 } fn main() -> int { "
+     "const point = Point { x: 1 }; point.x = 2; return 0; }"),
      "cannot assign to const binding 'point'"),
-    ("fn main() -> int { const values: [i64; 2] = [1, 2]; "
-     "values[0] = 3; return 0; }", "cannot assign to const binding 'values'"),
+    (("fn main() -> int { const values: [i64; 2] = [1, 2]; "
+     "values[0] = 3; return 0; }"), "cannot assign to const binding 'values'"),
     ("const GLOBAL: i64 = 1; fn main() -> int { GLOBAL = 2; return 0; }",
      "cannot assign to const binding 'GLOBAL'"),
-    ("fn main() -> int { const value = 1; let pointer = &value; "
-     "*pointer = 2; return 0; }", "cannot assign through a const pointer"),
-    ("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
-     "s[0] = 0; return 0; }", "cannot assign through a const slice"),
+    (("fn main() -> int { const value = 1; let pointer = &value; "
+     "*pointer = 2; return 0; }"), "cannot assign through a const pointer"),
+    (("fn main() -> int { let s: []const u8 = slice(\"Mort\" as *const u8, 4); "
+     "s[0] = 0; return 0; }"), "cannot assign through a const slice"),
 ])
 def test_type_errors(src, needle):
     with pytest.raises(MortError) as exc:
@@ -3670,7 +3683,7 @@ def test_examples_run(name, expected):
         with open(cfile, "w", encoding="utf-8") as fh:
             fh.write(c_source)
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
-        result = subprocess.run([exe], capture_output=True, text=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == expected
 
 
