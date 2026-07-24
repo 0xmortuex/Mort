@@ -152,9 +152,22 @@ def test_extended_literals_null_and_nested_block_comments_run():
         "fn main() -> int { let bad = 1__000; return 0; }",
         'fn main() -> int { let s = "\\',
         "fn main() -> int { let c = '\\",
+        "fn main() -> int { return 0➌; }",
+        "fn main() -> int { return ➌; }",
     ],
 )
 def test_malformed_extended_literals_are_rejected(source):
+    with pytest.raises(MortError):
+        c_of(source)
+
+
+def test_fuzzer_crash_unicode_digit_is_a_diagnostic():
+    # Regression for the second 2026-07-24 Atheris finding: str.isdigit()
+    # routed non-ASCII digits (e.g. circled '➌') into number parsing,
+    # where int() raised ValueError instead of a MortError diagnostic.
+    path = os.path.join(ROOT, "fuzz", "corpus", "regression-unicode-digit")
+    with open(path, "rb") as fh:
+        source = fh.read().decode("utf-8", errors="replace")
     with pytest.raises(MortError):
         c_of(source)
 

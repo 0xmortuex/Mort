@@ -1,0 +1,5 @@
+resource struct Handle!{ value: i64 }
+
+fn destroy(handle: *Handle) {
+    (*handle).value = 0**************************************************************************************************sume(move handle)âŒßint;
+}

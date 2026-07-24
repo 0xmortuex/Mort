@@ -59,6 +59,16 @@ _ONE_CHAR = {
 }
 
 
+def _is_digit(c):
+    """ASCII decimal digit test.
+
+    str.isdigit() accepts non-ASCII digit characters (e.g. circled digits
+    like '➌') that int()/float() reject, so relying on it lets fuzzer
+    inputs crash number parsing with ValueError instead of a diagnostic.
+    """
+    return "0" <= c <= "9"
+
+
 class Lexer:
     def __init__(self, src):
         self.src = src
@@ -103,7 +113,7 @@ class Lexer:
                 self._string(line, col)
             elif c == "'":
                 self._char(line, col)
-            elif c.isdigit():
+            elif _is_digit(c):
                 self._number(line, col)
             elif c.isalpha() or c == "_":
                 self._ident(line, col)
@@ -119,7 +129,7 @@ class Lexer:
         # become DOT, INT, DOT, INT instead of DOT, FLOAT(0.1).
         if self.tokens and self.tokens[-1].type == T.DOT:
             digits = ""
-            while self._peek().isdigit():
+            while _is_digit(self._peek()):
                 digits += self._advance()
             if self._peek().isalpha() or self._peek() == "_":
                 raise MortError("tuple index must be a decimal integer", line, col)
@@ -153,21 +163,21 @@ class Lexer:
             self._add(T.INT, int(digits.replace("_", ""), 2 if prefix == "b" else 8), line, col)
             return
         s = ""
-        while self._peek().isdigit() or self._peek() == "_":
+        while _is_digit(self._peek()) or self._peek() == "_":
             s += self._advance()
         if s.startswith("_") or s.endswith("_") or "__" in s:
             raise MortError("invalid numeric separator", line, col)
-        if self._peek() == "." and self._peek(1).isdigit():
+        if self._peek() == "." and _is_digit(self._peek(1)):
             s += self._advance()
-            while self._peek().isdigit():
+            while _is_digit(self._peek()):
                 s += self._advance()
             if self._peek() in "eE":
                 s += self._advance()
                 if self._peek() in "+-":
                     s += self._advance()
-                if not self._peek().isdigit():
+                if not _is_digit(self._peek()):
                     raise MortError("invalid floating-point exponent", line, col)
-                while self._peek().isdigit():
+                while _is_digit(self._peek()):
                     s += self._advance()
             if self._peek().isalnum() or self._peek() == "_":
                 raise MortError("invalid floating-point literal", line, col)
@@ -180,9 +190,9 @@ class Lexer:
             s += self._advance()
             if self._peek() in "+-":
                 s += self._advance()
-            if not self._peek().isdigit():
+            if not _is_digit(self._peek()):
                 raise MortError("invalid floating-point exponent", line, col)
-            while self._peek().isdigit():
+            while _is_digit(self._peek()):
                 s += self._advance()
             if self._peek().isalnum() or self._peek() == "_":
                 raise MortError("invalid floating-point literal", line, col)
