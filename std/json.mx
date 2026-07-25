@@ -1,0 +1,832 @@
+// Mort standard library: a JSON parser and serializer.
+//
+// The document is a flat arena. Every value is a plain-data `Node` stored in
+// one `Vec<Node>`; arrays and objects reference their children as a contiguous
+// range in a `Vec<Child>`; all string bytes (values and object keys) live in a
+// single `Vec<u8>` pool. Nodes are addressed by index, so the arenas can grow
+// during parsing without invalidating references, and nothing nested owns a
+// resource -- which keeps the whole structure inside Mort's ownership model.
+//
+// Kinds: 0 null, 1 bool, 2 number, 3 string, 4 array, 5 object.
+
+module std.json;
+
+import std.vec;
+import std.option;
+import std.bytes;
+
+struct Node {
+    kind: u8,
+    bool_val: bool,
+    num_val: f64,
+    str_off: u64,
+    str_len: u64,
+    child_first: u64,
+    child_last: u64,
+    child_count: u64,
+}
+
+// Children form a singly linked list so a parent node can be created before its
+// children and grown in place -- arrays and objects nest without needing an
+// owned temporary collection, which keeps the parser inside Mort's move rules.
+struct Child {
+    key_off: u64,
+    key_len: u64,
+    node: u64,
+    next: u64,
+}
+
+struct StrRef {
+    off: u64,
+    len: u64,
+    ok: bool,
+}
+
+resource struct Document {
+    nodes: Vec<Node>,
+    kids: Vec<Child>,
+    pool: Vec<u8>,
+    root: u64,
+    ok: bool,
+    error_pos: u64,
+}
+
+struct Parser {
+    input: *const u8,
+    length: u64,
+    pos: u64,
+}
+
+fn empty_node() -> Node {
+    return Node {
+        kind: 0 as u8, bool_val: false, num_val: 0.0,
+        str_off: 0, str_len: 0, child_first: 0, child_last: 0, child_count: 0,
+    };
+}
+
+fn get_node(doc: *Document, index: u64) -> Node {
+    match vec.get(&(*doc).nodes, index) {
+        Option<Node>.Some(node) => { return node; },
+        Option<Node>.None => { return empty_node(); },
+    }
+}
+
+fn set_node(doc: *Document, index: u64, node: Node) -> void {
+    vec.set(&(*doc).nodes, index, node);
+}
+
+fn get_child(doc: *Document, index: u64) -> Child {
+    match vec.get(&(*doc).kids, index) {
+        Option<Child>.Some(child) => { return child; },
+        Option<Child>.None => {
+            return Child { key_off: 0, key_len: 0, node: 0, next: 0 };
+        },
+    }
+}
+
+fn set_child(doc: *Document, index: u64, child: Child) -> void {
+    vec.set(&(*doc).kids, index, child);
+}
+
+fn push_node(doc: *Document, node: Node) -> u64 {
+    let index: u64 = (*doc).nodes.length;
+    vec.push(&(*doc).nodes, node);
+    return index;
+}
+
+// Append a child value to a parent array/object node, preserving order.
+fn add_child(
+    doc: *Document,
+    parent: u64,
+    key_off: u64,
+    key_len: u64,
+    child_node: u64
+) -> void {
+    let index: u64 = (*doc).kids.length;
+    vec.push(
+        &(*doc).kids,
+        Child { key_off: key_off, key_len: key_len, node: child_node, next: 0 });
+    let node: Node = get_node(doc, parent);
+    if node.child_count == 0 {
+        node.child_first = index;
+    } else {
+        let last: Child = get_child(doc, node.child_last);
+        last.next = index;
+        set_child(doc, node.child_last, last);
+    }
+    node.child_last = index;
+    node.child_count = node.child_count + 1;
+    set_node(doc, parent, node);
+}
+
+// Return the kids-table index of element `element` in a parent node's list.
+fn child_index_at(doc: *Document, node: Node, element: u64) -> u64 {
+    let cursor: u64 = node.child_first;
+    for step: u64 in 0..element {
+        cursor = get_child(doc, cursor).next;
+    }
+    return cursor;
+}
+
+fn pool_push(doc: *Document, byte: u8) -> void {
+    vec.push(&(*doc).pool, byte);
+}
+
+fn fail(doc: *Document, p: *Parser) -> u64 {
+    (*doc).ok = false;
+    (*doc).error_pos = (*p).pos;
+    return 0;
+}
+
+fn peek(p: *Parser) -> u8 {
+    if (*p).pos >= (*p).length {
+        return 0 as u8;
+    }
+    return (*p).input[(*p).pos];
+}
+
+fn skip_ws(p: *Parser) -> void {
+    while (*p).pos < (*p).length {
+        let c: u8 = (*p).input[(*p).pos];
+        if c == 32 as u8 || c == 9 as u8 || c == 10 as u8 || c == 13 as u8 {
+            (*p).pos = (*p).pos + 1;
+        } else {
+            return;
+        }
+    }
+}
+
+fn is_digit(c: u8) -> bool {
+    return c >= '0' && c <= '9';
+}
+
+fn match_literal(p: *Parser, text: *const u8, count: u64) -> bool {
+    if (*p).pos + count > (*p).length {
+        return false;
+    }
+    for index: u64 in 0..count {
+        if (*p).input[(*p).pos + index] != text[index] {
+            return false;
+        }
+    }
+    (*p).pos = (*p).pos + count;
+    return true;
+}
+
+fn parse_number(doc: *Document, p: *Parser) -> u64 {
+    let start: u64 = (*p).pos;
+    let negative: bool = false;
+    if peek(p) == '-' {
+        negative = true;
+        (*p).pos = (*p).pos + 1;
+    }
+    let value: f64 = 0.0;
+    let digits: u64 = 0;
+    while is_digit(peek(p)) {
+        value = value * 10.0 + ((peek(p) - '0') as f64);
+        (*p).pos = (*p).pos + 1;
+        digits = digits + 1;
+    }
+    let exponent: i64 = 0;
+    if peek(p) == '.' {
+        (*p).pos = (*p).pos + 1;
+        while is_digit(peek(p)) {
+            value = value * 10.0 + ((peek(p) - '0') as f64);
+            (*p).pos = (*p).pos + 1;
+            digits = digits + 1;
+            exponent = exponent - 1;
+        }
+    }
+    if digits == 0 {
+        (*p).pos = start;
+        return fail(doc, p);
+    }
+    if peek(p) == 'e' || peek(p) == 'E' {
+        (*p).pos = (*p).pos + 1;
+        let exp_negative: bool = false;
+        if peek(p) == '+' {
+            (*p).pos = (*p).pos + 1;
+        } else if peek(p) == '-' {
+            exp_negative = true;
+            (*p).pos = (*p).pos + 1;
+        }
+        let exp_value: i64 = 0;
+        while is_digit(peek(p)) {
+            exp_value = exp_value * 10 + ((peek(p) - '0') as i64);
+            (*p).pos = (*p).pos + 1;
+        }
+        if exp_negative {
+            exponent = exponent - exp_value;
+        } else {
+            exponent = exponent + exp_value;
+        }
+    }
+    value = value * pow10(exponent);
+    if negative {
+        value = 0.0 - value;
+    }
+    let node: Node = empty_node();
+    node.kind = 2 as u8;
+    node.num_val = value;
+    return push_node(doc, node);
+}
+
+fn pow10(exponent: i64) -> f64 {
+    let result: f64 = 1.0;
+    let count: i64 = exponent;
+    if count >= 0 {
+        while count > 0 {
+            result = result * 10.0;
+            count = count - 1;
+        }
+    } else {
+        while count < 0 {
+            result = result / 10.0;
+            count = count + 1;
+        }
+    }
+    return result;
+}
+
+fn parse_hex4(doc: *Document, p: *Parser) -> u32 {
+    let value: u32 = 0;
+    if (*p).pos + 4 > (*p).length {
+        fail(doc, p);
+        return 0 as u32;
+    }
+    for index: u64 in 0..4 {
+        let c: u8 = (*p).input[(*p).pos];
+        let digit: i64 = hex_value(c);
+        if digit < 0 {
+            fail(doc, p);
+            return 0 as u32;
+        }
+        value = value * (16 as u32) + (digit as u32);
+        (*p).pos = (*p).pos + 1;
+    }
+    return value;
+}
+
+fn hex_value(c: u8) -> i64 {
+    if c >= '0' && c <= '9' {
+        return (c - '0') as i64;
+    }
+    if c >= 'a' && c <= 'f' {
+        return (c - 'a') as i64 + 10;
+    }
+    if c >= 'A' && c <= 'F' {
+        return (c - 'A') as i64 + 10;
+    }
+    return -1;
+}
+
+fn pool_push_codepoint(doc: *Document, codepoint: u32) -> void {
+    if codepoint < (0x80 as u32) {
+        pool_push(doc, codepoint as u8);
+    } else if codepoint < (0x800 as u32) {
+        pool_push(doc, ((0xC0 as u32) | (codepoint >> 6)) as u8);
+        pool_push(doc, ((0x80 as u32) | (codepoint & (0x3F as u32))) as u8);
+    } else if codepoint < (0x10000 as u32) {
+        pool_push(doc, ((0xE0 as u32) | (codepoint >> 12)) as u8);
+        pool_push(doc, ((0x80 as u32) | ((codepoint >> 6) & (0x3F as u32))) as u8);
+        pool_push(doc, ((0x80 as u32) | (codepoint & (0x3F as u32))) as u8);
+    } else {
+        pool_push(doc, ((0xF0 as u32) | (codepoint >> 18)) as u8);
+        pool_push(doc, ((0x80 as u32) | ((codepoint >> 12) & (0x3F as u32))) as u8);
+        pool_push(doc, ((0x80 as u32) | ((codepoint >> 6) & (0x3F as u32))) as u8);
+        pool_push(doc, ((0x80 as u32) | (codepoint & (0x3F as u32))) as u8);
+    }
+}
+
+fn parse_string_pool(doc: *Document, p: *Parser) -> StrRef {
+    let start: u64 = (*doc).pool.length;
+    (*p).pos = (*p).pos + 1;
+    while (*p).pos < (*p).length {
+        let c: u8 = (*p).input[(*p).pos];
+        if c == '"' {
+            (*p).pos = (*p).pos + 1;
+            return StrRef {
+                off: start, len: (*doc).pool.length - start, ok: true,
+            };
+        } else if c == 92 as u8 {
+            (*p).pos = (*p).pos + 1;
+            if (*p).pos >= (*p).length {
+                fail(doc, p);
+                return StrRef { off: start, len: 0, ok: false };
+            }
+            let escape: u8 = (*p).input[(*p).pos];
+            (*p).pos = (*p).pos + 1;
+            if escape == '"' {
+                pool_push(doc, '"' as u8);
+            } else if escape == 92 as u8 {
+                pool_push(doc, 92 as u8);
+            } else if escape == '/' {
+                pool_push(doc, '/' as u8);
+            } else if escape == 'b' {
+                pool_push(doc, 8 as u8);
+            } else if escape == 'f' {
+                pool_push(doc, 12 as u8);
+            } else if escape == 'n' {
+                pool_push(doc, 10 as u8);
+            } else if escape == 'r' {
+                pool_push(doc, 13 as u8);
+            } else if escape == 't' {
+                pool_push(doc, 9 as u8);
+            } else if escape == 'u' {
+                let codepoint: u32 = parse_hex4(doc, p);
+                if !(*doc).ok {
+                    return StrRef { off: start, len: 0, ok: false };
+                }
+                if codepoint >= (0xD800 as u32) && codepoint <= (0xDBFF as u32) {
+                    if (*p).pos + 1 < (*p).length
+                        && (*p).input[(*p).pos] == 92 as u8
+                        && (*p).input[(*p).pos + 1] == 'u' {
+                        (*p).pos = (*p).pos + 2;
+                        let low: u32 = parse_hex4(doc, p);
+                        if !(*doc).ok {
+                            return StrRef { off: start, len: 0, ok: false };
+                        }
+                        codepoint = (0x10000 as u32)
+                            + ((codepoint - (0xD800 as u32)) << 10)
+                            + (low - (0xDC00 as u32));
+                    }
+                }
+                pool_push_codepoint(doc, codepoint);
+            } else {
+                fail(doc, p);
+                return StrRef { off: start, len: 0, ok: false };
+            }
+        } else {
+            pool_push(doc, c);
+            (*p).pos = (*p).pos + 1;
+        }
+    }
+    fail(doc, p);
+    return StrRef { off: start, len: 0, ok: false };
+}
+
+fn parse_string(doc: *Document, p: *Parser) -> u64 {
+    let reference: StrRef = parse_string_pool(doc, p);
+    if !reference.ok {
+        return 0;
+    }
+    let node: Node = empty_node();
+    node.kind = 3 as u8;
+    node.str_off = reference.off;
+    node.str_len = reference.len;
+    return push_node(doc, node);
+}
+
+fn parse_array(doc: *Document, p: *Parser) -> u64 {
+    (*p).pos = (*p).pos + 1;
+    let node: Node = empty_node();
+    node.kind = 4 as u8;
+    let array: u64 = push_node(doc, node);
+    skip_ws(p);
+    if peek(p) == ']' {
+        (*p).pos = (*p).pos + 1;
+        return array;
+    }
+    while true {
+        skip_ws(p);
+        let child: u64 = parse_value(doc, p);
+        if !(*doc).ok {
+            return 0;
+        }
+        add_child(doc, array, 0, 0, child);
+        skip_ws(p);
+        let c: u8 = peek(p);
+        if c == ',' {
+            (*p).pos = (*p).pos + 1;
+        } else if c == ']' {
+            (*p).pos = (*p).pos + 1;
+            return array;
+        } else {
+            return fail(doc, p);
+        }
+    }
+    return fail(doc, p);
+}
+
+fn parse_object(doc: *Document, p: *Parser) -> u64 {
+    (*p).pos = (*p).pos + 1;
+    let node: Node = empty_node();
+    node.kind = 5 as u8;
+    let object: u64 = push_node(doc, node);
+    skip_ws(p);
+    if peek(p) == '}' {
+        (*p).pos = (*p).pos + 1;
+        return object;
+    }
+    while true {
+        skip_ws(p);
+        if peek(p) != '"' {
+            return fail(doc, p);
+        }
+        let key: StrRef = parse_string_pool(doc, p);
+        if !key.ok {
+            return 0;
+        }
+        skip_ws(p);
+        if peek(p) != ':' {
+            return fail(doc, p);
+        }
+        (*p).pos = (*p).pos + 1;
+        skip_ws(p);
+        let value: u64 = parse_value(doc, p);
+        if !(*doc).ok {
+            return 0;
+        }
+        add_child(doc, object, key.off, key.len, value);
+        skip_ws(p);
+        let c: u8 = peek(p);
+        if c == ',' {
+            (*p).pos = (*p).pos + 1;
+        } else if c == '}' {
+            (*p).pos = (*p).pos + 1;
+            return object;
+        } else {
+            return fail(doc, p);
+        }
+    }
+    return fail(doc, p);
+}
+
+fn parse_value(doc: *Document, p: *Parser) -> u64 {
+    skip_ws(p);
+    let c: u8 = peek(p);
+    if c == '{' {
+        return parse_object(doc, p);
+    }
+    if c == '[' {
+        return parse_array(doc, p);
+    }
+    if c == '"' {
+        return parse_string(doc, p);
+    }
+    if c == 't' {
+        if match_literal(p, "true", 4) {
+            let node: Node = empty_node();
+            node.kind = 1 as u8;
+            node.bool_val = true;
+            return push_node(doc, node);
+        }
+        return fail(doc, p);
+    }
+    if c == 'f' {
+        if match_literal(p, "false", 5) {
+            let node: Node = empty_node();
+            node.kind = 1 as u8;
+            node.bool_val = false;
+            return push_node(doc, node);
+        }
+        return fail(doc, p);
+    }
+    if c == 'n' {
+        if match_literal(p, "null", 4) {
+            let node: Node = empty_node();
+            node.kind = 0 as u8;
+            return push_node(doc, node);
+        }
+        return fail(doc, p);
+    }
+    if c == '-' || is_digit(c) {
+        return parse_number(doc, p);
+    }
+    return fail(doc, p);
+}
+
+pub fn parse(text: *const u8, length: u64) -> Document {
+    let doc: Document = Document {
+        nodes: vec.new<Node>(),
+        kids: vec.new<Child>(),
+        pool: vec.new<u8>(),
+        root: 0,
+        ok: true,
+        error_pos: 0,
+    };
+    let parser: Parser = Parser { input: text, length: length, pos: 0 };
+    let root: u64 = parse_value(&doc, &parser);
+    if doc.ok {
+        skip_ws(&parser);
+        if parser.pos != length {
+            doc.ok = false;
+            doc.error_pos = parser.pos;
+        }
+    }
+    doc.root = root;
+    return move doc;
+}
+
+fn cstr_len(text: *const u8) -> u64 {
+    let length: u64 = 0;
+    while text[length] != 0 as u8 {
+        length = length + 1;
+    }
+    return length;
+}
+
+pub fn parse_cstr(text: *const u8) -> Document {
+    return parse(text, cstr_len(text));
+}
+
+pub fn ok(doc: *Document) -> bool {
+    return (*doc).ok;
+}
+
+pub fn error_pos(doc: *Document) -> u64 {
+    return (*doc).error_pos;
+}
+
+pub fn root(doc: *Document) -> u64 {
+    return (*doc).root;
+}
+
+pub fn kind(doc: *Document, index: u64) -> u8 {
+    return get_node(doc, index).kind;
+}
+
+pub fn is_null(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 0 as u8;
+}
+
+pub fn is_bool(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 1 as u8;
+}
+
+pub fn is_number(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 2 as u8;
+}
+
+pub fn is_string(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 3 as u8;
+}
+
+pub fn is_array(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 4 as u8;
+}
+
+pub fn is_object(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).kind == 5 as u8;
+}
+
+pub fn as_bool(doc: *Document, index: u64) -> bool {
+    return get_node(doc, index).bool_val;
+}
+
+pub fn as_number(doc: *Document, index: u64) -> f64 {
+    return get_node(doc, index).num_val;
+}
+
+pub fn as_string(doc: *Document, index: u64) -> []const u8 {
+    let node: Node = get_node(doc, index);
+    let base: *u8 = (*doc).pool.data;
+    return slice(((base as u64) + node.str_off) as *const u8, node.str_len);
+}
+
+pub fn array_len(doc: *Document, index: u64) -> u64 {
+    let node: Node = get_node(doc, index);
+    if node.kind != 4 as u8 {
+        return 0;
+    }
+    return node.child_count;
+}
+
+pub fn array_get(doc: *Document, index: u64, element: u64) -> Option<u64> {
+    let node: Node = get_node(doc, index);
+    if node.kind != 4 as u8 || element >= node.child_count {
+        return Option<u64>.None;
+    }
+    return Option<u64>.Some(get_child(doc, child_index_at(doc, node, element)).node);
+}
+
+pub fn object_len(doc: *Document, index: u64) -> u64 {
+    let node: Node = get_node(doc, index);
+    if node.kind != 5 as u8 {
+        return 0;
+    }
+    return node.child_count;
+}
+
+pub fn object_key(doc: *Document, index: u64, entry: u64) -> []const u8 {
+    let node: Node = get_node(doc, index);
+    if node.kind != 5 as u8 || entry >= node.child_count {
+        return slice((*doc).pool.data as *const u8, 0);
+    }
+    let child: Child = get_child(doc, child_index_at(doc, node, entry));
+    let base: *u8 = (*doc).pool.data;
+    return slice(((base as u64) + child.key_off) as *const u8, child.key_len);
+}
+
+pub fn object_value_at(doc: *Document, index: u64, entry: u64) -> u64 {
+    let node: Node = get_node(doc, index);
+    if node.kind != 5 as u8 || entry >= node.child_count {
+        return 0;
+    }
+    return get_child(doc, child_index_at(doc, node, entry)).node;
+}
+
+pub fn object_get_view(doc: *Document, index: u64, key: []const u8) -> Option<u64> {
+    let node: Node = get_node(doc, index);
+    if node.kind != 5 as u8 {
+        return Option<u64>.None;
+    }
+    let base: *u8 = (*doc).pool.data;
+    let cursor: u64 = node.child_first;
+    for entry: u64 in 0..node.child_count {
+        let child: Child = get_child(doc, cursor);
+        let key_view: []const u8 = slice(
+            ((base as u64) + child.key_off) as *const u8, child.key_len);
+        if bytes.equal(key_view, key) {
+            return Option<u64>.Some(child.node);
+        }
+        cursor = child.next;
+    }
+    return Option<u64>.None;
+}
+
+// Convenience lookup with a null-terminated key, e.g. a string literal.
+pub fn object_get(doc: *Document, index: u64, key: *const u8) -> Option<u64> {
+    return object_get_view(doc, index, slice(key, cstr_len(key)));
+}
+
+// ---- Serialization ------------------------------------------------------
+//
+// stringify writes compact JSON into an owned byte buffer. Structure, strings,
+// booleans, null, and integer-valued numbers round-trip exactly; non-integer
+// numbers are emitted with up to nine fractional digits (trailing zeros
+// trimmed), which is a deliberate v1 precision bound rather than shortest-round
+// trip formatting.
+
+fn write_uint(out: *Vec<u8>, value: u64) -> void {
+    if value == 0 {
+        vec.push(out, '0' as u8);
+        return;
+    }
+    let buffer: [u8; 24] = [0 as u8; 24];
+    let count: u64 = 0;
+    let remaining: u64 = value;
+    while remaining > 0 {
+        buffer[count] = ('0' as u8) + ((remaining % 10) as u8);
+        remaining = remaining / 10;
+        count = count + 1;
+    }
+    let index: u64 = count;
+    while index > 0 {
+        index = index - 1;
+        vec.push(out, buffer[index]);
+    }
+}
+
+fn write_number(out: *Vec<u8>, value: f64) -> void {
+    let magnitude: f64 = value;
+    if magnitude < 0.0 {
+        vec.push(out, '-' as u8);
+        magnitude = 0.0 - magnitude;
+    }
+    let integer_part: u64 = magnitude as u64;
+    let fraction: f64 = magnitude - (integer_part as f64);
+    write_uint(out, integer_part);
+    if fraction > 0.0 {
+        let scaled: u64 = (fraction * 1000000000.0 + 0.5) as u64;
+        if scaled > 999999999 {
+            scaled = 999999999;
+        }
+        if scaled > 0 {
+            let digits: [u8; 9] = [0 as u8; 9];
+            let position: u64 = 9;
+            let remaining: u64 = scaled;
+            while position > 0 {
+                position = position - 1;
+                digits[position] = ('0' as u8) + ((remaining % 10) as u8);
+                remaining = remaining / 10;
+            }
+            let last: u64 = 9;
+            while last > 0 && digits[last - 1] == '0' as u8 {
+                last = last - 1;
+            }
+            vec.push(out, '.' as u8);
+            for j: u64 in 0..last {
+                vec.push(out, digits[j]);
+            }
+        }
+    }
+}
+
+fn write_escaped(out: *Vec<u8>, doc: *Document, offset: u64, length: u64) -> void {
+    let base: *u8 = (*doc).pool.data;
+    let view: []const u8 = slice(((base as u64) + offset) as *const u8, length);
+    vec.push(out, '"' as u8);
+    for index: u64 in 0..length {
+        let c: u8 = view[index];
+        if c == '"' {
+            vec.push(out, 92 as u8);
+            vec.push(out, '"' as u8);
+        } else if c == 92 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 92 as u8);
+        } else if c == 8 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 'b' as u8);
+        } else if c == 12 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 'f' as u8);
+        } else if c == 10 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 'n' as u8);
+        } else if c == 13 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 'r' as u8);
+        } else if c == 9 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 't' as u8);
+        } else if c < 32 as u8 {
+            vec.push(out, 92 as u8);
+            vec.push(out, 'u' as u8);
+            vec.push(out, '0' as u8);
+            vec.push(out, '0' as u8);
+            vec.push(out, hex_digit((c >> 4) as u64));
+            vec.push(out, hex_digit((c & (0xF as u8)) as u64));
+        } else {
+            vec.push(out, c);
+        }
+    }
+    vec.push(out, '"' as u8);
+}
+
+fn hex_digit(value: u64) -> u8 {
+    if value < 10 {
+        return ('0' as u8) + (value as u8);
+    }
+    return ('a' as u8) + ((value - 10) as u8);
+}
+
+fn write_value(out: *Vec<u8>, doc: *Document, index: u64) -> void {
+    let node: Node = get_node(doc, index);
+    if node.kind == 0 as u8 {
+        vec.push(out, 'n' as u8);
+        vec.push(out, 'u' as u8);
+        vec.push(out, 'l' as u8);
+        vec.push(out, 'l' as u8);
+    } else if node.kind == 1 as u8 {
+        if node.bool_val {
+            vec.push(out, 't' as u8);
+            vec.push(out, 'r' as u8);
+            vec.push(out, 'u' as u8);
+            vec.push(out, 'e' as u8);
+        } else {
+            vec.push(out, 'f' as u8);
+            vec.push(out, 'a' as u8);
+            vec.push(out, 'l' as u8);
+            vec.push(out, 's' as u8);
+            vec.push(out, 'e' as u8);
+        }
+    } else if node.kind == 2 as u8 {
+        write_number(out, node.num_val);
+    } else if node.kind == 3 as u8 {
+        write_escaped(out, doc, node.str_off, node.str_len);
+    } else if node.kind == 4 as u8 {
+        vec.push(out, '[' as u8);
+        let cursor: u64 = node.child_first;
+        for element: u64 in 0..node.child_count {
+            if element > 0 {
+                vec.push(out, ',' as u8);
+            }
+            let child: Child = get_child(doc, cursor);
+            write_value(out, doc, child.node);
+            cursor = child.next;
+        }
+        vec.push(out, ']' as u8);
+    } else {
+        vec.push(out, '{' as u8);
+        let cursor: u64 = node.child_first;
+        for entry: u64 in 0..node.child_count {
+            if entry > 0 {
+                vec.push(out, ',' as u8);
+            }
+            let child: Child = get_child(doc, cursor);
+            write_escaped(out, doc, child.key_off, child.key_len);
+            vec.push(out, ':' as u8);
+            write_value(out, doc, child.node);
+            cursor = child.next;
+        }
+        vec.push(out, '}' as u8);
+    }
+}
+
+// Serialize a value (and its descendants) to a fresh owned byte buffer.
+// The caller owns the result and must eventually vec.destroy it.
+pub fn stringify(doc: *Document, index: u64) -> Vec<u8> {
+    let out: Vec<u8> = vec.new<u8>();
+    write_value(&out, doc, index);
+    return move out;
+}
+
+pub fn destroy(doc: *Document) -> void {
+    vec.destroy(&(*doc).nodes);
+    vec.destroy(&(*doc).kids);
+    vec.destroy(&(*doc).pool);
+    (*doc).root = 0;
+    (*doc).ok = false;
+    (*doc).error_pos = 0;
+}

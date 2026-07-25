@@ -327,9 +327,11 @@ share top-level functions, structs, and globals. Exactly one hosted `main`
 function is required.
 
 Bundled modules include modern importable `std.option`, `std.result`, `std.vec`,
-`std.map`, `std.math`, `std.algorithm`, `std.random`, `std.bytes`, `std.env`,
-`std.process`, `std.fs`, `std.time`, `std.thread`, `std.mutex`, and
-`std.atomic` modules. Legacy flat `string`, `memory`, and allocation-backed
+`std.map`, `std.json`, `std.math`, `std.algorithm`, `std.random`, `std.bytes`,
+`std.env`, `std.process`, `std.fs`, `std.time`, `std.thread`, `std.mutex`, and
+`std.atomic` modules. `std.json` parses and serializes JSON through a flat arena
+DOM that stays inside the ownership model. Legacy flat `string`, `memory`, and
+allocation-backed
 `owned_string` modules remain available through the repeatable `--std` option.
 Every module is Mort source and remains fully type-checked in the consuming
 program.

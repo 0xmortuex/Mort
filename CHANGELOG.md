@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.47.0 - 2026-07-25
+
+Standard-library release. The compiler version moves to 0.47 while continuing
+to implement the unchanged Mort 0.41 language contract.
+
+### Standard library
+
+- New `std.json` module: a from-scratch JSON parser and serializer built on a
+  flat arena (one `Vec<Node>`, a linked child table, and a single byte pool)
+  so nothing nested owns a resource and the whole document stays inside Mort's
+  move rules. Parses objects, arrays, strings with full escape handling
+  (including `\uXXXX` and surrogate pairs to UTF-8), numbers, booleans, and
+  null; rejects malformed input with an error position. Index-based accessors
+  (`root`, `kind`, `is_*`, `as_bool`/`as_number`/`as_string`, `array_len`/
+  `array_get`, `object_len`/`object_key`/`object_value_at`/`object_get`) read
+  without copying. `stringify` serializes back to a compact owned byte buffer;
+  structure, strings, booleans, null, and integer-valued numbers round-trip
+  exactly, with non-integer numbers emitted at a bounded nine-digit precision.
+- End-to-end test parses nested objects/arrays, checks accessors, and confirms
+  malformed input is rejected.
+
 ## 0.46.0 - 2026-07-25
 
 Mort's developer-insight release. The compiler version moves to 0.46 while

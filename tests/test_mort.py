@@ -1841,6 +1841,71 @@ def test_std_cli_module_runs():
     assert result.stdout.endswith("4\n1\n")
 
 
+@needs_cc
+def test_std_json_parses_arrays_objects_and_rejects_bad_input():
+    program = r'''import std.json;
+import std.vec;
+import std.option;
+
+fn check(doc: *Document) -> i64 {
+    let r: u64 = json.root(doc);
+    if !json.is_object(doc, r) { return 1; }
+    let ok: i64 = 0;
+    match json.object_get(doc, r, "name") {
+        Option<u64>.Some(n) => {
+            let s: []const u8 = json.as_string(doc, n);
+            if s.len == 4 && s[0] == 'm' { ok = ok + 1; }
+        },
+        Option<u64>.None => {},
+    }
+    match json.object_get(doc, r, "age") {
+        Option<u64>.Some(n) => { if (json.as_number(doc, n) as i64) == 9 { ok = ok + 1; } },
+        Option<u64>.None => {},
+    }
+    match json.object_get(doc, r, "tags") {
+        Option<u64>.Some(n) => {
+            if json.array_len(doc, n) == 3 {
+                match json.array_get(doc, n, 1) {
+                    Option<u64>.Some(e) => { if (json.as_number(doc, e) as i64) == 2 { ok = ok + 1; } },
+                    Option<u64>.None => {},
+                }
+            }
+        },
+        Option<u64>.None => {},
+    }
+    print(ok);
+    if ok == 3 { return 0; }
+    return 20 + ok;
+}
+
+fn main() -> i64 {
+    let text: *const u8 = "{\"name\":\"mort\",\"age\":9,\"tags\":[1,2,3]}";
+    let doc: Document = json.parse_cstr(text);
+    let code: i64 = 5;
+    if json.ok(&doc) { code = check(&doc); }
+    let bad: Document = json.parse_cstr("[1,2,");
+    let bad_ok: bool = json.ok(&bad);
+    json.destroy(&bad);
+    json.destroy(&doc);
+    if bad_ok { return 30; }
+    return code;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "jsonuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "jsonuse.exe" if os.name == "nt" else "jsonuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "3"
+
+
 def test_project_manifest_and_source_discovery():
     with tempfile.TemporaryDirectory() as d:
         project_dir = os.path.join(d, "demo")
