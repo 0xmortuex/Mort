@@ -3182,6 +3182,42 @@ def test_resource_can_move_once_across_exclusive_branches():
 
 
 @needs_cc
+def test_resource_survives_conditional_destroy_before_return():
+    # A branch that destroys and then returns must not mark the resource as
+    # moved on the fall-through path, for both `if` and `match`.
+    src = (
+        "enum Choice { Left, Right } "
+        "resource struct Value { number: i64 } "
+        "fn destroy(value: *Value) -> void { print((*value).number); } "
+        "fn read(value: *Value) -> i64 { return (*value).number; } "
+        "fn main() -> int { "
+        "let value = Value { number: 7 }; "
+        "if read(&value) == 999 { destroy(&value); return 1; } "
+        "let side = Choice.Left; "
+        "match side { "
+        "Choice.Left => { if read(&value) == 999 { destroy(&value); return 2; } }, "
+        "Choice.Right => { destroy(&value); return 3; }, "
+        "} "
+        "let total = read(&value); destroy(&value); return total; }"
+    )
+    c_source = c_of(src)
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "conditional_destroy.c")
+        exe = os.path.join(
+            d, "conditional_destroy.exe" if os.name == "nt"
+            else "conditional_destroy")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run(
+            [*_CC, cfile, "-o", exe, "-O2", "-std=c11", "-Wall", "-Werror"],
+            check=True,
+        )
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 7
+    assert result.stdout == "7\n"
+
+
+@needs_cc
 def test_resources_compose_through_structs_tuples_enums_and_arrays():
     src = (
         "resource struct Leaf { label: *u8 } "

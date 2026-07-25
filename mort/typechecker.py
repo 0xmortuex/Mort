@@ -1409,17 +1409,31 @@ class Checker:
             before = self._move_snapshot()
             self._check_block(s.then)
             after_then = self._move_snapshot()
+            then_returns = self._block_always_returns(s.then)
             self._restore_move_snapshot(before)
+            else_returns = False
             if s.els is not None:
                 if isinstance(s.els, A.If):
                     self._check_stmt(s.els)
+                    else_returns = self._if_always_returns(s.els)
                 else:
                     self._check_block(s.els)
+                    else_returns = self._block_always_returns(s.els)
                 after_else = self._move_snapshot()
             else:
                 after_else = before
             self._restore_move_snapshot(before)
-            self._merge_move_snapshots(after_then, after_else)
+            # A branch that always returns never falls through to the code after
+            # the `if`, so its moves must not leak into the merged state.
+            # Otherwise `if err { destroy(&r); return; } use(&r);` would wrongly
+            # report `r` as moved on the path where the branch was not taken.
+            live = []
+            if not then_returns:
+                live.append(after_then)
+            if not else_returns:
+                live.append(after_else)
+            if live:
+                self._merge_move_snapshots(*live)
 
         elif isinstance(s, A.While):
             if self._check_expr(s.cond) != "bool":
@@ -1598,7 +1612,10 @@ class Checker:
                     self._finish_binding_scope()
                     self.scopes.pop()
                     self.binding_scopes.pop()
-                arm_move_states.append(self._move_snapshot())
+                # An arm that always returns does not fall through past the
+                # match, so its moves must not leak into the merged state.
+                if not self._block_always_returns(arm.body):
+                    arm_move_states.append(self._move_snapshot())
             self._restore_move_snapshot(before_arms)
             if arm_move_states:
                 self._merge_move_snapshots(*arm_move_states)

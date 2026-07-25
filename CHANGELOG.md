@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.48.0 - 2026-07-25
+
+Ownership-checker fix. The compiler version moves to 0.48 while continuing to
+implement the unchanged Mort 0.41 language contract.
+
+### Fixed
+
+- The move checker was flow-insensitive when merging branches: a branch that
+  destroyed (or moved) a resource and then `return`ed still marked that resource
+  as moved on the path where the branch was not taken. The natural cleanup
+  pattern `if !ok { destroy(&r); return; } use(&r);` was wrongly rejected with
+  "use of moved resource". Branches (and `match` arms) that always return are
+  now excluded from the post-branch move state, since control never falls
+  through them. Soundness is unaffected: a branch that moves without diverging
+  is still merged, so real use-after-move is still reported.
+
 ## 0.47.0 - 2026-07-25
 
 Standard-library release. The compiler version moves to 0.47 while continuing
