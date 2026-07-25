@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.43.0 - 2026-07-25
+
+Mort's reproducible-release release. The compiler version moves to 0.43 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Reproducible builds
+
+- Release builds derive `SOURCE_DATE_EPOCH` from the tagged Git commit and fix
+  Python's hash seed and timezone.
+- The release frontend and setuptools backend are pinned to the non-yanked
+  versions `build==1.5.0` and `setuptools==83.0.0`.
+- Source archives receive canonical gzip and tar timestamps, numeric ownership,
+  owner/group names, and PAX metadata. Wheels already honor the fixed source
+  epoch.
+- An automated gate exports the same revision into two clean source trees,
+  builds both independently, and requires byte-identical SHA-256 hashes for the
+  wheel and source distribution. CI and tagged releases both run the proof.
+
 ## 0.42.0 - 2026-07-25
 
 Mort's cross-backend compiler-correctness release. The compiler version moves

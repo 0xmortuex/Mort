@@ -51,8 +51,9 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [ ] Registry records authenticate immutable source archives or commits with
   publisher signatures.
 - [ ] The client verifies a transparent package log and supports revocation.
-- [ ] Reproducible-build checks prove identical release artifacts from the same
-  source revision.
+- [x] A clean-tree reproducibility gate builds the same Git revision twice and
+  requires byte-identical wheel and source-archive SHA-256 hashes in CI and
+  release workflows.
 
 ## Platforms and compatibility
 

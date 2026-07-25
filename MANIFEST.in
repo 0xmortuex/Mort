@@ -6,3 +6,4 @@ recursive-include fuzz *.py *.mx
 recursive-include kernel *.py *.md *.mx *.mxinc *.s *.ld *.png
 recursive-include registry *.json *.md
 recursive-include tests *.py *.mx *.pem *.md
+recursive-include tools *.py

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mort-lang"
-version = "0.42.0"
+version = "0.43.0"
 description = "The Mort statically typed systems programming language"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,7 @@ mortc = "mortc:main"
 
 [project.optional-dependencies]
 dev = [
-    "build>=1.2",
+    "build==1.5.0",
     "pytest>=8",
     # Exact pin: ruff's default rule set changes between minor versions and
     # CI lints with defaults, so a floating version can break CI overnight
