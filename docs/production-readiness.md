@@ -53,7 +53,14 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [ ] The client verifies a transparent package log and supports revocation.
 - [x] A clean-tree reproducibility gate builds the same Git revision twice and
   requires byte-identical wheel and source-archive SHA-256 hashes in CI and
-  release workflows.
+  release workflows. The published v0.43.0 artifacts were independently
+  rebuilt from the tag with exact matches: wheel
+  `598d48103c0f2acb8d5cc397ce7bb3ce250dc8a2c92d1a87a61d027b579aeba2`
+  and sdist
+  `6bbae8ac95a6aaee41bd07469d37c791cb3c4df13f6e2cd84d87cb429c4af76c`.
+  Evidence: [CI](https://github.com/0xmortuex/Mort/actions/runs/30155638801),
+  [release gates](https://github.com/0xmortuex/Mort/actions/runs/30155738393),
+  and [published artifacts](https://github.com/0xmortuex/Mort/releases/tag/v0.43.0).
 
 ## Platforms and compatibility
 

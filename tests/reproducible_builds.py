@@ -113,6 +113,8 @@ def verify(revision):
         _run(
             [
                 "git",
+                "-c",
+                "core.autocrlf=false",
                 "archive",
                 "--format=tar",
                 f"--output={source_archive}",
