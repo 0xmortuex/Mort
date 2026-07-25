@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.44.0 - 2026-07-25
+
+Mort's authenticated-package release. The compiler version moves to 0.44 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Registry security
+
+- Registry format 2 requires Ed25519 signatures for publisher records and
+  operator checkpoints. Trust roots are pinned outside downloaded metadata.
+- Signed records bind the package/version identity, immutable Git commit,
+  source URL/ref, publication timestamp, and complete portable content hash.
+- Publisher additions, releases, and key revocations are recorded in a
+  hash-chained log; clients reject rollback or rewriting of a cached prefix.
+- Revoked publishers are excluded from dependency solving. Both Git checkouts
+  and offline mirrors must match the signed package-content hash.
+- An offline administration tool handles publisher enrollment, immutable
+  publication, revocation, checkpoint signing, and independent verification.
+- CI independently verifies the canonical empty registry and adversarial tests
+  cover tampered records, log entries, checkpoints, untrusted roots, rollback,
+  history rewriting, and revocation.
+
 ## 0.43.0 - 2026-07-25
 
 Mort's reproducible-release release. The compiler version moves to 0.43 while

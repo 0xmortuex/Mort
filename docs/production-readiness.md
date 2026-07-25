@@ -48,9 +48,9 @@ only when an automated gate or named artifact provides repeatable evidence.
 - [x] Dependency sources and entry points cannot escape their package root,
   including through symlinks.
 - [x] Lockfile hashing records symlink targets without following them.
-- [ ] Registry records authenticate immutable source archives or commits with
+- [x] Registry records authenticate immutable source archives or commits with
   publisher signatures.
-- [ ] The client verifies a transparent package log and supports revocation.
+- [x] The client verifies a transparent package log and supports revocation.
 - [x] A clean-tree reproducibility gate builds the same Git revision twice and
   requires byte-identical wheel and source-archive SHA-256 hashes in CI and
   release workflows. The published v0.43.0 artifacts were independently

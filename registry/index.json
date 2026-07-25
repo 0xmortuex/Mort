@@ -1,4 +1,13 @@
 {
-  "format": 1,
-  "packages": {}
+  "checkpoint": {
+    "key_id": "mort-registry-2026-1",
+    "log_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "log_size": 0,
+    "publishers_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "signature": "GISMgPHBj3WpVwz/ddGbTbaLkL5CB80/L8vwuypNJa74/UPWAwYTs9UFNjc4GPqHki3tdvq9/RBjQLYgbgnxDA=="
+  },
+  "format": 2,
+  "log": [],
+  "packages": {},
+  "publishers": {}
 }

@@ -455,6 +455,10 @@ test "addition" {
 - [x] **Phase 10f — Release correctness:** exact-output GCC/Clang/Zig
   differential gates, byte-reproducible wheel/source releases, and native
   ARM64 Linux/macOS end-to-end coverage.
+- [x] **Phase 10g — Authenticated packages:** Ed25519 publisher signatures,
+  immutable commit and package-content hashes, externally pinned registry
+  checkpoints, append-only publication history, publisher-key revocation,
+  cached-history rollback detection, and mandatory CI verification.
 
 Security reports use the confidential process in [SECURITY.md](SECURITY.md).
 Versioning and source-compatibility guarantees are defined in the

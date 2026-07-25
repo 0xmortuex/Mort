@@ -57,7 +57,10 @@ jobs:
           mortc doctor
 
       - name: Run Python static checks
-        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tools/build_release.py tests/test_mort.py tests/differential_backends.py tests/reproducible_builds.py
+        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tools/build_release.py tools/registry_admin.py tests/test_mort.py tests/test_registry_security.py tests/differential_backends.py tests/reproducible_builds.py
+
+      - name: Verify authenticated registry
+        run: python tools/registry_admin.py verify --index registry/index.json --trusted-key "mort-registry-2026-1:ulXWv5WgFfK+NnIOYEAjACtMzTXfMZ7z3SfNM8hp/SI="
 
       - name: Run the test suite
         run: python -m pytest tests/ -q

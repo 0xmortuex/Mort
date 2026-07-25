@@ -9,6 +9,13 @@ import subprocess
 import tempfile
 import urllib.request
 
+from mort.registry_security import (
+    DEFAULT_OPERATOR_KEYS,
+    RegistrySecurityError,
+    verify_append_only,
+    verify_registry,
+)
+
 
 class ProjectError(Exception):
     pass
@@ -165,38 +172,24 @@ def _resolve_cached_git_semver_tag(root, constraint):
     return tags[selected], selected
 
 
-def _validate_registry_index(index, source):
+def _validate_registry_index(index, source, trusted_operator_keys):
     """Validate the complete registry document before using any record."""
-    if (not isinstance(index, dict)
-            or type(index.get("format")) is not int
-            or index.get("format") != 1):
-        raise ProjectError(f"registry index {source!r} must use format 1")
+    try:
+        verify_registry(index, trusted_operator_keys, source)
+    except RegistrySecurityError as error:
+        raise ProjectError(f"registry index {source!r}: {error}") from error
     packages = index.get("packages")
-    if not isinstance(packages, dict):
-        raise ProjectError(f"registry index {source!r} must contain a packages object")
     for package_name, package in packages.items():
         if not isinstance(package_name, str) or not _NAME_RE.fullmatch(package_name):
             raise ProjectError(
                 f"registry index {source!r} has invalid package name {package_name!r}")
-        if not isinstance(package, dict) or not isinstance(package.get("versions"), dict):
-            raise ProjectError(
-                f"registry package {package_name!r} must contain a versions object")
         for version, record in package["versions"].items():
             try:
                 parse_semver(version)
             except ProjectError as error:
                 raise ProjectError(
                     f"registry package {package_name!r} has {error}") from error
-            if not isinstance(record, dict):
-                raise ProjectError(
-                    f"registry record {package_name}@{version} must be an object")
-            git_url = record.get("git")
-            if not isinstance(git_url, str) or not git_url:
-                raise ProjectError(
-                    f"registry record {package_name}@{version} has no Git source")
-            revision = record.get("ref")
-            if revision is not None and (
-                    not isinstance(revision, str) or not revision or revision.startswith("-")):
+            if record["ref"].startswith("-"):
                 raise ProjectError(
                     f"registry record {package_name}@{version} has an invalid Git ref")
     return index
@@ -211,13 +204,13 @@ def _read_registry_bytes(handle, source):
     return raw
 
 
-def _decode_registry_index(raw, source):
+def _decode_registry_index(raw, source, trusted_operator_keys):
     try:
         index = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError) as error:
         raise ProjectError(
             f"registry index {source!r} is not valid UTF-8 JSON: {error}") from error
-    return _validate_registry_index(index, source)
+    return _validate_registry_index(index, source, trusted_operator_keys)
 
 
 def _atomic_write(path, content, binary=False):
@@ -242,7 +235,14 @@ def _atomic_write(path, content, binary=False):
             pass
 
 
-def _load_registry_index(url, cache_path, offline=False):
+def _load_registry_index(
+        url, cache_path, trusted_operator_keys, offline=False):
+    previous = None
+    if os.path.isfile(cache_path):
+        with open(cache_path, "rb") as handle:
+            previous = _decode_registry_index(
+                _read_registry_bytes(handle, cache_path), cache_path,
+                trusted_operator_keys)
     local_source = not url.startswith(("http://", "https://"))
     if not offline or local_source:
         try:
@@ -252,7 +252,13 @@ def _load_registry_index(url, cache_path, offline=False):
             else:
                 with open(os.path.abspath(url), "rb") as handle:
                     raw = _read_registry_bytes(handle, url)
-            index = _decode_registry_index(raw, url)
+            index = _decode_registry_index(raw, url, trusted_operator_keys)
+            if previous is not None:
+                try:
+                    verify_append_only(previous, index)
+                except RegistrySecurityError as error:
+                    raise ProjectError(
+                        f"registry index {url!r}: {error}") from error
             _atomic_write(cache_path, raw, binary=True)
             return index
         except ProjectError:
@@ -264,7 +270,8 @@ def _load_registry_index(url, cache_path, offline=False):
     try:
         with open(cache_path, "rb") as handle:
             return _decode_registry_index(
-                _read_registry_bytes(handle, cache_path), cache_path)
+                _read_registry_bytes(handle, cache_path), cache_path,
+                trusted_operator_keys)
     except (OSError, ValueError):
         if offline:
             raise ProjectError(
@@ -463,6 +470,29 @@ def _string_list(section, key, default, manifest_path):
     return value
 
 
+def _registry_trust_keys(registry, registry_url, manifest_path):
+    configured = _string_list(registry, "trusted_keys", [], manifest_path)
+    environment = os.environ.get("MORT_REGISTRY_TRUSTED_KEYS", "")
+    if environment:
+        configured.extend(item.strip() for item in environment.split(",") if item.strip())
+    if not configured and registry_url == DEFAULT_REGISTRY_URL:
+        return dict(DEFAULT_OPERATOR_KEYS)
+    keys = {}
+    for item in configured:
+        if ":" not in item:
+            raise ProjectError(
+                f"{manifest_path}: registry trusted key must be key-id:Base64")
+        key_id, public_key = item.split(":", 1)
+        if not key_id or not public_key or key_id in keys:
+            raise ProjectError(
+                f"{manifest_path}: invalid or duplicate registry trusted key")
+        keys[key_id] = public_key
+    if not keys:
+        raise ProjectError(
+            f"{manifest_path}: custom registry requires registry.trusted_keys")
+    return keys
+
+
 def resolve_project(
         manifest_path, _seen=None, offline=False, mirrors=None,
         _is_dependency=False):
@@ -526,10 +556,14 @@ def resolve_project(
 
     dependencies = data.get("dependencies", {})
     registry = data.get("registry", {})
+    if not isinstance(registry, dict):
+        raise ProjectError(f"{manifest_path}: 'registry' must be a table")
     registry_url = registry.get(
         "url", os.environ.get("MORT_REGISTRY_URL", DEFAULT_REGISTRY_URL))
     if not isinstance(registry_url, str):
         raise ProjectError(f"{manifest_path}: registry.url must be a string")
+    registry_trusted_keys = _registry_trust_keys(
+        registry, registry_url, manifest_path)
     configured_mirrors = list(mirrors or [])
     configured_mirrors.extend(
         item for item in os.environ.get("MORT_MIRRORS", "").split(os.pathsep)
@@ -545,6 +579,7 @@ def resolve_project(
                 f"{manifest_path}: dependency aliases must be Mort identifiers "
                 "mapped to path, Git, or registry strings")
         registry_version = None
+        registry_record = None
         if dependency_path.startswith("registry:"):
             request = dependency_path[9:]
             if "@" not in request:
@@ -562,15 +597,24 @@ def resolve_project(
             index = _load_registry_index(
                 registry_url,
                 os.path.join(root, ".mort", "registry-index.json"),
+                registry_trusted_keys,
                 offline=offline,
             )
             package_record = index["packages"].get(package_name)
             if package_record is None:
                 raise ProjectError(
                     f"registry has no package named {package_name!r}")
-            versions = package_record["versions"]
+            versions = {
+                version: record
+                for version, record in package_record["versions"].items()
+                if index["publishers"][record["key_id"]]["status"] == "active"
+            }
+            if not versions:
+                raise ProjectError(
+                    f"registry package {package_name!r} has no versions signed "
+                    "by an active publisher key")
             registry_version = select_semver(versions, constraint)
-            record = versions[registry_version]
+            registry_record = versions[registry_version]
             mirror_root = next((
                 os.path.join(os.path.abspath(item), package_name, registry_version)
                 for item in configured_mirrors
@@ -585,14 +629,10 @@ def resolve_project(
                     if not os.path.isdir(os.path.join(cached, ".git")):
                         raise ProjectError(
                             f"offline mirror has no {package_name}@{registry_version}")
-                git_url = record.get("git")
-                if not isinstance(git_url, str):
-                    raise ProjectError(
-                        f"registry record {package_name}@{registry_version} "
-                        "has no Git source")
+                git_url = registry_record["git"]
                 dependency_path = (
                     "git+" + git_url + "#"
-                    + str(record.get("ref", "v" + registry_version))
+                    + registry_record["commit"]
                 )
         if dependency_path.startswith("git+"):
             specification = dependency_path[4:]
@@ -615,10 +655,21 @@ def resolve_project(
                 else:
                     clone_revision, selected_version = _resolve_git_semver_tag(
                         url, version_constraint)
-            _prepare_git_dependency(
+            resolved_commit = _prepare_git_dependency(
                 url, clone_revision, dependency_root, offline=offline)
+            if (registry_record is not None
+                    and resolved_commit != registry_record["commit"]):
+                raise ProjectError(
+                    f"registry commit mismatch for {alias!r}: expected "
+                    f"{registry_record['commit']}, got {resolved_commit}")
         else:
             dependency_root = os.path.abspath(os.path.join(root, dependency_path))
+        if registry_record is not None:
+            actual_hash = _package_content_digest(dependency_root)
+            if actual_hash != registry_record["content_hash"]:
+                raise ProjectError(
+                    f"registry content hash mismatch for {alias!r}: expected "
+                    f"{registry_record['content_hash']}, got {actual_hash}")
         dependency_manifest = find_manifest(dependency_root)
         dependency = resolve_project(
             dependency_manifest, set(_seen), offline=offline,

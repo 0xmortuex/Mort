@@ -8,6 +8,7 @@ Two layers:
 
 Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
+import base64
 import hashlib
 import io
 import json
@@ -22,6 +23,8 @@ import threading
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -40,11 +43,21 @@ from mort.lsp import (
 )
 from mort.project import (
     ProjectError,
+    _package_content_digest,
     load_manifest,
     parse_semver,
     resolve_project,
     select_semver,
     semver_satisfies,
+)
+from mort.registry_security import (
+    EMPTY_LOG_ROOT,
+    canonical_json,
+    checkpoint_payload,
+    entry_payload,
+    publisher_identity,
+    record_payload,
+    sha256_json,
 )
 
 
@@ -940,7 +953,10 @@ def _start_test_tls_server(
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(1)
-                listener.settimeout(180)
+                # The listener is created before the generated client can be
+                # compiled because its ephemeral port is embedded in source.
+                # Slow Windows/Zig links may legitimately take several minutes.
+                listener.settimeout(600)
                 state["port"] = listener.getsockname()[1]
                 ready.set()
                 connection, _ = listener.accept()
@@ -1000,6 +1016,16 @@ def test_verified_tls_loopback_and_fail_closed_validation(monkeypatch):
         sanitizer_args += ["--sanitize", sanitizer]
     with tempfile.TemporaryDirectory() as directory:
         monkeypatch.setenv("MORT_CACHE_DIR", os.path.join(directory, "cache"))
+        # Building Mbed TLS can take several minutes on emulated or low-power
+        # runners. Do that before opening a deliberately short-lived loopback
+        # listener so compilation time cannot be mistaken for a network fault.
+        tls_flags = []
+        if configured_sanitizers:
+            tls_flags = [
+                f"-fsanitize={configured_sanitizers}",
+                "-fno-omit-frame-pointer",
+            ]
+        mortc.ensure_tls_backend(_CC, tls_flags)
 
         port, server, state = _start_test_tls_server(
             fixtures / "server-cert.pem", fixtures / "server-key.pem")
@@ -2174,18 +2200,63 @@ def test_registry_dependency_resolves_from_offline_mirror():
         with open(os.path.join(package, "src", "lib.mx"), "w", encoding="utf-8") as fh:
             fh.write("module utility; pub fn answer() -> i64 { return 42; }")
         index_path = os.path.join(d, "index.json")
+        operator = Ed25519PrivateKey.generate()
+        publisher = Ed25519PrivateKey.generate()
+        public = lambda key: base64.b64encode(key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )).decode("ascii")
+        sign = lambda key, value: base64.b64encode(
+            key.sign(canonical_json(value))).decode("ascii")
+        record = {
+            "git": "https://example.test/unused.git",
+            "ref": "v1.4.0",
+            "commit": "a" * 40,
+            "content_hash": _package_content_digest(package),
+            "published_at": "2026-07-25T12:00:00Z",
+            "key_id": "publisher-1",
+        }
+        record["signature"] = sign(
+            publisher, record_payload("utility", "1.4.0", record))
+        publishers = {"publisher-1": {
+            "algorithm": "ed25519",
+            "public_key": public(publisher),
+            "status": "active",
+        }}
+        add_key = {
+            "sequence": 0,
+            "previous_hash": EMPTY_LOG_ROOT,
+            "event": "add-key",
+            "key_id": "publisher-1",
+            "key_hash": sha256_json(
+                publisher_identity(publishers["publisher-1"])),
+        }
+        add_key["entry_hash"] = sha256_json(entry_payload(add_key))
+        entry = {
+            "sequence": 1,
+            "previous_hash": add_key["entry_hash"],
+            "event": "publish",
+            "package": "utility",
+            "version": "1.4.0",
+            "record_hash": sha256_json(record),
+        }
+        entry["entry_hash"] = sha256_json(entry_payload(entry))
+        checkpoint = {
+            "key_id": "operator-1",
+            "log_size": 2,
+            "log_root": entry["entry_hash"],
+            "publishers_hash": sha256_json(publishers),
+        }
+        checkpoint["signature"] = sign(
+            operator, checkpoint_payload(checkpoint))
         with open(index_path, "w", encoding="utf-8") as fh:
             json.dump({
-                "format": 1,
+                "format": 2,
+                "publishers": publishers,
                 "packages": {
-                    "utility": {
-                        "versions": {
-                            "1.0.0": {"git": "unused"},
-                            "1.4.0": {"git": "unused"},
-                            "2.0.0": {"git": "unused"},
-                        }
-                    }
+                    "utility": {"versions": {"1.4.0": record}},
                 },
+                "log": [add_key, entry],
+                "checkpoint": checkpoint,
             }, fh)
         mirror_value = mirror.replace("\\", "/")
         index_value = index_path.replace("\\", "/")
@@ -2194,6 +2265,7 @@ def test_registry_dependency_resolves_from_offline_mirror():
                 '[package]\nname = "app"\nversion = "0.1.0"\n\n'
                 '[build]\nsources = ["src/**/*.mx"]\n\n'
                 f'[registry]\nurl = "{index_value}"\n'
+                f'trusted_keys = ["operator-1:{public(operator)}"]\n'
                 f'mirrors = ["{mirror_value}"]\n\n'
                 '[dependencies]\nutility = "registry:utility@^1.0.0"\n')
         with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
@@ -2204,50 +2276,23 @@ def test_registry_dependency_resolves_from_offline_mirror():
         os.path.join("utility", "1.4.0", "src", "lib.mx"))
 
 
-@pytest.mark.parametrize(
-    ("index", "message"),
-    [
-        ({"format": 2, "packages": {}}, "must use format 1"),
-        ({"format": True, "packages": {}}, "must use format 1"),
-        ({"format": 1, "packages": []}, "packages object"),
-        (
-            {"format": 1, "packages": {"utility": {"versions": []}}},
-            "versions object",
-        ),
-        (
-            {
-                "format": 1,
-                "packages": {
-                    "utility": {"versions": {"not-semver": {"git": "unused"}}}
-                },
-            },
-            "invalid semantic version",
-        ),
-        (
-            {
-                "format": 1,
-                "packages": {"utility": {"versions": {"1.0.0": "not-an-object"}}},
-            },
-            "must be an object",
-        ),
-    ],
-)
-def test_registry_rejects_malformed_indexes_cleanly(index, message):
+def test_registry_rejects_unauthenticated_indexes_cleanly():
     with tempfile.TemporaryDirectory() as d:
         app = os.path.join(d, "app")
         os.makedirs(os.path.join(app, "src"))
         index_path = os.path.join(d, "index.json")
         with open(index_path, "w", encoding="utf-8") as fh:
-            json.dump(index, fh)
+            json.dump({"format": 1, "packages": {}}, fh)
         with open(os.path.join(app, "src", "main.mx"), "w", encoding="utf-8") as fh:
             fh.write("fn main() -> int { return 0; }")
         with open(os.path.join(app, "mort.toml"), "w", encoding="utf-8") as fh:
             fh.write(
                 '[package]\nname = "app"\n\n'
                 '[build]\nsources = ["src/**/*.mx"]\n\n'
-                f'[registry]\nurl = "{index_path.replace(chr(92), "/")}"\n\n'
+                f'[registry]\nurl = "{index_path.replace(chr(92), "/")}"\n'
+                f'trusted_keys = ["operator-1:{base64.b64encode(bytes(32)).decode()}"]\n\n'
                 '[dependencies]\nutility = "registry:utility@^1.0.0"\n')
-        with pytest.raises(ProjectError, match=message):
+        with pytest.raises(ProjectError, match="authenticated format 2"):
             resolve_project(os.path.join(app, "mort.toml"))
 
 
