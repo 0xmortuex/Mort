@@ -16,7 +16,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MORTC = ROOT / "mortc.py"
 OPTIMIZATION_LEVELS = ("0", "1", "2", "3", "s")
