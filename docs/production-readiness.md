@@ -24,6 +24,8 @@ only when an automated gate or named artifact provides repeatable evidence.
   UBSan with leak detection enabled.
 - [x] Exact-output differential and metamorphic tests cover GCC, Clang, and
   Zig cc at `-O0`, `-O1`, `-O2`, `-O3`, and `-Os` in CI and release gates.
+  Evidence: the [v0.42 CI matrix](https://github.com/0xmortuex/Mort/actions/runs/30154832916)
+  and [v0.42 release gates](https://github.com/0xmortuex/Mort/actions/runs/30154924377).
 - [x] Mort 0.41 has a versioned
   [normative specification](language-specification.md) and a black-box
   [executable conformance suite](../conformance/README.md), gated on Linux,
