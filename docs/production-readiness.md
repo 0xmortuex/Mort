@@ -122,7 +122,7 @@ only when an automated gate or named artifact provides repeatable evidence.
   and guided tutorial are published and versioned.
 - [ ] Source-level debugging works in major editors with reliable Mort source
   locations and variable inspection.
-- [ ] Profiling, coverage reporting, benchmarking, and package documentation
+- [x] Profiling, coverage reporting, benchmarking, and package documentation
   generation are integrated into the CLI.
 - [ ] The public registry contains a useful audited package ecosystem rather
   than only an index format.

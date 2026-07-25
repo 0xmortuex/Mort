@@ -7,6 +7,8 @@ Design choices:
   * The user's ``main`` becomes ``mort_main`` and a real C ``main`` calls it,
     which sidesteps the int64/int return-type clash.
 """
+import base64
+
 from . import mort_ast as A
 
 _C_BASE = {
@@ -170,10 +172,13 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
 
 
 class CodeGen:
-    def __init__(self, program, freestanding=False, test_mode=False):
+    def __init__(
+            self, program, freestanding=False, test_mode=False, coverage=False):
         self.program = program
         self.freestanding = freestanding
         self.test_mode = test_mode
+        self.coverage = coverage
+        self.coverage_points = []
         self.struct_names = {s.name for s in program.structs if not s.generic_params}
         self.enum_names = {e.name for e in program.enums if not e.generic_params}
         self.payload_enum_names = {
@@ -419,6 +424,17 @@ class CodeGen:
 
     def _emit(self, s=""):
         self.lines.append(("    " * self.indent + s) if s else "")
+
+    def _coverage_point(self, statement):
+        if not self.coverage:
+            return
+        filename = getattr(statement, "filename", None)
+        line = getattr(statement, "line", None)
+        if not filename or type(line) is not int or line <= 0:
+            return
+        index = len(self.coverage_points)
+        self.coverage_points.append((filename, line))
+        self._emit(f"mort_coverage_points[{index}]++;")
 
     def _gen_integer_helpers(self):
         if not self.used_int_helpers:
@@ -1566,6 +1582,7 @@ class CodeGen:
                     or self.used_bounds
                     or self.used_threads or self.used_mutexes or self.used_atomics
                     or self.used_network
+                    or self.coverage
                     or any(op in ("div", "rem", "shift_count", "float_cast")
                            for op, _ in self.used_int_helpers)):
                 self._emit("#include <stdlib.h>")
@@ -1616,6 +1633,26 @@ class CodeGen:
         self._emit("#include <stdbool.h>")
         self._emit("#include <stddef.h>")
         self._emit()
+        if self.coverage:
+            count = max(1, len(self.coverage_points))
+            self._emit(f"static uint64_t mort_coverage_points[{count}] = {{0}};")
+            self._emit("static void mort_coverage_write(void) {")
+            self._emit("    const char* path = getenv(\"MORT_COVERAGE_FILE\");")
+            self._emit("    if (path == NULL || path[0] == '\\0') { return; }")
+            self._emit("    FILE* handle = fopen(path, \"wb\");")
+            self._emit("    if (handle == NULL) { return; }")
+            self._emit("    fputs(\"MORTCOV1\\n\", handle);")
+            for index, (filename, line) in enumerate(self.coverage_points):
+                encoded = base64.b64encode(
+                    filename.encode("utf-8", errors="surrogatepass")
+                ).decode("ascii")
+                self._emit(
+                    f'    fprintf(handle, "{index}\\t%llu\\t{line}\\t'
+                    f'{encoded}\\n", (unsigned long long)'
+                    f"mort_coverage_points[{index}]);")
+            self._emit("    fclose(handle);")
+            self._emit("}")
+            self._emit()
         if self.used_tls:
             self._emit("#define MORT_REQUIRES_TLS 1")
             self._emit(
@@ -1816,12 +1853,19 @@ class CodeGen:
         if not self.freestanding:
             if self.test_mode:
                 self._emit("int main(void) {")
+                if self.coverage:
+                    self._emit("    atexit(mort_coverage_write);")
                 for index, _ in enumerate(self.program.tests):
                     self._emit(f"    mort_test_{index}();")
                 self._emit("    return 0;")
                 self._emit("}")
             else:
-                self._emit("int main(void) { return (int)mort_main(); }")
+                if self.coverage:
+                    self._emit(
+                        "int main(void) { atexit(mort_coverage_write); "
+                        "return (int)mort_main(); }")
+                else:
+                    self._emit("int main(void) { return (int)mort_main(); }")
         return "\n".join(self.lines) + "\n"
 
     def _gen_struct(self, s):
@@ -2067,6 +2111,7 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _gen_stmt(self, s):
+        self._coverage_point(s)
         if isinstance(s, A.Let):
             self._prepare_try_expr(s.expr)
             destructor = getattr(s, "destructor_symbol", None)

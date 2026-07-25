@@ -274,11 +274,24 @@ mortc add json --registry '^1.2.0'  # highest compatible public release
 mortc fetch            # resolve dependencies and refresh the lockfile
 mortc fetch --locked   # verify the lockfile without changing it
 mortc fetch --offline  # use cached index/checkouts and configured mirrors
+mortc coverage         # native statement-line coverage -> build/coverage.json
+mortc bench            # warmup + min/median/mean/p95 native timing
+mortc profile          # compiler/build profile -> build/mortc.prof
+mortc doc              # deterministic package API -> build/api.md
 ```
 
 Project builds are content-addressed: unchanged sources, dependencies,
 configuration, standard modules, and compiler versions reuse the existing
 native output without invoking the C backend.
+
+`mortc coverage` instruments Mort statements directly, runs every project test,
+merges counters across test executables, and emits per-file executable and
+covered lines plus an aggregate percentage. `mortc bench` suppresses target
+output and records nanosecond samples in optional JSON. `mortc profile` writes
+standard Python `pstats` data for the complete compiler/build pipeline.
+`mortc doc --format markdown|json` extracts deterministic module, function,
+generic, struct, resource, enum, type-alias, visibility, and source-location
+metadata without executing project code.
 
 Hosted builds can enable `address`, `undefined`, `leak`, and `thread` C-backend
 sanitizers with repeated `--sanitize` options or a project setting such as
@@ -463,6 +476,10 @@ test "addition" {
   from the active language line runs unchanged against the current compiler,
   while a machine-checked deprecation ledger enforces a full minor-version
   migration window before removals.
+- [x] **Phase 10i — Performance and insight tooling:** portable statement-line
+  coverage, statistically summarized native benchmarks, compiler/build
+  profiles, and deterministic Markdown/JSON package API documentation are
+  integrated into `mortc`.
 
 Security reports use the confidential process in [SECURITY.md](SECURITY.md).
 Versioning and source-compatibility guarantees are defined in the

@@ -13,14 +13,19 @@ binary via a system C compiler (cc/gcc/clang). If no C compiler is found, the
 generated C is written next to your source so you can build it yourself.
 """
 import argparse
+import base64
+import cProfile
 import hashlib
 import json
 import os
+import pstats
 import shlex
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -134,7 +139,9 @@ def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=N
             "source nesting exceeds the compiler safety limit") from error
 
 
-def _compile_programs(programs, freestanding=False, test_mode=False, warnings=None):
+def _compile_programs(
+        programs, freestanding=False, test_mode=False, warnings=None,
+        coverage=False):
     for source_program in programs:
         for function in source_program.funcs:
             if source_program.module_name and function.module is None:
@@ -158,12 +165,14 @@ def _compile_programs(programs, freestanding=False, test_mode=False, warnings=No
     checker.check()
     if warnings is not None:
         warnings.extend(checker.warnings)
-    return CodeGen(program, freestanding=freestanding, test_mode=test_mode).generate()
+    return CodeGen(
+        program, freestanding=freestanding, test_mode=test_mode,
+        coverage=coverage).generate()
 
 
 def compile_files_to_c(
         paths, freestanding=False, test_mode=False, packages=None, warnings=None,
-        source_overrides=None):
+        source_overrides=None, coverage=False):
     """Resolve imports recursively and compile a set of root source files."""
     programs = []
     loaded = set()
@@ -258,7 +267,8 @@ def compile_files_to_c(
             test.import_aliases = dict(aliases)
     try:
         return _compile_programs(
-            programs, freestanding, test_mode=test_mode, warnings=warnings)
+            programs, freestanding, test_mode=test_mode, warnings=warnings,
+            coverage=coverage)
     except RecursionError as error:
         raise MortError(
             "source nesting exceeds the compiler safety limit") from error
@@ -363,6 +373,7 @@ def _compile_main(argv=None, test_mode=False):
                     help="include a bundled standard-library module (repeatable)")
     ap.add_argument("--package", action="append", default=[], metavar="NAME=ENTRY",
                     help=argparse.SUPPRESS)
+    ap.add_argument("--coverage-output", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     packages = {}
@@ -414,6 +425,9 @@ def _compile_main(argv=None, test_mode=False):
     if args.freestanding and args.sanitize:
         print("mortc: sanitizers are unavailable in freestanding mode", file=sys.stderr)
         return 1
+    if args.freestanding and args.coverage_output:
+        print("mortc: coverage is unavailable in freestanding mode", file=sys.stderr)
+        return 1
     if "thread" in args.sanitize and any(
             item in args.sanitize for item in ("address", "leak")):
         print(
@@ -427,7 +441,8 @@ def _compile_main(argv=None, test_mode=False):
     try:
         c_source = compile_files_to_c(
             source_files, freestanding=args.freestanding, test_mode=test_mode,
-            packages=packages, warnings=compiler_warnings)
+            packages=packages, warnings=compiler_warnings,
+            coverage=args.coverage_output is not None)
     except MortError as e:
         if args.diagnostic_format == "json":
             print(json.dumps(e.to_diagnostic(), ensure_ascii=False), file=sys.stderr)
@@ -552,7 +567,12 @@ def _compile_main(argv=None, test_mode=False):
 
     if args.run:
         exe = os.path.abspath(out)
-        result = subprocess.run([exe], check=False)
+        environment = None
+        if args.coverage_output:
+            environment = os.environ.copy()
+            environment["MORT_COVERAGE_FILE"] = os.path.abspath(
+                args.coverage_output)
+        result = subprocess.run([exe], check=False, env=environment)
         return result.returncode
     return 0
 
@@ -584,7 +604,7 @@ def _load_project(start, offline=False):
         return None
 
 
-def _project_build(start, run=False):
+def _project_build(start, run=False, force=False):
     project = _load_project(start)
     if project is None:
         return 1
@@ -598,7 +618,8 @@ def _project_build(start, run=False):
             cache = json.load(handle)
     except (OSError, ValueError):
         pass
-    if (cache.get("fingerprint") == fingerprint
+    if (not force
+            and cache.get("fingerprint") == fingerprint
             and cache.get("output") == project["output"]
             and os.path.isfile(project["output"])):
         print(f"mortc: build cache hit ({project['output']})")
@@ -699,6 +720,278 @@ def _project_test(start):
             passed += 1
             print("ok")
     print(f"mortc: {passed} test file(s) passed")
+    return 0
+
+
+def _write_json(path, value):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _read_coverage(path):
+    points = []
+    with open(path, "r", encoding="ascii") as handle:
+        if handle.readline().rstrip("\n") != "MORTCOV1":
+            raise ValueError("invalid Mort coverage data")
+        for raw in handle:
+            fields = raw.rstrip("\n").split("\t")
+            if len(fields) != 4:
+                raise ValueError("malformed Mort coverage point")
+            _, hits, line, encoded = fields
+            filename = base64.b64decode(encoded, validate=True).decode(
+                "utf-8", errors="surrogatepass")
+            points.append((filename, int(line), int(hits)))
+    return points
+
+
+def _project_coverage(start, output):
+    project = _load_project(start)
+    if project is None:
+        return 1
+    tests = resolve_tests(project)
+    if not tests:
+        print("mortc: coverage requires at least one project test", file=sys.stderr)
+        return 1
+    merged = {}
+    with tempfile.TemporaryDirectory(prefix="mort-coverage-") as directory:
+        for index, path in enumerate(tests):
+            executable = os.path.join(
+                directory, f"test-{index}" + (".exe" if os.name == "nt" else ""))
+            raw = os.path.join(directory, f"test-{index}.mortcov")
+            arguments = _project_args(
+                project, [*project["sources"], path], executable, run=True)
+            arguments += ["--coverage-output", raw]
+            if _compile_main(arguments, test_mode=True) != 0:
+                return 1
+            try:
+                points = _read_coverage(raw)
+            except (OSError, ValueError) as error:
+                print(f"mortc: could not read coverage data: {error}", file=sys.stderr)
+                return 1
+            for filename, line, hits in points:
+                absolute = os.path.abspath(filename)
+                try:
+                    in_project = os.path.commonpath(
+                        (project["root"], absolute)) == project["root"]
+                except ValueError:
+                    in_project = False
+                if in_project:
+                    key = (absolute, line)
+                    merged[key] = merged.get(key, 0) + hits
+    files = {}
+    for (filename, line), hits in sorted(merged.items()):
+        relative = os.path.relpath(filename, project["root"]).replace("\\", "/")
+        entry = files.setdefault(relative, {"executable_lines": [], "covered_lines": []})
+        entry["executable_lines"].append(line)
+        if hits:
+            entry["covered_lines"].append(line)
+    for entry in files.values():
+        entry["executable_lines"] = sorted(set(entry["executable_lines"]))
+        entry["covered_lines"] = sorted(set(entry["covered_lines"]))
+    total = sum(len(item["executable_lines"]) for item in files.values())
+    covered = sum(len(item["covered_lines"]) for item in files.values())
+    report = {
+        "format": 1,
+        "package": project["name"],
+        "statement_lines": total,
+        "covered_lines": covered,
+        "coverage_percent": round(covered * 100 / total, 2) if total else 100.0,
+        "files": files,
+    }
+    _write_json(output, report)
+    print(
+        f"mortc: coverage {covered}/{total} statement line(s) "
+        f"({report['coverage_percent']:.2f}%); wrote {os.path.abspath(output)}")
+    return 0
+
+
+def _project_benchmark(start, iterations, warmup, output):
+    project = _load_project(start)
+    if project is None or _project_build(start) != 0:
+        return 1
+    for _ in range(warmup):
+        result = subprocess.run(
+            [project["output"]], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False)
+        if result.returncode:
+            print(
+                f"mortc: benchmark warmup exited with {result.returncode}",
+                file=sys.stderr)
+            return result.returncode
+    samples = []
+    for _ in range(iterations):
+        started = time.perf_counter_ns()
+        result = subprocess.run(
+            [project["output"]], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False)
+        elapsed = time.perf_counter_ns() - started
+        if result.returncode:
+            print(
+                f"mortc: benchmark target exited with {result.returncode}",
+                file=sys.stderr)
+            return result.returncode
+        samples.append(elapsed)
+    ordered = sorted(samples)
+    percentile_95 = ordered[min(
+        len(ordered) - 1, max(0, (len(ordered) * 95 + 99) // 100 - 1))]
+    report = {
+        "format": 1,
+        "package": project["name"],
+        "iterations": iterations,
+        "warmup": warmup,
+        "unit": "nanoseconds",
+        "min": min(samples),
+        "median": int(statistics.median(samples)),
+        "mean": round(statistics.fmean(samples), 2),
+        "p95": percentile_95,
+        "max": max(samples),
+        "samples": samples,
+    }
+    if output:
+        _write_json(output, report)
+    print(
+        f"mortc: benchmark {iterations} run(s): median "
+        f"{report['median'] / 1_000_000:.3f} ms, "
+        f"p95 {report['p95'] / 1_000_000:.3f} ms")
+    if output:
+        print(f"mortc: wrote {os.path.abspath(output)}")
+    return 0
+
+
+def _project_profile(start, output, limit):
+    profile = cProfile.Profile()
+    result = profile.runcall(_project_build, start, False, True)
+    profile.dump_stats(output)
+    stats = pstats.Stats(profile).strip_dirs().sort_stats("cumulative")
+    stats.print_stats(limit)
+    print(f"mortc: wrote compiler build profile {os.path.abspath(output)}")
+    return result
+
+
+def _type_parameters(values):
+    return "<" + ", ".join(values) + ">" if values else ""
+
+
+def _package_api(start):
+    project = _load_project(start)
+    if project is None:
+        return None
+    modules = []
+    for path in project["sources"]:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                program = _parse_source(handle.read(), path)
+        except (OSError, MortError) as error:
+            print(f"mortc: documentation failed: {error}", file=sys.stderr)
+            return None
+        functions = []
+        for function in program.funcs:
+            generics = _type_parameters(function.generic_params)
+            parameters = ", ".join(
+                f"{item.name}: {item.typ}" for item in function.params)
+            functions.append({
+                "name": function.name,
+                "public": function.public,
+                "signature": (
+                    f"fn {function.name}{generics}({parameters}) -> {function.ret}"
+                ),
+                "line": function.line,
+            })
+        structures = [{
+            "name": item.name,
+            "generic_parameters": item.generic_params,
+            "resource": item.resource,
+            "line": item.line,
+            "fields": [
+                {"name": field.name, "type": field.typ} for field in item.fields
+            ],
+        } for item in program.structs]
+        enumerations = [{
+            "name": item.name,
+            "generic_parameters": item.generic_params,
+            "line": item.line,
+            "variants": [{
+                "name": variant.name,
+                "payload_types": variant.payload_types,
+            } for variant in item.variants],
+        } for item in program.enums]
+        aliases = [{
+            "name": item.name, "target": item.target, "line": item.line
+        } for item in program.aliases]
+        modules.append({
+            "module": program.module_name,
+            "path": os.path.relpath(path, project["root"]).replace("\\", "/"),
+            "functions": functions,
+            "structs": structures,
+            "enums": enumerations,
+            "aliases": aliases,
+        })
+    return {
+        "format": 1,
+        "package": project["name"],
+        "compiler_version": __version__,
+        "language_version": __language_version__,
+        "modules": modules,
+    }
+
+
+def _api_markdown(api):
+    lines = [
+        f"# {api['package']} API",
+        "",
+        (
+            f"Generated by Mort {api['compiler_version']} "
+            f"(language {api['language_version']})."
+        ),
+    ]
+    for module in api["modules"]:
+        title = module["module"] or module["path"]
+        lines += ["", f"## `{title}`", "", f"Source: `{module['path']}`"]
+        if module["functions"]:
+            lines += ["", "### Functions", ""]
+            for function in module["functions"]:
+                visibility = "public" if function["public"] else "private"
+                lines.append(
+                    f"- `{function['signature']}` — {visibility}, "
+                    f"line {function['line']}")
+        if module["structs"]:
+            lines += ["", "### Structs", ""]
+            for structure in module["structs"]:
+                suffix = _type_parameters(structure["generic_parameters"])
+                kind = "resource struct" if structure["resource"] else "struct"
+                fields = ", ".join(
+                    f"{field['name']}: {field['type']}"
+                    for field in structure["fields"]) or "no fields"
+                lines.append(
+                    f"- `{kind} {structure['name']}{suffix}` — {fields}")
+        if module["enums"]:
+            lines += ["", "### Enums", ""]
+            for enumeration in module["enums"]:
+                suffix = _type_parameters(enumeration["generic_parameters"])
+                variants = ", ".join(
+                    variant["name"] for variant in enumeration["variants"])
+                lines.append(
+                    f"- `enum {enumeration['name']}{suffix}` — {variants}")
+        if module["aliases"]:
+            lines += ["", "### Type aliases", ""]
+            for alias in module["aliases"]:
+                lines.append(f"- `type {alias['name']} = {alias['target']}`")
+    return "\n".join(lines) + "\n"
+
+
+def _project_document(start, output, output_format):
+    api = _package_api(start)
+    if api is None:
+        return 1
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    if output_format == "json":
+        _write_json(output, api)
+    else:
+        with open(output, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(_api_markdown(api))
+    print(f"mortc: wrote package documentation {os.path.abspath(output)}")
     return 0
 
 
@@ -874,6 +1167,59 @@ def main(argv=None):
         if command == "test":
             return _project_test(args.path)
         return _project_build(args.path, run=command == "run")
+    if argv and argv[0] == "coverage":
+        ap = argparse.ArgumentParser(
+            prog="mortc coverage",
+            description="Run project tests with Mort statement-line coverage.")
+        ap.add_argument("path", nargs="?", default=".", help="project directory")
+        ap.add_argument(
+            "--output", default="build/coverage.json",
+            help="JSON report path (default: build/coverage.json)")
+        args = ap.parse_args(argv[1:])
+        return _project_coverage(args.path, args.output)
+    if argv and argv[0] == "bench":
+        ap = argparse.ArgumentParser(
+            prog="mortc bench", description="Benchmark a Mort project executable.")
+        ap.add_argument("path", nargs="?", default=".", help="project directory")
+        ap.add_argument("--iterations", type=int, default=20)
+        ap.add_argument("--warmup", type=int, default=3)
+        ap.add_argument("--output", help="optional JSON report path")
+        args = ap.parse_args(argv[1:])
+        if not 1 <= args.iterations <= 100000 or not 0 <= args.warmup <= 100000:
+            print(
+                "mortc: iterations must be 1..100000 and warmup 0..100000",
+                file=sys.stderr)
+            return 1
+        return _project_benchmark(
+            args.path, args.iterations, args.warmup, args.output)
+    if argv and argv[0] == "profile":
+        ap = argparse.ArgumentParser(
+            prog="mortc profile",
+            description="Profile the compiler while building a Mort project.")
+        ap.add_argument("path", nargs="?", default=".", help="project directory")
+        ap.add_argument(
+            "--output", default="build/mortc.prof",
+            help="pstats output path (default: build/mortc.prof)")
+        ap.add_argument(
+            "--limit", type=int, default=25,
+            help="number of cumulative-time entries to print")
+        args = ap.parse_args(argv[1:])
+        if not 1 <= args.limit <= 1000:
+            print("mortc: --limit must be 1..1000", file=sys.stderr)
+            return 1
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+        return _project_profile(args.path, args.output, args.limit)
+    if argv and argv[0] == "doc":
+        ap = argparse.ArgumentParser(
+            prog="mortc doc", description="Generate package API documentation.")
+        ap.add_argument("path", nargs="?", default=".", help="project directory")
+        ap.add_argument(
+            "--format", choices=("markdown", "json"), default="markdown")
+        ap.add_argument("--output", help="documentation output path")
+        args = ap.parse_args(argv[1:])
+        output = args.output or (
+            "build/api.json" if args.format == "json" else "build/api.md")
+        return _project_document(args.path, output, args.format)
     if argv and argv[0] == "fmt":
         ap = argparse.ArgumentParser(prog="mortc fmt", description="Format Mort source files.")
         ap.add_argument("paths", nargs="*", help="files or project directories")

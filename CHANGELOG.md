@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.46.0 - 2026-07-25
+
+Mort's developer-insight release. The compiler version moves to 0.46 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Developer tooling
+
+- `mortc coverage` performs compiler-native statement instrumentation, runs all
+  project tests, merges counters, and writes deterministic per-file JSON.
+- `mortc bench` records bounded warmups and iterations with raw nanosecond
+  samples and min, median, mean, p95, and max summaries.
+- `mortc profile` writes a standard `pstats` profile for the complete
+  compiler/build pipeline and prints the hottest cumulative-time entries.
+- `mortc doc` generates deterministic Markdown or machine-readable JSON for
+  modules, functions and visibility, generics, structs/resources, enums,
+  aliases, fields, variants, and source locations.
+- End-to-end tests execute and validate every new command and artifact.
+
 ## 0.45.0 - 2026-07-25
 
 Mort's cross-release compatibility release. The compiler version moves to 0.45

@@ -2312,6 +2312,46 @@ def test_registry_rejects_package_path_traversal_before_loading_index():
 
 
 @needs_cc
+def test_project_coverage_benchmark_profile_and_documentation_commands():
+    with tempfile.TemporaryDirectory() as directory:
+        project = os.path.join(directory, "tooling")
+        assert mortc.main(["new", project]) == 0
+        coverage = os.path.join(directory, "coverage.json")
+        benchmark = os.path.join(directory, "benchmark.json")
+        profile = os.path.join(directory, "compiler.prof")
+        markdown = os.path.join(directory, "api.md")
+        api_json = os.path.join(directory, "api.json")
+        assert mortc.main([
+            "coverage", project, "--output", coverage]) == 0
+        assert mortc.main([
+            "bench", project, "--iterations", "2", "--warmup", "0",
+            "--output", benchmark]) == 0
+        assert mortc.main([
+            "profile", project, "--limit", "3", "--output", profile]) == 0
+        assert mortc.main([
+            "doc", project, "--output", markdown]) == 0
+        assert mortc.main([
+            "doc", project, "--format", "json", "--output", api_json]) == 0
+        with open(coverage, encoding="utf-8") as handle:
+            coverage_data = json.load(handle)
+        with open(benchmark, encoding="utf-8") as handle:
+            benchmark_data = json.load(handle)
+        with open(api_json, encoding="utf-8") as handle:
+            api_data = json.load(handle)
+        assert coverage_data["format"] == 1
+        assert coverage_data["statement_lines"] >= 3
+        assert coverage_data["covered_lines"] >= 1
+        assert "tests/smoke.mx" in coverage_data["files"]
+        assert benchmark_data["iterations"] == 2
+        assert len(benchmark_data["samples"]) == 2
+        assert benchmark_data["min"] <= benchmark_data["median"]
+        assert os.path.getsize(profile) > 0
+        assert "# tooling API" in Path(markdown).read_text(encoding="utf-8")
+        assert api_data["package"] == "tooling"
+        assert api_data["modules"][0]["functions"][0]["name"] == "main"
+
+
+@needs_cc
 def test_typed_slices_and_owned_strings_run():
     slice_src = (
         "fn sum(values: []i32) -> i64 { let total: i64 = 0; "
