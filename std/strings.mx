@@ -1,0 +1,105 @@
+// Mort standard library: slice helpers over []const u8 text.
+
+module std.strings;
+
+import std.bytes;
+import std.option;
+
+pub fn equal(left: []const u8, right: []const u8) -> bool {
+    return bytes.equal(left, right);
+}
+
+pub fn starts_with(text: []const u8, prefix: []const u8) -> bool {
+    if prefix.len > text.len {
+        return false;
+    }
+    return bytes.equal(slice(text.data, prefix.len), prefix);
+}
+
+pub fn ends_with(text: []const u8, suffix: []const u8) -> bool {
+    if suffix.len > text.len {
+        return false;
+    }
+    let offset: u64 = text.len - suffix.len;
+    return bytes.equal(slice(((text.data as u64) + offset) as *const u8, suffix.len), suffix);
+}
+
+// First byte offset of `needle` in `text`, or None if it does not occur.
+// An empty needle matches at offset 0.
+pub fn index_of(text: []const u8, needle: []const u8) -> Option<u64> {
+    if needle.len == 0 {
+        return Option<u64>.Some(0);
+    }
+    if needle.len > text.len {
+        return Option<u64>.None;
+    }
+    let last: u64 = text.len - needle.len;
+    for start: u64 in 0..(last + 1) {
+        if bytes.equal(slice(((text.data as u64) + start) as *const u8, needle.len), needle) {
+            return Option<u64>.Some(start);
+        }
+    }
+    return Option<u64>.None;
+}
+
+fn is_ascii_space(byte: u8) -> bool {
+    return byte == 32 || byte == 9 || byte == 10 || byte == 13 || byte == 11 || byte == 12;
+}
+
+// Trims leading and trailing ASCII whitespace, returning a view into `text`.
+pub fn trim(text: []const u8) -> []const u8 {
+    let start: u64 = 0;
+    while start < text.len && is_ascii_space(text[start]) {
+        start += 1;
+    }
+    let end: u64 = text.len;
+    while end > start && is_ascii_space(text[end - 1]) {
+        end -= 1;
+    }
+    return slice(((text.data as u64) + start) as *const u8, end - start);
+}
+
+// Parses an unsigned decimal integer. None on an empty or non-digit input.
+pub fn parse_u64(text: []const u8) -> Option<u64> {
+    if text.len == 0 {
+        return Option<u64>.None;
+    }
+    let value: u64 = 0;
+    for index: u64 in 0..text.len {
+        let byte = text[index];
+        if byte < 48 || byte > 57 {
+            return Option<u64>.None;
+        }
+        value = value * 10 + ((byte - 48) as u64);
+    }
+    return Option<u64>.Some(value);
+}
+
+// Parses a signed decimal integer with an optional leading '-'. None on an
+// empty, sign-only, or non-digit input.
+pub fn parse_i64(text: []const u8) -> Option<i64> {
+    if text.len == 0 {
+        return Option<i64>.None;
+    }
+    let negative: bool = false;
+    let start: u64 = 0;
+    if text[0] == 45 {
+        negative = true;
+        start = 1;
+    }
+    if start >= text.len {
+        return Option<i64>.None;
+    }
+    let value: i64 = 0;
+    for index: u64 in start..text.len {
+        let byte = text[index];
+        if byte < 48 || byte > 57 {
+            return Option<i64>.None;
+        }
+        value = value * 10 + ((byte - 48) as i64);
+    }
+    if negative {
+        value = 0 - value;
+    }
+    return Option<i64>.Some(value);
+}

@@ -12,10 +12,11 @@ the compiler internals (`mort/parser.py`, `mort/typechecker.py`, `mort/codegen.p
 autonomously; those need careful human review with the full suite.
 
 ## Standard library (each module compiles + is tested by a small program)
-- [ ] `std.strings` — slice helpers over `[]const u8`: `equal`, `starts_with`, `ends_with`, `index_of`, `trim` (ASCII whitespace), `parse_i64` / `parse_u64` (with an ok flag). Cover each with a compiled test program.
+- [x] `std.strings` — slice helpers over `[]const u8`: `equal`, `starts_with`, `ends_with`, `index_of` (substring search), `trim` (ASCII whitespace), `parse_i64` / `parse_u64` (returning `Option<i64>` / `Option<u64>`). Shipped 2026-07-25: `std/strings.mx`, covered by `test_std_strings_helpers_cover_equal_prefix_trim_and_parse` in `tests/test_mort.py` (16 assertions, `--run` exits 0), registered in `pyproject.toml`'s `mort-stdlib` list, version bumped to 0.50.0.
 - [ ] `std.ascii` — `to_upper` / `to_lower` / `is_alpha` / `is_digit` / `is_space` on `u8`, plus in-place case conversion over a `[]u8`.
-- [ ] `std.sort` — in-place comparison sort over `[]T` taking a caller `fn(a: T, b: T) -> bool` less-than (insertion or heap sort; document the complexity in the module header).
+- [ ] `std.sort` — in-place comparison sort over `[]T` taking a caller `fn(a: T, b: T) -> bool` less-than (insertion or heap sort; document the complexity in the module header). Note: `std.algorithm.sort<T>` already exists but only supports `<`-comparable element types, not a caller-supplied comparator — this item is the comparator-taking variant, so it's still open and not a duplicate.
 - [ ] `std.json` follow-up: `object_get_path(doc, index, "a.b.c")` walking nested objects by a dotted key, with a test.
+- [ ] `std.strings` follow-up: `split(text, separator)` and `replace(text, old, new)`. `split` needs an allocation story (likely a `Vec<[]const u8>` of borrowed views into the source, which shouldn't own resources and should fit the existing ownership model) — worth checking against `std.vec` before committing.
 
 ## Docs & examples
 - [ ] `examples/json.mx` — parse a small JSON config and print a couple of fields using `std.json`; make it run in the suite.

@@ -1907,6 +1907,83 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_helpers_cover_equal_prefix_trim_and_parse():
+    program = r'''import std.strings;
+import std.option;
+
+fn main() -> i64 {
+    let hello: []const u8 = slice("hello world" as *const u8, 11);
+    let ok: i64 = 0;
+
+    if strings.equal(hello, slice("hello world" as *const u8, 11)) { ok += 1; }
+    if !strings.equal(hello, slice("hello there" as *const u8, 11)) { ok += 1; }
+
+    if strings.starts_with(hello, slice("hello" as *const u8, 5)) { ok += 1; }
+    if !strings.starts_with(hello, slice("world" as *const u8, 5)) { ok += 1; }
+    if !strings.starts_with(hello, slice("hello world!" as *const u8, 12)) { ok += 1; }
+
+    if strings.ends_with(hello, slice("world" as *const u8, 5)) { ok += 1; }
+    if !strings.ends_with(hello, slice("hello" as *const u8, 5)) { ok += 1; }
+
+    match strings.index_of(hello, slice("world" as *const u8, 5)) {
+        Option<u64>.Some(offset) => { if offset == 6 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    match strings.index_of(hello, slice("nope" as *const u8, 4)) {
+        Option<u64>.Some(offset) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    let padded: []const u8 = slice("  spaced out  \t\n" as *const u8, 16);
+    let trimmed: []const u8 = strings.trim(padded);
+    if trimmed.len == 10 && strings.equal(trimmed, slice("spaced out" as *const u8, 10)) { ok += 1; }
+
+    let blank: []const u8 = slice("   " as *const u8, 3);
+    if strings.trim(blank).len == 0 { ok += 1; }
+
+    match strings.parse_u64(slice("12345" as *const u8, 5)) {
+        Option<u64>.Some(value) => { if value == 12345 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    match strings.parse_u64(slice("12a45" as *const u8, 5)) {
+        Option<u64>.Some(value) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match strings.parse_i64(slice("-4200" as *const u8, 5)) {
+        Option<i64>.Some(value) => { if value == -4200 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match strings.parse_i64(slice("-" as *const u8, 1)) {
+        Option<i64>.Some(value) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    match strings.parse_i64(slice("" as *const u8, 0)) {
+        Option<i64>.Some(value) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 16 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "stringsuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "stringsuse.exe" if os.name == "nt" else "stringsuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "16"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

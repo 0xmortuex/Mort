@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.50.0 - 2026-07-25
+
+New standard library module. The compiler version moves to 0.50 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Added
+
+- `std.strings`: slice helpers over `[]const u8` — `equal`, `starts_with`,
+  `ends_with`, `index_of` (substring search), `trim` (ASCII whitespace), and
+  `parse_i64` / `parse_u64` (returning `Option<i64>` / `Option<u64>`).
+
 ## 0.49.0 - 2026-07-25
 
 Generic containers of resources. The compiler version moves to 0.49 while
