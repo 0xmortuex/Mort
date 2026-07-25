@@ -57,7 +57,7 @@ jobs:
           mortc doctor
 
       - name: Run Python static checks
-        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tests/test_mort.py
+        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tests/test_mort.py tests/differential_backends.py
 
       - name: Run the test suite
         run: python -m pytest tests/ -q
@@ -70,6 +70,25 @@ jobs:
 
       - name: Build the MORT OS kernel
         run: python kernel/build.py check
+
+  differential:
+    name: Differential C backends and optimization levels
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Mort and the Zig C toolchain
+        run: python -m pip install -e . ziglang
+
+      - name: Compare GCC, Clang, and Zig cc at every optimization level
+        run: python tests/differential_backends.py --require-backends 3
 
   sanitizers:
     name: Address/undefined-behavior sanitizers
@@ -183,6 +202,7 @@ jobs:
           tar -tf dist/*.tar.gz | grep "/docs/production-readiness.md"
           tar -tf dist/*.tar.gz | grep "/docs/language-specification.md"
           tar -tf dist/*.tar.gz | grep "/conformance/manifest.json"
+          tar -tf dist/*.tar.gz | grep "/tests/differential_backends.py"
           tar -tf dist/*.tar.gz | grep "/fuzz/atheris_frontend.py"
           tar -tf dist/*.tar.gz | grep "/kernel/kmain.mx"
           tar -tf dist/*.tar.gz | grep "/mort/vendor/mbedtls-3.6.6.tar.bz2"

@@ -22,8 +22,8 @@ only when an automated gate or named artifact provides repeatable evidence.
   UndefinedBehaviorSanitizer, and leak-sanitizer controls.
 - [x] CI and release gates exercise representative generated C under ASan and
   UBSan with leak detection enabled.
-- [ ] Differential and metamorphic tests cover optimization levels and multiple
-  C backends.
+- [x] Exact-output differential and metamorphic tests cover GCC, Clang, and
+  Zig cc at `-O0`, `-O1`, `-O2`, `-O3`, and `-Os` in CI and release gates.
 - [x] Mort 0.41 has a versioned
   [normative specification](language-specification.md) and a black-box
   [executable conformance suite](../conformance/README.md), gated on Linux,

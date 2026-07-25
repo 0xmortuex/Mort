@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.42.0 - 2026-07-25
+
+Mort's cross-backend compiler-correctness release. The compiler version moves
+to 0.42 while continuing to implement the unchanged Mort 0.41 language
+contract.
+
+### Compiler validation
+
+- A black-box differential gate compiles and executes exact-output programs
+  with GCC, Clang, and Zig cc at `-O0`, `-O1`, `-O2`, `-O3`, and `-Os`.
+- Three independently structured metamorphic variants cover range and while
+  loops, recursion and iteration, closed-form substitution, declaration
+  reordering, short-circuit side effects, and specified signed wrapping.
+- Every execution is checked against a fixed language-level oracle before the
+  results are compared, preventing unanimous backend miscompilation from being
+  accepted as correct.
+- The 45-combination matrix is a required Linux CI job and a release gate.
+
 ## 0.41.0 - 2026-07-25
 
 Mort's verified TLS and bounded HTTPS release.
