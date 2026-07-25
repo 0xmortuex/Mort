@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.45.0 - 2026-07-25
+
+Mort's cross-release compatibility release. The compiler version moves to 0.45
+while continuing to implement the unchanged Mort 0.41 language contract.
+
+### Compatibility enforcement
+
+- CI discovers every tagged release on the active language-version line and
+  runs each release's original conformance suite unchanged against the current
+  compiler and standard library.
+- The gate requires multiple release generations, uses validated archive
+  extraction, and blocks both ordinary changes and tagged releases on any
+  historical source or behavior regression.
+- A machine-checked deprecation ledger requires a named replacement and at
+  least one full minor language-version transition before removal.
+
 ## 0.44.0 - 2026-07-25
 
 Mort's authenticated-package release. The compiler version moves to 0.44 while

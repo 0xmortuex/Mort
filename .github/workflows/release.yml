@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -54,6 +55,7 @@ jobs:
         run: |
           python -m pytest tests/ -q
           python conformance/run.py
+          python tests/release_compatibility.py
           python tests/differential_backends.py --require-backends 3
           python tests/reproducible_builds.py
           python mortc.py fuzz --cases 20000 --seed 330

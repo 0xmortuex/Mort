@@ -2,6 +2,7 @@ include CHANGELOG.md
 include SECURITY.md
 recursive-include docs *.md *.png
 recursive-include conformance *.py *.json *.md *.mx
+recursive-include compatibility *.json
 recursive-include examples *.mx
 recursive-include fuzz *.py *.mx
 recursive-include kernel *.py *.md *.mx *.mxinc *.s *.ld *.png

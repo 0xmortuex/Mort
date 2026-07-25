@@ -459,6 +459,10 @@ test "addition" {
   immutable commit and package-content hashes, externally pinned registry
   checkpoints, append-only publication history, publisher-key revocation,
   cached-history rollback detection, and mandatory CI verification.
+- [x] **Phase 10h — Release compatibility:** every historical conformance suite
+  from the active language line runs unchanged against the current compiler,
+  while a machine-checked deprecation ledger enforces a full minor-version
+  migration window before removals.
 
 Security reports use the confidential process in [SECURITY.md](SECURITY.md).
 Versioning and source-compatibility guarantees are defined in the

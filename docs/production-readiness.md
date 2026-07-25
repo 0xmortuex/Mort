@@ -75,7 +75,7 @@ only when an automated gate or named artifact provides repeatable evidence.
   the full tests, conformance suite, fuzzing, and kernel cross-build
   ([CI evidence](https://github.com/0xmortuex/Mort/actions/runs/30156538075)).
 - [ ] WebAssembly, Android, and iOS have supported targets and platform APIs.
-- [ ] Backward source-compatibility and deprecation policies are enforced across
+- [x] Backward source-compatibility and deprecation policies are enforced across
   multiple release generations.
 
 ## Language capabilities needed for broad application use

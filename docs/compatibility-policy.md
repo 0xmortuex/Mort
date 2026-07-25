@@ -35,6 +35,15 @@ The CI conformance suite is the executable minimum contract. New compilers are
 expected to continue passing prior applicable conformance cases, and releases
 must not silently rewrite the declared language version.
 
+CI fetches every published Mort tag, discovers each release implementing the
+current language-version line, safely extracts that release's exact conformance
+suite, and runs it unchanged against the current compiler and standard
+library. At least two release generations are required, so accidentally
+dropping old valid syntax or changing specified output blocks both normal CI
+and releases. `compatibility/deprecations.json` is a machine-checked ledger:
+every future removal must name a replacement and declare a removal window at
+least one full minor language-version transition after introduction.
+
 ## Package and platform compatibility
 
 Lockfiles pin dependency versions, Git revisions, and content hashes. The lock
