@@ -452,6 +452,16 @@ test "addition" {
   HTTP/1.1 and RFC 6455 WebSocket framing, verified TLS 1.2/1.3 client streams,
   and bounded HTTPS with cross-platform fail-closed loopback gates.
 
+- [x] **Phase 10f — Release correctness:** exact-output GCC/Clang/Zig
+  differential gates, byte-reproducible wheel/source releases, and native
+  ARM64 Linux/macOS end-to-end coverage.
+
+Security reports use the confidential process in [SECURITY.md](SECURITY.md).
+Versioning and source-compatibility guarantees are defined in the
+[compatibility policy](docs/compatibility-policy.md); broader readiness limits
+remain explicit in the
+[production-readiness checklist](docs/production-readiness.md).
+
 ## License
 
 MIT

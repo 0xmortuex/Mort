@@ -71,7 +71,9 @@ only when an automated gate or named artifact provides repeatable evidence.
   including native execution, fuzzing, packaging, and the x86-64 kernel build
   ([CI evidence](https://github.com/0xmortuex/Mort/actions/runs/30153547441)).
 - [x] Python 3.13 and 3.14 have dedicated Linux CI jobs.
-- [ ] Native ARM64 Linux and macOS targets have end-to-end test coverage.
+- [x] Native ARM64 Linux and macOS targets assert the host architecture and run
+  the full tests, conformance suite, fuzzing, and kernel cross-build
+  ([CI evidence](https://github.com/0xmortuex/Mort/actions/runs/30156538075)).
 - [ ] WebAssembly, Android, and iOS have supported targets and platform APIs.
 - [ ] Backward source-compatibility and deprecation policies are enforced across
   multiple release generations.
@@ -126,8 +128,9 @@ only when an automated gate or named artifact provides repeatable evidence.
   than only an index format.
 - [ ] Large maintained applications outside the compiler and MORT OS complete
   sustained release cycles on Mort.
-- [ ] A security policy, supported-version policy, compatibility promise, and
-  vulnerability response process are published.
+- [x] A [security and vulnerability-response policy](../SECURITY.md) and
+  [version-support and compatibility promise](compatibility-policy.md) are
+  published; private GitHub vulnerability reporting is enabled.
 
 ## Release claim rule
 
