@@ -1080,6 +1080,22 @@ class Checker:
             return Checker._assignment_root(expression.obj)
         return None
 
+    @staticmethod
+    def _writes_through_raw_pointer(target):
+        """True when the assignment target is memory reached through a mutable
+        raw pointer -- ``ptr[i]`` or ``*ptr``. Such storage is manually managed
+        (containers, allocators) and is not a binding the ownership checker
+        tracks, so overwriting a resource-typed slot there is the programmer's
+        responsibility rather than a leak the checker can prove. Const-pointer
+        writes are rejected separately, so they need no exception here."""
+        if isinstance(target, A.Index):
+            obj_type = getattr(target.obj, "type", None)
+            return is_ptr(obj_type) and not is_const_ptr(obj_type)
+        if isinstance(target, A.Unary) and target.op == "*":
+            operand_type = getattr(target.operand, "type", None)
+            return is_ptr(operand_type) and not is_const_ptr(operand_type)
+        return False
+
     def _finish_binding_scope(self):
         bindings = self.binding_scopes[-1]
         for name, binding in bindings.items():
@@ -1374,7 +1390,8 @@ class Checker:
                 self._error("cannot assign through a const slice", s)
             if is_array(tt):
                 self._error("cannot assign to a whole array; assign elements via a[i]", s)
-            if self._needs_drop_type(tt):
+            if self._needs_drop_type(tt) and not self._writes_through_raw_pointer(
+                    s.target):
                 self._error(
                     "cannot overwrite a resource binding; destroy it and "
                     "create a new binding",
@@ -1744,11 +1761,22 @@ class Checker:
 
         if isinstance(e, A.Move):
             if not isinstance(e.expr, A.Var):
-                self._error("move expects a local resource binding", e)
+                self._error("move expects a local binding", e)
             typ, binding = self._local_binding(e.expr.name)
-            if typ is None or binding is None or not self._needs_drop_type(typ):
+            if typ is None or binding is None:
                 self._error(
-                    f"move expects a resource binding, got {e.expr.name!r}", e)
+                    f"move expects a local binding, got {e.expr.name!r}", e)
+            e.binding_name = e.expr.name
+            e.expr.type = typ
+            if not self._needs_drop_type(typ):
+                # Moving a copyable (non-resource) value is a plain copy: it
+                # needs no cleanup and does not consume the source. Allowing it
+                # lets generic code -- e.g. a container storing an element --
+                # use `move` uniformly whether the element is a resource or not.
+                e.is_resource_move = False
+                binding["used"] = True
+                return typ
+            e.is_resource_move = True
             if binding.get("moved"):
                 self._error(f"resource {e.expr.name!r} was already moved", e)
             if (self.loop_depth
@@ -1759,8 +1787,6 @@ class Checker:
                 )
             binding["used"] = True
             binding["moved"] = True
-            e.binding_name = e.expr.name
-            e.expr.type = typ
             return typ
 
         if isinstance(e, A.Cast):

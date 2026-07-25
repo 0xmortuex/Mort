@@ -38,7 +38,10 @@ pub fn push<T>(value: *Vec<T>, item: T) -> void {
     if (*value).length == (*value).capacity {
         reserve(value, (*value).capacity * 2);
     }
-    (*value).data[(*value).length] = item;
+    // Move the element into the (uninitialized) backing slot. For a resource T
+    // this transfers ownership so `item` is not dropped when push returns; for
+    // a plain T it is an ordinary copy.
+    (*value).data[(*value).length] = move item;
     (*value).length = (*value).length + 1;
 }
 
@@ -53,7 +56,10 @@ pub fn set<T>(value: *Vec<T>, index: u64, item: T) -> bool {
     if index >= (*value).length {
         return false;
     }
-    (*value).data[index] = item;
+    // For a resource T the previous occupant is overwritten in place; the
+    // caller is responsible for having drained it, since raw slot storage is
+    // outside the ownership checker's view.
+    (*value).data[index] = move item;
     return true;
 }
 

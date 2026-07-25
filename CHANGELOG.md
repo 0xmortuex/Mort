@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.49.0 - 2026-07-25
+
+Generic containers of resources. The compiler version moves to 0.49 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Fixed
+
+- `Vec<T>` and `Map<K, V>` can now hold resource-owning element types. Two
+  causes are addressed:
+  - The ownership checker rejected every assignment whose target type was a
+    resource, including writes through a raw pointer (`ptr[i] = x`, `*ptr = x`).
+    Such storage is manually managed and is not a binding the checker tracks, so
+    it no longer reports "cannot overwrite a resource binding" there. Writes to
+    real bindings (`x = other`) are still rejected, and const-pointer writes are
+    still rejected separately.
+  - `move` may now be applied to a copyable (non-resource) value, where it is a
+    plain copy that does not consume the source. This lets generic code store an
+    element with `move item` regardless of whether the element is a resource.
+- `std.vec` (`push`, `set`) and `std.map` (`insert`) now move elements into
+  their backing slots, so a resource element's ownership transfers into the
+  container instead of being dropped when the call returns. Draining with `pop`
+  moves each element back out; a new end-to-end test confirms every element of a
+  `Vec` of resources is destroyed exactly once with no double free or leak.
+
 ## 0.48.0 - 2026-07-25
 
 Ownership-checker fix. The compiler version moves to 0.48 while continuing to

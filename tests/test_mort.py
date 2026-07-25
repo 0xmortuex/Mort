@@ -1906,6 +1906,50 @@ fn main() -> i64 {
     assert result.stdout.strip().splitlines()[-1] == "3"
 
 
+@needs_cc
+def test_vec_of_resources_moves_and_drops_each_element_once():
+    # A generic Vec can hold a resource element type: push moves ownership into
+    # the raw backing slot, pop moves it back out, and every element is
+    # destroyed exactly once with no double free or leak.
+    program = r'''import std.vec;
+import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+fn make(n: i64) -> Res { return Res { id: n }; }
+
+fn main() -> i64 {
+    let v: Vec<Res> = vec.new<Res>();
+    vec.push(&v, make(1));
+    vec.push(&v, make(2));
+    vec.push(&v, make(3));
+    let sum: i64 = 0;
+    while v.length > 0 {
+        let popped: Option<Res> = vec.pop(&v);
+        match move popped {
+            Option<Res>.Some(item) => { sum = sum + item.id; destroy(&item); },
+            Option<Res>.None => {},
+        }
+    }
+    vec.destroy(&v);
+    return sum;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecres.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecres.exe" if os.name == "nt" else "vecres")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 6, result.stderr
+    assert result.stdout.strip().splitlines()[-3:] == ["3", "2", "1"]
+
+
 def test_project_manifest_and_source_discovery():
     with tempfile.TemporaryDirectory() as d:
         project_dir = os.path.join(d, "demo")

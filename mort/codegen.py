@@ -2489,10 +2489,15 @@ class CodeGen:
                 raise AssertionError("try expression was not prepared before generation")
             return e.temp_name
         if isinstance(e, A.Move):
-            return (
-                f"((mort_live_m_{e.binding_name} = false), "
-                f"{self._gen_expr(e.expr)})"
-            )
+            # A resource move clears the source's liveness flag so it is not
+            # dropped again at scope exit. A non-resource `move` is a plain copy
+            # with no liveness flag to clear.
+            if getattr(e, "is_resource_move", True):
+                return (
+                    f"((mort_live_m_{e.binding_name} = false), "
+                    f"{self._gen_expr(e.expr)})"
+                )
+            return self._gen_expr(e.expr)
         if isinstance(e, A.StructLit):
             inits = ", ".join(
                 f".f_{name} = {self._gen_expr(val)}" for name, val in e.fields)
