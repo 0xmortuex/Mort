@@ -1984,6 +1984,57 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_ascii_classification_and_case_conversion():
+    program = r'''import std.ascii;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if ascii.is_alpha(65) { ok += 1; }
+    if ascii.is_alpha(122) { ok += 1; }
+    if !ascii.is_alpha(48) { ok += 1; }
+
+    if ascii.is_digit(57) { ok += 1; }
+    if !ascii.is_digit(65) { ok += 1; }
+
+    if ascii.is_space(32) { ok += 1; }
+    if ascii.is_space(9) { ok += 1; }
+    if !ascii.is_space(65) { ok += 1; }
+
+    if ascii.to_upper(97) == 65 { ok += 1; }
+    if ascii.to_upper(65) == 65 { ok += 1; }
+    if ascii.to_lower(65) == 97 { ok += 1; }
+    if ascii.to_lower(97) == 97 { ok += 1; }
+
+    let buffer: [u8; 5] = [104, 101, 108, 108, 111];
+    let view: []u8 = slice(&buffer[0], 5);
+    ascii.upper_inplace(view);
+    if buffer[0] == 72 && buffer[4] == 79 { ok += 1; }
+
+    ascii.lower_inplace(view);
+    if buffer[0] == 104 && buffer[4] == 111 { ok += 1; }
+
+    print(ok);
+    if ok == 14 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "asciiuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "asciiuse.exe" if os.name == "nt" else "asciiuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "14"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

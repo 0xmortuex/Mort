@@ -1,0 +1,43 @@
+// Mort standard library: ASCII classification and case conversion for u8.
+
+module std.ascii;
+
+pub fn is_alpha(byte: u8) -> bool {
+    return (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122);
+}
+
+pub fn is_digit(byte: u8) -> bool {
+    return byte >= 48 && byte <= 57;
+}
+
+pub fn is_space(byte: u8) -> bool {
+    return byte == 32 || byte == 9 || byte == 10 || byte == 13 || byte == 11 || byte == 12;
+}
+
+pub fn to_upper(byte: u8) -> u8 {
+    if byte >= 97 && byte <= 122 {
+        return byte - 32;
+    }
+    return byte;
+}
+
+pub fn to_lower(byte: u8) -> u8 {
+    if byte >= 65 && byte <= 90 {
+        return byte + 32;
+    }
+    return byte;
+}
+
+// Converts every ASCII lowercase byte in `text` to uppercase, in place.
+pub fn upper_inplace(text: []u8) -> void {
+    for index: u64 in 0..text.len {
+        text[index] = to_upper(text[index]);
+    }
+}
+
+// Converts every ASCII uppercase byte in `text` to lowercase, in place.
+pub fn lower_inplace(text: []u8) -> void {
+    for index: u64 in 0..text.len {
+        text[index] = to_lower(text[index]);
+    }
+}
