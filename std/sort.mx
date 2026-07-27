@@ -1,0 +1,32 @@
+// Mort standard library: comparator-taking sort over []T.
+//
+// std.algorithm.sort<T> only accepts `<`-comparable element types. This
+// module takes a caller-supplied `less_than` predicate instead, so it works
+// for any T (including structs with no built-in ordering).
+
+module std.sort;
+
+// In-place insertion sort. Stable. O(n) best case (already sorted),
+// O(n^2) average and worst case, O(1) extra space.
+pub fn sort<T>(values: []T, less_than: fn(T, T) -> bool) -> void {
+    for index: u64 in 1..values.len {
+        let position = index;
+        while position > 0 && less_than(values[position], values[position - 1]) {
+            let temporary = values[position];
+            values[position] = values[position - 1];
+            values[position - 1] = temporary;
+            position -= 1;
+        }
+    }
+}
+
+// True if `values` is ordered according to `less_than` (no element is
+// strictly less than its predecessor).
+pub fn is_sorted<T>(values: []const T, less_than: fn(T, T) -> bool) -> bool {
+    for index: u64 in 1..values.len {
+        if less_than(values[index], values[index - 1]) {
+            return false;
+        }
+    }
+    return true;
+}

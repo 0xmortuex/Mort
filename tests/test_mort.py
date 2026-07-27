@@ -2035,6 +2035,65 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_sort_orders_by_caller_comparator_and_reports_sortedness():
+    program = r'''import std.sort;
+
+fn less_i64(a: i64, b: i64) -> bool {
+    return a < b;
+}
+
+fn greater_i64(a: i64, b: i64) -> bool {
+    return a > b;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let ascending: [i64; 5] = [5, 3, 1, 4, 2];
+    let ascending_view: []i64 = slice(&ascending[0], 5);
+    sort.sort(ascending_view, less_i64);
+    if ascending[0] == 1 && ascending[1] == 2 && ascending[2] == 3
+        && ascending[3] == 4 && ascending[4] == 5 { ok += 1; }
+
+    let ascending_const: []const i64 = slice(&ascending[0] as *const i64, 5);
+    if sort.is_sorted(ascending_const, less_i64) { ok += 1; }
+    if !sort.is_sorted(ascending_const, greater_i64) { ok += 1; }
+
+    let descending: [i64; 5] = [5, 3, 1, 4, 2];
+    let descending_view: []i64 = slice(&descending[0], 5);
+    sort.sort(descending_view, greater_i64);
+    if descending[0] == 5 && descending[1] == 4 && descending[2] == 3
+        && descending[3] == 2 && descending[4] == 1 { ok += 1; }
+
+    let descending_const: []const i64 = slice(&descending[0] as *const i64, 5);
+    if sort.is_sorted(descending_const, greater_i64) { ok += 1; }
+
+    let single: [i64; 1] = [42];
+    let single_view: []i64 = slice(&single[0], 1);
+    sort.sort(single_view, less_i64);
+    if single[0] == 42 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "sortuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "sortuse.exe" if os.name == "nt" else "sortuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is
