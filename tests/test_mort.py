@@ -1907,6 +1907,64 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_json_object_get_path_walks_dotted_nested_keys():
+    program = r'''import std.json;
+import std.option;
+
+fn main() -> i64 {
+    let text: *const u8 = "{\"a\":{\"b\":{\"c\":42}},\"top\":1,\"missing\":{\"x\":1}}";
+    let doc: Document = json.parse_cstr(text);
+    let ok: i64 = 0;
+    if json.ok(&doc) { ok += 1; }
+    let r: u64 = json.root(&doc);
+
+    match json.object_get_path(&doc, r, slice("a.b.c" as *const u8, 5)) {
+        Option<u64>.Some(n) => { if (json.as_number(&doc, n) as i64) == 42 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match json.object_get_path(&doc, r, slice("top" as *const u8, 3)) {
+        Option<u64>.Some(n) => { if (json.as_number(&doc, n) as i64) == 1 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match json.object_get_path(&doc, r, slice("a.b.missing" as *const u8, 11)) {
+        Option<u64>.Some(n) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match json.object_get_path(&doc, r, slice("a.missing.c" as *const u8, 11)) {
+        Option<u64>.Some(n) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match json.object_get_path(&doc, r, slice("top.c" as *const u8, 5)) {
+        Option<u64>.Some(n) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    json.destroy(&doc);
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "jsonpath.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "jsonpath.exe" if os.name == "nt" else "jsonpath")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_strings_helpers_cover_equal_prefix_trim_and_parse():
     program = r'''import std.strings;
 import std.option;

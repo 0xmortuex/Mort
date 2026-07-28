@@ -14,6 +14,7 @@ module std.json;
 import std.vec;
 import std.option;
 import std.bytes;
+import std.strings;
 
 struct Node {
     kind: u8,
@@ -648,6 +649,37 @@ pub fn object_get_view(doc: *Document, index: u64, key: []const u8) -> Option<u6
 // Convenience lookup with a null-terminated key, e.g. a string literal.
 pub fn object_get(doc: *Document, index: u64, key: *const u8) -> Option<u64> {
     return object_get_view(doc, index, slice(key, cstr_len(key)));
+}
+
+// Walks nested objects by a dot-separated key path, e.g. "a.b.c" looks up
+// key "a" on `index`, then "b" on that result, then "c" on that. Returns
+// None as soon as a segment is missing or an intermediate value is not an
+// object.
+pub fn object_get_path(doc: *Document, index: u64, path: []const u8) -> Option<u64> {
+    let current: u64 = index;
+    let remaining: []const u8 = path;
+    let dot: []const u8 = slice("." as *const u8, 1);
+    while true {
+        let segment: []const u8 = remaining;
+        let has_more: bool = false;
+        match strings.index_of(remaining, dot) {
+            Option<u64>.Some(pos) => {
+                segment = slice(remaining.data, pos);
+                remaining = slice(
+                    ((remaining.data as u64) + pos + 1) as *const u8,
+                    remaining.len - pos - 1);
+                has_more = true;
+            },
+            Option<u64>.None => {},
+        }
+        match object_get_view(doc, current, segment) {
+            Option<u64>.Some(next) => { current = next; },
+            Option<u64>.None => { return Option<u64>.None; },
+        }
+        if !has_more {
+            return Option<u64>.Some(current);
+        }
+    }
 }
 
 // ---- Serialization ------------------------------------------------------

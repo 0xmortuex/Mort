@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.53.0 - 2026-07-28
+
+Standard library addition. The compiler version moves to 0.53 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Added
+
+- `std.json`: `object_get_path` walks nested objects by a dot-separated key
+  path (e.g. `"a.b.c"`), returning `None` as soon as a segment is missing or
+  an intermediate value is not an object.
+
 ## 0.50.0 - 2026-07-25
 
 New standard library module. The compiler version moves to 0.50 while
