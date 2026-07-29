@@ -4406,6 +4406,7 @@ EXPECTED = {
     "floats.mx": "42.5\n",
     "tuples.mx": "43\n42\n",
     "resources.mx": "42\nreleased\n",
+    "json.mx": "4\n3\n1\n",
 }
 
 

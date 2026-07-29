@@ -19,7 +19,7 @@ autonomously; those need careful human review with the full suite.
 - [ ] `std.strings` follow-up: `split(text, separator)` and `replace(text, old, new)`. `split` needs an allocation story (likely a `Vec<[]const u8>` of borrowed views into the source, which shouldn't own resources and should fit the existing ownership model) — worth checking against `std.vec` before committing.
 
 ## Docs & examples
-- [ ] `examples/json.mx` — parse a small JSON config and print a couple of fields using `std.json`; make it run in the suite.
+- [x] `examples/json.mx` — parse a small JSON config and print a couple of fields using `std.json`. Shipped 2026-07-29: parses `{"name":"mort","version":3,"debug":true}` and prints the name's byte length, the version number, and the debug flag (`4\n3\n1\n`); added to `EXPECTED` in `tests/test_mort.py::test_examples_run`, `--run` exits 0, full suite (334 tests) green.
 - [ ] `docs/stdlib.md` — a one-paragraph reference per bundled `std` module listing its public functions (ground each against the module source).
 - [ ] `docs/ownership.md` — the resource / `move` rules with worked examples: `move` on return, `match move`, and containers of resources.
 

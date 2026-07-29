@@ -1,0 +1,29 @@
+// Parse a small JSON config and print a couple of fields using std.json.
+import std.json;
+import std.option;
+
+fn main() -> int {
+    let text: *const u8 = "{\"name\":\"mort\",\"version\":3,\"debug\":true}";
+    let doc: Document = json.parse_cstr(text);
+    let root: u64 = json.root(&doc);
+
+    match json.object_get(&doc, root, "name") {
+        Option<u64>.Some(n) => { print(json.as_string(&doc, n).len); },
+        Option<u64>.None => { print(-1); },
+    }
+
+    match json.object_get(&doc, root, "version") {
+        Option<u64>.Some(n) => { print(json.as_number(&doc, n) as i64); },
+        Option<u64>.None => { print(-1); },
+    }
+
+    match json.object_get(&doc, root, "debug") {
+        Option<u64>.Some(n) => {
+            if json.as_bool(&doc, n) { print(1); } else { print(0); }
+        },
+        Option<u64>.None => { print(-1); },
+    }
+
+    json.destroy(&doc);
+    return 0;
+}
