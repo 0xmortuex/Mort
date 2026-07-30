@@ -24,7 +24,8 @@ autonomously; those need careful human review with the full suite.
 - [ ] `docs/ownership.md` — the resource / `move` rules with worked examples: `move` on return, `match move`, and containers of resources.
 
 ## Tests
-- [ ] More `std.json` edge cases: deep nesting, `\uXXXX` + surrogate pairs, exponent/negative numbers, and malformed inputs asserting the reported error position.
+- [x] More `std.json` edge cases: deep nesting, `\uXXXX` + surrogate pairs, exponent/negative numbers, and malformed inputs asserting the reported error position. Shipped 2026-07-30: `test_std_json_edge_cases_cover_nesting_unicode_exponents_and_errors` in `tests/test_mort.py` (11 assertions — 4-level nested object ending in an array of mixed values, a BMP `é` escape plus a `😀` surrogate pair decoding to the expected UTF-8 byte length, `-1.5e2` / `2e-2` exponent parsing, and two malformed-input cases with an exact expected `error_pos`: a trailing comma in an object at `error_pos == 7`, and an unterminated array at `error_pos == length`), `--run` exits 0, full suite (335 tests) green. No compiler or std module changes, so no version bump.
+- [ ] Malformed-JSON coverage still open: duplicate object keys (what does `object_get` return?), a bare top-level scalar with trailing garbage (e.g. `"1 2"`), and non-UTF-8/invalid-continuation-byte input in string values.
 
 ## Larger (sketch in the item before shipping — may need human review)
 - [ ] Resource-aware container API: `Vec.get` returns an aliasing copy (unsafe for resource elements) and `Vec.destroy` frees only the backing array. Design a safe `get_ref` returning `*T` and an element-dropping destroy without breaking the plain-`T` API.

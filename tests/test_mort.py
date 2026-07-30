@@ -1965,6 +1965,107 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_json_edge_cases_cover_nesting_unicode_exponents_and_errors():
+    program = r'''import std.json;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let nested_text: *const u8 = "{\"a\":{\"b\":{\"c\":{\"d\":[10,20,{\"e\":42}]}}}}";
+    let nested: Document = json.parse_cstr(nested_text);
+    if json.ok(&nested) { ok += 1; }
+    let nested_root: u64 = json.root(&nested);
+    match json.object_get_path(&nested, nested_root, slice("a.b.c.d" as *const u8, 7)) {
+        Option<u64>.Some(arr) => {
+            if json.is_array(&nested, arr) && json.array_len(&nested, arr) == 3 {
+                ok += 1;
+                match json.array_get(&nested, arr, 0) {
+                    Option<u64>.Some(first) => { if (json.as_number(&nested, first) as i64) == 10 { ok += 1; } },
+                    Option<u64>.None => {},
+                }
+                match json.array_get(&nested, arr, 2) {
+                    Option<u64>.Some(third) => {
+                        match json.object_get(&nested, third, "e") {
+                            Option<u64>.Some(leaf) => { if (json.as_number(&nested, leaf) as i64) == 42 { ok += 1; } },
+                            Option<u64>.None => {},
+                        }
+                    },
+                    Option<u64>.None => {},
+                }
+            }
+        },
+        Option<u64>.None => {},
+    }
+    json.destroy(&nested);
+
+    // "A" (1 byte) + é (2-byte UTF-8) + the 😀 surrogate pair
+    // (U+1F600, 4-byte UTF-8) decode to 7 bytes total.
+    let unicode_text: *const u8 = "{\"s\":\"A\\u00e9\\ud83d\\ude00\"}";
+    let udoc: Document = json.parse_cstr(unicode_text);
+    if json.ok(&udoc) { ok += 1; }
+    let uroot: u64 = json.root(&udoc);
+    match json.object_get(&udoc, uroot, "s") {
+        Option<u64>.Some(n) => {
+            let s: []const u8 = json.as_string(&udoc, n);
+            if s.len == 7 && s[0] == 'A' { ok += 1; }
+        },
+        Option<u64>.None => {},
+    }
+    json.destroy(&udoc);
+
+    let num_text: *const u8 = "[-1.5e2,2e-2]";
+    let ndoc: Document = json.parse_cstr(num_text);
+    if json.ok(&ndoc) { ok += 1; }
+    let nroot: u64 = json.root(&ndoc);
+    match json.array_get(&ndoc, nroot, 0) {
+        Option<u64>.Some(n) => { if (json.as_number(&ndoc, n) as i64) == -150 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    match json.array_get(&ndoc, nroot, 1) {
+        Option<u64>.Some(n) => {
+            let value: f64 = json.as_number(&ndoc, n);
+            if value > 0.019 && value < 0.021 { ok += 1; }
+        },
+        Option<u64>.None => {},
+    }
+    json.destroy(&ndoc);
+
+    // A trailing comma in an object leaves the parser expecting a key, so the
+    // reported error position is the index of the byte after the comma (7).
+    let bad_object: *const u8 = "{\"a\":1,}";
+    let bad_obj_doc: Document = json.parse_cstr(bad_object);
+    if !json.ok(&bad_obj_doc) && json.error_pos(&bad_obj_doc) == 7 { ok += 1; }
+    json.destroy(&bad_obj_doc);
+
+    // An array left open past the end of the text reports an error position
+    // equal to the input length (5).
+    let bad_array: *const u8 = "[1,2,";
+    let bad_array_doc: Document = json.parse_cstr(bad_array);
+    if !json.ok(&bad_array_doc) && json.error_pos(&bad_array_doc) == 5 { ok += 1; }
+    json.destroy(&bad_array_doc);
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "jsonedge.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "jsonedge.exe" if os.name == "nt" else "jsonedge")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+@needs_cc
 def test_std_strings_helpers_cover_equal_prefix_trim_and_parse():
     program = r'''import std.strings;
 import std.option;
