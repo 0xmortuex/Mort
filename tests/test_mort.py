@@ -2066,6 +2066,75 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_json_malformed_input_coverage():
+    program = r'''import std.json;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Duplicate object keys are not deduplicated: both entries stay in the
+    // child list, and object_get returns the first match in source order.
+    let dup_text: *const u8 = "{\"a\":1,\"a\":2}";
+    let dup: Document = json.parse_cstr(dup_text);
+    if json.ok(&dup) { ok += 1; }
+    let droot: u64 = json.root(&dup);
+    if json.object_len(&dup, droot) == 2 { ok += 1; }
+    match json.object_get(&dup, droot, "a") {
+        Option<u64>.Some(n) => { if (json.as_number(&dup, n) as i64) == 1 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    json.destroy(&dup);
+
+    // A bare top-level scalar followed by trailing garbage (not whitespace)
+    // is rejected; the reported error position is where the garbage starts.
+    let scalar_text: *const u8 = "1 2";
+    let sdoc: Document = json.parse_cstr(scalar_text);
+    if !json.ok(&sdoc) && json.error_pos(&sdoc) == 2 { ok += 1; }
+    json.destroy(&sdoc);
+
+    let literal_text: *const u8 = "true1";
+    let ldoc: Document = json.parse_cstr(literal_text);
+    if !json.ok(&ldoc) && json.error_pos(&ldoc) == 4 { ok += 1; }
+    json.destroy(&ldoc);
+
+    // The parser does not validate UTF-8 inside string values: a raw invalid
+    // continuation byte (0xFF, which is not valid UTF-8 on its own) passes
+    // straight through into the pool unchanged.
+    let bad_text: *const u8 = "{\"s\":\"\xFF\"}";
+    let bdoc: Document = json.parse_cstr(bad_text);
+    if json.ok(&bdoc) { ok += 1; }
+    let broot: u64 = json.root(&bdoc);
+    match json.object_get(&bdoc, broot, "s") {
+        Option<u64>.Some(n) => {
+            let s: []const u8 = json.as_string(&bdoc, n);
+            if s.len == 1 && (s[0] as i64) == 255 { ok += 1; }
+        },
+        Option<u64>.None => {},
+    }
+    json.destroy(&bdoc);
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "jsonmalformed.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "jsonmalformed.exe" if os.name == "nt" else "jsonmalformed")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_strings_helpers_cover_equal_prefix_trim_and_parse():
     program = r'''import std.strings;
 import std.option;
