@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.54.0 - 2026-08-01
+
+Standard library addition. The compiler version moves to 0.54 while
+continuing to implement the unchanged Mort 0.41 language contract.
+
+### Added
+
+- `std.strings`: `split(text, separator)` splits a `[]const u8` on every
+  occurrence of `separator`, returning a `Vec<[]const u8>` of views borrowed
+  from `text` (no copies). Matches Python's `str.split(sep)` semantics:
+  consecutive or edge separators produce empty elements; an empty
+  `separator` returns the whole text as a single element.
+
 ## 0.53.0 - 2026-07-28
 
 Standard library addition. The compiler version moves to 0.53 while

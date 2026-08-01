@@ -2322,6 +2322,87 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_split_borrows_views_and_matches_python_semantics():
+    program = r'''import std.strings;
+import std.vec;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let csv: []const u8 = slice("a,bb,,ccc" as *const u8, 9);
+    let parts = strings.split(csv, slice("," as *const u8, 1));
+
+    match vec.get(&parts, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("a" as *const u8, 1)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 1) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("bb" as *const u8, 2)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 2) {
+        Option<[]const u8>.Some(p) => { if p.len == 0 { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 3) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("ccc" as *const u8, 3)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // No separator present: whole text as a single element.
+    let none_sep: []const u8 = slice("hello" as *const u8, 5);
+    let single = strings.split(none_sep, slice("," as *const u8, 1));
+    if single.length == 1 {
+        match vec.get(&single, 0) {
+            Option<[]const u8>.Some(p) => { if strings.equal(p, none_sep) { ok += 1; } },
+            Option<[]const u8>.None => {},
+        }
+    }
+
+    // Empty separator: whole text unchanged.
+    let empty_sep = strings.split(none_sep, slice("" as *const u8, 0));
+    if empty_sep.length == 1 { ok += 1; }
+
+    // Leading and trailing separators produce leading/trailing empty parts.
+    let edges: []const u8 = slice(",a," as *const u8, 3);
+    let edge_parts = strings.split(edges, slice("," as *const u8, 1));
+    if edge_parts.length == 3 { ok += 1; }
+    match vec.get(&edge_parts, 0) {
+        Option<[]const u8>.Some(p) => { if p.len == 0 { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&edge_parts, 2) {
+        Option<[]const u8>.Some(p) => { if p.len == 0 { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    vec.destroy(&parts);
+    vec.destroy(&single);
+    vec.destroy(&empty_sep);
+    vec.destroy(&edge_parts);
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "splituse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "splituse.exe" if os.name == "nt" else "splituse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

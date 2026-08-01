@@ -4,6 +4,7 @@ module std.strings;
 
 import std.bytes;
 import std.option;
+import std.vec;
 
 pub fn equal(left: []const u8, right: []const u8) -> bool {
     return bytes.equal(left, right);
@@ -102,4 +103,31 @@ pub fn parse_i64(text: []const u8) -> Option<i64> {
         value = 0 - value;
     }
     return Option<i64>.Some(value);
+}
+
+// Splits `text` on every occurrence of `separator`, returning a Vec of views
+// borrowed from `text` (no copies, no allocation beyond the Vec itself).
+// Matches Python's `str.split(sep)`: consecutive separators produce empty
+// elements, and a leading/trailing separator produces a leading/trailing
+// empty element. An empty `separator` returns a single-element Vec holding
+// all of `text` unchanged, rather than splitting between every byte.
+pub fn split(text: []const u8, separator: []const u8) -> Vec<[]const u8> {
+    let parts: Vec<[]const u8> = vec.new<[]const u8>();
+    if separator.len == 0 {
+        vec.push(&parts, text);
+        return move parts;
+    }
+    let start: u64 = 0;
+    let index: u64 = 0;
+    while index + separator.len <= text.len {
+        if bytes.equal(slice(((text.data as u64) + index) as *const u8, separator.len), separator) {
+            vec.push(&parts, slice(((text.data as u64) + start) as *const u8, index - start));
+            index = index + separator.len;
+            start = index;
+        } else {
+            index = index + 1;
+        }
+    }
+    vec.push(&parts, slice(((text.data as u64) + start) as *const u8, text.len - start));
+    return move parts;
 }
