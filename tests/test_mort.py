@@ -2403,6 +2403,70 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_replace_builds_owned_buffer_and_matches_python_semantics():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Basic replace-all: two non-overlapping matches.
+    let text: []const u8 = slice("the cat sat on the mat" as *const u8, 22);
+    let replaced: String = strings.replace(text, slice("at" as *const u8, 2), slice("og" as *const u8, 2));
+    if strings.equal(owned_string.view(&replaced), slice("the cog sog on the mog" as *const u8, 22)) { ok += 1; }
+    owned_string.destroy(&replaced);
+
+    // No match: unchanged copy.
+    let none_text: []const u8 = slice("no match here" as *const u8, 13);
+    let unchanged: String = strings.replace(none_text, slice("xyz" as *const u8, 3), slice("abc" as *const u8, 3));
+    if strings.equal(owned_string.view(&unchanged), none_text) { ok += 1; }
+    owned_string.destroy(&unchanged);
+
+    // Overlapping occurrences are not rescanned: "aaaa" with old="aa" matches
+    // at offset 0 and then resumes scanning at offset 2, not offset 1.
+    let overlap: String = strings.replace(slice("aaaa" as *const u8, 4), slice("aa" as *const u8, 2), slice("b" as *const u8, 1));
+    if strings.equal(owned_string.view(&overlap), slice("bb" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&overlap);
+
+    // Empty `old` returns an unchanged copy rather than inserting between
+    // every byte.
+    let abc_text: []const u8 = slice("abc" as *const u8, 3);
+    let empty_old: String = strings.replace(abc_text, slice("" as *const u8, 0), slice("Z" as *const u8, 1));
+    if strings.equal(owned_string.view(&empty_old), abc_text) { ok += 1; }
+    owned_string.destroy(&empty_old);
+
+    // A replacement longer than the match grows the buffer.
+    let grow: String = strings.replace(slice("a-a" as *const u8, 3), slice("-" as *const u8, 1), slice("<->" as *const u8, 3));
+    if strings.equal(owned_string.view(&grow), slice("a<->a" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&grow);
+
+    // The whole text is one match.
+    let whole: []const u8 = slice("shrink" as *const u8, 6);
+    let shrunk: String = strings.replace(whole, whole, slice("s" as *const u8, 1));
+    if strings.equal(owned_string.view(&shrunk), slice("s" as *const u8, 1)) { ok += 1; }
+    owned_string.destroy(&shrunk);
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "replaceuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "replaceuse.exe" if os.name == "nt" else "replaceuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

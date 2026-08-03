@@ -169,8 +169,15 @@ empty, sign-only, or non-digit input; `split(text, separator)` returns a
 `Vec<[]const u8>` of views borrowed from `text`, matching Python's
 `str.split(sep)` semantics — consecutive or edge separators produce empty
 elements, and an empty `separator` returns the whole text as a single
-unsplit element. Every view returned by `index_of`, `trim`, or `split`
-borrows from the original `text` buffer and is only valid as long as it is.
+unsplit element. `replace(text, old, new)` returns a freshly allocated
+`std.owned_string.String` with every non-overlapping, left-to-right
+occurrence of `old` replaced by `new` (replace-all, like Python's
+`str.replace` with no `count`; an empty `old` returns an unchanged owned
+copy rather than inserting `new` between every byte) — unlike the other
+functions here it allocates, so the caller must call
+`std.owned_string.destroy` on the result. Every view returned by
+`index_of`, `trim`, or `split` borrows from the original `text` buffer and
+is only valid as long as it is.
 
 ## `std.thread`
 

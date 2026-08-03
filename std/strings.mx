@@ -4,6 +4,7 @@ module std.strings;
 
 import std.bytes;
 import std.option;
+import std.owned_string;
 import std.vec;
 
 pub fn equal(left: []const u8, right: []const u8) -> bool {
@@ -130,4 +131,66 @@ pub fn split(text: []const u8, separator: []const u8) -> Vec<[]const u8> {
     }
     vec.push(&parts, slice(((text.data as u64) + start) as *const u8, text.len - start));
     return move parts;
+}
+
+fn copy_view(text: []const u8) -> String {
+    let data: *u8 = alloc(text.len + 1) as *u8;
+    let destination: []u8 = slice(data, text.len + 1);
+    bytes.copy(destination, text);
+    destination[text.len] = 0;
+    return String { data: data, length: text.len };
+}
+
+// Returns a new owned buffer with every non-overlapping, left-to-right
+// occurrence of `old` in `text` replaced by `new` (replace-all, matching
+// Python's `str.replace(old, new)` with no `count` argument -- occurrences
+// are found by scanning left to right and are not rescanned once matched, so
+// overlapping matches only replace the first). An empty `old` returns an
+// unchanged owned copy of `text`, consistent with `split`'s treatment of an
+// empty separator, rather than Python's insert-between-every-byte behavior
+// for an empty search string. The result is a freshly allocated buffer since
+// its length generally differs from `text`'s; the caller owns it and must
+// call `std.owned_string.destroy` on it.
+pub fn replace(text: []const u8, old: []const u8, new: []const u8) -> String {
+    if old.len == 0 {
+        return copy_view(text);
+    }
+    let match_count: u64 = 0;
+    let scan: u64 = 0;
+    while scan + old.len <= text.len {
+        if bytes.equal(slice(((text.data as u64) + scan) as *const u8, old.len), old) {
+            match_count += 1;
+            scan += old.len;
+        } else {
+            scan += 1;
+        }
+    }
+    if match_count == 0 {
+        return copy_view(text);
+    }
+    let result_length: u64 = text.len - match_count * old.len + match_count * new.len;
+    let data: *u8 = alloc(result_length + 1) as *u8;
+    let destination: []u8 = slice(data, result_length + 1);
+    let write: u64 = 0;
+    let read: u64 = 0;
+    while read + old.len <= text.len {
+        if bytes.equal(slice(((text.data as u64) + read) as *const u8, old.len), old) {
+            for offset: u64 in 0..new.len {
+                destination[write + offset] = new[offset];
+            }
+            write += new.len;
+            read += old.len;
+        } else {
+            destination[write] = text[read];
+            write += 1;
+            read += 1;
+        }
+    }
+    while read < text.len {
+        destination[write] = text[read];
+        write += 1;
+        read += 1;
+    }
+    destination[result_length] = 0;
+    return String { data: data, length: result_length };
 }
