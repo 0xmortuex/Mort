@@ -1,3 +1,18 @@
+// Mort standard library: a fast, non-cryptographic pseudo-random generator.
+//
+// `Random` wraps a 64-bit xorshift state (Marsaglia's xorshift64 with shifts
+// 13/-7/17). It is deterministic from its seed (`seeded` with the same
+// nonzero input always produces the same stream) and is not suitable for
+// anything security-sensitive -- use `std.crypto.random_fill` for that.
+//
+// `below(random, maximum)` and `between(random, minimum, maximum)` derive
+// their result from `next_u64(random) % maximum`, which is not uniformly
+// unbiased when `maximum` does not evenly divide 2^64: some remainders are
+// very slightly more likely than others. The bias is negligible for small
+// `maximum` (game logic, sampling, jitter) and is not worth the extra
+// rejection-sampling complexity there; avoid this module for any use case
+// that needs a formally uniform distribution over a large range.
+
 module std.random;
 
 struct Random {
