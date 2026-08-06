@@ -8,6 +8,12 @@
 // resource -- which keeps the whole structure inside Mort's ownership model.
 //
 // Kinds: 0 null, 1 bool, 2 number, 3 string, 4 array, 5 object.
+//
+// String values are not validated as UTF-8: raw bytes between the quotes are
+// copied into the pool verbatim (see `parse_string_pool` below), so a bare
+// invalid byte such as 0xFF parses "ok" and lands in the pool unchanged. If a
+// caller needs a guarantee of valid UTF-8, validate the returned bytes
+// (e.g. with `std.strings`) before trusting them.
 
 module std.json;
 
@@ -299,6 +305,8 @@ fn pool_push_codepoint(doc: *Document, codepoint: u32) -> void {
     }
 }
 
+// Unescaped bytes are copied straight into the pool with no UTF-8 validation
+// (see the module-header note above) -- this is the "else" branch below.
 fn parse_string_pool(doc: *Document, p: *Parser) -> StrRef {
     let start: u64 = (*doc).pool.length;
     (*p).pos = (*p).pos + 1;
