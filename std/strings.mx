@@ -133,6 +133,48 @@ pub fn split(text: []const u8, separator: []const u8) -> Vec<[]const u8> {
     return move parts;
 }
 
+// Concatenates every element of `parts` (as produced by `split`) with
+// `separator` inserted between consecutive elements, matching Python's
+// `separator.join(parts)`: zero elements yields an empty string, and one
+// element yields an unchanged copy of it with no separator inserted. The
+// result is a freshly allocated owned buffer; the caller must call
+// `std.owned_string.destroy` on it.
+pub fn join(parts: *Vec<[]const u8>, separator: []const u8) -> String {
+    let count: u64 = (*parts).length;
+    let total: u64 = 0;
+    if count > 0 {
+        total = separator.len * (count - 1);
+    }
+    for index: u64 in 0..count {
+        match vec.get(parts, index) {
+            Option<[]const u8>.Some(part) => { total += part.len; },
+            Option<[]const u8>.None => {},
+        }
+    }
+    let data: *u8 = alloc(total + 1) as *u8;
+    let destination: []u8 = slice(data, total + 1);
+    let write: u64 = 0;
+    for index: u64 in 0..count {
+        if index > 0 {
+            for offset: u64 in 0..separator.len {
+                destination[write + offset] = separator[offset];
+            }
+            write += separator.len;
+        }
+        match vec.get(parts, index) {
+            Option<[]const u8>.Some(part) => {
+                for offset: u64 in 0..part.len {
+                    destination[write + offset] = part[offset];
+                }
+                write += part.len;
+            },
+            Option<[]const u8>.None => {},
+        }
+    }
+    destination[total] = 0;
+    return String { data: data, length: total };
+}
+
 fn copy_view(text: []const u8) -> String {
     let data: *u8 = alloc(text.len + 1) as *u8;
     let destination: []u8 = slice(data, text.len + 1);

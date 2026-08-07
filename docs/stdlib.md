@@ -173,9 +173,14 @@ unsplit element. `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned
-copy rather than inserting `new` between every byte) — unlike the other
-functions here it allocates, so the caller must call
-`std.owned_string.destroy` on the result. Every view returned by
+copy rather than inserting `new` between every byte). `join(parts, separator)`
+is `split`'s inverse: it takes a `*Vec<[]const u8>` and concatenates its
+elements with `separator` inserted between consecutive ones, matching
+Python's `separator.join(parts)` (zero elements yields an empty string, one
+element yields an unchanged copy with no separator inserted), also
+returning a freshly allocated `std.owned_string.String`. `replace` and
+`join` are the only functions here that allocate, so the caller must call
+`std.owned_string.destroy` on their results. Every view returned by
 `index_of`, `trim`, or `split` borrows from the original `text` buffer and
 is only valid as long as it is.
 

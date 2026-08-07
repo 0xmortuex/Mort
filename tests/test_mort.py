@@ -2467,6 +2467,65 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_join_is_splits_inverse_and_matches_python_semantics():
+    program = r'''import std.strings;
+import std.owned_string;
+import std.vec;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // join(split(text, sep), sep) round-trips back to the original text.
+    let csv: []const u8 = slice("a,bb,,ccc" as *const u8, 9);
+    let parts = strings.split(csv, slice("," as *const u8, 1));
+    let joined = strings.join(&parts, slice("," as *const u8, 1));
+    if strings.equal(owned_string.view(&joined), csv) { ok += 1; }
+    owned_string.destroy(&joined);
+    vec.destroy(&parts);
+
+    // Joining with a different separator than the one split on.
+    let mismatched = strings.split(csv, slice("," as *const u8, 1));
+    let rejoined = strings.join(&mismatched, slice("|" as *const u8, 1));
+    if strings.equal(owned_string.view(&rejoined), slice("a|bb||ccc" as *const u8, 9)) { ok += 1; }
+    owned_string.destroy(&rejoined);
+    vec.destroy(&mismatched);
+
+    // Zero elements: empty string, no separator inserted.
+    let empty_parts: Vec<[]const u8> = vec.new<[]const u8>();
+    let empty_joined = strings.join(&empty_parts, slice("," as *const u8, 1));
+    if empty_joined.length == 0 { ok += 1; }
+    owned_string.destroy(&empty_joined);
+    vec.destroy(&empty_parts);
+
+    // One element: unchanged copy, no separator inserted.
+    let single: Vec<[]const u8> = vec.new<[]const u8>();
+    vec.push(&single, slice("solo" as *const u8, 4));
+    let single_joined = strings.join(&single, slice("," as *const u8, 1));
+    if strings.equal(owned_string.view(&single_joined), slice("solo" as *const u8, 4)) { ok += 1; }
+    owned_string.destroy(&single_joined);
+    vec.destroy(&single);
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "joinuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "joinuse.exe" if os.name == "nt" else "joinuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is
