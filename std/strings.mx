@@ -44,6 +44,15 @@ pub fn index_of(text: []const u8, needle: []const u8) -> Option<u64> {
     return Option<u64>.None;
 }
 
+// Whether `needle` occurs anywhere in `text`. A thin convenience wrapper
+// over `index_of(text, needle).is_some()`.
+pub fn contains(text: []const u8, needle: []const u8) -> bool {
+    match index_of(text, needle) {
+        Option<u64>.Some(offset) => { return true; },
+        Option<u64>.None => { return false; },
+    }
+}
+
 fn is_ascii_space(byte: u8) -> bool {
     return byte == 32 || byte == 9 || byte == 10 || byte == 13 || byte == 11 || byte == 12;
 }

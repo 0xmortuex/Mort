@@ -2526,6 +2526,40 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_contains_wraps_index_of():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let hello: []const u8 = slice("hello world" as *const u8, 11);
+    let ok: i64 = 0;
+
+    if strings.contains(hello, slice("world" as *const u8, 5)) { ok += 1; }
+    if strings.contains(hello, slice("hello world" as *const u8, 11)) { ok += 1; }
+    if !strings.contains(hello, slice("nope" as *const u8, 4)) { ok += 1; }
+    if strings.contains(hello, slice("" as *const u8, 0)) { ok += 1; }
+    if !strings.contains(slice("" as *const u8, 0), slice("x" as *const u8, 1)) { ok += 1; }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "containsuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "containsuse.exe" if os.name == "nt" else "containsuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "5"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

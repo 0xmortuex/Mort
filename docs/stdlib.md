@@ -178,11 +178,12 @@ is `split`'s inverse: it takes a `*Vec<[]const u8>` and concatenates its
 elements with `separator` inserted between consecutive ones, matching
 Python's `separator.join(parts)` (zero elements yields an empty string, one
 element yields an unchanged copy with no separator inserted), also
-returning a freshly allocated `std.owned_string.String`. `replace` and
-`join` are the only functions here that allocate, so the caller must call
-`std.owned_string.destroy` on their results. Every view returned by
-`index_of`, `trim`, or `split` borrows from the original `text` buffer and
-is only valid as long as it is.
+returning a freshly allocated `std.owned_string.String`. `contains(text,
+needle)` is a thin wrapper over `index_of(text, needle)` that returns a
+plain `bool`. `replace` and `join` are the only functions here that
+allocate, so the caller must call `std.owned_string.destroy` on their
+results. Every view returned by `index_of`, `trim`, or `split` borrows from
+the original `text` buffer and is only valid as long as it is.
 
 ## `std.thread`
 
