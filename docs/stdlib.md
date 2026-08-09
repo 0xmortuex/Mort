@@ -73,8 +73,11 @@ construct one; `insert` adds or overwrites a key (returning `true` only for
 a new key — an overwrite of a resource `Value` still requires the caller to
 have drained the old value first, since the slot is overwritten as raw
 memory); `get` returns `Option<Value>`; `contains` checks key presence;
-`reserve` grows capacity ahead of time; `clear` resets the length without
-freeing backing storage; `destroy` frees both backing arrays.
+`remove` deletes a key and returns its `Value` (moved out, so a resource
+`Value` is not dropped) inside `Option<Value>`, `Option<Value>.None` if the
+key was absent, shifting later entries down to fill the gap; `reserve` grows
+capacity ahead of time; `clear` resets the length without freeing backing
+storage; `destroy` frees both backing arrays.
 
 ## `std.math`
 
@@ -236,9 +239,11 @@ drained (e.g. by repeated `pop`) before `destroy`.
 
 Both containers' `get`/`set` (and `Map`'s overwrite-on-`insert`) operate on
 raw backing storage rather than through the ownership checker, so they only
-fully track resource lifetimes through `push`/`insert`-then-`pop`/`drain`
-patterns. See the "Resource-aware container API" item in `BACKLOG.md` for
-the known gap and the planned `get_ref`/dropping-`destroy` API.
+fully track resource lifetimes through `push`/`insert`-then-`pop`/`drain`/
+`remove` patterns (`Map.remove` moves its slot's `Value` out cleanly, same
+as `Vec.pop`). See the "Resource-aware container API" item in `BACKLOG.md`
+for the remaining gap (`get`/`set`/insert-overwrite) and the planned
+`get_ref`/dropping-`destroy` API.
 
 ## `std.json`
 

@@ -2560,6 +2560,62 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
+    program = r'''import std.map;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let values: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..5 { map.insert(&values, index, index * 10); }
+
+    // Removing a middle key returns its value and the shift preserves the
+    // other keys' associations.
+    if unwrap(map.remove(&values, 2)) == 20 { ok += 1; }
+    if !map.contains(&values, 2) { ok += 1; }
+    if unwrap(map.get(&values, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&values, 3)) == 30 { ok += 1; }
+    if unwrap(map.get(&values, 4)) == 40 { ok += 1; }
+
+    // Removing the last remaining slot for a key works too.
+    if unwrap(map.remove(&values, 4)) == 40 { ok += 1; }
+    if !map.contains(&values, 4) { ok += 1; }
+
+    // Removing a missing key returns None and leaves the map unchanged.
+    match map.remove(&values, 999) {
+        Option<i64>.Some(item) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapremove.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapremove.exe" if os.name == "nt" else "mapremove")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

@@ -99,6 +99,26 @@ pub fn contains<Key, Value>(value: *Map<Key, Value>, key: Key) -> bool {
     }
 }
 
+pub fn remove<Key, Value>(value: *Map<Key, Value>, key: Key) -> Option<Value> {
+    let existing = find(value, key);
+    match existing {
+        Option<u64>.Some(index) => {
+            // Move the slot's value out before the shift below overwrites it.
+            let removed = Option<Value>.Some((*value).values[index]);
+            let last = (*value).length - 1;
+            for cursor: u64 in index..last {
+                (*value).keys[cursor] = (*value).keys[cursor + 1];
+                (*value).values[cursor] = (*value).values[cursor + 1];
+            }
+            (*value).length = last;
+            return move removed;
+        },
+        Option<u64>.None => {
+            return Option<Value>.None;
+        },
+    }
+}
+
 pub fn clear<Key, Value>(value: *Map<Key, Value>) -> void {
     (*value).length = 0;
 }
