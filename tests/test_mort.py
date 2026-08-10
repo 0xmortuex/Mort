@@ -2616,6 +2616,61 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_remove_moves_value_out_and_shifts_remaining_elements():
+    program = r'''import std.vec;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..5 { vec.push(&values, index * 10); }
+
+    // Removing a middle index returns its value and shifts later elements down.
+    if unwrap(vec.remove(&values, 2)) == 20 { ok += 1; }
+    if unwrap(vec.get(&values, 2)) == 30 { ok += 1; }
+    if unwrap(vec.get(&values, 3)) == 40 { ok += 1; }
+    if values.length == 4 { ok += 1; }
+
+    // Removing the last remaining slot works too (empty shift range).
+    if unwrap(vec.remove(&values, 3)) == 40 { ok += 1; }
+    if values.length == 3 { ok += 1; }
+
+    // Removing an out-of-bounds index returns None and leaves the vec unchanged.
+    match vec.remove(&values, 999) {
+        Option<i64>.Some(item) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    if values.length == 3 { ok += 1; }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecremove.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecremove.exe" if os.name == "nt" else "vecremove")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

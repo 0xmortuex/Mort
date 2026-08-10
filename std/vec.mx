@@ -71,6 +71,20 @@ pub fn pop<T>(value: *Vec<T>) -> Option<T> {
     return Option<T>.Some((*value).data[(*value).length]);
 }
 
+pub fn remove<T>(value: *Vec<T>, index: u64) -> Option<T> {
+    if index >= (*value).length {
+        return Option<T>.None;
+    }
+    // Move the slot's value out before the shift below overwrites it.
+    let removed = Option<T>.Some((*value).data[index]);
+    let last = (*value).length - 1;
+    for cursor: u64 in index..last {
+        (*value).data[cursor] = (*value).data[cursor + 1];
+    }
+    (*value).length = last;
+    return move removed;
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }
