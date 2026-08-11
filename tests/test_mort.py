@@ -2671,6 +2671,76 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_insert_shifts_tail_up_and_opens_a_gap():
+    program = r'''import std.vec;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..5 { vec.push(&values, index * 10); }
+    // values: [0, 10, 20, 30, 40]
+
+    // Inserting in the middle shifts the tail up and opens a gap.
+    if vec.insert(&values, 2, 999) { ok += 1; }
+    if values.length == 6 { ok += 1; }
+    if unwrap(vec.get(&values, 2)) == 999 { ok += 1; }
+    if unwrap(vec.get(&values, 3)) == 20 { ok += 1; }
+    if unwrap(vec.get(&values, 5)) == 40 { ok += 1; }
+
+    // Inserting at index 0 shifts every existing element.
+    if vec.insert(&values, 0, -1) { ok += 1; }
+    if unwrap(vec.get(&values, 0)) == -1 { ok += 1; }
+    if unwrap(vec.get(&values, 1)) == 0 { ok += 1; }
+    if values.length == 7 { ok += 1; }
+
+    // Inserting at index == length appends, same as push.
+    if vec.insert(&values, 7, 12345) { ok += 1; }
+    if unwrap(vec.get(&values, 7)) == 12345 { ok += 1; }
+    if values.length == 8 { ok += 1; }
+
+    // Inserting past the end fails and leaves the vec unchanged.
+    if vec.insert(&values, 999, 0) == false { ok += 1; }
+    if values.length == 8 { ok += 1; }
+
+    // Inserting into a full-capacity vec forces a grow before shifting.
+    let small: Vec<i64> = vec.with_capacity<i64>(1);
+    defer vec.destroy(&small);
+    vec.push(&small, 1);
+    if vec.insert(&small, 0, 0) { ok += 1; }
+    if unwrap(vec.get(&small, 0)) == 0 { ok += 1; }
+    if unwrap(vec.get(&small, 1)) == 1 { ok += 1; }
+    if small.length == 2 { ok += 1; }
+
+    print(ok);
+    if ok == 18 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecinsert.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecinsert.exe" if os.name == "nt" else "vecinsert")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "18"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

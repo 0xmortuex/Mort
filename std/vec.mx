@@ -85,6 +85,24 @@ pub fn remove<T>(value: *Vec<T>, index: u64) -> Option<T> {
     return move removed;
 }
 
+pub fn insert<T>(value: *Vec<T>, index: u64, item: T) -> bool {
+    if index > (*value).length {
+        return false;
+    }
+    if (*value).length == (*value).capacity {
+        reserve(value, (*value).capacity * 2);
+    }
+    // Shift the tail up one slot, from the end down to `index`, to open a gap.
+    let cursor = (*value).length;
+    while cursor > index {
+        (*value).data[cursor] = (*value).data[cursor - 1];
+        cursor = cursor - 1;
+    }
+    (*value).data[index] = move item;
+    (*value).length = (*value).length + 1;
+    return true;
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }

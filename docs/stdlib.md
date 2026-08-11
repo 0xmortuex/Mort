@@ -232,21 +232,27 @@ there); `pop` removes and returns the last element as `Option<T>`;
 `remove(vec, index)` removes an arbitrary element, moving its value out as
 `Option<T>` and shifting later elements down to fill the gap (returns
 `None` and leaves the vector unchanged for an out-of-bounds `index`);
-`as_slice` / `as_const_slice` borrow the live contents as `[]T` /
-`[]const T` without copying; `clear` resets the length without freeing
-backing storage; `destroy` frees the backing array only — it does **not**
-drop resource elements still in the vector, so a `Vec` of resources must be
-drained (e.g. by repeated `pop`/`remove`) before `destroy`.
+`insert(vec, index, item)` is `remove`'s counterpart — it moves `item` into
+an arbitrary position, growing the backing array if needed and shifting
+later elements up to open a gap (`index == length` appends, same as `push`;
+an out-of-bounds `index` returns `false` and leaves the vector unchanged,
+so the caller must otherwise drop or reuse `item`); `as_slice` /
+`as_const_slice` borrow the live contents as `[]T` / `[]const T` without
+copying; `clear` resets the length without freeing backing storage;
+`destroy` frees the backing array only — it does **not** drop resource
+elements still in the vector, so a `Vec` of resources must be drained
+(e.g. by repeated `pop`/`remove`) before `destroy`.
 
 ## `std.map` and `std.vec`: resource caveats
 
 Both containers' `get`/`set` (and `Map`'s overwrite-on-`insert`) operate on
 raw backing storage rather than through the ownership checker, so they only
-fully track resource lifetimes through `push`/`insert`-then-`pop`/`drain`/
-`remove` patterns (`Map.remove` and `Vec.remove` both move their slot's
-value out cleanly, same as `Vec.pop`). See the "Resource-aware container
-API" item in `BACKLOG.md` for the remaining gap (`get`/`set`/insert-overwrite)
-and the planned `get_ref`/dropping-`destroy` API.
+fully track resource lifetimes through `push`/`Vec.insert`-then-`pop`/
+`drain`/`remove` patterns (`Map.remove`, `Vec.remove`, and `Vec.insert` all
+move their slot's value in or out cleanly, same as `Vec.pop`). See the
+"Resource-aware container API" item in `BACKLOG.md` for the remaining gap
+(`get`/`set`/`Map.insert`-overwrite) and the planned `get_ref`/dropping-
+`destroy` API.
 
 ## `std.json`
 
