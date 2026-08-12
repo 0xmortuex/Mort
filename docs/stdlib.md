@@ -183,10 +183,14 @@ Python's `separator.join(parts)` (zero elements yields an empty string, one
 element yields an unchanged copy with no separator inserted), also
 returning a freshly allocated `std.owned_string.String`. `contains(text,
 needle)` is a thin wrapper over `index_of(text, needle)` that returns a
-plain `bool`. `replace` and `join` are the only functions here that
+plain `bool`. `trim_start(text)` and `trim_end(text)` are `trim`'s one-sided
+counterparts, stripping ASCII whitespace from only the leading or only the
+trailing edge respectively and returning a borrowed view, same as `trim`.
+`replace` and `join` are the only functions here that
 allocate, so the caller must call `std.owned_string.destroy` on their
-results. Every view returned by `index_of`, `trim`, or `split` borrows from
-the original `text` buffer and is only valid as long as it is.
+results. Every view returned by `index_of`, `trim`, `trim_start`,
+`trim_end`, or `split` borrows from the original `text` buffer and is only
+valid as long as it is.
 
 ## `std.thread`
 

@@ -2559,6 +2559,51 @@ fn main() -> i64 {
     assert result.stdout.strip().splitlines()[-1] == "5"
 
 
+def test_std_strings_trim_start_and_trim_end_trim_one_side_only():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let padded: []const u8 = slice("  spaced out  \t\n" as *const u8, 16);
+    let ok: i64 = 0;
+
+    let started: []const u8 = strings.trim_start(padded);
+    if started.len == 14 && strings.equal(started, slice("spaced out  \t\n" as *const u8, 14)) { ok += 1; }
+
+    let ended: []const u8 = strings.trim_end(padded);
+    if ended.len == 12 && strings.equal(ended, slice("  spaced out" as *const u8, 12)) { ok += 1; }
+
+    let blank: []const u8 = slice("   " as *const u8, 3);
+    if strings.trim_start(blank).len == 0 { ok += 1; }
+    if strings.trim_end(blank).len == 0 { ok += 1; }
+
+    let empty: []const u8 = slice("" as *const u8, 0);
+    if strings.trim_start(empty).len == 0 { ok += 1; }
+    if strings.trim_end(empty).len == 0 { ok += 1; }
+
+    let none: []const u8 = slice("noedges" as *const u8, 7);
+    if strings.trim_start(none).len == 7 { ok += 1; }
+    if strings.trim_end(none).len == 7 { ok += 1; }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "trimsides.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "trimsides.exe" if os.name == "nt" else "trimsides")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
 @needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;

@@ -70,6 +70,24 @@ pub fn trim(text: []const u8) -> []const u8 {
     return slice(((text.data as u64) + start) as *const u8, end - start);
 }
 
+// Trims only leading ASCII whitespace, returning a view into `text`.
+pub fn trim_start(text: []const u8) -> []const u8 {
+    let start: u64 = 0;
+    while start < text.len && is_ascii_space(text[start]) {
+        start += 1;
+    }
+    return slice(((text.data as u64) + start) as *const u8, text.len - start);
+}
+
+// Trims only trailing ASCII whitespace, returning a view into `text`.
+pub fn trim_end(text: []const u8) -> []const u8 {
+    let end: u64 = text.len;
+    while end > 0 && is_ascii_space(text[end - 1]) {
+        end -= 1;
+    }
+    return slice(text.data, end);
+}
+
 // Parses an unsigned decimal integer. None on an empty or non-digit input.
 pub fn parse_u64(text: []const u8) -> Option<u64> {
     if text.len == 0 {
