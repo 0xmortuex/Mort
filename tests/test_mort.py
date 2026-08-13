@@ -2786,6 +2786,51 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_and_map_is_empty_reflects_length():
+    program = r'''import std.vec;
+import std.map;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    if vec.is_empty(&values) { ok += 1; }
+    vec.push(&values, 1);
+    if !vec.is_empty(&values) { ok += 1; }
+    vec.pop(&values);
+    if vec.is_empty(&values) { ok += 1; }
+
+    let entries: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&entries);
+
+    if map.is_empty(&entries) { ok += 1; }
+    map.insert(&entries, 1, 10);
+    if !map.is_empty(&entries) { ok += 1; }
+    map.remove(&entries, 1);
+    if map.is_empty(&entries) { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "isempty.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "isempty.exe" if os.name == "nt" else "isempty")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

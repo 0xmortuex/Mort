@@ -103,6 +103,10 @@ pub fn insert<T>(value: *Vec<T>, index: u64, item: T) -> bool {
     return true;
 }
 
+pub fn is_empty<T>(value: *Vec<T>) -> bool {
+    return (*value).length == 0;
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }

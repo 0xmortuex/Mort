@@ -119,6 +119,10 @@ pub fn remove<Key, Value>(value: *Map<Key, Value>, key: Key) -> Option<Value> {
     }
 }
 
+pub fn is_empty<Key, Value>(value: *Map<Key, Value>) -> bool {
+    return (*value).length == 0;
+}
+
 pub fn clear<Key, Value>(value: *Map<Key, Value>) -> void {
     (*value).length = 0;
 }

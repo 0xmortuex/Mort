@@ -76,8 +76,9 @@ memory); `get` returns `Option<Value>`; `contains` checks key presence;
 `remove` deletes a key and returns its `Value` (moved out, so a resource
 `Value` is not dropped) inside `Option<Value>`, `Option<Value>.None` if the
 key was absent, shifting later entries down to fill the gap; `reserve` grows
-capacity ahead of time; `clear` resets the length without freeing backing
-storage; `destroy` frees both backing arrays.
+capacity ahead of time; `is_empty` checks whether the length is zero; `clear`
+resets the length without freeing backing storage; `destroy` frees both
+backing arrays.
 
 ## `std.math`
 
@@ -242,10 +243,11 @@ later elements up to open a gap (`index == length` appends, same as `push`;
 an out-of-bounds `index` returns `false` and leaves the vector unchanged,
 so the caller must otherwise drop or reuse `item`); `as_slice` /
 `as_const_slice` borrow the live contents as `[]T` / `[]const T` without
-copying; `clear` resets the length without freeing backing storage;
-`destroy` frees the backing array only — it does **not** drop resource
-elements still in the vector, so a `Vec` of resources must be drained
-(e.g. by repeated `pop`/`remove`) before `destroy`.
+copying; `is_empty` checks whether the length is zero; `clear` resets the
+length without freeing backing storage; `destroy` frees the backing array
+only — it does **not** drop resource elements still in the vector, so a
+`Vec` of resources must be drained (e.g. by repeated `pop`/`remove`) before
+`destroy`.
 
 ## `std.map` and `std.vec`: resource caveats
 
