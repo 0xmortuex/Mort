@@ -2467,6 +2467,55 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_repeat_builds_owned_buffer_and_matches_python_semantics():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Basic repeat: text repeated multiple times.
+    let text: []const u8 = slice("ab" as *const u8, 2);
+    let repeated: String = strings.repeat(text, 3);
+    if strings.equal(owned_string.view(&repeated), slice("ababab" as *const u8, 6)) { ok += 1; }
+    owned_string.destroy(&repeated);
+
+    // count == 0 returns an empty owned string.
+    let zero: String = strings.repeat(slice("xyz" as *const u8, 3), 0);
+    if zero.length == 0 { ok += 1; }
+    owned_string.destroy(&zero);
+
+    // count == 1 returns an unchanged copy.
+    let once: String = strings.repeat(slice("solo" as *const u8, 4), 1);
+    if strings.equal(owned_string.view(&once), slice("solo" as *const u8, 4)) { ok += 1; }
+    owned_string.destroy(&once);
+
+    // Repeating an empty string any number of times is still empty.
+    let empty_text: String = strings.repeat(slice("" as *const u8, 0), 5);
+    if empty_text.length == 0 { ok += 1; }
+    owned_string.destroy(&empty_text);
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "repeatuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "repeatuse.exe" if os.name == "nt" else "repeatuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_std_strings_join_is_splits_inverse_and_matches_python_semantics():
     program = r'''import std.strings;
 import std.owned_string;

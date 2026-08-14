@@ -187,11 +187,13 @@ needle)` is a thin wrapper over `index_of(text, needle)` that returns a
 plain `bool`. `trim_start(text)` and `trim_end(text)` are `trim`'s one-sided
 counterparts, stripping ASCII whitespace from only the leading or only the
 trailing edge respectively and returning a borrowed view, same as `trim`.
-`replace` and `join` are the only functions here that
-allocate, so the caller must call `std.owned_string.destroy` on their
-results. Every view returned by `index_of`, `trim`, `trim_start`,
-`trim_end`, or `split` borrows from the original `text` buffer and is only
-valid as long as it is.
+`repeat(text, count)` returns a freshly allocated `std.owned_string.String`
+containing `text` repeated `count` times, matching Python's `text * count`
+(`count == 0` returns an empty owned string). `replace`, `join`, and
+`repeat` are the only functions here that allocate, so the caller must call
+`std.owned_string.destroy` on their results. Every view returned by
+`index_of`, `trim`, `trim_start`, `trim_end`, or `split` borrows from the
+original `text` buffer and is only valid as long as it is.
 
 ## `std.thread`
 
