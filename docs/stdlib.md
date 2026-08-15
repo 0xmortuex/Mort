@@ -189,11 +189,17 @@ counterparts, stripping ASCII whitespace from only the leading or only the
 trailing edge respectively and returning a borrowed view, same as `trim`.
 `repeat(text, count)` returns a freshly allocated `std.owned_string.String`
 containing `text` repeated `count` times, matching Python's `text * count`
-(`count == 0` returns an empty owned string). `replace`, `join`, and
-`repeat` are the only functions here that allocate, so the caller must call
-`std.owned_string.destroy` on their results. Every view returned by
-`index_of`, `trim`, `trim_start`, `trim_end`, or `split` borrows from the
-original `text` buffer and is only valid as long as it is.
+(`count == 0` returns an empty owned string). `last_index_of(text, needle)`
+is `index_of`'s reverse counterpart: it returns the *last* byte offset of
+`needle` as `Option<u64>`, scanning from the end so the rightmost occurrence
+wins (an empty `needle` matches at `text.len`, the last possible start
+position, mirroring `index_of`'s empty-needle match at offset 0). `replace`,
+`join`, and `repeat` are the only functions here that allocate, so the
+caller must call `std.owned_string.destroy` on their results. Every view
+returned by `trim`, `trim_start`, `trim_end`, or `split` borrows from the
+original `text` buffer and is only valid as long as it is (`index_of` and
+`last_index_of` return a byte offset into `text` rather than a view, but
+the same lifetime applies to interpreting it).
 
 ## `std.thread`
 

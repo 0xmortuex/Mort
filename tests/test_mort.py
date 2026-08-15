@@ -2608,6 +2608,65 @@ fn main() -> i64 {
     assert result.stdout.strip().splitlines()[-1] == "5"
 
 
+@needs_cc
+def test_std_strings_last_index_of_scans_from_the_end():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let repeated: []const u8 = slice("abc abc abc" as *const u8, 11);
+    let ok: i64 = 0;
+
+    match strings.last_index_of(repeated, slice("abc" as *const u8, 3)) {
+        Option<u64>.Some(offset) => { if offset == 8 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match strings.last_index_of(repeated, slice("bc" as *const u8, 2)) {
+        Option<u64>.Some(offset) => { if offset == 9 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match strings.last_index_of(repeated, slice("z" as *const u8, 1)) {
+        Option<u64>.Some(offset) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match strings.last_index_of(repeated, slice("" as *const u8, 0)) {
+        Option<u64>.Some(offset) => { if offset == 11 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    let empty: []const u8 = slice("" as *const u8, 0);
+    match strings.last_index_of(empty, slice("x" as *const u8, 1)) {
+        Option<u64>.Some(offset) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match strings.last_index_of(repeated, repeated) {
+        Option<u64>.Some(offset) => { if offset == 0 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "lastindexofuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "lastindexofuse.exe" if os.name == "nt" else "lastindexofuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
 def test_std_strings_trim_start_and_trim_end_trim_one_side_only():
     program = r'''import std.strings;
 

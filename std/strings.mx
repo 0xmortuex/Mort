@@ -44,6 +44,29 @@ pub fn index_of(text: []const u8, needle: []const u8) -> Option<u64> {
     return Option<u64>.None;
 }
 
+// Last byte offset of `needle` in `text`, or None if it does not occur.
+// The reverse counterpart to `index_of`: scans from the end, so overlapping
+// candidate positions prefer the rightmost one. An empty needle matches at
+// the last possible start position, `text.len` (matching `index_of`'s
+// empty-needle convention of matching at the first possible position, 0).
+pub fn last_index_of(text: []const u8, needle: []const u8) -> Option<u64> {
+    if needle.len == 0 {
+        return Option<u64>.Some(text.len);
+    }
+    if needle.len > text.len {
+        return Option<u64>.None;
+    }
+    let last: u64 = text.len - needle.len;
+    let start: u64 = last + 1;
+    while start > 0 {
+        start -= 1;
+        if bytes.equal(slice(((text.data as u64) + start) as *const u8, needle.len), needle) {
+            return Option<u64>.Some(start);
+        }
+    }
+    return Option<u64>.None;
+}
+
 // Whether `needle` occurs anywhere in `text`. A thin convenience wrapper
 // over `index_of(text, needle).is_some()`.
 pub fn contains(text: []const u8, needle: []const u8) -> bool {
