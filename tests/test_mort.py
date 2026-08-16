@@ -2769,6 +2769,78 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_key_at_and_value_at_enumerate_entries_in_insertion_order():
+    program = r'''import std.map;
+
+fn unwrap_key(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn unwrap_value(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let values: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..4 { map.insert(&values, index, index * 10); }
+
+    // Entries are visited in insertion order via key_at/value_at.
+    let sum_keys: i64 = 0;
+    let sum_values: i64 = 0;
+    for index: u64 in 0..values.length {
+        sum_keys += unwrap_key(map.key_at(&values, index));
+        sum_values += unwrap_value(map.value_at(&values, index));
+    }
+    if sum_keys == 6 { ok += 1; }
+    if sum_values == 60 { ok += 1; }
+    if unwrap_key(map.key_at(&values, 2)) == 2 { ok += 1; }
+    if unwrap_value(map.value_at(&values, 2)) == 20 { ok += 1; }
+
+    // Removing a key shifts later entries down, and key_at/value_at reflect it.
+    map.remove(&values, 1);
+    if unwrap_key(map.key_at(&values, 1)) == 2 { ok += 1; }
+    if unwrap_value(map.value_at(&values, 1)) == 20 { ok += 1; }
+
+    // Out-of-bounds index returns None for both.
+    match map.key_at(&values, 999) {
+        Option<i64>.Some(item) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    match map.value_at(&values, 999) {
+        Option<i64>.Some(item) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapkeyat.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapkeyat.exe" if os.name == "nt" else "mapkeyat")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_std_vec_remove_moves_value_out_and_shifts_remaining_elements():
     program = r'''import std.vec;
 

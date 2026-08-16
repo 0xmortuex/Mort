@@ -75,10 +75,14 @@ have drained the old value first, since the slot is overwritten as raw
 memory); `get` returns `Option<Value>`; `contains` checks key presence;
 `remove` deletes a key and returns its `Value` (moved out, so a resource
 `Value` is not dropped) inside `Option<Value>`, `Option<Value>.None` if the
-key was absent, shifting later entries down to fill the gap; `reserve` grows
-capacity ahead of time; `is_empty` checks whether the length is zero; `clear`
-resets the length without freeing backing storage; `destroy` frees both
-backing arrays.
+key was absent, shifting later entries down to fill the gap; `key_at` /
+`value_at` return the entry at a given index (aliasing copies, same caveat as
+`get`) as `Option<Key>` / `Option<Value>`, `None` if the index is
+out-of-bounds — the supported way to enumerate a map's entries in insertion
+order (`for index: u64 in 0..map.length { ... }`) without reaching into the
+struct's internal fields; `reserve` grows capacity ahead of time; `is_empty`
+checks whether the length is zero; `clear` resets the length without freeing
+backing storage; `destroy` frees both backing arrays.
 
 ## `std.math`
 
