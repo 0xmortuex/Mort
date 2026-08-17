@@ -203,7 +203,13 @@ caller must call `std.owned_string.destroy` on their results. Every view
 returned by `trim`, `trim_start`, `trim_end`, or `split` borrows from the
 original `text` buffer and is only valid as long as it is (`index_of` and
 `last_index_of` return a byte offset into `text` rather than a view, but
-the same lifetime applies to interpreting it).
+the same lifetime applies to interpreting it). `split_once(text, separator)`
+returns `Option<SplitOnce>`, a struct of two borrowed views (`before` and
+`after` the first `separator` match), or `None` if `separator` does not
+occur — the cheaper alternative to `split` when a caller only needs the
+first two parts (e.g. `"key=value"`), since it borrows two views instead of
+allocating a `Vec`. Like `index_of`, an empty `separator` matches at offset
+0 (`before` empty, `after` all of `text`).
 
 ## `std.thread`
 

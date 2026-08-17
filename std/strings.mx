@@ -306,3 +306,30 @@ pub fn repeat(text: []const u8, count: u64) -> String {
     destination[result_length] = 0;
     return String { data: data, length: result_length };
 }
+
+// The two views produced by `split_once`: the text before and after the
+// first `separator` match. Both are borrowed views into the original text.
+struct SplitOnce {
+    before: []const u8,
+    after: []const u8,
+}
+
+// Splits `text` into the views before and after the first occurrence of
+// `separator`, or `None` if `separator` does not occur. Unlike `split`
+// (which allocates a `Vec` of every piece), this borrows just the two views
+// a caller needs to pull e.g. `key`/`value` out of `"key=value"`-shaped
+// text without paying for a full split. An empty `separator` matches at
+// offset 0, matching `index_of`'s empty-needle convention: `before` is
+// empty and `after` is all of `text`.
+pub fn split_once(text: []const u8, separator: []const u8) -> Option<SplitOnce> {
+    match index_of(text, separator) {
+        Option<u64>.Some(offset) => {
+            let after_start: u64 = offset + separator.len;
+            return Option<SplitOnce>.Some(SplitOnce {
+                before: slice(text.data, offset),
+                after: slice(((text.data as u64) + after_start) as *const u8, text.len - after_start),
+            });
+        },
+        Option<u64>.None => { return Option<SplitOnce>.None; },
+    }
+}
