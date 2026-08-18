@@ -2774,6 +2774,68 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_rsplit_once_returns_views_before_and_after_last_match():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match strings.rsplit_once(slice("a=b=c" as *const u8, 5), slice("=" as *const u8, 1)) {
+        Option<SplitOnce>.Some(parts) => {
+            if parts.before.len == 3 && strings.equal(parts.before, slice("a=b" as *const u8, 3)) { ok += 1; }
+            if parts.after.len == 1 && strings.equal(parts.after, slice("c" as *const u8, 1)) { ok += 1; }
+        },
+        Option<SplitOnce>.None => {},
+    }
+
+    match strings.rsplit_once(slice("file.tar.gz" as *const u8, 11), slice("." as *const u8, 1)) {
+        Option<SplitOnce>.Some(parts) => {
+            if parts.before.len == 8 && strings.equal(parts.before, slice("file.tar" as *const u8, 8)) { ok += 1; }
+            if parts.after.len == 2 && strings.equal(parts.after, slice("gz" as *const u8, 2)) { ok += 1; }
+        },
+        Option<SplitOnce>.None => {},
+    }
+
+    match strings.rsplit_once(slice("noseparator" as *const u8, 11), slice("=" as *const u8, 1)) {
+        Option<SplitOnce>.Some(parts) => {},
+        Option<SplitOnce>.None => { ok += 1; },
+    }
+
+    match strings.rsplit_once(slice("abc" as *const u8, 3), slice("" as *const u8, 0)) {
+        Option<SplitOnce>.Some(parts) => {
+            if parts.before.len == 3 && strings.equal(parts.before, slice("abc" as *const u8, 3)) { ok += 1; }
+            if parts.after.len == 0 { ok += 1; }
+        },
+        Option<SplitOnce>.None => {},
+    }
+
+    let empty: []const u8 = slice("" as *const u8, 0);
+    match strings.rsplit_once(empty, slice("=" as *const u8, 1)) {
+        Option<SplitOnce>.Some(parts) => {},
+        Option<SplitOnce>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "rsplitonceuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "rsplitonceuse.exe" if os.name == "nt" else "rsplitonceuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

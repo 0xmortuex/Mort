@@ -333,3 +333,24 @@ pub fn split_once(text: []const u8, separator: []const u8) -> Option<SplitOnce> 
         Option<u64>.None => { return Option<SplitOnce>.None; },
     }
 }
+
+// Splits `text` into the views before and after the *last* occurrence of
+// `separator`, or `None` if `separator` does not occur. The reverse
+// counterpart to `split_once`, built the same way `last_index_of` mirrors
+// `index_of` — useful for e.g. peeling a file extension or the last path
+// segment off `text`. Reuses `SplitOnce`; both views are borrowed from
+// `text`, no allocation. An empty `separator` matches at the last possible
+// position, `text.len` (matching `last_index_of`'s empty-needle
+// convention): `before` is all of `text` and `after` is empty.
+pub fn rsplit_once(text: []const u8, separator: []const u8) -> Option<SplitOnce> {
+    match last_index_of(text, separator) {
+        Option<u64>.Some(offset) => {
+            let after_start: u64 = offset + separator.len;
+            return Option<SplitOnce>.Some(SplitOnce {
+                before: slice(text.data, offset),
+                after: slice(((text.data as u64) + after_start) as *const u8, text.len - after_start),
+            });
+        },
+        Option<u64>.None => { return Option<SplitOnce>.None; },
+    }
+}

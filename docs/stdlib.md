@@ -209,7 +209,13 @@ returns `Option<SplitOnce>`, a struct of two borrowed views (`before` and
 occur — the cheaper alternative to `split` when a caller only needs the
 first two parts (e.g. `"key=value"`), since it borrows two views instead of
 allocating a `Vec`. Like `index_of`, an empty `separator` matches at offset
-0 (`before` empty, `after` all of `text`).
+0 (`before` empty, `after` all of `text`). `rsplit_once(text, separator)` is
+`split_once`'s reverse counterpart: it also returns `Option<SplitOnce>`, but
+split at the *last* `separator` match (built the same way `last_index_of`
+mirrors `index_of`), useful for e.g. peeling a file extension or the last
+path segment off `text`. Like `last_index_of`, an empty `separator` matches
+at the last possible position, `text.len` (`before` all of `text`, `after`
+empty).
 
 ## `std.thread`
 
