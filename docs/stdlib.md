@@ -80,7 +80,11 @@ key was absent, shifting later entries down to fill the gap; `key_at` /
 `get`) as `Option<Key>` / `Option<Value>`, `None` if the index is
 out-of-bounds — the supported way to enumerate a map's entries in insertion
 order (`for index: u64 in 0..map.length { ... }`) without reaching into the
-struct's internal fields; `reserve` grows capacity ahead of time; `is_empty`
+struct's internal fields; `find_by` scans entries in insertion order and
+returns the `Option<Key>` of the first one for which a caller-supplied
+`fn(Key, Value) -> bool` predicate is true (`None` if none match, same
+aliasing-copy caveat as `key_at`/`value_at`), for a predicate search without
+a hand-rolled loop; `reserve` grows capacity ahead of time; `is_empty`
 checks whether the length is zero; `clear` resets the length without freeing
 backing storage; `destroy` frees both backing arrays.
 

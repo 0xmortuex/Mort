@@ -105,6 +105,22 @@ pub fn value_at<Key, Value>(value: *Map<Key, Value>, index: u64) -> Option<Value
     return Option<Value>.Some((*value).values[index]);
 }
 
+// Returns the key of the first entry (in insertion order) for which
+// `predicate(key, value)` is true, or None if no entry matches. Like
+// key_at/value_at, this reads key and value via an aliasing copy — see the
+// resource caveats note for Map.get.
+pub fn find_by<Key, Value>(
+value: *Map<Key, Value>,
+predicate: fn(Key, Value) -> bool
+) -> Option<Key> {
+    for index: u64 in 0..(*value).length {
+        if predicate((*value).keys[index], (*value).values[index]) {
+            return Option<Key>.Some((*value).keys[index]);
+        }
+    }
+    return Option<Key>.None;
+}
+
 pub fn contains<Key, Value>(value: *Map<Key, Value>, key: Key) -> bool {
     let existing = find(value, key);
     match existing {

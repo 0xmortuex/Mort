@@ -2892,6 +2892,76 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_find_by_returns_first_matching_key_in_insertion_order():
+    program = r'''import std.map;
+
+fn is_big(key: i64, value: i64) -> bool {
+    return value > 25;
+}
+
+fn is_negative(key: i64, value: i64) -> bool {
+    return value < 0;
+}
+
+fn is_key_two(key: i64, value: i64) -> bool {
+    return key == 2;
+}
+
+fn main() -> i64 {
+    let values: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..4 { map.insert(&values, index, index * 10); }
+    // keys 0..3 hold values 0, 10, 20, 30 -- entries with value > 25 are key 3 only.
+
+    // Matches the first (and only, here) entry by value predicate.
+    match map.find_by(&values, is_big) {
+        Option<i64>.Some(key) => { if key == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Matches by key predicate too, since both key and value reach the predicate.
+    match map.find_by(&values, is_key_two) {
+        Option<i64>.Some(key) => { if key == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // No match returns None.
+    match map.find_by(&values, is_negative) {
+        Option<i64>.Some(key) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    // An empty map never matches.
+    let empty: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&empty);
+    match map.find_by(&empty, is_big) {
+        Option<i64>.Some(key) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapfindby.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapfindby.exe" if os.name == "nt" else "mapfindby")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_std_map_key_at_and_value_at_enumerate_entries_in_insertion_order():
     program = r'''import std.map;
 
