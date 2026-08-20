@@ -3204,6 +3204,63 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_index_of_and_contains_scan_for_a_matching_element():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..5 { vec.push(&values, index * 10); }
+    // values: [0, 10, 20, 30, 40]
+
+    match vec.index_of(&values, 30) {
+        Option<u64>.Some(index) => { if index == 3 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    // A repeated value returns the first matching index.
+    vec.push(&values, 30);
+    match vec.index_of(&values, 30) {
+        Option<u64>.Some(index) => { if index == 3 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match vec.index_of(&values, 999) {
+        Option<u64>.Some(index) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    if vec.contains(&values, 0) { ok += 1; }
+    if vec.contains(&values, 40) { ok += 1; }
+    if !vec.contains(&values, 999) { ok += 1; }
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    if !vec.contains(&empty, 0) { ok += 1; }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecindexof.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecindexof.exe" if os.name == "nt" else "vecindexof")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

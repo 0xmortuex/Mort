@@ -107,6 +107,26 @@ pub fn is_empty<T>(value: *Vec<T>) -> bool {
     return (*value).length == 0;
 }
 
+// Returns the index of the first element equal to `item` (in order), or
+// None if no element matches. Reads elements via an aliasing copy to
+// compare — see the resource caveats note for Vec.get.
+pub fn index_of<T>(value: *Vec<T>, item: T) -> Option<u64> {
+    for index: u64 in 0..(*value).length {
+        if (*value).data[index] == item {
+            return Option<u64>.Some(index);
+        }
+    }
+    return Option<u64>.None;
+}
+
+pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
+    let existing = index_of(value, item);
+    match existing {
+        Option<u64>.Some(index) => { return true; },
+        Option<u64>.None => { return false; },
+    }
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }

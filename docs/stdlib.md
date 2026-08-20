@@ -269,7 +269,11 @@ there); `pop` removes and returns the last element as `Option<T>`;
 an arbitrary position, growing the backing array if needed and shifting
 later elements up to open a gap (`index == length` appends, same as `push`;
 an out-of-bounds `index` returns `false` and leaves the vector unchanged,
-so the caller must otherwise drop or reuse `item`); `as_slice` /
+so the caller must otherwise drop or reuse `item`); `index_of(vec, item)`
+scans in order and returns the index of the first element equal to `item`
+as `Option<u64>` (`None` if none match), reading elements via the same
+aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
+`index_of`; `as_slice` /
 `as_const_slice` borrow the live contents as `[]T` / `[]const T` without
 copying; `is_empty` checks whether the length is zero; `clear` resets the
 length without freeing backing storage; `destroy` frees the backing array
