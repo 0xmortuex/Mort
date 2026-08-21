@@ -3261,6 +3261,68 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_first_and_last_peek_the_ends():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    // Empty vec: both report None.
+    match vec.first(&values) {
+        Option<i64>.Some(x) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    match vec.last(&values) {
+        Option<i64>.Some(x) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    // Single element: first and last agree.
+    vec.push(&values, 10);
+    match vec.first(&values) {
+        Option<i64>.Some(x) => { if x == 10 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.last(&values) {
+        Option<i64>.Some(x) => { if x == 10 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Multiple elements: first and last point at opposite ends.
+    vec.push(&values, 20);
+    vec.push(&values, 30);
+    match vec.first(&values) {
+        Option<i64>.Some(x) => { if x == 10 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.last(&values) {
+        Option<i64>.Some(x) => { if x == 30 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecfirstlast.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecfirstlast.exe" if os.name == "nt" else "vecfirstlast")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

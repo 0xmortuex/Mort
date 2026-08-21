@@ -273,7 +273,10 @@ so the caller must otherwise drop or reuse `item`); `index_of(vec, item)`
 scans in order and returns the index of the first element equal to `item`
 as `Option<u64>` (`None` if none match), reading elements via the same
 aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
-`index_of`; `as_slice` /
+`index_of`; `first(vec)` / `last(vec)` are thin wrappers over `get(vec, 0)`
+/ `get(vec, length - 1)` that return `Option<T>` (`None` for an empty
+vector), sharing `get`'s aliasing-copy caveat for resource elements;
+`as_slice` /
 `as_const_slice` borrow the live contents as `[]T` / `[]const T` without
 copying; `is_empty` checks whether the length is zero; `clear` resets the
 length without freeing backing storage; `destroy` frees the backing array
