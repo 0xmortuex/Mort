@@ -2467,6 +2467,55 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_count_counts_non_overlapping_occurrences():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Basic count: three non-overlapping matches.
+    let text: []const u8 = slice("abcabcabc" as *const u8, 9);
+    if strings.count(text, slice("abc" as *const u8, 3)) == 3 { ok += 1; }
+
+    // Overlapping candidates are not rescanned: "aaaa" with needle="aa"
+    // matches at offset 0 and then resumes scanning at offset 2, so it
+    // counts 2, not 3.
+    if strings.count(slice("aaaa" as *const u8, 4), slice("aa" as *const u8, 2)) == 2 { ok += 1; }
+
+    // No match.
+    if strings.count(slice("hello" as *const u8, 5), slice("xyz" as *const u8, 3)) == 0 { ok += 1; }
+
+    // An empty needle returns 0, not text.len + 1 as in Python.
+    if strings.count(slice("hello" as *const u8, 5), slice("" as *const u8, 0)) == 0 { ok += 1; }
+
+    // Empty text never matches a non-empty needle.
+    if strings.count(slice("" as *const u8, 0), slice("a" as *const u8, 1)) == 0 { ok += 1; }
+
+    // The whole text is one match.
+    let whole: []const u8 = slice("shrink" as *const u8, 6);
+    if strings.count(whole, whole) == 1 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "countuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "countuse.exe" if os.name == "nt" else "countuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_strings_repeat_builds_owned_buffer_and_matches_python_semantics():
     program = r'''import std.strings;
 import std.owned_string;

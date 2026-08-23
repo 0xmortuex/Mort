@@ -185,7 +185,12 @@ unsplit element. `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned
-copy rather than inserting `new` between every byte). `join(parts, separator)`
+copy rather than inserting `new` between every byte). `count(text, needle)`
+counts non-overlapping, left-to-right occurrences of `needle` in `text` as a
+plain `u64`, using the same matching pass as `replace`'s counting loop (a
+match is not rescanned, so `count("aaaa", "aa")` is 2, not 3); an empty
+`needle` returns 0, unlike Python's `str.count("")`, which returns
+`text.len + 1`. `join(parts, separator)`
 is `split`'s inverse: it takes a `*Vec<[]const u8>` and concatenates its
 elements with `separator` inserted between consecutive ones, matching
 Python's `separator.join(parts)` (zero elements yields an empty string, one

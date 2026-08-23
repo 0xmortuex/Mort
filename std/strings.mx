@@ -287,6 +287,30 @@ pub fn replace(text: []const u8, old: []const u8, new: []const u8) -> String {
     return String { data: data, length: result_length };
 }
 
+// Counts non-overlapping, left-to-right occurrences of `needle` in `text`,
+// using the same matching pass as `replace`'s first (counting) loop -- a
+// match consumes its bytes and is not rescanned, so overlapping candidates
+// only count once (e.g. `count("aaaa", "aa")` is 2, not 3). An empty
+// `needle` returns 0, consistent with `replace`'s and `split`'s treatment of
+// an empty search string as a no-op, rather than Python's `str.count("")`,
+// which returns `text.len + 1`.
+pub fn count(text: []const u8, needle: []const u8) -> u64 {
+    if needle.len == 0 {
+        return 0;
+    }
+    let match_count: u64 = 0;
+    let scan: u64 = 0;
+    while scan + needle.len <= text.len {
+        if bytes.equal(slice(((text.data as u64) + scan) as *const u8, needle.len), needle) {
+            match_count += 1;
+            scan += needle.len;
+        } else {
+            scan += 1;
+        }
+    }
+    return match_count;
+}
+
 // Returns a new owned buffer containing `text` repeated `count` times,
 // matching Python's `text * count`. `count == 0` returns an empty owned
 // string (consistent with `join`'s zero-element case). The result is a
