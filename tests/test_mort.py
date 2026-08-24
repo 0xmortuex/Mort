@@ -5627,6 +5627,7 @@ EXPECTED = {
     "tuples.mx": "43\n42\n",
     "resources.mx": "42\nreleased\n",
     "json.mx": "4\n3\n1\n",
+    "word_frequency.mx": "9\n12\n3\n1\n1\n2\n1\n1\n1\n1\n1\n",
 }
 
 

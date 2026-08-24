@@ -1,0 +1,66 @@
+// Word-frequency counter: std.strings.split feeds a std.vec of words, and a
+// second std.vec (of unique words) paired with a parallel std.vec of counts
+// acts as a simple frequency table. Demonstrates std.vec + std.map's sibling
+// module std.strings working together, and defer-driven cleanup of nested
+// containers (the words Vec + the two frequency-table Vecs).
+//
+// Map<[]const u8, ...> isn't used for the table itself: std.map.insert looks
+// up an existing key with `==`, and comparing two `[]const u8` slices with
+// `==` does not compile in the current C backend (only content comparisons
+// like std.strings.equal work) — so the frequency table is a linear scan
+// over parallel Vecs instead.
+import std.vec;
+import std.strings;
+import std.option;
+
+fn main() -> int {
+    let text: []const u8 = slice(
+        "the quick brown fox jumps over the lazy dog the fox runs" as *const u8, 56);
+    let words: Vec<[]const u8> = strings.split(text, slice(" " as *const u8, 1));
+    defer vec.destroy(&words);
+
+    let unique: Vec<[]const u8> = vec.new<[]const u8>();
+    defer vec.destroy(&unique);
+    let counts: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&counts);
+
+    for index: u64 in 0..words.length {
+        match vec.get(&words, index) {
+            Option<[]const u8>.Some(word) => {
+                let matched = false;
+                for slot: u64 in 0..unique.length {
+                    match vec.get(&unique, slot) {
+                        Option<[]const u8>.Some(existing) => {
+                            if strings.equal(existing, word) {
+                                match vec.get(&counts, slot) {
+                                    Option<i64>.Some(current) => {
+                                        vec.set(&counts, slot, current + 1);
+                                    },
+                                    Option<i64>.None => {},
+                                }
+                                matched = true;
+                            }
+                        },
+                        Option<[]const u8>.None => {},
+                    }
+                }
+                if !matched {
+                    vec.push(&unique, word);
+                    vec.push(&counts, 1);
+                }
+            },
+            Option<[]const u8>.None => {},
+        }
+    }
+
+    print(unique.length as i64);
+    print(words.length as i64);
+    for slot: u64 in 0..counts.length {
+        match vec.get(&counts, slot) {
+            Option<i64>.Some(count) => { print(count); },
+            Option<i64>.None => {},
+        }
+    }
+
+    return 0;
+}
