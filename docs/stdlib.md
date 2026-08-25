@@ -206,9 +206,7 @@ containing `text` repeated `count` times, matching Python's `text * count`
 is `index_of`'s reverse counterpart: it returns the *last* byte offset of
 `needle` as `Option<u64>`, scanning from the end so the rightmost occurrence
 wins (an empty `needle` matches at `text.len`, the last possible start
-position, mirroring `index_of`'s empty-needle match at offset 0). `replace`,
-`join`, and `repeat` are the only functions here that allocate, so the
-caller must call `std.owned_string.destroy` on their results. Every view
+position, mirroring `index_of`'s empty-needle match at offset 0). Every view
 returned by `trim`, `trim_start`, `trim_end`, or `split` borrows from the
 original `text` buffer and is only valid as long as it is (`index_of` and
 `last_index_of` return a byte offset into `text` rather than a view, but
@@ -224,7 +222,16 @@ split at the *last* `separator` match (built the same way `last_index_of`
 mirrors `index_of`), useful for e.g. peeling a file extension or the last
 path segment off `text`. Like `last_index_of`, an empty `separator` matches
 at the last possible position, `text.len` (`before` all of `text`, `after`
-empty).
+empty). `from_u64(value)` and `from_i64(value)` are `parse_u64`/`parse_i64`'s
+inverse: each returns a freshly allocated `std.owned_string.String`
+containing `value`'s decimal digits, with a leading `-` for a negative
+`from_i64` value (`value == 0` returns `"0"` for both). `from_i64` computes
+the magnitude of a negative value via two's-complement negation in `u64`
+space (`~(value as u64) + 1`) rather than signed negation, so it is correct
+even for `value == i64::MIN`, whose magnitude (2^63) has no positive `i64`
+representation to negate into. `replace`, `join`, `repeat`, `from_u64`, and
+`from_i64` are the only functions here that allocate, so the caller must
+call `std.owned_string.destroy` on their results.
 
 ## `std.thread`
 

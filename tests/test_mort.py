@@ -2885,6 +2885,85 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_from_u64_and_from_i64_build_decimal_owned_buffers():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // from_u64: zero, a typical value, and u64::MAX (20 digits).
+    let zero_u: String = strings.from_u64(0);
+    if strings.equal(owned_string.view(&zero_u), slice("0" as *const u8, 1)) { ok += 1; }
+    owned_string.destroy(&zero_u);
+
+    let typical_u: String = strings.from_u64(42);
+    if strings.equal(owned_string.view(&typical_u), slice("42" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&typical_u);
+
+    let max_u: String = strings.from_u64(18446744073709551615);
+    if strings.equal(owned_string.view(&max_u), slice("18446744073709551615" as *const u8, 20)) { ok += 1; }
+    owned_string.destroy(&max_u);
+
+    // from_i64: zero, positive, negative, and the i64::MIN edge case (whose
+    // magnitude, 2^63, has no positive i64 representation to negate into).
+    let zero_i: String = strings.from_i64(0);
+    if strings.equal(owned_string.view(&zero_i), slice("0" as *const u8, 1)) { ok += 1; }
+    owned_string.destroy(&zero_i);
+
+    let positive_i: String = strings.from_i64(42);
+    if strings.equal(owned_string.view(&positive_i), slice("42" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&positive_i);
+
+    let negative_i: String = strings.from_i64(-42);
+    if strings.equal(owned_string.view(&negative_i), slice("-42" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&negative_i);
+
+    let min_i64: i64 = (-9223372036854775807) - 1;
+    let min_i: String = strings.from_i64(min_i64);
+    if strings.equal(owned_string.view(&min_i), slice("-9223372036854775808" as *const u8, 20)) { ok += 1; }
+    owned_string.destroy(&min_i);
+
+    let max_i: String = strings.from_i64(9223372036854775807);
+    if strings.equal(owned_string.view(&max_i), slice("9223372036854775807" as *const u8, 19)) { ok += 1; }
+    owned_string.destroy(&max_i);
+
+    // Round-trips back through parse_u64 / parse_i64.
+    let round_u: String = strings.from_u64(987654321);
+    match strings.parse_u64(owned_string.view(&round_u)) {
+        Option<u64>.Some(v) => { if v == 987654321 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    owned_string.destroy(&round_u);
+
+    let round_i: String = strings.from_i64(-987654321);
+    match strings.parse_i64(owned_string.view(&round_i)) {
+        Option<i64>.Some(v) => { if v == 0 - 987654321 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    owned_string.destroy(&round_i);
+
+    print(ok);
+    if ok == 10 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "fromintuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "fromintuse.exe" if os.name == "nt" else "fromintuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "10"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

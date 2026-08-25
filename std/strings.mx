@@ -156,6 +156,74 @@ pub fn parse_i64(text: []const u8) -> Option<i64> {
     return Option<i64>.Some(value);
 }
 
+// Number of decimal digits `value` prints as (at least 1, since 0 prints as
+// a single "0" digit). A private helper shared by `from_u64`/`from_i64`.
+fn count_digits(value: u64) -> u64 {
+    if value == 0 {
+        return 1;
+    }
+    let count: u64 = 0;
+    let remaining: u64 = value;
+    while remaining > 0 {
+        count += 1;
+        remaining = remaining / 10;
+    }
+    return count;
+}
+
+// Writes `value`'s `count` decimal digits (as produced by `count_digits`)
+// into `destination` starting at `offset`, most significant digit first, no
+// sign. A private helper shared by `from_u64`/`from_i64`.
+fn write_digits(value: u64, destination: []u8, offset: u64, count: u64) -> void {
+    if value == 0 {
+        destination[offset] = 48;
+        return;
+    }
+    let remaining: u64 = value;
+    let index: u64 = count;
+    while remaining > 0 {
+        index -= 1;
+        destination[offset + index] = ((48 + (remaining % 10)) as u8);
+        remaining = remaining / 10;
+    }
+}
+
+// Returns a new owned buffer holding the decimal digits of `value`, the
+// inverse of `parse_u64` (`parse_u64(view(from_u64(value)))` round-trips
+// back to `Some(value)`). `value == 0` returns `"0"`. The result is a
+// freshly allocated buffer; the caller must call `std.owned_string.destroy`
+// on it.
+pub fn from_u64(value: u64) -> String {
+    let count: u64 = count_digits(value);
+    let data: *u8 = alloc(count + 1) as *u8;
+    let destination: []u8 = slice(data, count + 1);
+    write_digits(value, destination, 0, count);
+    destination[count] = 0;
+    return String { data: data, length: count };
+}
+
+// Returns a new owned buffer holding the decimal digits of `value`, with a
+// leading '-' for negative values, the inverse of `parse_i64`. The
+// magnitude of `value` is computed via two's-complement negation in `u64`
+// space (`~(value as u64) + 1`) rather than signed negation, so this is
+// correct even for `value == i64::MIN`, whose magnitude (2^63) has no
+// positive `i64` representation to negate into. The result is a freshly
+// allocated buffer; the caller must call `std.owned_string.destroy` on it.
+pub fn from_i64(value: i64) -> String {
+    if value >= 0 {
+        return from_u64(value as u64);
+    }
+    let magnitude: u64 = (~(value as u64)) + 1;
+    let count: u64 = count_digits(magnitude);
+    let total: u64 = count + 1;
+    let data: *u8 = alloc(total + 1) as *u8;
+    let destination: []u8 = slice(data, total + 1);
+    destination[0] = 45;
+    write_digits(magnitude, destination, 1, count);
+    destination[total] = 0;
+    return String { data: data, length: total };
+}
+
 // Splits `text` on every occurrence of `separator`, returning a Vec of views
 // borrowed from `text` (no copies, no allocation beyond the Vec itself).
 // Matches Python's `str.split(sep)`: consecutive separators produce empty
