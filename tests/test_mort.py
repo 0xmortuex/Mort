@@ -3451,6 +3451,66 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_swap_exchanges_two_elements_in_place():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    vec.push(&values, 10);
+    vec.push(&values, 20);
+    vec.push(&values, 30);
+
+    // Swap two distinct middle/end indices; both slots exchange, others untouched.
+    if vec.swap(&values, 0, 2) { ok += 1; }
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 30 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 20 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 10 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Swapping an index with itself is a no-op that still returns true.
+    if vec.swap(&values, 1, 1) { ok += 1; }
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 20 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Either index out of bounds: no-op, returns false.
+    if !vec.swap(&values, 0, 5) { ok += 1; }
+    if !vec.swap(&values, 5, 0) { ok += 1; }
+    if !vec.swap(&values, 5, 9) { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecswap.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecswap.exe" if os.name == "nt" else "vecswap")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is

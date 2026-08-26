@@ -290,11 +290,14 @@ aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
 vector), sharing `get`'s aliasing-copy caveat for resource elements;
 `as_slice` /
 `as_const_slice` borrow the live contents as `[]T` / `[]const T` without
-copying; `is_empty` checks whether the length is zero; `clear` resets the
-length without freeing backing storage; `destroy` frees the backing array
-only — it does **not** drop resource elements still in the vector, so a
-`Vec` of resources must be drained (e.g. by repeated `pop`/`remove`) before
-`destroy`.
+copying; `swap(vec, i, j)` exchanges two elements in place by moving each
+slot's value out and back in exactly once (safe for resource elements,
+unlike `get`/`set`; returns `false` and leaves the vector unchanged if
+either index is out of bounds, `true` as a no-op when `i == j`); `is_empty`
+checks whether the length is zero; `clear` resets the length without
+freeing backing storage; `destroy` frees the backing array only — it does
+**not** drop resource elements still in the vector, so a `Vec` of resources
+must be drained (e.g. by repeated `pop`/`remove`) before `destroy`.
 
 ## `std.map` and `std.vec`: resource caveats
 

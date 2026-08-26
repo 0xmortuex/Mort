@@ -134,6 +134,25 @@ pub fn last<T>(value: *Vec<T>) -> Option<T> {
     return get(value, (*value).length - 1);
 }
 
+// Exchanges the elements at `i` and `j` in place. Returns false and leaves
+// the Vec unchanged if either index is out of bounds; swapping an index
+// with itself is a no-op that still returns true. Unlike Vec.get/set, this
+// does not alias or drop a resource T: each slot's value is moved out and
+// back in exactly once, so it is safe for resource element types (verified
+// under --sanitize address --sanitize leak with a resource struct).
+pub fn swap<T>(value: *Vec<T>, i: u64, j: u64) -> bool {
+    if i >= (*value).length || j >= (*value).length {
+        return false;
+    }
+    if i == j {
+        return true;
+    }
+    let temporary = (*value).data[i];
+    (*value).data[i] = (*value).data[j];
+    (*value).data[j] = move temporary;
+    return true;
+}
+
 pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
     let existing = index_of(value, item);
     match existing {
