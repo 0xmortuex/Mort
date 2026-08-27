@@ -1,0 +1,25 @@
+// Demonstrates the "turn a number into text" pattern: std.strings.from_u64 /
+// from_i64 build an owned decimal string, and std.owned_string.concat
+// splices it after a literal prefix to form one printable owned message.
+import std.strings;
+import std.owned_string;
+
+fn main() -> int {
+    let count_prefix: String = owned_string.from("count: " as *u8);
+    defer owned_string.destroy(&count_prefix);
+    let count_number: String = strings.from_u64(42);
+    defer owned_string.destroy(&count_number);
+    let count_message: String = owned_string.concat(&count_prefix, &count_number);
+    defer owned_string.destroy(&count_message);
+    println(count_message.data);
+
+    let temperature_prefix: String = owned_string.from("temperature: " as *u8);
+    defer owned_string.destroy(&temperature_prefix);
+    let temperature_number: String = strings.from_i64(-7);
+    defer owned_string.destroy(&temperature_number);
+    let temperature_message: String = owned_string.concat(&temperature_prefix, &temperature_number);
+    defer owned_string.destroy(&temperature_message);
+    println(temperature_message.data);
+
+    return 0;
+}
