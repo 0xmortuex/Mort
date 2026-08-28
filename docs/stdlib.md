@@ -229,9 +229,12 @@ containing `value`'s decimal digits, with a leading `-` for a negative
 the magnitude of a negative value via two's-complement negation in `u64`
 space (`~(value as u64) + 1`) rather than signed negation, so it is correct
 even for `value == i64::MIN`, whose magnitude (2^63) has no positive `i64`
-representation to negate into. `replace`, `join`, `repeat`, `from_u64`, and
-`from_i64` are the only functions here that allocate, so the caller must
-call `std.owned_string.destroy` on their results.
+representation to negate into. `to_hex(value)` formats a `u64` as lowercase
+hexadecimal digits (no `"0x"` prefix, no leading zeros; `value == 0` returns
+`"0"`), also returning a freshly allocated `std.owned_string.String`.
+`replace`, `join`, `repeat`, `from_u64`, `from_i64`, and `to_hex` are the
+only functions here that allocate, so the caller must call
+`std.owned_string.destroy` on their results.
 
 ## `std.thread`
 

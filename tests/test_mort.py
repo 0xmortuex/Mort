@@ -2964,6 +2964,57 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_to_hex_formats_lowercase_hexadecimal():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let zero: String = strings.to_hex(0);
+    if strings.equal(owned_string.view(&zero), slice("0" as *const u8, 1)) { ok += 1; }
+    owned_string.destroy(&zero);
+
+    let small: String = strings.to_hex(255);
+    if strings.equal(owned_string.view(&small), slice("ff" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&small);
+
+    // A boundary that exercises the digit-count/leading-zero logic: 4096 is
+    // 0x1000, so no digit collapses to "0" internally the way 255 does.
+    let power_of_two: String = strings.to_hex(4096);
+    if strings.equal(owned_string.view(&power_of_two), slice("1000" as *const u8, 4)) { ok += 1; }
+    owned_string.destroy(&power_of_two);
+
+    // Exercises every hex digit 0-9/a-f at once.
+    let all_digits: String = strings.to_hex(1985229328);
+    if strings.equal(owned_string.view(&all_digits), slice("76543210" as *const u8, 8)) { ok += 1; }
+    owned_string.destroy(&all_digits);
+
+    let max_u: String = strings.to_hex(18446744073709551615);
+    if strings.equal(owned_string.view(&max_u), slice("ffffffffffffffff" as *const u8, 16)) { ok += 1; }
+    owned_string.destroy(&max_u);
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "tohexuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "tohexuse.exe" if os.name == "nt" else "tohexuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "5"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 
