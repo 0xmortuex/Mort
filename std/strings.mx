@@ -274,6 +274,33 @@ pub fn to_hex(value: u64) -> String {
     return String { data: data, length: count };
 }
 
+// Parses an unsigned hexadecimal integer (no "0x" prefix), the inverse of
+// `to_hex` (`parse_hex(view(to_hex(value)))` round-trips back to
+// `Some(value)`). Accepts both lowercase and uppercase `a`-`f`/`A`-`F`
+// digits. None on an empty or non-hex-digit input. Like `parse_u64`, more
+// than 16 digits silently overflows rather than being rejected.
+pub fn parse_hex(text: []const u8) -> Option<u64> {
+    if text.len == 0 {
+        return Option<u64>.None;
+    }
+    let value: u64 = 0;
+    for index: u64 in 0..text.len {
+        let byte = text[index];
+        let digit: u64 = 0;
+        if byte >= '0' && byte <= '9' {
+            digit = (byte - '0') as u64;
+        } else if byte >= 'a' && byte <= 'f' {
+            digit = (byte - 'a') as u64 + 10;
+        } else if byte >= 'A' && byte <= 'F' {
+            digit = (byte - 'A') as u64 + 10;
+        } else {
+            return Option<u64>.None;
+        }
+        value = value * 16 + digit;
+    }
+    return Option<u64>.Some(value);
+}
+
 // Splits `text` on every occurrence of `separator`, returning a Vec of views
 // borrowed from `text` (no copies, no allocation beyond the Vec itself).
 // Matches Python's `str.split(sep)`: consecutive separators produce empty

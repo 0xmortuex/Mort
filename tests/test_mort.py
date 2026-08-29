@@ -3015,6 +3015,82 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_parse_hex_parses_lowercase_and_uppercase_hex_digits():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match strings.parse_hex(slice("0" as *const u8, 1)) {
+        Option<u64>.Some(value) => { if value == 0 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match strings.parse_hex(slice("ff" as *const u8, 2)) {
+        Option<u64>.Some(value) => { if value == 255 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    // Uppercase digits must parse the same as lowercase.
+    match strings.parse_hex(slice("FF" as *const u8, 2)) {
+        Option<u64>.Some(value) => { if value == 255 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    // Mixed-case digits.
+    match strings.parse_hex(slice("1a2B" as *const u8, 4)) {
+        Option<u64>.Some(value) => { if value == 6699 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    // Empty input is rejected.
+    match strings.parse_hex(slice("" as *const u8, 0)) {
+        Option<u64>.Some(value) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    // A non-hex-digit byte anywhere in the input is rejected.
+    match strings.parse_hex(slice("12g4" as *const u8, 4)) {
+        Option<u64>.Some(value) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    // u64::MAX, exercising the full 16-digit width.
+    match strings.parse_hex(slice("ffffffffffffffff" as *const u8, 16)) {
+        Option<u64>.Some(value) => { if value == 18446744073709551615 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    // Round-trips back through to_hex.
+    let formatted: String = strings.to_hex(48879);
+    match strings.parse_hex(owned_string.view(&formatted)) {
+        Option<u64>.Some(value) => { if value == 48879 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+    owned_string.destroy(&formatted);
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "parsehexuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "parsehexuse.exe" if os.name == "nt" else "parsehexuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

@@ -232,6 +232,11 @@ even for `value == i64::MIN`, whose magnitude (2^63) has no positive `i64`
 representation to negate into. `to_hex(value)` formats a `u64` as lowercase
 hexadecimal digits (no `"0x"` prefix, no leading zeros; `value == 0` returns
 `"0"`), also returning a freshly allocated `std.owned_string.String`.
+`parse_hex(text)` is `to_hex`'s inverse: it parses an unsigned hexadecimal
+integer (no `"0x"` prefix) into `Option<u64>`, accepting both lowercase and
+uppercase `a`-`f`/`A`-`F` digits, and returning `None` on empty or
+non-hex-digit input; like `parse_u64`, more than 16 digits silently
+overflows rather than being rejected.
 `replace`, `join`, `repeat`, `from_u64`, `from_i64`, and `to_hex` are the
 only functions here that allocate, so the caller must call
 `std.owned_string.destroy` on their results.
