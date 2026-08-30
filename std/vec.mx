@@ -153,6 +153,16 @@ pub fn swap<T>(value: *Vec<T>, i: u64, j: u64) -> bool {
     return true;
 }
 
+// Reverses the Vec's elements in place, resource-safe (built on `swap`,
+// which moves rather than aliases each slot). A Vec of length 0 or 1 is
+// left unchanged.
+pub fn reverse<T>(value: *Vec<T>) -> void {
+    let length = (*value).length;
+    for index: u64 in 0..(length / 2) {
+        swap(value, index, length - 1 - index);
+    }
+}
+
 pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
     let existing = index_of(value, item);
     match existing {

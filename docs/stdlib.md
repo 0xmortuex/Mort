@@ -301,7 +301,10 @@ vector), sharing `get`'s aliasing-copy caveat for resource elements;
 copying; `swap(vec, i, j)` exchanges two elements in place by moving each
 slot's value out and back in exactly once (safe for resource elements,
 unlike `get`/`set`; returns `false` and leaves the vector unchanged if
-either index is out of bounds, `true` as a no-op when `i == j`); `is_empty`
+either index is out of bounds, `true` as a no-op when `i == j`);
+`reverse(vec)` reverses the elements in place by looping `swap` over each
+outer pair of indices (`length / 2` swaps total, resource-safe for the same
+reason `swap` is; a no-op for a vector of length 0 or 1); `is_empty`
 checks whether the length is zero; `clear` resets the length without
 freeing backing storage; `destroy` frees the backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources

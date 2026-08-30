@@ -3638,6 +3638,86 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_reverse_reverses_elements_in_place():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    // Odd length: reverse and check every slot.
+    vec.push(&values, 1);
+    vec.push(&values, 2);
+    vec.push(&values, 3);
+    vec.push(&values, 4);
+    vec.push(&values, 5);
+    vec.reverse(&values);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 4 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 3) {
+        Option<i64>.Some(x) => { if x == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 4) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Reversing twice restores the original order.
+    vec.reverse(&values);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Empty Vec: no-op, does not crash.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.reverse(&empty);
+    if vec.is_empty(&empty) { ok += 1; }
+
+    // Single-element Vec: no-op.
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 42);
+    vec.reverse(&single);
+    match vec.get(&single, 0) {
+        Option<i64>.Some(x) => { if x == 42 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecreverse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecreverse.exe" if os.name == "nt" else "vecreverse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_vec_of_resources_moves_and_drops_each_element_once():
     # A generic Vec can hold a resource element type: push moves ownership into
     # the raw backing slot, pop moves it back out, and every element is
