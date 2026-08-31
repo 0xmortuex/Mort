@@ -163,6 +163,26 @@ pub fn reverse<T>(value: *Vec<T>) -> void {
     }
 }
 
+// Reverses a bare `[]T` slice in place, `reverse`'s counterpart for
+// content that isn't wrapped in a `Vec` (e.g. `as_slice`'s borrowed view,
+// or a caller's own array-backed slice). Each pair of slots is exchanged
+// through a moved-out temporary, the same approach `reverse`/`swap` use for
+// `Vec`. Unlike `reverse`/`swap`, this is *not* usable for a resource
+// element type: the typechecker's resource-overwrite check only exempts
+// assignment through a raw pointer (`*T`, as `Vec`'s backing storage is),
+// not through a slice, so `value[index] = ...` on a resource `T` is
+// rejected at compile time with "cannot overwrite a resource binding"
+// rather than compiling into something unsafe. A slice of length 0 or 1 is
+// left unchanged.
+pub fn slice_reverse<T>(value: []T) -> void {
+    let length = value.len;
+    for index: u64 in 0..(length / 2) {
+        let temporary = value[index];
+        value[index] = value[length - 1 - index];
+        value[length - 1 - index] = move temporary;
+    }
+}
+
 pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
     let existing = index_of(value, item);
     match existing {

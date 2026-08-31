@@ -304,7 +304,13 @@ unlike `get`/`set`; returns `false` and leaves the vector unchanged if
 either index is out of bounds, `true` as a no-op when `i == j`);
 `reverse(vec)` reverses the elements in place by looping `swap` over each
 outer pair of indices (`length / 2` swaps total, resource-safe for the same
-reason `swap` is; a no-op for a vector of length 0 or 1); `is_empty`
+reason `swap` is; a no-op for a vector of length 0 or 1); `slice_reverse`
+reverses a bare `[]T` slice in place (e.g. `as_slice`'s borrowed view, or a
+caller's own array-backed slice) using the same swap-through-a-temporary
+approach, but is **not** usable for a resource element type — the
+typechecker's resource-overwrite check only exempts writes through a raw
+pointer, not through a slice, so it is rejected at compile time rather than
+compiling into something unsafe; `is_empty`
 checks whether the length is zero; `clear` resets the length without
 freeing backing storage; `destroy` frees the backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources
