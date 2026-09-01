@@ -3091,6 +3091,123 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_bytes_to_hex_and_from_hex_round_trip_arbitrary_buffers():
+    program = r'''import std.bytes;
+import std.vec;
+import std.owned_string;
+
+fn unwrap(value: Option<u8>) -> u8 {
+    match value {
+        Option<u8>.Some(item) => { return item; },
+        Option<u8>.None => { return 255 as u8; },
+    }
+}
+
+fn strings_equal(left: []const u8, right: []const u8) -> bool {
+    if left.len != right.len { return false; }
+    for index: u64 in 0..left.len {
+        if left[index] != right[index] { return false; }
+    }
+    return true;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let data: Vec<u8> = vec.new<u8>();
+    defer vec.destroy(&data);
+    vec.push(&data, 0x2f as u8);
+    vec.push(&data, 0x00 as u8);
+    vec.push(&data, 0xa9 as u8);
+
+    let encoded: String = bytes.to_hex(vec.as_const_slice(&data));
+    defer owned_string.destroy(&encoded);
+    if strings_equal(owned_string.view(&encoded), slice("2f00a9" as *const u8, 6)) { ok += 1; }
+
+    // Encoding an empty buffer yields an empty string.
+    let empty_vec: Vec<u8> = vec.new<u8>();
+    defer vec.destroy(&empty_vec);
+    let empty_encoded: String = bytes.to_hex(vec.as_const_slice(&empty_vec));
+    defer owned_string.destroy(&empty_encoded);
+    if empty_encoded.length == 0 { ok += 1; }
+
+    // from_hex is to_hex's inverse.
+    let round_trip = bytes.from_hex(owned_string.view(&encoded));
+    match move round_trip {
+        Option<Vec<u8>>.Some(v) => {
+            let decoded = move v;
+            defer vec.destroy(&decoded);
+            if decoded.length == 3
+                && unwrap(vec.get(&decoded, 0)) == 0x2f as u8
+                && unwrap(vec.get(&decoded, 1)) == 0x00 as u8
+                && unwrap(vec.get(&decoded, 2)) == 0xa9 as u8 {
+                ok += 1;
+            }
+        },
+        Option<Vec<u8>>.None => {},
+    }
+
+    // Uppercase digits decode the same as lowercase.
+    let upper_result = bytes.from_hex(slice("2FA9" as *const u8, 4));
+    match move upper_result {
+        Option<Vec<u8>>.Some(v) => {
+            let decoded = move v;
+            defer vec.destroy(&decoded);
+            if decoded.length == 2
+                && unwrap(vec.get(&decoded, 0)) == 0x2f as u8
+                && unwrap(vec.get(&decoded, 1)) == 0xa9 as u8 {
+                ok += 1;
+            }
+        },
+        Option<Vec<u8>>.None => {},
+    }
+
+    // Odd-length input is rejected.
+    let odd_result = bytes.from_hex(slice("abc" as *const u8, 3));
+    match move odd_result {
+        Option<Vec<u8>>.Some(v) => { let discard = move v; vec.destroy(&discard); },
+        Option<Vec<u8>>.None => { ok += 1; },
+    }
+
+    // A non-hex-digit byte anywhere in the input is rejected.
+    let bad_result = bytes.from_hex(slice("zz" as *const u8, 2));
+    match move bad_result {
+        Option<Vec<u8>>.Some(v) => { let discard = move v; vec.destroy(&discard); },
+        Option<Vec<u8>>.None => { ok += 1; },
+    }
+
+    // Empty input decodes to an empty (not-None) buffer.
+    let empty_result = bytes.from_hex(slice("" as *const u8, 0));
+    match move empty_result {
+        Option<Vec<u8>>.Some(v) => {
+            let decoded = move v;
+            defer vec.destroy(&decoded);
+            if decoded.length == 0 { ok += 1; }
+        },
+        Option<Vec<u8>>.None => {},
+    }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "bytestohex.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "bytestohex.exe" if os.name == "nt" else "bytestohex")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

@@ -39,7 +39,14 @@ Raw byte-slice operations: `fill(output: []u8, value: u8)` and
 `copy(destination: []u8, source: []const u8)` copies up to
 `min(destination.len, source.len)` bytes and returns the count copied;
 `equal(left: []const u8, right: []const u8)` does a length-then-byte-by-byte
-comparison.
+comparison. `to_hex(data: []const u8) -> std.owned_string.String` formats an
+arbitrary-length byte buffer as lowercase hexadecimal, two digits per byte,
+most significant nibble first (empty `data` returns an empty string); the
+caller must `std.owned_string.destroy` the result. `from_hex(text: []const
+u8) -> Option<std.vec.Vec<u8>>` is its inverse, accepting both lowercase and
+uppercase `a`-`f`/`A`-`F` digits and returning `None` for odd-length or
+non-hex-digit input (validated up front, so a rejected `text` never
+allocates); the caller must `std.vec.destroy` a `Some` result.
 
 ## `std.crypto`
 

@@ -1,5 +1,9 @@
 module std.bytes;
 
+import std.option;
+import std.owned_string;
+import std.vec;
+
 pub fn fill(output: []u8, value: u8) -> void {
     for index: u64 in 0..output.len {
         output[index] = value;
@@ -31,4 +35,72 @@ pub fn equal(left: []const u8, right: []const u8) -> bool {
         }
     }
     return true;
+}
+
+// Returns the lowercase hex-digit character for `nibble` (0-15). A private
+// helper for `to_hex`.
+fn hex_digit_char(nibble: u64) -> u8 {
+    if nibble < 10 {
+        return (48 + nibble) as u8;
+    }
+    return (87 + nibble) as u8;
+}
+
+// Returns the numeric value (0-15) of an ASCII hex-digit byte, or 255 if
+// `value` is not a valid hex digit ('0'-'9', 'a'-'f', 'A'-'F'). A private
+// helper for `from_hex`.
+fn hex_digit_value(value: u8) -> u64 {
+    if value >= '0' && value <= '9' {
+        return (value - '0') as u64;
+    }
+    if value >= 'a' && value <= 'f' {
+        return (value - 'a') as u64 + 10;
+    }
+    if value >= 'A' && value <= 'F' {
+        return (value - 'A') as u64 + 10;
+    }
+    return 255;
+}
+
+// Returns a new owned buffer holding `data` formatted as lowercase
+// hexadecimal, two digits per byte, most significant nibble first (e.g.
+// `[0x2f, 0x00]` becomes `"2f00"`). An empty `data` returns an empty
+// string. The result is a freshly allocated buffer; the caller must call
+// `std.owned_string.destroy` on it.
+pub fn to_hex(data: []const u8) -> String {
+    let length: u64 = data.len * 2;
+    let out: *u8 = alloc(length + 1) as *u8;
+    let destination: []u8 = slice(out, length + 1);
+    for index: u64 in 0..data.len {
+        let value = data[index];
+        destination[index * 2] = hex_digit_char((value / 16) as u64);
+        destination[index * 2 + 1] = hex_digit_char((value % 16) as u64);
+    }
+    destination[length] = 0;
+    return String { data: out, length: length };
+}
+
+// Parses `text` as hex-encoded bytes, the inverse of `to_hex`: two hex
+// digits per byte, most significant nibble first. Accepts both lowercase
+// and uppercase 'a'-'f'/'A'-'F' digits. Returns None if `text` has odd
+// length or contains a byte that is not a hex digit; the whole input is
+// validated before any allocation, so a rejected `text` never allocates.
+// The caller owns the returned Vec and must call `std.vec.destroy` on it.
+pub fn from_hex(text: []const u8) -> Option<Vec<u8>> {
+    if text.len % 2 != 0 {
+        return Option<Vec<u8>>.None;
+    }
+    for index: u64 in 0..text.len {
+        if hex_digit_value(text[index]) == 255 {
+            return Option<Vec<u8>>.None;
+        }
+    }
+    let count: u64 = text.len / 2;
+    let result: Vec<u8> = vec.with_capacity<u8>(count);
+    for index: u64 in 0..count {
+        let high: u64 = hex_digit_value(text[index * 2]);
+        let low: u64 = hex_digit_value(text[index * 2 + 1]);
+        vec.push(&result, ((high * 16) + low) as u8);
+    }
+    return Option<Vec<u8>>.Some(move result);
 }
