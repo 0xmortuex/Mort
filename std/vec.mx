@@ -183,6 +183,52 @@ pub fn slice_reverse<T>(value: []T) -> void {
     }
 }
 
+// Reverses the half-open range [start, end) in place, via `swap` (see
+// `reverse`). Shared by `rotate_left`/`rotate_right` below.
+fn reverse_range<T>(value: *Vec<T>, start: u64, end: u64) -> void {
+    let count = end - start;
+    for index: u64 in 0..(count / 2) {
+        swap(value, start + index, end - 1 - index);
+    }
+}
+
+// Rotates the Vec in place so the element at `count` becomes the new first
+// element; the first `count` elements move to the end, preserving their
+// relative order (matching Rust's `slice::rotate_left`). `count` is taken
+// modulo `length` (so `count >= length` wraps rather than being a no-op or
+// out-of-bounds), and an empty Vec is always a no-op. Built on the standard
+// three-reversal trick — reverse [0, count), reverse [count, length), then
+// reverse the whole Vec — so it inherits `swap`'s resource-safety.
+pub fn rotate_left<T>(value: *Vec<T>, count: u64) -> void {
+    let length = (*value).length;
+    if length == 0 {
+        return;
+    }
+    let amount = count % length;
+    if amount == 0 {
+        return;
+    }
+    reverse_range(value, 0, amount);
+    reverse_range(value, amount, length);
+    reverse_range(value, 0, length);
+}
+
+// Rotates the Vec in place so the last `count` elements move to the front,
+// preserving their relative order (matching Rust's `slice::rotate_right`).
+// Equivalent to `rotate_left(value, length - count % length)`; see
+// `rotate_left` for the wraparound and empty-Vec behavior.
+pub fn rotate_right<T>(value: *Vec<T>, count: u64) -> void {
+    let length = (*value).length;
+    if length == 0 {
+        return;
+    }
+    let amount = count % length;
+    if amount == 0 {
+        return;
+    }
+    rotate_left(value, length - amount);
+}
+
 pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
     let existing = index_of(value, item);
     match existing {

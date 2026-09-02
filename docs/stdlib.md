@@ -317,7 +317,15 @@ caller's own array-backed slice) using the same swap-through-a-temporary
 approach, but is **not** usable for a resource element type — the
 typechecker's resource-overwrite check only exempts writes through a raw
 pointer, not through a slice, so it is rejected at compile time rather than
-compiling into something unsafe; `is_empty`
+compiling into something unsafe; `rotate_left(vec, count)` rotates the
+elements in place so the element at `count` becomes the new first element,
+the first `count` elements moving to the end in their original relative
+order (matching Rust's `slice::rotate_left`); `rotate_right(vec, count)` is
+its mirror — the last `count` elements move to the front (matching
+`slice::rotate_right`). Both take `count` modulo the length (so `count >=
+length` wraps rather than being rejected), are a no-op for an empty vector,
+and are built on the standard three-reversal trick over `swap`/`reverse`, so
+they are resource-safe for the same reason `swap` is; `is_empty`
 checks whether the length is zero; `clear` resets the length without
 freeing backing storage; `destroy` frees the backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources

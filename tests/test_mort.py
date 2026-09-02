@@ -3835,6 +3835,99 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_rotate_left_and_rotate_right_rotate_elements_in_place():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    vec.push(&values, 1);
+    vec.push(&values, 2);
+    vec.push(&values, 3);
+    vec.push(&values, 4);
+    vec.push(&values, 5);
+
+    // rotate_left by 2: [1,2,3,4,5] -> [3,4,5,1,2].
+    vec.rotate_left(&values, 2);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 4) {
+        Option<i64>.Some(x) => { if x == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // rotate_right by 2 undoes the rotate_left by 2 above, back to [1..5].
+    vec.rotate_right(&values, 2);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 4) {
+        Option<i64>.Some(x) => { if x == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // count >= length wraps via modulo: rotate_left by 7 on length 5 behaves
+    // like rotate_left by 2.
+    vec.rotate_left(&values, 7);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // count == 0 is a no-op.
+    vec.rotate_left(&values, 0);
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Empty Vec: no-op for both directions, does not crash.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.rotate_left(&empty, 3);
+    vec.rotate_right(&empty, 3);
+    if vec.is_empty(&empty) { ok += 1; }
+
+    // Single-element Vec: no-op.
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 42);
+    vec.rotate_left(&single, 1);
+    match vec.get(&single, 0) {
+        Option<i64>.Some(x) => { if x == 42 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecrotate.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecrotate.exe" if os.name == "nt" else "vecrotate")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_slice_reverse_reverses_a_bare_slice_in_place():
     program = r'''import std.vec;
 
