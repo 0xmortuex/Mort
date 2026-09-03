@@ -3755,6 +3755,74 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_get_ref_reads_and_writes_without_aliasing():
+    # get_ref returns a pointer to the live slot rather than an aliasing
+    # copy, so writes through it are visible via get, an out-of-bounds
+    # index yields a null pointer, and a resource element can be mutated
+    # in place and later popped/destroyed exactly once (no double drop).
+    program = r'''import std.vec;
+import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    vec.push(&values, 10);
+    vec.push(&values, 20);
+    vec.push(&values, 30);
+
+    let pointer: *i64 = vec.get_ref(&values, 1);
+    if *pointer == 20 { ok += 1; }
+    *pointer = 99;
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 99 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    if vec.get_ref(&values, 10) == (0 as *i64) { ok += 1; }
+
+    let resources: Vec<Res> = vec.new<Res>();
+    vec.push(&resources, Res { id: 1 });
+    vec.push(&resources, Res { id: 2 });
+    let first: *Res = vec.get_ref(&resources, 0);
+    (*first).id = 42;
+
+    let sum: i64 = 0;
+    while resources.length > 0 {
+        let popped: Option<Res> = vec.pop(&resources);
+        match move popped {
+            Option<Res>.Some(item) => { sum = sum + item.id; destroy(&item); },
+            Option<Res>.None => {},
+        }
+    }
+    vec.destroy(&resources);
+    if sum == 44 { ok += 1; }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecgetref.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecgetref.exe" if os.name == "nt" else "vecgetref")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 

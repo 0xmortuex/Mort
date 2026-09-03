@@ -286,7 +286,12 @@ array that doubles on growth), safe for both plain and resource element
 types. `new<T>()` / `with_capacity<T>(capacity)` construct one; `push`
 appends (moving a resource `T` into the backing slot); `get` returns an
 **aliasing copy** as `Option<T>` — not safe to rely on for resource
-elements, since it duplicates ownership; `set` overwrites a slot in place
+elements, since it duplicates ownership; `get_ref(vec, index)` returns a
+`*T` pointer to the live slot instead (a null pointer, `0 as *T`, for an
+out-of-bounds `index`) — reading/writing through it does not alias or drop
+the element, so it *is* safe for a resource `T`; the pointer is only valid
+until the next operation that can reallocate the backing array
+(`push`/`insert`/`reserve` past capacity); `set` overwrites a slot in place
 (the caller must have already drained a resource `T` previously stored
 there); `pop` removes and returns the last element as `Option<T>`;
 `remove(vec, index)` removes an arbitrary element, moving its value out as
@@ -337,10 +342,14 @@ Both containers' `get`/`set` (and `Map`'s overwrite-on-`insert`) operate on
 raw backing storage rather than through the ownership checker, so they only
 fully track resource lifetimes through `push`/`Vec.insert`-then-`pop`/
 `drain`/`remove` patterns (`Map.remove`, `Vec.remove`, and `Vec.insert` all
-move their slot's value in or out cleanly, same as `Vec.pop`). See the
-"Resource-aware container API" item in `BACKLOG.md` for the remaining gap
-(`get`/`set`/`Map.insert`-overwrite) and the planned `get_ref`/dropping-
-`destroy` API.
+move their slot's value in or out cleanly, same as `Vec.pop`). `Vec.get_ref`
+(see above) closes this gap for `Vec` reads/writes specifically — it hands
+back a pointer to the live slot instead of an aliasing copy, so in-place
+mutation of a resource element no longer needs a `pop`/mutate/`push` dance.
+`Map` has no equivalent yet, and `Vec.destroy` still does not drop resource
+elements left in the vector. See the "Resource-aware container API" item in
+`BACKLOG.md` for the remaining gap (`Map.get_ref`, and a dropping
+`destroy`).
 
 ## `std.json`
 

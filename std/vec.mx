@@ -52,6 +52,20 @@ pub fn get<T>(value: *Vec<T>, index: u64) -> Option<T> {
     return Option<T>.Some((*value).data[index]);
 }
 
+// Returns a pointer to the element at `index`, or a null pointer (`0 as
+// *T`) if `index` is out of bounds. Unlike `get`, this does not alias or
+// copy the element: the caller reads/writes through the pointer directly,
+// so it is safe for a resource `T` (no duplicated or dropped ownership).
+// The pointer is only valid until the next operation that can reallocate
+// the backing array (push/insert/reserve past capacity) — do not hold it
+// across one of those.
+pub fn get_ref<T>(value: *Vec<T>, index: u64) -> *T {
+    if index >= (*value).length {
+        return 0 as *T;
+    }
+    return &(*value).data[index];
+}
+
 pub fn set<T>(value: *Vec<T>, index: u64, item: T) -> bool {
     if index >= (*value).length {
         return false;
