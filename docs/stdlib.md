@@ -100,8 +100,10 @@ backing storage; `destroy` frees both backing arrays.
 Generic numeric helpers usable with any type supporting the relevant
 operators: `min<T>`, `max<T>`, `clamp<T>(value, minimum, maximum)`,
 `abs<T>` (via `0 - value`, so unsigned `T` will wrap rather than error),
-`gcd<T>` (iterative Euclidean algorithm), and `pow<T>(base, exponent: u64)`
-(binary exponentiation, `exponent` is always unsigned).
+`gcd<T>` (iterative Euclidean algorithm), `lcm<T>` (`(left / gcd(left,
+right)) * right`; returns `0` if either argument is `0`, since `0` has no
+nonzero multiple), and `pow<T>(base, exponent: u64)` (binary
+exponentiation, `exponent` is always unsigned).
 
 ## `std.memory`
 

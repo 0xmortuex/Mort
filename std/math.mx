@@ -42,6 +42,14 @@ pub fn gcd<T>(left: T, right: T) -> T {
     return a;
 }
 
+pub fn lcm<T>(left: T, right: T) -> T {
+    if left == 0 || right == 0 {
+        return 0;
+    }
+    let divisor = gcd(left, right);
+    return (left / divisor) * right;
+}
+
 pub fn pow<T>(base: T, exponent: u64) -> T {
     let result: T = 1;
     let factor = base;

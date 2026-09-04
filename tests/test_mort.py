@@ -3823,6 +3823,42 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_lcm_computes_least_common_multiple():
+    # lcm is built on the existing gcd: (left / gcd(left, right)) * right,
+    # with an explicit 0 case since lcm(0, n) has no nonzero multiple.
+    program = r'''import std.math;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math.lcm(4, 6) == 12 { ok += 1; }
+    if math.lcm(21, 6) == 42 { ok += 1; }
+    if math.lcm(7, 7) == 7 { ok += 1; }
+    if math.lcm(1, 9) == 9 { ok += 1; }
+    if math.lcm(0, 5) == 0 { ok += 1; }
+    if math.lcm(5, 0) == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathlcm.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathlcm.exe" if os.name == "nt" else "mathlcm")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 
