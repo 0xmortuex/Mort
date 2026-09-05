@@ -332,7 +332,14 @@ its mirror — the last `count` elements move to the front (matching
 `slice::rotate_right`). Both take `count` modulo the length (so `count >=
 length` wraps rather than being rejected), are a no-op for an empty vector,
 and are built on the standard three-reversal trick over `swap`/`reverse`, so
-they are resource-safe for the same reason `swap` is; `is_empty`
+they are resource-safe for the same reason `swap` is; `dedup(vec)` collapses
+*consecutive* equal elements in place, keeping the first of each run (the
+common post-`sort` cleanup, matching Rust's `Vec::dedup`/C++'s
+`std::unique`; non-adjacent equal elements are left alone) — it compares via
+`==`, the same convention and struct-comparison limitation as
+`index_of`/`contains`, and is **not** safe for a resource element type since
+a collapsed duplicate is overwritten rather than destroyed (the same caveat
+`set` already documents); `is_empty`
 checks whether the length is zero; `clear` resets the length without
 freeing backing storage; `destroy` frees the backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources

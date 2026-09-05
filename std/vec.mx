@@ -243,6 +243,28 @@ pub fn rotate_right<T>(value: *Vec<T>, count: u64) -> void {
     rotate_left(value, length - amount);
 }
 
+// Collapses consecutive equal elements in place, keeping the first of
+// each run — the common post-`sort` cleanup pattern (Rust's
+// `Vec::dedup`/C++'s `std::unique`), not a full "remove all duplicates"
+// (non-adjacent equal elements are left alone). Compares via `==`, the
+// same convention as `index_of`/`contains` (works for primitive T;
+// struct-typed T generally can't be compared this way). Not safe for a
+// resource-typed T: a dropped duplicate is overwritten, not destroyed,
+// the same caveat `set` already documents for overwriting a slot.
+pub fn dedup<T>(value: *Vec<T>) -> void {
+    if (*value).length <= 1 {
+        return;
+    }
+    let write: u64 = 0;
+    for read: u64 in 1..(*value).length {
+        if (*value).data[write] != (*value).data[read] {
+            write = write + 1;
+            (*value).data[write] = (*value).data[read];
+        }
+    }
+    (*value).length = write + 1;
+}
+
 pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
     let existing = index_of(value, item);
     match existing {

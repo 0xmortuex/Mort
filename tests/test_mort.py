@@ -4032,6 +4032,89 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_dedup_collapses_consecutive_equal_elements():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    // [1,1,2,2,2,1,3] -> [1,2,1,3]; non-adjacent equal runs (the two 1s)
+    // are not collapsed, only the consecutive ones.
+    vec.push(&values, 1);
+    vec.push(&values, 1);
+    vec.push(&values, 2);
+    vec.push(&values, 2);
+    vec.push(&values, 2);
+    vec.push(&values, 1);
+    vec.push(&values, 3);
+    vec.dedup(&values);
+    if values.length == 4 { ok += 1; }
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 3) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Empty Vec: no-op, does not crash.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.dedup(&empty);
+    if vec.is_empty(&empty) { ok += 1; }
+
+    // Single-element Vec: no-op.
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 42);
+    vec.dedup(&single);
+    if single.length == 1 { ok += 1; }
+
+    // All-equal Vec collapses to one element.
+    let all_same: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&all_same);
+    vec.push(&all_same, 5);
+    vec.push(&all_same, 5);
+    vec.push(&all_same, 5);
+    vec.dedup(&all_same);
+    if all_same.length == 1 { ok += 1; }
+    match vec.get(&all_same, 0) {
+        Option<i64>.Some(x) => { if x == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecdedup.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecdedup.exe" if os.name == "nt" else "vecdedup")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_slice_reverse_reverses_a_bare_slice_in_place():
     program = r'''import std.vec;
 
