@@ -245,7 +245,9 @@ hexadecimal digits (no `"0x"` prefix, no leading zeros; `value == 0` returns
 integer (no `"0x"` prefix) into `Option<u64>`, accepting both lowercase and
 uppercase `a`-`f`/`A`-`F` digits, and returning `None` on empty or
 non-hex-digit input; like `parse_u64`, more than 16 digits silently
-overflows rather than being rejected.
+overflows rather than being rejected. `is_empty(text)` is a thin wrapper
+over `text.len == 0`, matching the `is_empty` predicate already documented
+for `std.vec.Vec` and `std.map.Map`.
 `replace`, `join`, `repeat`, `from_u64`, `from_i64`, and `to_hex` are the
 only functions here that allocate, so the caller must call
 `std.owned_string.destroy` on their results.

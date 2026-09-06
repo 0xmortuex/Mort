@@ -76,6 +76,13 @@ pub fn contains(text: []const u8, needle: []const u8) -> bool {
     }
 }
 
+// Whether `text` has zero length. A thin convenience wrapper over
+// `text.len == 0`, matching the `is_empty` predicate already documented
+// for `std.vec.Vec` and `std.map.Map`.
+pub fn is_empty(text: []const u8) -> bool {
+    return text.len == 0;
+}
+
 fn is_ascii_space(byte: u8) -> bool {
     return byte == 32 || byte == 9 || byte == 10 || byte == 13 || byte == 11 || byte == 12;
 }

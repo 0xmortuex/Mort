@@ -2823,6 +2823,37 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_is_empty_wraps_zero_length_check():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if strings.is_empty(slice("" as *const u8, 0)) { ok += 1; }
+    if !strings.is_empty(slice("x" as *const u8, 1)) { ok += 1; }
+    if !strings.is_empty(slice("hello" as *const u8, 5)) { ok += 1; }
+
+    print(ok);
+    if ok == 3 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "isemptystr.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "isemptystr.exe" if os.name == "nt" else "isemptystr")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "3"
+
+
+@needs_cc
 def test_std_strings_rsplit_once_returns_views_before_and_after_last_match():
     program = r'''import std.strings;
 
