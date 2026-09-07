@@ -102,7 +102,11 @@ operators: `min<T>`, `max<T>`, `clamp<T>(value, minimum, maximum)`,
 `abs<T>` (via `0 - value`, so unsigned `T` will wrap rather than error),
 `gcd<T>` (iterative Euclidean algorithm), `lcm<T>` (`(left / gcd(left,
 right)) * right`; returns `0` if either argument is `0`, since `0` has no
-nonzero multiple), and `pow<T>(base, exponent: u64)` (binary
+nonzero multiple), `sign<T>` (returns `1`/`0`/`-1` for positive/zero/negative;
+for an unsigned `T` the negative branch never triggers, so no wraparound is
+observed), `is_power_of_two<T>` (`value > 0 && (value & (value - 1)) == 0`,
+requiring bitwise `&` so `T` must be an integer type), and
+`pow<T>(base, exponent: u64)` (binary
 exponentiation, `exponent` is always unsigned).
 
 ## `std.memory`

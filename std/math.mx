@@ -63,3 +63,22 @@ pub fn pow<T>(base: T, exponent: u64) -> T {
     }
     return result;
 }
+
+pub fn sign<T>(value: T) -> T {
+    let zero: T = 0;
+    let one: T = 1;
+    if value > zero {
+        return one;
+    }
+    if value < zero {
+        return zero - one;
+    }
+    return zero;
+}
+
+pub fn is_power_of_two<T>(value: T) -> bool {
+    if value <= 0 {
+        return false;
+    }
+    return (value & (value - 1)) == 0;
+}

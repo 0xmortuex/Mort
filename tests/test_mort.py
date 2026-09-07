@@ -3890,6 +3890,51 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_sign_and_is_power_of_two():
+    # sign returns -1/0/1 via generic zero/one locals (not literal `-1`,
+    # which the typechecker rejects as out-of-range when T is unsigned).
+    # is_power_of_two rejects <= 0 first, then checks value & (value - 1) == 0.
+    program = r'''import std.math;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math.sign(5) == 1 { ok += 1; }
+    if math.sign(0 - 5) == 0 - 1 { ok += 1; }
+    if math.sign(0) == 0 { ok += 1; }
+    let uzero: u64 = 0;
+    if math.sign(uzero) == 0 { ok += 1; }
+    let uone: u64 = 7;
+    if math.sign(uone) == 1 { ok += 1; }
+
+    if math.is_power_of_two(1) == true { ok += 1; }
+    if math.is_power_of_two(2) == true { ok += 1; }
+    if math.is_power_of_two(3) == false { ok += 1; }
+    if math.is_power_of_two(1024) == true { ok += 1; }
+    if math.is_power_of_two(0) == false { ok += 1; }
+    if math.is_power_of_two(0 - 4) == false { ok += 1; }
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathsign.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathsign.exe" if os.name == "nt" else "mathsign")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 
