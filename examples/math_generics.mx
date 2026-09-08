@@ -1,0 +1,19 @@
+// Demonstrates std.math's generic numeric helpers working across
+// different instantiations of T: gcd/lcm on i64, clamp on u8, and
+// pow on i64, each called the same way regardless of the concrete type.
+import std.math;
+
+fn main() -> int {
+    print(math.gcd(48, 18));
+    print(math.lcm(4, 6));
+
+    let low: u8 = math.clamp(200 as u8, 0 as u8, 100 as u8);
+    print(low as i64);
+    let mid: u8 = math.clamp(50 as u8, 0 as u8, 100 as u8);
+    print(mid as i64);
+
+    print(math.pow(2, 10));
+    print(math.pow(3, 0));
+
+    return 0;
+}

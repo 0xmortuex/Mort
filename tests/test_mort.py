@@ -6530,6 +6530,7 @@ EXPECTED = {
     "json.mx": "4\n3\n1\n",
     "word_frequency.mx": "9\n12\n3\n1\n1\n2\n1\n1\n1\n1\n1\n",
     "number_formatting.mx": "count: 42\ntemperature: -7\n",
+    "math_generics.mx": "6\n12\n100\n50\n1024\n1\n",
 }
 
 
