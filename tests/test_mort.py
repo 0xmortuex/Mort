@@ -3935,6 +3935,47 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_is_some_is_none_and_unwrap_or():
+    # is_some/is_none/unwrap_or all consume `value` via `match move` (see
+    # std/option.mx's doc comments); for a plain, non-resource T this needs
+    # no `move` at the call site since a non-resource move is just a copy.
+    program = r'''import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let some_val: Option<i64> = Option<i64>.Some(42);
+    let none_val: Option<i64> = Option<i64>.None;
+
+    if option.is_some(some_val) == true { ok += 1; }
+    if option.is_none(some_val) == false { ok += 1; }
+    if option.is_some(none_val) == false { ok += 1; }
+    if option.is_none(none_val) == true { ok += 1; }
+
+    if option.unwrap_or(Option<i64>.Some(7), 99) == 7 { ok += 1; }
+    if option.unwrap_or(Option<i64>.None, 99) == 99 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionhelpers.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionhelpers.exe" if os.name == "nt" else "optionhelpers")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 

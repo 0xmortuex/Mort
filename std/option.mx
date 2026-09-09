@@ -4,3 +4,31 @@ enum Option<T> {
     Some(T),
     None,
 }
+
+// Consumes `value`; for a resource `T` a `Some` payload is dropped by this
+// call (there is no by-reference variant, since Mort enums expose no
+// tag-only inspection without a match).
+pub fn is_some<T>(value: Option<T>) -> bool {
+    match move value {
+        Option<T>.Some(payload) => { return true; }
+        Option<T>.None => { return false; }
+    }
+}
+
+// Consumes `value`; see `is_some`'s resource-drop note.
+pub fn is_none<T>(value: Option<T>) -> bool {
+    match move value {
+        Option<T>.Some(payload) => { return false; }
+        Option<T>.None => { return true; }
+    }
+}
+
+// Consumes both `value` and `default`; returns the `Some` payload, or
+// `default` if `value` is `None`. For a resource `T`, whichever of the two
+// is not returned is dropped automatically.
+pub fn unwrap_or<T>(value: Option<T>, default: T) -> T {
+    match move value {
+        Option<T>.Some(payload) => { return move payload; }
+        Option<T>.None => { return move default; }
+    }
+}
