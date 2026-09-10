@@ -171,7 +171,12 @@ randomness, use `std.crypto` instead.
 ## `std.result`
 
 Defines the `Result<Value, Error>` enum (`Ok(Value)` / `Err(Error)`) used
-for fallible operations. No functions — just the type declaration.
+for fallible operations, plus three helpers mirroring `std.option`'s:
+`is_ok(value)` / `is_err(value)` (bool predicates) and
+`unwrap_or(value, default)` (the `Ok` payload, or `default` if `Err`). All
+three consume `value` via `match move`, since Mort enums expose no tag-only
+inspection without a match; for a resource `Value`/`Error`, the payload not
+returned is dropped automatically.
 
 ## `std.sort`
 

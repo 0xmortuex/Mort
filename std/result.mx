@@ -4,3 +4,31 @@ enum Result<Value, Error> {
     Ok(Value),
     Err(Error),
 }
+
+// Consumes `value`; for a resource `Value`/`Error` the payload is dropped by
+// this call (there is no by-reference variant, since Mort enums expose no
+// tag-only inspection without a match). Mirrors std.option.is_some.
+pub fn is_ok<Value, Error>(value: Result<Value, Error>) -> bool {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return true; }
+        Result<Value, Error>.Err(payload) => { return false; }
+    }
+}
+
+// Consumes `value`; see `is_ok`'s resource-drop note.
+pub fn is_err<Value, Error>(value: Result<Value, Error>) -> bool {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return false; }
+        Result<Value, Error>.Err(payload) => { return true; }
+    }
+}
+
+// Consumes both `value` and `default`; returns the `Ok` payload, or
+// `default` if `value` is `Err`. For a resource `Value`/`Error`, whichever
+// of the two is not returned is dropped automatically.
+pub fn unwrap_or<Value, Error>(value: Result<Value, Error>, default: Value) -> Value {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return move payload; }
+        Result<Value, Error>.Err(payload) => { return move default; }
+    }
+}

@@ -3976,6 +3976,48 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_is_ok_is_err_and_unwrap_or():
+    # Mirrors test_std_option_is_some_is_none_and_unwrap_or: is_ok/is_err/
+    # unwrap_or all consume `value` via `match move` (see std/result.mx's
+    # doc comments); for plain, non-resource Value/Error types this needs
+    # no `move` at the call site since a non-resource move is just a copy.
+    program = r'''import std.result;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let ok_val: Result<i64, i64> = Result<i64, i64>.Ok(42);
+    let err_val: Result<i64, i64> = Result<i64, i64>.Err(-1);
+
+    if result.is_ok(ok_val) == true { ok += 1; }
+    if result.is_err(ok_val) == false { ok += 1; }
+    if result.is_ok(err_val) == false { ok += 1; }
+    if result.is_err(err_val) == true { ok += 1; }
+
+    if result.unwrap_or(Result<i64, i64>.Ok(7), 99) == 7 { ok += 1; }
+    if result.unwrap_or(Result<i64, i64>.Err(-1), 99) == 99 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resulthelpers.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resulthelpers.exe" if os.name == "nt" else "resulthelpers")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 
