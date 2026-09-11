@@ -32,3 +32,16 @@ pub fn unwrap_or<T>(value: Option<T>, default: T) -> T {
         Option<T>.None => { return move default; }
     }
 }
+
+// Consumes `value`; applies `f` to a `Some` payload and wraps the result as
+// `Option<U>.Some(...)`, or returns `Option<U>.None` unchanged if `value`
+// is `None`. `f` is a plain top-level function reference (Mort has no
+// closures), matching the `predicate`-argument convention already used by
+// `std.map.find_by`. See `is_some`'s resource-drop note for `value`'s
+// consuming semantics.
+pub fn map<T, U>(value: Option<T>, f: fn(T) -> U) -> Option<U> {
+    match move value {
+        Option<T>.Some(payload) => { return Option<U>.Some(f(move payload)); }
+        Option<T>.None => { return Option<U>.None; }
+    }
+}

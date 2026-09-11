@@ -3976,6 +3976,74 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_map_transforms_some_and_passes_through_none():
+    # map consumes `value` via `match move` (see std/option.mx's doc
+    # comment) and applies a plain top-level function reference to a Some
+    # payload, wrapping the result back into Option<U>; a None value is
+    # passed through unchanged (never calling `f`). Also checked with a
+    # resource payload (Res), confirming the un-mapped None branch drops
+    # the resource automatically and the Some branch's payload is
+    # destroyed exactly once inside `extract_id` when it goes out of scope.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn double(x: i64) -> i64 {
+    return x * 2;
+}
+
+fn extract_id(r: Res) -> i64 {
+    return r.id;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.map(Option<i64>.Some(21), double) {
+        Option<i64>.Some(v) => { if v == 42 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.map(Option<i64>.None, double) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 7 });
+    match option.map(move some_res, extract_id) {
+        Option<i64>.Some(v) => { if v == 7 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    let none_res: Option<Res> = Option<Res>.None;
+    match option.map(move none_res, extract_id) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionmap.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionmap.exe" if os.name == "nt" else "optionmap")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from extract_id's Res.destroy print, then "4" from the final ok count.
+    assert result.stdout.strip().splitlines()[-2:] == ["7", "4"]
+
+
+@needs_cc
 def test_std_result_is_ok_is_err_and_unwrap_or():
     # Mirrors test_std_option_is_some_is_none_and_unwrap_or: is_ok/is_err/
     # unwrap_or all consume `value` via `match move` (see std/result.mx's

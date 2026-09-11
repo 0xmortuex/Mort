@@ -126,16 +126,20 @@ called exactly once per value.
 ## `std.option`
 
 Defines the `Option<T>` enum (`Some(T)` / `None`) used throughout the
-standard library for values that may be absent, plus three helpers:
-`is_some(value)` / `is_none(value)` (bool predicates on the active variant)
-and `unwrap_or(value, default)` (the `Some` payload, or `default` if
-`value` is `None`). All three take `value` by value via `match move`, so
+standard library for values that may be absent, plus four helpers:
+`is_some(value)` / `is_none(value)` (bool predicates on the active variant),
+`unwrap_or(value, default)` (the `Some` payload, or `default` if
+`value` is `None`), and `map(value, f)` (applies a plain top-level function
+`f: fn(T) -> U` to a `Some` payload and rewraps the result as
+`Option<U>.Some(...)`, or passes `Option<U>.None` through unchanged without
+calling `f`). All four take `value` by value via `match move`, so
 they consume it; for a non-resource `T` (the common case) that costs
 nothing extra, since a non-resource `move` is just a copy and the original
 binding stays usable. For a resource `T`, the payload not returned (a
-matched `Some` for `is_some`/`is_none`, or whichever of `value`/`default`
-`unwrap_or` doesn't return) is destroyed automatically — safe, but means
-these are consuming operations, not read-only inspection.
+matched `Some` for `is_some`/`is_none`, the unused side of `unwrap_or`, or
+`map`'s payload once `f` has consumed and returned from it) is destroyed
+automatically — safe, but means these are consuming operations, not
+read-only inspection.
 
 ## `std.owned_string`
 
