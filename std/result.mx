@@ -32,3 +32,16 @@ pub fn unwrap_or<Value, Error>(value: Result<Value, Error>, default: Value) -> V
         Result<Value, Error>.Err(payload) => { return move default; }
     }
 }
+
+// Consumes `value`; applies `f` to an `Ok` payload and wraps the result as
+// `Result<Mapped, Error>.Ok(...)`, or returns `Result<Mapped, Error>.Err`
+// unchanged (with the original error payload, never calling `f`) if `value`
+// is `Err`. `f` is a plain top-level function reference (Mort has no
+// closures), matching `std.option.map`'s convention. See `is_ok`'s
+// resource-drop note for `value`'s consuming semantics.
+pub fn map<Value, Error, Mapped>(value: Result<Value, Error>, f: fn(Value) -> Mapped) -> Result<Mapped, Error> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return Result<Mapped, Error>.Ok(f(move payload)); }
+        Result<Value, Error>.Err(payload) => { return Result<Mapped, Error>.Err(move payload); }
+    }
+}
