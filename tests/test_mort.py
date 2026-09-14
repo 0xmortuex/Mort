@@ -4155,6 +4155,74 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_map_err_transforms_err_and_passes_through_ok():
+    # The error-side counterpart to map: map_err consumes `value` via
+    # `match move`, applies a plain top-level function reference to an Err
+    # payload, and wraps the result back into Result<Value, MappedError>; an
+    # Ok value is passed through unchanged (never calling `f`, Ok payload
+    # preserved). Also checked with a resource Err payload (Res), confirming
+    # the Err branch's payload is destroyed exactly once inside `extract_id`
+    # when it goes out of scope.
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn to_message(code: i64) -> i64 {
+    return code * 100;
+}
+
+fn extract_id(r: Res) -> i64 {
+    return r.id;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.map_err(Result<i64, i64>.Err(3), to_message) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == 300 { ok += 1; } },
+    }
+
+    match result.map_err(Result<i64, i64>.Ok(9), to_message) {
+        Result<i64, i64>.Ok(v) => { if v == 9 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    let err_res: Result<i64, Res> = Result<i64, Res>.Err(Res { id: 7 });
+    match result.map_err(move err_res, extract_id) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == 7 { ok += 1; } },
+    }
+
+    let ok_res: Result<i64, Res> = Result<i64, Res>.Ok(42);
+    match result.map_err(move ok_res, extract_id) {
+        Result<i64, i64>.Ok(v) => { if v == 42 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultmaperr.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultmaperr.exe" if os.name == "nt" else "resultmaperr")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from extract_id's Res.destroy print, then "4" from the final ok count.
+    assert result.stdout.strip().splitlines()[-2:] == ["7", "4"]
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 

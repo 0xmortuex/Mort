@@ -45,3 +45,15 @@ pub fn map<Value, Error, Mapped>(value: Result<Value, Error>, f: fn(Value) -> Ma
         Result<Value, Error>.Err(payload) => { return Result<Mapped, Error>.Err(move payload); }
     }
 }
+
+// Consumes `value`; the error-side counterpart to `map`. Applies `f` to an
+// `Err` payload and wraps the result as `Result<Value, MappedError>.Err(...)`,
+// or returns `Result<Value, MappedError>.Ok` unchanged (with the original
+// Ok payload, never calling `f`) if `value` is `Ok`. Same plain-top-level-
+// function-reference and resource-drop conventions as `map`.
+pub fn map_err<Value, Error, MappedError>(value: Result<Value, Error>, f: fn(Error) -> MappedError) -> Result<Value, MappedError> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return Result<Value, MappedError>.Ok(move payload); }
+        Result<Value, Error>.Err(payload) => { return Result<Value, MappedError>.Err(f(move payload)); }
+    }
+}
