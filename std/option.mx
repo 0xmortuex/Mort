@@ -1,5 +1,7 @@
 module std.option;
 
+import std.result;
+
 enum Option<T> {
     Some(T),
     None,
@@ -43,5 +45,16 @@ pub fn map<T, U>(value: Option<T>, f: fn(T) -> U) -> Option<U> {
     match move value {
         Option<T>.Some(payload) => { return Option<U>.Some(f(move payload)); }
         Option<T>.None => { return Option<U>.None; }
+    }
+}
+
+// Consumes both `value` and `error`; converts to `std.result.Result`, the
+// natural counterpart to `std.result.ok`. A `Some` payload becomes `Ok`,
+// with `error` dropped unused (automatically, for a resource `Error`);
+// `None` becomes `Err(error)`.
+pub fn ok_or<T, Error>(value: Option<T>, error: Error) -> Result<T, Error> {
+    match move value {
+        Option<T>.Some(payload) => { return Result<T, Error>.Ok(move payload); }
+        Option<T>.None => { return Result<T, Error>.Err(move error); }
     }
 }

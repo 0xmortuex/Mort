@@ -126,18 +126,21 @@ called exactly once per value.
 ## `std.option`
 
 Defines the `Option<T>` enum (`Some(T)` / `None`) used throughout the
-standard library for values that may be absent, plus four helpers:
+standard library for values that may be absent, plus five helpers:
 `is_some(value)` / `is_none(value)` (bool predicates on the active variant),
 `unwrap_or(value, default)` (the `Some` payload, or `default` if
-`value` is `None`), and `map(value, f)` (applies a plain top-level function
+`value` is `None`), `map(value, f)` (applies a plain top-level function
 `f: fn(T) -> U` to a `Some` payload and rewraps the result as
 `Option<U>.Some(...)`, or passes `Option<U>.None` through unchanged without
-calling `f`). All four take `value` by value via `match move`, so
+calling `f`), and `ok_or(value, error)` (converts to `std.result.Result`:
+a `Some` payload becomes `Ok`, with `error` dropped unused, or `None`
+becomes `Err(error)`). All five take `value` by value via `match move`, so
 they consume it; for a non-resource `T` (the common case) that costs
 nothing extra, since a non-resource `move` is just a copy and the original
 binding stays usable. For a resource `T`, the payload not returned (a
-matched `Some` for `is_some`/`is_none`, the unused side of `unwrap_or`, or
-`map`'s payload once `f` has consumed and returned from it) is destroyed
+matched `Some` for `is_some`/`is_none`, the unused side of `unwrap_or`,
+`map`'s payload once `f` has consumed and returned from it, or `ok_or`'s
+unused `error` argument when `value` is `Some`) is destroyed
 automatically — safe, but means these are consuming operations, not
 read-only inspection.
 
@@ -175,18 +178,21 @@ randomness, use `std.crypto` instead.
 ## `std.result`
 
 Defines the `Result<Value, Error>` enum (`Ok(Value)` / `Err(Error)`) used
-for fallible operations, plus five helpers mirroring `std.option`'s:
+for fallible operations, plus six helpers mirroring `std.option`'s:
 `is_ok(value)` / `is_err(value)` (bool predicates),
 `unwrap_or(value, default)` (the `Ok` payload, or `default` if `Err`),
 `map(value, f)` (applies a plain top-level function `f: fn(Value) -> Mapped`
 to an `Ok` payload and rewraps the result as `Result<Mapped, Error>.Ok(...)`,
-or passes the `Err` payload through unchanged without calling `f`), and
+or passes the `Err` payload through unchanged without calling `f`),
 `map_err(value, f)` (the error-side counterpart: applies
 `f: fn(Error) -> MappedError` to an `Err` payload and rewraps the result as
 `Result<Value, MappedError>.Err(...)`, or passes the `Ok` payload through
-unchanged without calling `f`). All five consume `value` via `match move`,
-since Mort enums expose no tag-only inspection without a match; for a
-resource `Value`/`Error`, the payload not returned is dropped automatically.
+unchanged without calling `f`), and `ok(value)` (converts to
+`std.option.Option`: an `Ok` payload becomes `Some`, an `Err` payload is
+dropped and the result is `None` — the inverse of `std.option.ok_or`). All
+six consume `value` via `match move`, since Mort enums expose no tag-only
+inspection without a match; for a resource `Value`/`Error`, the payload not
+returned is dropped automatically.
 
 ## `std.sort`
 

@@ -4223,6 +4223,97 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_ok_and_option_ok_or_convert_between_the_two_enums():
+    # result.ok converts Result<Value, Error> to Option<Value> (Ok becomes
+    # Some, Err's payload is dropped); option.ok_or is the inverse,
+    # converting Option<T> to Result<T, Error> (Some becomes Ok, None
+    # becomes Err(error)). Both consume their arguments via `match move`
+    # (see the doc comments in std/result.mx and std/option.mx). Checked
+    # with a resource Res payload on the discarded side of each direction
+    # (an Err(Res) collapsed by result.ok, and the unused `error: Res`
+    # passed to option.ok_or when the Option is Some) to confirm it is
+    # dropped automatically with no leak or double free, and with a
+    # resource Res payload on the kept side to confirm it survives intact.
+    program = r'''import std.result;
+import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.ok(Result<i64, i64>.Ok(42)) {
+        Option<i64>.Some(v) => { if v == 42 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match result.ok(Result<i64, i64>.Err(-1)) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match option.ok_or(Option<i64>.Some(5), -9) {
+        Result<i64, i64>.Ok(v) => { if v == 5 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match option.ok_or(Option<i64>.None, -9) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == -9 { ok += 1; } },
+    }
+
+    let ok_res: Result<Res, i64> = Result<Res, i64>.Ok(Res { id: 1 });
+    let kept: Option<Res> = result.ok(move ok_res);
+    match move kept {
+        Option<Res>.Some(item) => { if item.id == 1 { ok += 1; } destroy(&item); },
+        Option<Res>.None => {},
+    }
+
+    let err_res: Result<i64, Res> = Result<i64, Res>.Err(Res { id: 2 });
+    match result.ok(move err_res) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let none_val: Option<i64> = Option<i64>.None;
+    let converted: Result<i64, Res> = option.ok_or(none_val, (Res { id: 3 }));
+    match move converted {
+        Result<i64, Res>.Ok(v) => {},
+        Result<i64, Res>.Err(item) => { if item.id == 3 { ok += 1; } destroy(&item); },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 4 });
+    let discarded_error: Result<Res, Res> = option.ok_or(move some_res, (Res { id: 5 }));
+    match move discarded_error {
+        Result<Res, Res>.Ok(item) => { if item.id == 4 { ok += 1; } destroy(&item); },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultokoptionokor.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultokoptionokor.exe" if os.name == "nt" else "resultokoptionokor")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "1" (kept Res destroyed), "2" (Err(Res) auto-dropped inside result.ok),
+    # "3" (Err(Res) destroyed), "5" (unused error: Res auto-dropped inside
+    # option.ok_or), "4" (kept Res destroyed), then "8" for the final ok count.
+    assert result.stdout.strip().splitlines()[-6:] == ["1", "2", "3", "5", "4", "8"]
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 
