@@ -1,0 +1,36 @@
+// Demonstrates std.option.map and std.result.map chained in one pipeline,
+// with std.option.ok_or as the bridge between the two enums: parse text to
+// an Option<i64> (std.strings.parse_i64), double it (option.map), convert
+// to a Result<i64, i64> (option.ok_or, using -1 as the "no number" error),
+// then increment the Ok side (result.map). Uses genuine stdlib functions
+// throughout, not a contrived Result producer.
+import std.strings;
+import std.option;
+import std.result;
+
+fn double(value: i64) -> i64 {
+    return value * 2;
+}
+
+fn increment(value: i64) -> i64 {
+    return value + 1;
+}
+
+fn pipeline(text: []const u8) -> Result<i64, i64> {
+    let parsed: Option<i64> = strings.parse_i64(text);
+    let doubled: Option<i64> = option.map(parsed, double);
+    let as_result: Result<i64, i64> = option.ok_or(doubled, -1);
+    return result.map(as_result, increment);
+}
+
+fn main() -> int {
+    let good: []const u8 = slice("21" as *const u8, 2);
+    if result.is_ok(pipeline(good)) { print(1); } else { print(0); }
+    print(result.unwrap_or(pipeline(good), -99));
+
+    let bad: []const u8 = slice("xyz" as *const u8, 3);
+    if result.is_ok(pipeline(bad)) { print(1); } else { print(0); }
+    print(result.unwrap_or(pipeline(bad), -99));
+
+    return 0;
+}
