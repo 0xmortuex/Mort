@@ -35,6 +35,20 @@ pub fn unwrap_or<T>(value: Option<T>, default: T) -> T {
     }
 }
 
+// Consumes `value`; returns the `Some` payload, or the result of calling
+// `f()` if `value` is `None`. The lazy counterpart to `unwrap_or`: `f` is
+// only called when `value` is `None`, so use this instead of `unwrap_or`
+// when computing the default is expensive or has side effects. `f` is a
+// plain top-level function reference taking no arguments (Mort has no
+// closures). See `is_some`'s resource-drop note for `value`'s consuming
+// semantics.
+pub fn unwrap_or_else<T>(value: Option<T>, f: fn() -> T) -> T {
+    match move value {
+        Option<T>.Some(payload) => { return move payload; }
+        Option<T>.None => { return f(); }
+    }
+}
+
 // Consumes `value`; applies `f` to a `Some` payload and wraps the result as
 // `Option<U>.Some(...)`, or returns `Option<U>.None` unchanged if `value`
 // is `None`. `f` is a plain top-level function reference (Mort has no

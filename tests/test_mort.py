@@ -4314,6 +4314,93 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_and_result_unwrap_or_else_computes_a_lazy_default():
+    # unwrap_or_else is the lazy counterpart to unwrap_or: `f` is only
+    # called on the "empty" side (None / Err), computing the fallback
+    # instead of taking a pre-built one. std.option's `f` takes no
+    # arguments; std.result's `f` receives the Err payload (mirroring
+    # Rust's Result::unwrap_or_else), so a resource Err payload passed to
+    # it must be consumed there rather than dropped automatically. Checked
+    # with resource Res payloads on both the kept and the computed side for
+    # both option.unwrap_or_else and result.unwrap_or_else.
+    program = r'''import std.option;
+import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn make_default() -> i64 {
+    return 99;
+}
+
+fn err_to_value(e: i64) -> i64 {
+    return e * 10;
+}
+
+fn make_default_res() -> Res {
+    return Res { id: 42 };
+}
+
+fn err_res_to_value(e: Res) -> Res {
+    let out: Res = Res { id: e.id + 1 };
+    destroy(&e);
+    return move out;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if option.unwrap_or_else(Option<i64>.Some(7), make_default) == 7 { ok += 1; }
+    if option.unwrap_or_else(Option<i64>.None, make_default) == 99 { ok += 1; }
+
+    if result.unwrap_or_else(Result<i64, i64>.Ok(5), err_to_value) == 5 { ok += 1; }
+    if result.unwrap_or_else(Result<i64, i64>.Err(3), err_to_value) == 30 { ok += 1; }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 1 });
+    let kept: Res = option.unwrap_or_else(move some_res, make_default_res);
+    if kept.id == 1 { ok += 1; }
+    destroy(&kept);
+
+    let none_res: Option<Res> = Option<Res>.None;
+    let defaulted: Res = option.unwrap_or_else(move none_res, make_default_res);
+    if defaulted.id == 42 { ok += 1; }
+    destroy(&defaulted);
+
+    let ok_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 2 });
+    let kept2: Res = result.unwrap_or_else(move ok_res, err_res_to_value);
+    if kept2.id == 2 { ok += 1; }
+    destroy(&kept2);
+
+    let err_res: Result<Res, Res> = Result<Res, Res>.Err(Res { id: 9 });
+    let mapped: Res = result.unwrap_or_else(move err_res, err_res_to_value);
+    if mapped.id == 10 { ok += 1; }
+    destroy(&mapped);
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "unwraporelse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "unwraporelse.exe" if os.name == "nt" else "unwraporelse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "1" (kept Res destroyed), "42" (computed default Res destroyed), "2"
+    # (kept Res destroyed), "9" (Err payload consumed inside
+    # err_res_to_value), "10" (computed Res destroyed), then "8" for the
+    # final ok count.
+    assert result.stdout.strip().splitlines()[-6:] == ["1", "42", "2", "9", "10", "8"]
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 
