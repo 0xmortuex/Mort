@@ -2467,6 +2467,64 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_replacen_caps_the_number_of_replacements():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Cap below the total match count: only the first 2 of 4 "a"s flip.
+    let capped: String = strings.replacen(slice("aaaa" as *const u8, 4), slice("a" as *const u8, 1), slice("b" as *const u8, 1), 2);
+    if strings.equal(owned_string.view(&capped), slice("bbaa" as *const u8, 4)) { ok += 1; }
+    owned_string.destroy(&capped);
+
+    // count at or above the actual match count behaves like replace-all.
+    let all: String = strings.replacen(slice("aaaa" as *const u8, 4), slice("aa" as *const u8, 2), slice("b" as *const u8, 1), 5);
+    if strings.equal(owned_string.view(&all), slice("bb" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&all);
+
+    // count == 0 is a no-op copy.
+    let zero: String = strings.replacen(slice("hello" as *const u8, 5), slice("l" as *const u8, 1), slice("L" as *const u8, 1), 0);
+    if strings.equal(owned_string.view(&zero), slice("hello" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&zero);
+
+    // Empty `old` is a no-op copy regardless of count.
+    let empty_old: String = strings.replacen(slice("hello" as *const u8, 5), slice("" as *const u8, 0), slice("X" as *const u8, 1), 3);
+    if strings.equal(owned_string.view(&empty_old), slice("hello" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&empty_old);
+
+    // No match at all is a no-op copy.
+    let none: String = strings.replacen(slice("hello" as *const u8, 5), slice("z" as *const u8, 1), slice("Z" as *const u8, 1), 2);
+    if strings.equal(owned_string.view(&none), slice("hello" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&none);
+
+    // Overlapping candidates are not rescanned, capped at 1 replacement.
+    let overlap: String = strings.replacen(slice("aaaa" as *const u8, 4), slice("aa" as *const u8, 2), slice("b" as *const u8, 1), 1);
+    if strings.equal(owned_string.view(&overlap), slice("baa" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&overlap);
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "replacenuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "replacenuse.exe" if os.name == "nt" else "replacenuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_strings_count_counts_non_overlapping_occurrences():
     program = r'''import std.strings;
 

@@ -238,7 +238,12 @@ unsplit element. `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned
-copy rather than inserting `new` between every byte). `count(text, needle)`
+copy rather than inserting `new` between every byte). `replacen(text, old,
+new, count)` is `replace` capped to the first `count` non-overlapping
+matches (Python's `str.replace(old, new, count)`, Rust's `str::replacen`);
+bytes past the cap, including any later occurrences of `old`, are copied
+through unchanged, and `count == 0` or an empty `old` returns an unchanged
+owned copy, same as `replace`. `count(text, needle)`
 counts non-overlapping, left-to-right occurrences of `needle` in `text` as a
 plain `u64`, using the same matching pass as `replace`'s counting loop (a
 match is not rescanned, so `count("aaaa", "aa")` is 2, not 3); an empty
