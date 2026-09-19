@@ -3353,6 +3353,77 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_get_ref_reads_writes_and_supports_resource_values():
+    # get_ref mirrors Vec.get_ref: a pointer to the live value slot instead
+    # of get's aliasing copy, so a resource Value can be mutated in place and
+    # later removed/destroyed exactly once (no double drop), and a missing
+    # key yields a null pointer.
+    program = r'''import std.map;
+import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let values: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&values);
+    let ok: i64 = 0;
+
+    map.insert(&values, 1, 10);
+    map.insert(&values, 2, 20);
+
+    let pointer: *i64 = map.get_ref(&values, 1);
+    if *pointer == 10 { ok += 1; }
+    *pointer = 99;
+    match map.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 99 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    if map.get_ref(&values, 999) == (0 as *i64) { ok += 1; }
+
+    let resources: Map<i64, Res> = map.new<i64, Res>();
+    map.insert(&resources, 1, Res { id: 1 });
+    map.insert(&resources, 2, Res { id: 2 });
+
+    let first: *Res = map.get_ref(&resources, 1);
+    (*first).id = 42;
+
+    let removed: Option<Res> = map.remove(&resources, 1);
+    let sum: i64 = 0;
+    match move removed {
+        Option<Res>.Some(item) => { sum = sum + item.id; destroy(&item); },
+        Option<Res>.None => {},
+    }
+    let removed2: Option<Res> = map.remove(&resources, 2);
+    match move removed2 {
+        Option<Res>.Some(item) => { sum = sum + item.id; destroy(&item); },
+        Option<Res>.None => {},
+    }
+    map.destroy(&resources);
+    if sum == 44 { ok += 1; }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapgetref.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapgetref.exe" if os.name == "nt" else "mapgetref")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_std_map_find_by_returns_first_matching_key_in_insertion_order():
     program = r'''import std.map;
 

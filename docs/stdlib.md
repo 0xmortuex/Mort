@@ -79,7 +79,13 @@ cheap equality. `new<Key, Value>()` / `with_capacity<Key, Value>(capacity)`
 construct one; `insert` adds or overwrites a key (returning `true` only for
 a new key — an overwrite of a resource `Value` still requires the caller to
 have drained the old value first, since the slot is overwritten as raw
-memory); `get` returns `Option<Value>`; `contains` checks key presence;
+memory); `get` returns `Option<Value>`; `get_ref(map, key)` returns a `*Value`
+pointer to the live slot instead of `get`'s aliasing copy (a null pointer,
+`0 as *Value`, if `key` is absent) — reading/writing/moving through it does
+not alias or drop the value, so it *is* safe for a resource `Value`, mirroring
+`Vec.get_ref`; the pointer is only valid until the next operation that can
+reallocate backing storage (`insert` past capacity); `contains` checks key
+presence;
 `remove` deletes a key and returns its `Value` (moved out, so a resource
 `Value` is not dropped) inside `Option<Value>`, `Option<Value>.None` if the
 key was absent, shifting later entries down to fill the gap; `key_at` /
@@ -403,13 +409,13 @@ raw backing storage rather than through the ownership checker, so they only
 fully track resource lifetimes through `push`/`Vec.insert`-then-`pop`/
 `drain`/`remove` patterns (`Map.remove`, `Vec.remove`, and `Vec.insert` all
 move their slot's value in or out cleanly, same as `Vec.pop`). `Vec.get_ref`
-(see above) closes this gap for `Vec` reads/writes specifically — it hands
-back a pointer to the live slot instead of an aliasing copy, so in-place
-mutation of a resource element no longer needs a `pop`/mutate/`push` dance.
-`Map` has no equivalent yet, and `Vec.destroy` still does not drop resource
-elements left in the vector. See the "Resource-aware container API" item in
-`BACKLOG.md` for the remaining gap (`Map.get_ref`, and a dropping
-`destroy`).
+and `Map.get_ref` (see above) close this gap for `Vec`/`Map` reads/writes
+specifically — each hands back a pointer to the live slot instead of an
+aliasing copy, so in-place mutation of a resource element no longer needs a
+`pop`/mutate/`push` (or remove/mutate/insert) dance. `Vec.destroy` and
+`Map.destroy` still do not drop resource elements left in the container. See
+the "Resource-aware container API" item in `BACKLOG.md` for the remaining
+gap (a dropping `destroy`).
 
 ## `std.json`
 
