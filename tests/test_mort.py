@@ -4786,6 +4786,67 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_truncate_shrinks_to_at_most_length():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    vec.push(&values, 10);
+    vec.push(&values, 20);
+    vec.push(&values, 30);
+    vec.push(&values, 40);
+    vec.push(&values, 50);
+
+    // Shrinks to the first 3 elements; the rest are dropped via pop.
+    vec.truncate(&values, 3);
+    if values.length == 3 { ok += 1; }
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 10 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 30 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // A length at or above the current length is a no-op.
+    vec.truncate(&values, 10);
+    if values.length == 3 { ok += 1; }
+
+    // Truncating to 0 behaves like clear.
+    vec.truncate(&values, 0);
+    if vec.is_empty(&values) { ok += 1; }
+
+    // Empty Vec: no-op, does not crash.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.truncate(&empty, 0);
+    if vec.is_empty(&empty) { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vectruncate.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vectruncate.exe" if os.name == "nt" else "vectruncate")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_slice_reverse_reverses_a_bare_slice_in_place():
     program = r'''import std.vec;
 

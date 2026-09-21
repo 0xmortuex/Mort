@@ -285,6 +285,16 @@ pub fn clear<T>(value: *Vec<T>) -> void {
     (*value).length = 0;
 }
 
+// Shrinks `value` down to at most `length` elements. A no-op if `value` is
+// already at or below `length`. Each removed element comes back through
+// `pop` as a real `Option<T>` and drops normally at scope exit, so this is
+// resource-safe for the same reason `pop`/`remove` are.
+pub fn truncate<T>(value: *Vec<T>, length: u64) -> void {
+    while (*value).length > length {
+        let removed = pop(value);
+    }
+}
+
 pub fn destroy<T>(value: *Vec<T>) -> void {
     free((*value).data);
     (*value).data = 0 as *T;

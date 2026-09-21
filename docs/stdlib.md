@@ -398,7 +398,12 @@ common post-`sort` cleanup, matching Rust's `Vec::dedup`/C++'s
 a collapsed duplicate is overwritten rather than destroyed (the same caveat
 `set` already documents); `is_empty`
 checks whether the length is zero; `clear` resets the length without
-freeing backing storage; `destroy` frees the backing array only — it does
+freeing backing storage; `truncate(vec, length)` shrinks the vector down to
+at most `length` elements (a no-op if it is already at or below `length`;
+`truncate(vec, 0)` behaves like `clear`), built as a bounded `pop` loop so
+each removed element comes back as a real `Option<T>` and drops normally,
+resource-safe for the same reason `pop`/`remove` are; `destroy` frees the
+backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources
 must be drained (e.g. by repeated `pop`/`remove`) before `destroy`.
 
