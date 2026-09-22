@@ -46,3 +46,29 @@ pub fn contains<T>(values: []const T, needle: T) -> bool {
     }
     return false;
 }
+
+pub fn min<T>(values: []const T) -> Option<T> {
+    if values.len == 0 {
+        return Option<T>.None;
+    }
+    let best = values[0];
+    for index: u64 in 1..values.len {
+        if values[index] < best {
+            best = values[index];
+        }
+    }
+    return Option<T>.Some(best);
+}
+
+pub fn max<T>(values: []const T) -> Option<T> {
+    if values.len == 0 {
+        return Option<T>.None;
+    }
+    let best = values[0];
+    for index: u64 in 1..values.len {
+        if values[index] > best {
+            best = values[index];
+        }
+    }
+    return Option<T>.Some(best);
+}

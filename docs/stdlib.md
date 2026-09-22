@@ -13,8 +13,12 @@ Generic slice helpers with no caller-supplied comparator: `reverse<T>(values: []
 reverses in place, `sort<T>(values: []T)` is an in-place insertion sort
 requiring `T` to support `<`, and `index_of<T>` / `contains<T>` do a linear
 scan over `[]const T` for a needle, returning `Option<u64>` and `bool`
-respectively. For element types without a built-in `<` (or where the caller
-wants a custom order), see `std.sort`, which takes an explicit comparator.
+respectively. `min<T>(values: []const T) -> Option<T>` / `max<T>(values: []const T)
+-> Option<T>` scan a slice by `<` / `>` for its smallest/largest element,
+`None` for an empty slice — the slice-level counterpart to `std.math.min`/`max`,
+which only compare two values. For element types without a built-in `<` (or
+where the caller wants a custom order), see `std.sort`, which takes an
+explicit comparator.
 
 ## `std.ascii`
 

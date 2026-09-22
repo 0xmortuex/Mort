@@ -6723,6 +6723,39 @@ def test_generic_slice_algorithm_module():
 
 
 @needs_cc
+def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_min_max.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; import std.option; "
+                "fn main() -> int { let values: [i64; 5] = [3, 1, 4, 1, 5]; "
+                "let view: []const i64 = slice(&values[0] as *const i64, 5); "
+                "print(option.unwrap_or(algorithm.min(view), -1)); "
+                "print(option.unwrap_or(algorithm.max(view), -1)); "
+                "let empty_view: []const i64 = slice(&values[0] as *const i64, 0); "
+                "if option.is_none(algorithm.min(empty_view)) { print(1); } else { print(0); } "
+                "if option.is_none(algorithm.max(empty_view)) { print(1); } else { print(0); } "
+                "let single: [i64; 1] = [42]; "
+                "let single_view: []const i64 = slice(&single[0] as *const i64, 1); "
+                "print(option.unwrap_or(algorithm.min(single_view), -1)); "
+                "print(option.unwrap_or(algorithm.max(single_view), -1)); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__min_i64" in c_source
+        assert "mort_std__algorithm__max_i64" in c_source
+        cfile = os.path.join(d, "algorithm_min_max.c")
+        exe = os.path.join(d, "algorithm_min_max.exe" if os.name == "nt" else "algorithm_min_max")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "1\n5\n1\n1\n42\n42\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")
