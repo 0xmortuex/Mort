@@ -244,7 +244,12 @@ empty, sign-only, or non-digit input; `split(text, separator)` returns a
 `Vec<[]const u8>` of views borrowed from `text`, matching Python's
 `str.split(sep)` semantics — consecutive or edge separators produce empty
 elements, and an empty `separator` returns the whole text as a single
-unsplit element. `replace(text, old, new)` returns a freshly allocated
+unsplit element. `split_whitespace(text)` returns a `Vec<[]const u8>` of
+views borrowed from `text`, splitting on *runs* of ASCII whitespace and
+skipping leading/trailing/repeated whitespace so it never produces empty
+elements — Python's zero-argument `str.split()`, a genuinely different
+operation from `split(text, separator)`'s exact-separator matching; an
+empty or all-whitespace `text` returns an empty `Vec`. `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned

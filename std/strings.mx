@@ -335,6 +335,30 @@ pub fn split(text: []const u8, separator: []const u8) -> Vec<[]const u8> {
     return move parts;
 }
 
+// Splits `text` on runs of ASCII whitespace (the same set `trim` uses),
+// skipping leading/trailing/repeated whitespace and never producing empty
+// elements — Python's zero-argument `str.split()`. This differs from
+// `split(text, separator)` above, which splits on an *exact* separator and
+// does produce empty elements between consecutive separators, by design.
+// Returns a Vec of views borrowed from `text` (no copies).
+pub fn split_whitespace(text: []const u8) -> Vec<[]const u8> {
+    let parts: Vec<[]const u8> = vec.new<[]const u8>();
+    let index: u64 = 0;
+    while index < text.len {
+        while index < text.len && is_ascii_space(text[index]) {
+            index += 1;
+        }
+        let start: u64 = index;
+        while index < text.len && !is_ascii_space(text[index]) {
+            index += 1;
+        }
+        if index > start {
+            vec.push(&parts, slice(((text.data as u64) + start) as *const u8, index - start));
+        }
+    }
+    return move parts;
+}
+
 // Concatenates every element of `parts` (as produced by `split`) with
 // `separator` inserted between consecutive elements, matching Python's
 // `separator.join(parts)`: zero elements yields an empty string, and one

@@ -2403,6 +2403,78 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_split_whitespace_splits_on_runs_and_skips_empty_elements():
+    program = r'''import std.strings;
+import std.vec;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Leading, trailing, and repeated whitespace of mixed kinds (space, tab,
+    // newline) never produces empty elements, unlike split(text, " ").
+    let text: []const u8 = slice("  hello   world\tfoo\n" as *const u8, 20);
+    let parts = strings.split_whitespace(text);
+    if parts.length == 3 { ok += 1; }
+    match vec.get(&parts, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("hello" as *const u8, 5)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 1) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("world" as *const u8, 5)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 2) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("foo" as *const u8, 3)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // All-whitespace input: empty Vec, not a single empty element.
+    let all_ws: []const u8 = slice("   " as *const u8, 3);
+    let empty = strings.split_whitespace(all_ws);
+    if empty.length == 0 { ok += 1; }
+
+    // Empty input: empty Vec.
+    let empty_text: []const u8 = slice("" as *const u8, 0);
+    let none_ws = strings.split_whitespace(empty_text);
+    if none_ws.length == 0 { ok += 1; }
+
+    // No whitespace at all: single element equal to the whole text.
+    let solo: []const u8 = slice("solo" as *const u8, 4);
+    let single = strings.split_whitespace(solo);
+    if single.length == 1 {
+        match vec.get(&single, 0) {
+            Option<[]const u8>.Some(p) => { if strings.equal(p, solo) { ok += 1; } },
+            Option<[]const u8>.None => {},
+        }
+    }
+
+    vec.destroy(&parts);
+    vec.destroy(&empty);
+    vec.destroy(&none_ws);
+    vec.destroy(&single);
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "splitws.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "splitws.exe" if os.name == "nt" else "splitws")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_strings_replace_builds_owned_buffer_and_matches_python_semantics():
     program = r'''import std.strings;
 import std.owned_string;
