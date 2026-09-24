@@ -411,7 +411,14 @@ freeing backing storage; `truncate(vec, length)` shrinks the vector down to
 at most `length` elements (a no-op if it is already at or below `length`;
 `truncate(vec, 0)` behaves like `clear`), built as a bounded `pop` loop so
 each removed element comes back as a real `Option<T>` and drops normally,
-resource-safe for the same reason `pop`/`remove` are; `destroy` frees the
+resource-safe for the same reason `pop`/`remove` are; `extend(vec, other)`
+appends every element of a `[]const T` slice onto the end of `vec`, in
+order (e.g. combining two `Vec`s via `extend(&a, b.as_const_slice())`, or
+appending a literal array), reserving capacity for the combined length once
+up front and then pushing each element in turn — like `index_of`/`dedup`,
+it reads each element out of `other` by copy, so it is **not** safe for a
+resource element type (the source slice's elements are duplicated into
+`vec`, not moved out of `other`); `destroy` frees the
 backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources
 must be drained (e.g. by repeated `pop`/`remove`) before `destroy`.

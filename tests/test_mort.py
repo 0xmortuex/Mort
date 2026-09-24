@@ -4858,6 +4858,70 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_extend_appends_every_element_of_a_slice():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    vec.push(&values, 1);
+    vec.push(&values, 2);
+
+    let other: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&other);
+    vec.push(&other, 3);
+    vec.push(&other, 4);
+    vec.push(&other, 5);
+
+    // Appends all of other's elements, in order, onto the end of values.
+    vec.extend(&values, vec.as_const_slice(&other));
+    if values.length == 5 { ok += 1; }
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 4) {
+        Option<i64>.Some(x) => { if x == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Extending with an empty slice is a no-op.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.extend(&values, vec.as_const_slice(&empty));
+    if values.length == 5 { ok += 1; }
+
+    // Extending an empty Vec grows it from scratch.
+    vec.extend(&empty, vec.as_const_slice(&other));
+    if empty.length == 3 { ok += 1; }
+    match vec.get(&empty, 0) {
+        Option<i64>.Some(x) => { if x == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecextend.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecextend.exe" if os.name == "nt" else "vecextend")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_truncate_shrinks_to_at_most_length():
     program = r'''import std.vec;
 

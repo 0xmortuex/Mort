@@ -295,6 +295,21 @@ pub fn truncate<T>(value: *Vec<T>, length: u64) -> void {
     }
 }
 
+// Appends every element of `other` onto the end of `value`, in order — the
+// natural counterpart to `push` for bulk-appending (e.g. combining two
+// `Vec`s via `extend(&a, b.as_const_slice())`, or a literal array). Reserves
+// capacity for the combined length once up front, then pushes each element
+// in turn. Like `index_of`/`contains`/`dedup`, each element is read out of
+// `other` by copy, so this is safe for a plain `T` but not resource-safe:
+// the source slice's elements are duplicated into `value`, not moved out of
+// `other`.
+pub fn extend<T>(value: *Vec<T>, other: []const T) -> void {
+    reserve(value, (*value).length + other.len);
+    for index: u64 in 0..other.len {
+        push(value, other[index]);
+    }
+}
+
 pub fn destroy<T>(value: *Vec<T>) -> void {
     free((*value).data);
     (*value).data = 0 as *T;
