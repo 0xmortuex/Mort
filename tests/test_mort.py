@@ -2475,6 +2475,104 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_lines_splits_on_newlines_and_handles_crlf():
+    program = r'''import std.strings;
+import std.vec;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Plain \n-terminated lines, no trailing newline: three elements, no
+    // trailing empty element.
+    let text: []const u8 = slice("a\nbb\nccc" as *const u8, 8);
+    let parts = strings.lines(text);
+    if parts.length == 3 { ok += 1; }
+    match vec.get(&parts, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("a" as *const u8, 1)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 1) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("bb" as *const u8, 2)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&parts, 2) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("ccc" as *const u8, 3)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // \r\n-terminated lines, including a trailing one: the \r is stripped
+    // from each line and the trailing newline does not produce a final
+    // empty element.
+    let crlf: []const u8 = slice("a\r\nbb\r\n" as *const u8, 7);
+    let crlf_parts = strings.lines(crlf);
+    if crlf_parts.length == 2 { ok += 1; }
+    match vec.get(&crlf_parts, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("a" as *const u8, 1)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&crlf_parts, 1) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("bb" as *const u8, 2)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // Empty input: empty Vec.
+    let empty_text: []const u8 = slice("" as *const u8, 0);
+    let empty_parts = strings.lines(empty_text);
+    if empty_parts.length == 0 { ok += 1; }
+
+    // No trailing newline at all: single element equal to the whole text.
+    let noeol: []const u8 = slice("noeol" as *const u8, 5);
+    let noeol_parts = strings.lines(noeol);
+    if noeol_parts.length == 1 {
+        match vec.get(&noeol_parts, 0) {
+            Option<[]const u8>.Some(p) => { if strings.equal(p, noeol) { ok += 1; } },
+            Option<[]const u8>.None => {},
+        }
+    }
+
+    // Consecutive newlines produce empty-line elements, not skipped ones
+    // (unlike split_whitespace).
+    let blanks: []const u8 = slice("\n\n" as *const u8, 2);
+    let blank_parts = strings.lines(blanks);
+    if blank_parts.length == 2 {
+        match vec.get(&blank_parts, 0) {
+            Option<[]const u8>.Some(p) => { if p.len == 0 { ok += 1; } },
+            Option<[]const u8>.None => {},
+        }
+        match vec.get(&blank_parts, 1) {
+            Option<[]const u8>.Some(p) => { if p.len == 0 { ok += 1; } },
+            Option<[]const u8>.None => {},
+        }
+    }
+
+    vec.destroy(&parts);
+    vec.destroy(&crlf_parts);
+    vec.destroy(&empty_parts);
+    vec.destroy(&noeol_parts);
+    vec.destroy(&blank_parts);
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "lines.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "lines.exe" if os.name == "nt" else "lines")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+@needs_cc
 def test_std_strings_replace_builds_owned_buffer_and_matches_python_semantics():
     program = r'''import std.strings;
 import std.owned_string;

@@ -249,7 +249,13 @@ views borrowed from `text`, splitting on *runs* of ASCII whitespace and
 skipping leading/trailing/repeated whitespace so it never produces empty
 elements — Python's zero-argument `str.split()`, a genuinely different
 operation from `split(text, separator)`'s exact-separator matching; an
-empty or all-whitespace `text` returns an empty `Vec`. `replace(text, old, new)` returns a freshly allocated
+empty or all-whitespace `text` returns an empty `Vec`. `lines(text)` returns
+a `Vec<[]const u8>` of views borrowed from `text`, splitting on `\n` and
+trimming a preceding `\r` off each line so both `\n`- and `\r\n`-terminated
+input work (Python's `str.splitlines()`, restricted to those two newline
+conventions); unlike `split(text, "\n")`, a single trailing newline does not
+produce a final empty element, though consecutive newlines still produce
+empty-line elements (unlike `split_whitespace`). `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned

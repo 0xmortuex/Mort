@@ -359,6 +359,35 @@ pub fn split_whitespace(text: []const u8) -> Vec<[]const u8> {
     return move parts;
 }
 
+// Splits `text` into lines on `\n`, trimming a preceding `\r` off each line
+// so both `\n`- and `\r\n`-terminated input work (Python's
+// `str.splitlines()`, restricted to the two common newline conventions).
+// Unlike `split(text, "\n")`, a single trailing newline does not produce a
+// final empty element. Returns a Vec of views borrowed from `text` (no
+// copies).
+pub fn lines(text: []const u8) -> Vec<[]const u8> {
+    let parts: Vec<[]const u8> = vec.new<[]const u8>();
+    let start: u64 = 0;
+    let index: u64 = 0;
+    while index < text.len {
+        if text[index] == 10 {
+            let end: u64 = index;
+            if end > start && text[end - 1] == 13 {
+                end = end - 1;
+            }
+            vec.push(&parts, slice(((text.data as u64) + start) as *const u8, end - start));
+            index += 1;
+            start = index;
+        } else {
+            index += 1;
+        }
+    }
+    if start < text.len {
+        vec.push(&parts, slice(((text.data as u64) + start) as *const u8, text.len - start));
+    }
+    return move parts;
+}
+
 // Concatenates every element of `parts` (as produced by `split`) with
 // `separator` inserted between consecutive elements, matching Python's
 // `separator.join(parts)`: zero elements yields an empty string, and one
