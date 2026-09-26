@@ -72,3 +72,26 @@ pub fn max<T>(values: []const T) -> Option<T> {
     }
     return Option<T>.Some(best);
 }
+
+// Collapses *consecutive* equal elements of `values` in place, the
+// slice-level counterpart to `std.vec.dedup`. Keeps the first element of
+// each run and returns the new logical length; unlike a `Vec`, a slice has
+// no `.length` field to shrink, so the caller re-slices with the returned
+// length if it wants the shrunk view. Compares via `==`, the same
+// convention as `index_of`/`contains` (works for primitive T; struct-typed
+// T generally can't be compared this way). Not safe for a resource-typed
+// T: a dropped duplicate is overwritten, not destroyed, the same caveat
+// `std.vec.dedup` already documents.
+pub fn dedup<T>(values: []T) -> u64 {
+    if values.len <= 1 {
+        return values.len;
+    }
+    let write: u64 = 0;
+    for read: u64 in 1..values.len {
+        if values[write] != values[read] {
+            write = write + 1;
+            values[write] = values[read];
+        }
+    }
+    return write + 1;
+}

@@ -18,7 +18,12 @@ respectively. `min<T>(values: []const T) -> Option<T>` / `max<T>(values: []const
 `None` for an empty slice — the slice-level counterpart to `std.math.min`/`max`,
 which only compare two values. For element types without a built-in `<` (or
 where the caller wants a custom order), see `std.sort`, which takes an
-explicit comparator.
+explicit comparator. `dedup<T>(values: []T) -> u64` collapses *consecutive*
+equal elements in place (comparing via `==`) and returns the new logical
+length — the slice-level counterpart to `std.vec.dedup`; since a slice has
+no `.length` field to shrink, the caller re-slices with the returned length
+if it wants the shrunk view, and it is not resource-safe (an overwritten
+duplicate is not destroyed).
 
 ## `std.ascii`
 

@@ -6957,6 +6957,41 @@ def test_generic_slice_algorithm_module():
 
 
 @needs_cc
+def test_std_algorithm_dedup_collapses_consecutive_equal_elements_in_a_slice():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_dedup.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; "
+                "fn main() -> int { "
+                "let values: [i64; 7] = [1, 1, 2, 2, 2, 1, 3]; "
+                "let mutable: []i64 = slice(&values[0], 7); "
+                "print(algorithm.dedup(mutable) as i64); "
+                "print(values[0]); print(values[1]); print(values[2]); print(values[3]); "
+                "let single: [i64; 1] = [42]; "
+                "let single_view: []i64 = slice(&single[0], 1); "
+                "print(algorithm.dedup(single_view) as i64); "
+                "let empty_view: []i64 = slice(&single[0], 0); "
+                "print(algorithm.dedup(empty_view) as i64); "
+                "let all_same: [i64; 4] = [5, 5, 5, 5]; "
+                "let all_view: []i64 = slice(&all_same[0], 4); "
+                "print(algorithm.dedup(all_view) as i64); "
+                "print(all_same[0]); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__dedup_i64" in c_source
+        cfile = os.path.join(d, "algorithm_dedup.c")
+        exe = os.path.join(d, "algorithm_dedup.exe" if os.name == "nt" else "algorithm_dedup")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "4\n1\n2\n1\n3\n1\n0\n1\n5\n"
+
+
+@needs_cc
 def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_min_max.mx")
