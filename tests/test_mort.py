@@ -7491,6 +7491,7 @@ EXPECTED = {
     "math_generics.mx": "6\n12\n100\n50\n1024\n1\n",
     "option_chaining.mx": "1\n1\n2\n0\n1\n123\n1\n-1\n",
     "option_result_pipeline.mx": "1\n43\n0\n-99\n",
+    "sort_struct.mx": "8\n15\n21\n34\n1\n",
 }
 
 
