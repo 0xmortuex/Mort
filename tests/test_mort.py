@@ -7492,6 +7492,7 @@ EXPECTED = {
     "option_chaining.mx": "1\n1\n2\n0\n1\n123\n1\n-1\n",
     "option_result_pipeline.mx": "1\n43\n0\n-99\n",
     "sort_struct.mx": "8\n15\n21\n34\n1\n",
+    "vec_of_resources.mx": "2\n1\n4\n103\n",
 }
 
 

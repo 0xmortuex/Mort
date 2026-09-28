@@ -1,0 +1,51 @@
+// Demonstrates the resource-safety boundary of `std.vec`'s operations in
+// practice with a `Vec` of a `resource struct` element: which operations
+// move/track an element correctly (safe), and where the boundary sits.
+import std.vec;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> int {
+    let resources: Vec<Res> = vec.new<Res>();
+    vec.push(&resources, Res { id: 1 });
+    vec.push(&resources, Res { id: 2 });
+    vec.push(&resources, Res { id: 3 });
+    vec.push(&resources, Res { id: 4 });
+
+    // swap/reverse/rotate_left move each slot through a temporary and
+    // never alias or drop an element, so they are resource-safe.
+    vec.swap(&resources, 0, 3);      // [4, 2, 3, 1]
+    vec.reverse(&resources);         // [1, 3, 2, 4]
+    vec.rotate_left(&resources, 1);  // [3, 2, 4, 1]
+
+    // get_ref hands back a pointer to the live slot instead of get's
+    // aliasing copy, so a resource element can be mutated in place with no
+    // pop/mutate/push dance.
+    let first: *Res = vec.get_ref(&resources, 0);
+    (*first).id = (*first).id + 100; // [103, 2, 4, 1]
+
+    // remove moves its slot's value out cleanly; match move takes
+    // ownership of the payload and destroy runs exactly once.
+    let removed: Option<Res> = vec.remove(&resources, 1); // [103, 4, 1]
+    match move removed {
+        Option<Res>.Some(item) => { destroy(&item); },
+        Option<Res>.None => {},
+    }
+
+    // truncate is a bounded pop loop: each popped element comes back as a
+    // real Option<T> and drops immediately, so shrinking a Vec of
+    // resources never leaks or double-frees.
+    vec.truncate(&resources, 0); // pops and drops 1, then 4, then 103
+
+    // Note: not every std.vec operation is usable here. index_of/contains/
+    // dedup all compare elements with ==/!=, and the typechecker rejects
+    // comparing a struct at all ("cannot compare aggregate values") -- so
+    // e.g. vec.dedup(&resources) is a compile error, not a silent misuse.
+
+    // Every element above was popped out (and destroyed) already, so
+    // Vec.destroy -- which only frees the backing array, not any elements
+    // still inside it -- is safe to call on this now-empty Vec.
+    vec.destroy(&resources);
+    return 0;
+}
