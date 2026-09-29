@@ -2,6 +2,7 @@
 
 module std.strings;
 
+import std.ascii;
 import std.bytes;
 import std.option;
 import std.owned_string;
@@ -637,4 +638,36 @@ pub fn rsplit_once(text: []const u8, separator: []const u8) -> Option<SplitOnce>
         },
         Option<u64>.None => { return Option<SplitOnce>.None; },
     }
+}
+
+// Returns a new owned buffer with every ASCII lowercase byte of `text`
+// converted to uppercase (`std.ascii.to_upper` applied byte-by-byte);
+// non-ASCII / non-letter bytes pass through unchanged. Unlike
+// `std.ascii.upper_inplace`, this does not require a mutable `[]u8` and
+// never modifies `text` — it always allocates a fresh copy, even when no
+// byte actually changes. The caller must call `std.owned_string.destroy`
+// on the result.
+pub fn to_upper(text: []const u8) -> String {
+    let data: *u8 = alloc(text.len + 1) as *u8;
+    let destination: []u8 = slice(data, text.len + 1);
+    for index: u64 in 0..text.len {
+        destination[index] = ascii.to_upper(text[index]);
+    }
+    destination[text.len] = 0;
+    return String { data: data, length: text.len };
+}
+
+// Returns a new owned buffer with every ASCII uppercase byte of `text`
+// converted to lowercase (`std.ascii.to_lower` applied byte-by-byte); the
+// lowercase counterpart to `to_upper`, with the same allocate-a-fresh-copy
+// and non-ASCII-passthrough behavior. The caller must call
+// `std.owned_string.destroy` on the result.
+pub fn to_lower(text: []const u8) -> String {
+    let data: *u8 = alloc(text.len + 1) as *u8;
+    let destination: []u8 = slice(data, text.len + 1);
+    for index: u64 in 0..text.len {
+        destination[index] = ascii.to_lower(text[index]);
+    }
+    destination[text.len] = 0;
+    return String { data: data, length: text.len };
 }

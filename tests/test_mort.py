@@ -2793,6 +2793,62 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_to_upper_and_to_lower_build_owned_case_converted_copies():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // Mixed-case text with digits and punctuation: only ASCII letters change.
+    let mixed: []const u8 = slice("Hello, World! 123" as *const u8, 18);
+
+    let upper: String = strings.to_upper(mixed);
+    if strings.equal(owned_string.view(&upper), slice("HELLO, WORLD! 123" as *const u8, 18)) { ok += 1; }
+    owned_string.destroy(&upper);
+
+    let lower: String = strings.to_lower(mixed);
+    if strings.equal(owned_string.view(&lower), slice("hello, world! 123" as *const u8, 18)) { ok += 1; }
+    owned_string.destroy(&lower);
+
+    // Already-cased input is returned unchanged (as a fresh copy).
+    let already_upper: String = strings.to_upper(slice("SHOUT" as *const u8, 5));
+    if strings.equal(owned_string.view(&already_upper), slice("SHOUT" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&already_upper);
+
+    let already_lower: String = strings.to_lower(slice("whisper" as *const u8, 7));
+    if strings.equal(owned_string.view(&already_lower), slice("whisper" as *const u8, 7)) { ok += 1; }
+    owned_string.destroy(&already_lower);
+
+    // Original text is not mutated by either call.
+    if strings.equal(mixed, slice("Hello, World! 123" as *const u8, 18)) { ok += 1; }
+
+    // Empty input returns an empty owned buffer.
+    let empty_upper: String = strings.to_upper(slice("" as *const u8, 0));
+    if empty_upper.length == 0 { ok += 1; }
+    owned_string.destroy(&empty_upper);
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "caseuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "caseuse.exe" if os.name == "nt" else "caseuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_strings_join_is_splits_inverse_and_matches_python_semantics():
     program = r'''import std.strings;
 import std.owned_string;

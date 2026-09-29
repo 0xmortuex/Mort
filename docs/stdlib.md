@@ -322,10 +322,16 @@ uppercase `a`-`f`/`A`-`F` digits, and returning `None` on empty or
 non-hex-digit input; like `parse_u64`, more than 16 digits silently
 overflows rather than being rejected. `is_empty(text)` is a thin wrapper
 over `text.len == 0`, matching the `is_empty` predicate already documented
-for `std.vec.Vec` and `std.map.Map`.
-`replace`, `join`, `repeat`, `from_u64`, `from_i64`, and `to_hex` are the
-only functions here that allocate, so the caller must call
-`std.owned_string.destroy` on their results.
+for `std.vec.Vec` and `std.map.Map`. `to_upper(text)` and `to_lower(text)`
+return a freshly allocated `std.owned_string.String` with every ASCII
+letter case-converted (`std.ascii.to_upper`/`to_lower` applied
+byte-by-byte; non-ASCII and non-letter bytes pass through unchanged) —
+unlike `std.ascii.upper_inplace`/`lower_inplace`, which mutate a `[]u8` in
+place, these take a `[]const u8` and always return a fresh copy, leaving
+`text` untouched.
+`replace`, `join`, `repeat`, `from_u64`, `from_i64`, `to_hex`, `to_upper`,
+and `to_lower` are the only functions here that allocate, so the caller
+must call `std.owned_string.destroy` on their results.
 
 ## `std.thread`
 
