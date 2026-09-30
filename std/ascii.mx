@@ -14,6 +14,18 @@ pub fn is_space(byte: u8) -> bool {
     return byte == 32 || byte == 9 || byte == 10 || byte == 13 || byte == 11 || byte == 12;
 }
 
+pub fn is_alnum(byte: u8) -> bool {
+    return is_alpha(byte) || is_digit(byte);
+}
+
+pub fn is_upper(byte: u8) -> bool {
+    return byte >= 65 && byte <= 90;
+}
+
+pub fn is_lower(byte: u8) -> bool {
+    return byte >= 97 && byte <= 122;
+}
+
 pub fn to_upper(byte: u8) -> u8 {
     if byte >= 97 && byte <= 122 {
         return byte - 32;

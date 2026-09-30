@@ -2263,6 +2263,50 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_ascii_is_alnum_is_upper_is_lower():
+    program = r'''import std.ascii;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if ascii.is_alnum(65) { ok += 1; }
+    if ascii.is_alnum(122) { ok += 1; }
+    if ascii.is_alnum(48) { ok += 1; }
+    if ascii.is_alnum(57) { ok += 1; }
+    if !ascii.is_alnum(32) { ok += 1; }
+    if !ascii.is_alnum(33) { ok += 1; }
+
+    if ascii.is_upper(65) { ok += 1; }
+    if ascii.is_upper(90) { ok += 1; }
+    if !ascii.is_upper(97) { ok += 1; }
+    if !ascii.is_upper(48) { ok += 1; }
+
+    if ascii.is_lower(97) { ok += 1; }
+    if ascii.is_lower(122) { ok += 1; }
+    if !ascii.is_lower(65) { ok += 1; }
+    if !ascii.is_lower(48) { ok += 1; }
+
+    print(ok);
+    if ok == 14 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "asciipredicates.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "asciipredicates.exe" if os.name == "nt" else "asciipredicates")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "14"
+
+
+@needs_cc
 def test_std_sort_orders_by_caller_comparator_and_reports_sortedness():
     program = r'''import std.sort;
 
