@@ -26,6 +26,16 @@ pub fn is_lower(byte: u8) -> bool {
     return byte >= 97 && byte <= 122;
 }
 
+// The full printable ASCII range, 0x20 (space) through 0x7E (`~`).
+pub fn is_print(byte: u8) -> bool {
+    return byte >= 32 && byte <= 126;
+}
+
+// Printable but neither alphanumeric nor a space: the punctuation/symbol bytes.
+pub fn is_punct(byte: u8) -> bool {
+    return is_print(byte) && !is_alnum(byte) && byte != 32;
+}
+
 pub fn to_upper(byte: u8) -> u8 {
     if byte >= 97 && byte <= 122 {
         return byte - 32;

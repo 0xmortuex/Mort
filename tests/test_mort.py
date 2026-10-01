@@ -2307,6 +2307,46 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_ascii_is_print_and_is_punct():
+    program = r'''import std.ascii;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if ascii.is_print(32) { ok += 1; }
+    if ascii.is_print(126) { ok += 1; }
+    if ascii.is_print(65) { ok += 1; }
+    if !ascii.is_print(31) { ok += 1; }
+    if !ascii.is_print(127) { ok += 1; }
+
+    if ascii.is_punct(33) { ok += 1; }
+    if ascii.is_punct(44) { ok += 1; }
+    if !ascii.is_punct(65) { ok += 1; }
+    if !ascii.is_punct(53) { ok += 1; }
+    if !ascii.is_punct(32) { ok += 1; }
+    if !ascii.is_punct(9) { ok += 1; }
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "asciiprintpunct.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "asciiprintpunct.exe" if os.name == "nt" else "asciiprintpunct")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+@needs_cc
 def test_std_sort_orders_by_caller_comparator_and_reports_sortedness():
     program = r'''import std.sort;
 

@@ -30,6 +30,8 @@ duplicate is not destroyed).
 Byte-level ASCII classification and case conversion, all operating on `u8`
 (not on multi-byte UTF-8 sequences): `is_alpha`, `is_digit`, `is_space`,
 `is_alnum` (`is_alpha(byte) || is_digit(byte)`), `is_upper`, `is_lower`,
+`is_print` (the full printable range, `0x20`-`0x7E` inclusive), `is_punct`
+(printable but neither alphanumeric nor a space — punctuation/symbol bytes),
 `to_upper`, `to_lower`. `upper_inplace(text: []u8)` and
 `lower_inplace(text: []u8)` apply the corresponding conversion to every byte
 of a mutable slice in place.
