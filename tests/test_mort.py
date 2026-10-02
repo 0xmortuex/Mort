@@ -7165,6 +7165,38 @@ def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
 
 
 @needs_cc
+def test_std_algorithm_find_by_searches_a_slice_by_predicate():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_find_by.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; import std.option; "
+                "struct Person { age: i64 } "
+                "fn is_adult(p: Person) -> bool { return p.age >= 18; } "
+                "fn main() -> int { "
+                "let people: [Person; 3] = [Person { age: 5 }, Person { age: 21 }, Person { age: 40 }]; "
+                "let view: []const Person = slice(&people[0] as *const Person, 3); "
+                "print(option.unwrap_or(algorithm.find_by(view, is_adult), 99 as u64) as i64); "
+                "let minors: [Person; 2] = [Person { age: 5 }, Person { age: 10 }]; "
+                "let minors_view: []const Person = slice(&minors[0] as *const Person, 2); "
+                "if option.is_none(algorithm.find_by(minors_view, is_adult)) { print(1); } else { print(0); } "
+                "let empty_view: []const Person = slice(&minors[0] as *const Person, 0); "
+                "if option.is_none(algorithm.find_by(empty_view, is_adult)) { print(1); } else { print(0); } "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "find_by" in c_source
+        cfile = os.path.join(d, "algorithm_find_by.c")
+        exe = os.path.join(d, "algorithm_find_by.exe" if os.name == "nt" else "algorithm_find_by")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "1\n1\n1\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")

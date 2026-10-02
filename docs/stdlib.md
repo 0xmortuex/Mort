@@ -23,7 +23,12 @@ equal elements in place (comparing via `==`) and returns the new logical
 length — the slice-level counterpart to `std.vec.dedup`; since a slice has
 no `.length` field to shrink, the caller re-slices with the returned length
 if it wants the shrunk view, and it is not resource-safe (an overwritten
-duplicate is not destroyed).
+duplicate is not destroyed). `find_by<T>(values: []const T, predicate: fn(T)
+-> bool) -> Option<u64>` returns the index of the first element for which
+`predicate` is true, or `None` — unlike `index_of`/`contains`, it does not
+require `T` to support `==`, so it is the way to search a slice of a struct
+type (which generally can't be compared with `==` at all) for a matching
+element, mirroring `std.map.find_by`.
 
 ## `std.ascii`
 

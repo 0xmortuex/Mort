@@ -47,6 +47,20 @@ pub fn contains<T>(values: []const T, needle: T) -> bool {
     return false;
 }
 
+// Returns the index of the first element for which `predicate(element)` is
+// true, or None if no element matches. Unlike `index_of`/`contains`, this
+// does not require `T` to support `==` — the only way to search a slice of
+// a struct type (which can't be compared with `==` at all) for a matching
+// element without hand-rolling the scan loop, mirroring `std.map.find_by`.
+pub fn find_by<T>(values: []const T, predicate: fn(T) -> bool) -> Option<u64> {
+    for index: u64 in 0..values.len {
+        if predicate(values[index]) {
+            return Option<u64>.Some(index);
+        }
+    }
+    return Option<u64>.None;
+}
+
 pub fn min<T>(values: []const T) -> Option<T> {
     if values.len == 0 {
         return Option<T>.None;
