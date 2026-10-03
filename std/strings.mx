@@ -336,6 +336,38 @@ pub fn split(text: []const u8, separator: []const u8) -> Vec<[]const u8> {
     return move parts;
 }
 
+// Splits `text` on at most the first `count - 1` occurrences of `separator`,
+// leaving the remainder unsplit as the final element (Rust's `str::splitn`).
+// `count == 0` returns an empty Vec (no elements at all, matching Rust); an
+// empty `separator` or `count == 1` returns `text` unchanged as the sole
+// element, matching `split`'s own empty-separator convention. Returns a Vec
+// of views borrowed from `text` (no copies).
+pub fn splitn(text: []const u8, separator: []const u8, count: u64) -> Vec<[]const u8> {
+    let parts: Vec<[]const u8> = vec.new<[]const u8>();
+    if count == 0 {
+        return move parts;
+    }
+    if separator.len == 0 || count == 1 {
+        vec.push(&parts, text);
+        return move parts;
+    }
+    let start: u64 = 0;
+    let index: u64 = 0;
+    let splits_remaining: u64 = count - 1;
+    while splits_remaining > 0 && index + separator.len <= text.len {
+        if bytes.equal(slice(((text.data as u64) + index) as *const u8, separator.len), separator) {
+            vec.push(&parts, slice(((text.data as u64) + start) as *const u8, index - start));
+            index = index + separator.len;
+            start = index;
+            splits_remaining = splits_remaining - 1;
+        } else {
+            index = index + 1;
+        }
+    }
+    vec.push(&parts, slice(((text.data as u64) + start) as *const u8, text.len - start));
+    return move parts;
+}
+
 // Splits `text` on runs of ASCII whitespace (the same set `trim` uses),
 // skipping leading/trailing/repeated whitespace and never producing empty
 // elements — Python's zero-argument `str.split()`. This differs from

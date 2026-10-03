@@ -268,7 +268,13 @@ trimming a preceding `\r` off each line so both `\n`- and `\r\n`-terminated
 input work (Python's `str.splitlines()`, restricted to those two newline
 conventions); unlike `split(text, "\n")`, a single trailing newline does not
 produce a final empty element, though consecutive newlines still produce
-empty-line elements (unlike `split_whitespace`). `replace(text, old, new)` returns a freshly allocated
+empty-line elements (unlike `split_whitespace`). `splitn(text, separator,
+count)` returns a `Vec<[]const u8>` of views borrowed from `text`, splitting
+on at most the first `count - 1` occurrences of `separator` and leaving the
+remainder unsplit as the final element (Rust's `str::splitn`); `count == 0`
+returns an empty `Vec`, and an empty `separator` or `count == 1` returns
+`text` unchanged as the sole element, matching `split`'s own
+empty-separator convention. `replace(text, old, new)` returns a freshly allocated
 `std.owned_string.String` with every non-overlapping, left-to-right
 occurrence of `old` replaced by `new` (replace-all, like Python's
 `str.replace` with no `count`; an empty `old` returns an unchanged owned

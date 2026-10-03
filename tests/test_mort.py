@@ -2779,6 +2779,83 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_splitn_caps_the_number_of_splits():
+    program = r'''import std.strings;
+import std.vec;
+import std.option;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let text: []const u8 = slice("a:b:c:d" as *const u8, 7);
+    let sep: []const u8 = slice(":" as *const u8, 1);
+
+    // count == 2 -> ["a", "b:c:d"], remainder unsplit.
+    let two = strings.splitn(text, sep, 2);
+    if two.length == 2 { ok += 1; }
+    match vec.get(&two, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("a" as *const u8, 1)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match vec.get(&two, 1) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("b:c:d" as *const u8, 5)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // count == 3 -> ["a", "b", "c:d"].
+    let three = strings.splitn(text, sep, 3);
+    if three.length == 3 { ok += 1; }
+    match vec.get(&three, 2) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, slice("c:d" as *const u8, 3)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // count greater than the available number of separators behaves like a full split.
+    let many = strings.splitn(text, sep, 10);
+    if many.length == 4 { ok += 1; }
+
+    // count == 1 returns the whole text unsplit.
+    let one = strings.splitn(text, sep, 1);
+    if one.length == 1 { ok += 1; }
+    match vec.get(&one, 0) {
+        Option<[]const u8>.Some(p) => { if strings.equal(p, text) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+
+    // count == 0 returns an empty Vec.
+    let zero = strings.splitn(text, sep, 0);
+    if zero.length == 0 { ok += 1; }
+
+    // Empty separator returns the whole text as a single element regardless of count.
+    let empty_sep = strings.splitn(text, slice("" as *const u8, 0), 5);
+    if empty_sep.length == 1 { ok += 1; }
+
+    // No match at all returns the whole text as a single element.
+    let none_sep: []const u8 = slice("hello" as *const u8, 5);
+    let no_match = strings.splitn(none_sep, sep, 3);
+    if no_match.length == 1 { ok += 1; }
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "splitnuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "splitnuse.exe" if os.name == "nt" else "splitnuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+@needs_cc
 def test_std_strings_count_counts_non_overlapping_occurrences():
     program = r'''import std.strings;
 

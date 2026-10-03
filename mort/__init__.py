@@ -2,5 +2,5 @@
 
 The compiler pipeline: source text -> Lexer -> Parser -> Checker -> CodeGen -> C.
 """
-__version__ = "0.104.0"
+__version__ = "0.105.0"
 __language_version__ = "0.41.0"
