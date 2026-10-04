@@ -4560,6 +4560,87 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_and_then_chains_fallible_transforms_and_passes_through_none():
+    # and_then consumes `value` via `match move` (see std/option.mx's doc
+    # comment) and, unlike map, returns f's Option<U> result directly with
+    # no extra Some-wrapping -- the flat-map counterpart to map, for
+    # chaining a function that can itself fail. A None value is passed
+    # through unchanged (never calling `f`). Also checked with a resource
+    # Some payload (Res), confirming it is destroyed exactly once inside
+    # `halve_if_even` when it goes out of scope, and that a resource-typed
+    # None never calls `f` at all.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn halve_if_even(x: i64) -> Option<i64> {
+    if x % 2 == 0 {
+        return Option<i64>.Some(x / 2);
+    }
+    return Option<i64>.None;
+}
+
+fn halve_if_even_res(r: Res) -> Option<i64> {
+    let id = r.id;
+    if id % 2 == 0 {
+        return Option<i64>.Some(id / 2);
+    }
+    return Option<i64>.None;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.and_then(Option<i64>.Some(10), halve_if_even) {
+        Option<i64>.Some(v) => { if v == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.and_then(Option<i64>.Some(3), halve_if_even) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match option.and_then(Option<i64>.None, halve_if_even) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 8 });
+    match option.and_then(move some_res, halve_if_even_res) {
+        Option<i64>.Some(v) => { if v == 4 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    let none_res: Option<Res> = Option<Res>.None;
+    match option.and_then(move none_res, halve_if_even_res) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionandthen.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionandthen.exe" if os.name == "nt" else "optionandthen")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "8" from Res.destroy's print, then "5" from the final ok count.
+    assert result.stdout.strip().splitlines()[-2:] == ["8", "5"]
+
+
+@needs_cc
 def test_std_result_is_ok_is_err_and_unwrap_or():
     # Mirrors test_std_option_is_some_is_none_and_unwrap_or: is_ok/is_err/
     # unwrap_or all consume `value` via `match move` (see std/result.mx's

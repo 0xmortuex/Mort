@@ -62,6 +62,20 @@ pub fn map<T, U>(value: Option<T>, f: fn(T) -> U) -> Option<U> {
     }
 }
 
+// Consumes `value`; applies `f` to a `Some` payload and returns its result
+// directly (no extra `Some`-wrapping, unlike `map`), or returns
+// `Option<U>.None` unchanged (never calling `f`) if `value` is `None`. The
+// "flat-map" counterpart to `map`, for chaining functions that already
+// return an `Option` themselves (e.g. a parse step that can itself fail).
+// `f` is a plain top-level function reference (Mort has no closures). See
+// `is_some`'s resource-drop note for `value`'s consuming semantics.
+pub fn and_then<T, U>(value: Option<T>, f: fn(T) -> Option<U>) -> Option<U> {
+    match move value {
+        Option<T>.Some(payload) => { return f(move payload); }
+        Option<T>.None => { return Option<U>.None; }
+    }
+}
+
 // Consumes both `value` and `error`; converts to `std.result.Result`, the
 // natural counterpart to `std.result.ok`. A `Some` payload becomes `Ok`,
 // with `error` dropped unused (automatically, for a resource `Error`);
