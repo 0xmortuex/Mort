@@ -4820,6 +4820,96 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_and_then_chains_fallible_transforms_and_passes_through_err():
+    # Mirrors test_std_option_and_then_chains_fallible_transforms_and_passes_
+    # through_none: and_then consumes `value` via `match move` (see
+    # std/result.mx's doc comment) and, unlike map, returns f's
+    # Result<Mapped, Error> result directly with no extra Ok-wrapping -- the
+    # flat-map counterpart to map, for chaining a function that can itself
+    # fail. An Err value is passed through unchanged (never calling `f`,
+    # error payload preserved). Also checked with a resource Ok payload
+    # (Res), confirming it is destroyed exactly once inside `halve_if_even_
+    # res` when it goes out of scope, and with a resource Err payload,
+    # confirming it is passed through untouched (destroyed once by the
+    # test's own match arm, since `f` is never called).
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn halve_if_even(x: i64) -> Result<i64, i64> {
+    if x % 2 == 0 {
+        return Result<i64, i64>.Ok(x / 2);
+    }
+    return Result<i64, i64>.Err(-1);
+}
+
+fn halve_if_even_res(r: Res) -> Result<i64, i64> {
+    let id = r.id;
+    if id % 2 == 0 {
+        return Result<i64, i64>.Ok(id / 2);
+    }
+    return Result<i64, i64>.Err(-1);
+}
+
+fn never_called(r: i64) -> Result<i64, Res> {
+    return Result<i64, Res>.Ok(r);
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.and_then(Result<i64, i64>.Ok(10), halve_if_even) {
+        Result<i64, i64>.Ok(v) => { if v == 5 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match result.and_then(Result<i64, i64>.Ok(3), halve_if_even) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == -1 { ok += 1; } },
+    }
+
+    match result.and_then(Result<i64, i64>.Err(-9), halve_if_even) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == -9 { ok += 1; } },
+    }
+
+    let ok_res: Result<Res, i64> = Result<Res, i64>.Ok(Res { id: 8 });
+    match result.and_then(move ok_res, halve_if_even_res) {
+        Result<i64, i64>.Ok(v) => { if v == 4 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    let err_res: Result<i64, Res> = Result<i64, Res>.Err(Res { id: 9 });
+    let chained: Result<i64, Res> = result.and_then(move err_res, never_called);
+    match move chained {
+        Result<i64, Res>.Ok(v) => {},
+        Result<i64, Res>.Err(e) => { if e.id == 9 { ok += 1; } },
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultandthen.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultandthen.exe" if os.name == "nt" else "resultandthen")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "8" from halve_if_even_res's Res.destroy print, "9" from the Err
+    # payload's destroy in the final match arm, then "5" from the ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["8", "9", "5"]
+
+
+@needs_cc
 def test_std_result_ok_and_option_ok_or_convert_between_the_two_enums():
     # result.ok converts Result<Value, Error> to Option<Value> (Ok becomes
     # Some, Err's payload is dropped); option.ok_or is the inverse,

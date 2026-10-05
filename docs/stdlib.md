@@ -210,7 +210,7 @@ randomness, use `std.crypto` instead.
 ## `std.result`
 
 Defines the `Result<Value, Error>` enum (`Ok(Value)` / `Err(Error)`) used
-for fallible operations, plus seven helpers mirroring `std.option`'s:
+for fallible operations, plus eight helpers mirroring `std.option`'s:
 `is_ok(value)` / `is_err(value)` (bool predicates),
 `unwrap_or(value, default)` (the `Ok` payload, or `default` if `Err`),
 `unwrap_or_else(value, f)` (the lazy counterpart to `unwrap_or`: the `Ok`
@@ -220,13 +220,18 @@ payload, mirroring Rust's `Result::unwrap_or_else`, so it can turn the
 error itself into a fallback value), `map(value, f)` (applies a plain
 top-level function `f: fn(Value) -> Mapped` to an `Ok` payload and rewraps
 the result as `Result<Mapped, Error>.Ok(...)`, or passes the `Err` payload
-through unchanged without calling `f`), `map_err(value, f)` (the
-error-side counterpart: applies `f: fn(Error) -> MappedError` to an `Err`
-payload and rewraps the result as `Result<Value, MappedError>.Err(...)`,
-or passes the `Ok` payload through unchanged without calling `f`), and
-`ok(value)` (converts to `std.option.Option`: an `Ok` payload becomes
-`Some`, an `Err` payload is dropped and the result is `None` — the inverse
-of `std.option.ok_or`). All seven consume `value` via `match move`, since
+through unchanged without calling `f`), `and_then(value, f)` (the
+"flat-map" counterpart to `map`: applies `f: fn(Value) -> Result<Mapped,
+Error>` to an `Ok` payload and returns its result directly with no extra
+`Ok`-wrapping, for chaining a function that can itself fail, or passes the
+`Err` payload through unchanged without calling `f`, mirroring
+`std.option.and_then`), `map_err(value, f)` (the error-side counterpart to
+`map`: applies `f: fn(Error) -> MappedError` to an `Err` payload and
+rewraps the result as `Result<Value, MappedError>.Err(...)`, or passes the
+`Ok` payload through unchanged without calling `f`), and `ok(value)`
+(converts to `std.option.Option`: an `Ok` payload becomes `Some`, an `Err`
+payload is dropped and the result is `None` — the inverse of
+`std.option.ok_or`). All eight consume `value` via `match move`, since
 Mort enums expose no tag-only inspection without a match; for a resource
 `Value`/`Error`, the payload not returned is dropped automatically —
 except `unwrap_or_else`'s `Err` payload, which is instead moved into `f`
