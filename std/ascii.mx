@@ -36,6 +36,11 @@ pub fn is_punct(byte: u8) -> bool {
     return is_print(byte) && !is_alnum(byte) && byte != 32;
 }
 
+// A valid hexadecimal digit: `0`-`9`, `a`-`f`, or `A`-`F`.
+pub fn is_hex_digit(byte: u8) -> bool {
+    return is_digit(byte) || (byte >= 97 && byte <= 102) || (byte >= 65 && byte <= 70);
+}
+
 pub fn to_upper(byte: u8) -> u8 {
     if byte >= 97 && byte <= 122 {
         return byte - 32;

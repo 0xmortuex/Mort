@@ -2347,6 +2347,44 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_ascii_is_hex_digit_recognizes_0_9_a_f_and_rejects_the_rest():
+    program = r'''import std.ascii;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if ascii.is_hex_digit(48) { ok += 1; }
+    if ascii.is_hex_digit(57) { ok += 1; }
+    if ascii.is_hex_digit(97) { ok += 1; }
+    if ascii.is_hex_digit(102) { ok += 1; }
+    if ascii.is_hex_digit(65) { ok += 1; }
+    if ascii.is_hex_digit(70) { ok += 1; }
+    if !ascii.is_hex_digit(103) { ok += 1; }
+    if !ascii.is_hex_digit(71) { ok += 1; }
+    if !ascii.is_hex_digit(58) { ok += 1; }
+    if !ascii.is_hex_digit(32) { ok += 1; }
+
+    print(ok);
+    if ok == 10 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "asciihexdigit.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "asciihexdigit.exe" if os.name == "nt" else "asciihexdigit")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "10"
+
+
+@needs_cc
 def test_std_sort_orders_by_caller_comparator_and_reports_sortedness():
     program = r'''import std.sort;
 
