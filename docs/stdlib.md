@@ -459,7 +459,11 @@ appending a literal array), reserving capacity for the combined length once
 up front and then pushing each element in turn — like `index_of`/`dedup`,
 it reads each element out of `other` by copy, so it is **not** safe for a
 resource element type (the source slice's elements are duplicated into
-`vec`, not moved out of `other`); `destroy` frees the
+`vec`, not moved out of `other`); `clone(vec)` returns a new `Vec<T>`
+holding a copy of every element, in order, built from `with_capacity` +
+`extend` — like `extend`, it is **not** safe for a resource element type
+(elements are copied, not moved, so a resource `T` would end up aliased
+between the original and the copy); `destroy` frees the
 backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources
 must be drained (e.g. by repeated `pop`/`remove`) before `destroy`.

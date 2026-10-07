@@ -310,6 +310,18 @@ pub fn extend<T>(value: *Vec<T>, other: []const T) -> void {
     }
 }
 
+// Returns a new `Vec<T>` holding a copy of every element in `value`, in
+// order — the natural thing to reach for before mutating a copy while
+// keeping the original intact. Built from `with_capacity` + `extend`, so
+// it shares `extend`'s caveat: elements are read out of `value` by copy,
+// not moved, so this is **not** safe for a resource element type (a
+// resource `T` would end up aliased between `value` and the result).
+pub fn clone<T>(value: *Vec<T>) -> Vec<T> {
+    let result = with_capacity<T>((*value).length);
+    extend(&result, as_const_slice(value));
+    return move result;
+}
+
 pub fn destroy<T>(value: *Vec<T>) -> void {
     free((*value).data);
     (*value).data = 0 as *T;

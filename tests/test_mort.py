@@ -4218,6 +4218,57 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_clone_copies_elements_independently_of_the_original():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let original: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&original);
+    for index: i64 in 0..3 { vec.push(&original, index * 10); }
+    // original: [0, 10, 20]
+
+    let copy: Vec<i64> = vec.clone(&original);
+    defer vec.destroy(&copy);
+    let ok: i64 = 0;
+
+    if copy.length == 3 { ok += 1; }
+    match vec.get(&copy, 0) { Option<i64>.Some(v) => { if v == 0 { ok += 1; } }, Option<i64>.None => {} }
+    match vec.get(&copy, 2) { Option<i64>.Some(v) => { if v == 20 { ok += 1; } }, Option<i64>.None => {} }
+
+    // Mutating the copy must not affect the original.
+    vec.push(&copy, 30);
+    vec.set(&copy, 0, 999);
+    if copy.length == 4 { ok += 1; }
+    if original.length == 3 { ok += 1; }
+    match vec.get(&original, 0) { Option<i64>.Some(v) => { if v == 0 { ok += 1; } }, Option<i64>.None => {} }
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    let empty_copy: Vec<i64> = vec.clone(&empty);
+    defer vec.destroy(&empty_copy);
+    if empty_copy.length == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecclone.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecclone.exe" if os.name == "nt" else "vecclone")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_vec_first_and_last_peek_the_ends():
     program = r'''import std.vec;
 
