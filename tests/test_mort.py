@@ -1699,6 +1699,26 @@ def test_freestanding_needs_no_main():
     c_free("fn kmain() { return; }")
 
 
+def test_user_functions_with_runtime_prefixes_are_not_builtins():
+    # A kernel's own network/TLS/atomic helpers share the builtins' prefixes.
+    # Matching by prefix pulled the hosted socket runtime (malloc, snprintf,
+    # getaddrinfo) into freestanding C, so MORT OS stopped compiling.
+    c = c_free(
+        "fn net_send(len: u32) { return; }\n"
+        "fn tls_note() { return; }\n"
+        "fn atomic_i64_ticks() -> i64 { return 0; }\n"
+        "fn kmain() { net_send(4); tls_note(); let t: i64 = atomic_i64_ticks(); }"
+    )
+    # No hosted runtime: sockets, TLS, or the atomics/concurrency helpers.
+    assert "mort_net_init" not in c and "malloc" not in c
+    assert "struct addrinfo" not in c
+    assert "mbedtls" not in c and "mort_tls_client_connect" not in c
+    assert "<stdatomic.h>" not in c and "MORT_CONCURRENCY_INTERNAL" not in c
+    # ...and the user's functions are called as ordinary Mort functions.
+    assert "mort_net_send(4)" in c and "mort_tls_note()" in c
+    assert "mort_atomic_i64_ticks()" in c
+
+
 def test_print_banned_in_freestanding():
     with pytest.raises(MortError) as exc:
         c_free("fn kmain() { print(1); }")

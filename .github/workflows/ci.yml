@@ -239,6 +239,43 @@ jobs:
       - name: Exercise the persistent corpus
         run: python fuzz/atheris_frontend.py fuzz/corpus -runs=5000
 
+  mortos-kernel:
+    # Build and boot MORT OS with this compiler. Freestanding output is only
+    # exercised by the unit tests on small programs; a real kernel caught a
+    # regression they missed (user `net_*` functions pulling in the hosted
+    # socket runtime, so MORT OS stopped compiling).
+    name: MORT OS builds and boots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: 0xmortuex/MortOS
+          path: mortos
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the Zig C backend and QEMU
+        run: |
+          python -m pip install ziglang
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - name: Build the kernel with this compiler
+        working-directory: mortos
+        env:
+          MORT_HOME: ${{ github.workspace }}
+        run: python build.py build
+
+      - name: Boot it (smoke test)
+        working-directory: mortos
+        env:
+          MORT_HOME: ${{ github.workspace }}
+        run: python test.py smoke
+
   package:
     name: Verify distributions
     runs-on: ubuntu-latest

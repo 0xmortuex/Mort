@@ -10,6 +10,14 @@ Design choices:
 import base64
 
 from . import mort_ast as A
+from .typechecker import BUILTIN_NAMES
+
+# Runtime-backed builtin families. Membership must be exact: a user function
+# such as a kernel's own `net_send` shares the prefix but is not a builtin,
+# and treating it as one pulls the hosted socket runtime into freestanding C.
+_NET_BUILTINS = frozenset(n for n in BUILTIN_NAMES if n.startswith("net_"))
+_TLS_BUILTINS = frozenset(n for n in BUILTIN_NAMES if n.startswith("tls_"))
+_ATOMIC_BUILTINS = frozenset(n for n in BUILTIN_NAMES if n.startswith("atomic_i64_"))
 
 _C_BASE = {
     "i8": "int8_t", "i16": "int16_t", "i32": "int32_t", "i64": "int64_t",
@@ -2634,13 +2642,13 @@ class CodeGen:
             elif e.name in (
                     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock"):
                 self.used_mutexes = True
-            elif e.name.startswith("atomic_i64_"):
+            elif e.name in _ATOMIC_BUILTINS:
                 self.used_atomics = True
-            elif e.name.startswith("net_"):
+            elif e.name in _NET_BUILTINS:
                 self.used_network = True
             elif e.name == "secure_random_fill":
                 self.used_secure_random = True
-            elif e.name.startswith("tls_"):
+            elif e.name in _TLS_BUILTINS:
                 self.used_tls = True
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
@@ -2672,10 +2680,10 @@ class CodeGen:
             elif (e.name in (
                     "thread_spawn", "thread_join", "thread_sleep_millis",
                     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock")
-                    or e.name.startswith("atomic_i64_")
-                    or e.name.startswith("net_")
+                    or e.name in _ATOMIC_BUILTINS
+                    or e.name in _NET_BUILTINS
                     or e.name == "secure_random_fill"
-                    or e.name.startswith("tls_")):
+                    or e.name in _TLS_BUILTINS):
                 name = f"mort_{e.name}"
             elif (e.resolved_name or e.name) in self.extern_names:
                 name = e.resolved_name or e.name
