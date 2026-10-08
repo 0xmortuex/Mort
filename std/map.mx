@@ -1,6 +1,7 @@
 module std.map;
 
 import std.option;
+import std.vec;
 
 resource struct Map<Key, Value> {
     keys: *Key,
@@ -121,6 +122,28 @@ pub fn value_at<Key, Value>(value: *Map<Key, Value>, index: u64) -> Option<Value
         return Option<Value>.None;
     }
     return Option<Value>.Some((*value).values[index]);
+}
+
+// Collects every key, in insertion order, into a freshly allocated Vec.
+// Same aliasing-copy caveat as key_at/Map.get (not resource-safe for a
+// resource Key, since each entry is copied, not moved, out of the map).
+pub fn keys<Key, Value>(value: *Map<Key, Value>) -> Vec<Key> {
+    let result: Vec<Key> = vec.with_capacity<Key>((*value).length);
+    for index: u64 in 0..(*value).length {
+        vec.push(&result, (*value).keys[index]);
+    }
+    return move result;
+}
+
+// Collects every value, in insertion order, into a freshly allocated Vec.
+// Same aliasing-copy caveat as value_at/Map.get (not resource-safe for a
+// resource Value, since each entry is copied, not moved, out of the map).
+pub fn values<Key, Value>(value: *Map<Key, Value>) -> Vec<Value> {
+    let result: Vec<Value> = vec.with_capacity<Value>((*value).length);
+    for index: u64 in 0..(*value).length {
+        vec.push(&result, (*value).values[index]);
+    }
+    return move result;
 }
 
 // Returns the key of the first entry (in insertion order) for which

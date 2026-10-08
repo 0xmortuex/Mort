@@ -3991,6 +3991,81 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_keys_and_values_collect_entries_in_insertion_order():
+    program = r'''import std.map;
+import std.vec;
+
+fn main() -> i64 {
+    let values: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..4 { map.insert(&values, index, index * 10); }
+
+    let ks: Vec<i64> = map.keys(&values);
+    defer vec.destroy(&ks);
+    let vs: Vec<i64> = map.values(&values);
+    defer vec.destroy(&vs);
+
+    if ks.length == 4 { ok += 1; }
+    if vs.length == 4 { ok += 1; }
+    match vec.get(&ks, 0) {
+        Option<i64>.Some(item) => { if item == 0 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&ks, 3) {
+        Option<i64>.Some(item) => { if item == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&vs, 0) {
+        Option<i64>.Some(item) => { if item == 0 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&vs, 3) {
+        Option<i64>.Some(item) => { if item == 30 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // Removing a key shifts later entries down, reflected by keys/values too.
+    map.remove(&values, 1);
+    let ks2: Vec<i64> = map.keys(&values);
+    defer vec.destroy(&ks2);
+    match vec.get(&ks2, 1) {
+        Option<i64>.Some(item) => { if item == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // An empty map collects into an empty Vec for both.
+    let empty: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&empty);
+    let ek: Vec<i64> = map.keys(&empty);
+    defer vec.destroy(&ek);
+    let ev: Vec<i64> = map.values(&empty);
+    defer vec.destroy(&ev);
+    if ek.length == 0 { ok += 1; }
+    if ev.length == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapkeysvalues.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapkeysvalues.exe" if os.name == "nt" else "mapkeysvalues")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_remove_moves_value_out_and_shifts_remaining_elements():
     program = r'''import std.vec;
 
