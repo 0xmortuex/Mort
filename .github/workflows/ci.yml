@@ -261,7 +261,7 @@ jobs:
 
       - name: Install the Zig C backend and QEMU
         run: |
-          python -m pip install ziglang
+          python -m pip install -e . ziglang
           sudo apt-get update && sudo apt-get install -y qemu-system-x86
 
       - name: Build the kernel with this compiler
