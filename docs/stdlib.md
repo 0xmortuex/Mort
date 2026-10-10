@@ -263,7 +263,12 @@ the public API.
 
 Slice helpers over `[]const u8` text (UTF-8 agnostic — all operations are
 byte-oriented). `equal`, `starts_with`, `ends_with` do straightforward byte
-comparisons; `index_of(text, needle)` returns the first byte offset of
+comparisons; `strip_prefix(text, prefix)` / `strip_suffix(text, suffix)`
+return `Option<[]const u8>` — a borrowed view of `text` with the prefix or
+suffix peeled off, or `None` if `text` doesn't start/end with it (built on
+`starts_with`/`ends_with`, saving a caller the hand-rolled slice of the
+remainder, e.g. stripping a `"0x"` prefix before `parse_hex`);
+`index_of(text, needle)` returns the first byte offset of
 `needle` as `Option<u64>` (an empty `needle` matches at offset 0);
 `trim(text)` strips leading/trailing ASCII whitespace and returns a
 borrowed view (no copy); `parse_u64` / `parse_i64` parse a decimal integer

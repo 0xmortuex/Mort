@@ -3325,6 +3325,64 @@ fn main() -> i64 {
     assert result.stdout.strip().splitlines()[-1] == "8"
 
 
+def test_std_strings_strip_prefix_and_strip_suffix_peel_a_known_edge():
+    program = r'''import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match strings.strip_prefix(slice("0xFF" as *const u8, 4), slice("0x" as *const u8, 2)) {
+        Option<[]const u8>.Some(rest) => {
+            if rest.len == 2 && strings.equal(rest, slice("FF" as *const u8, 2)) { ok += 1; }
+        },
+        Option<[]const u8>.None => {},
+    }
+
+    match strings.strip_prefix(slice("hello" as *const u8, 5), slice("0x" as *const u8, 2)) {
+        Option<[]const u8>.Some(rest) => {},
+        Option<[]const u8>.None => { ok += 1; },
+    }
+
+    match strings.strip_suffix(slice("file.mx" as *const u8, 7), slice(".mx" as *const u8, 3)) {
+        Option<[]const u8>.Some(rest) => {
+            if rest.len == 4 && strings.equal(rest, slice("file" as *const u8, 4)) { ok += 1; }
+        },
+        Option<[]const u8>.None => {},
+    }
+
+    match strings.strip_suffix(slice("file.mx" as *const u8, 7), slice(".py" as *const u8, 3)) {
+        Option<[]const u8>.Some(rest) => {},
+        Option<[]const u8>.None => { ok += 1; },
+    }
+
+    let empty: []const u8 = slice("" as *const u8, 0);
+    match strings.strip_prefix(empty, empty) {
+        Option<[]const u8>.Some(rest) => {
+            if rest.len == 0 { ok += 1; }
+        },
+        Option<[]const u8>.None => {},
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "stripprefixuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "stripprefixuse.exe" if os.name == "nt" else "stripprefixuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "5"
+
+
 @needs_cc
 def test_std_strings_is_empty_wraps_zero_length_check():
     program = r'''import std.strings;

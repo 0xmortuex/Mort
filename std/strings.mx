@@ -27,6 +27,28 @@ pub fn ends_with(text: []const u8, suffix: []const u8) -> bool {
     return bytes.equal(slice(((text.data as u64) + offset) as *const u8, suffix.len), suffix);
 }
 
+// If `text` starts with `prefix`, returns a view of the remainder with the
+// prefix peeled off; otherwise `None`. Saves the caller from pairing
+// `starts_with` with a hand-rolled slice of the remainder (e.g. stripping a
+// known `"0x"` prefix before `parse_hex`). The returned view borrows from
+// `text`, no allocation.
+pub fn strip_prefix(text: []const u8, prefix: []const u8) -> Option<[]const u8> {
+    if !starts_with(text, prefix) {
+        return Option<[]const u8>.None;
+    }
+    return Option<[]const u8>.Some(slice(((text.data as u64) + prefix.len) as *const u8, text.len - prefix.len));
+}
+
+// If `text` ends with `suffix`, returns a view of the remainder with the
+// suffix peeled off; otherwise `None`. The reverse counterpart to
+// `strip_prefix`. The returned view borrows from `text`, no allocation.
+pub fn strip_suffix(text: []const u8, suffix: []const u8) -> Option<[]const u8> {
+    if !ends_with(text, suffix) {
+        return Option<[]const u8>.None;
+    }
+    return Option<[]const u8>.Some(slice(text.data, text.len - suffix.len));
+}
+
 // First byte offset of `needle` in `text`, or None if it does not occur.
 // An empty needle matches at offset 0.
 pub fn index_of(text: []const u8, needle: []const u8) -> Option<u64> {
