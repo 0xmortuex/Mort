@@ -3415,6 +3415,58 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_strings_pad_start_and_pad_end_pad_to_a_fixed_width():
+    program = r'''import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // pad_start grows a short value on the left with the pad byte.
+    let left: String = strings.pad_start(slice("7" as *const u8, 1), 3, 48);
+    defer owned_string.destroy(&left);
+    if left.length == 3 && strings.equal(owned_string.view(&left), slice("007" as *const u8, 3)) { ok += 1; }
+
+    // pad_end grows a short value on the right with the pad byte.
+    let right: String = strings.pad_end(slice("ab" as *const u8, 2), 5, 46);
+    defer owned_string.destroy(&right);
+    if right.length == 5 && strings.equal(owned_string.view(&right), slice("ab..." as *const u8, 5)) { ok += 1; }
+
+    // width <= text.len returns an unchanged copy, never truncating.
+    let unchanged_start: String = strings.pad_start(slice("toolong" as *const u8, 7), 3, 48);
+    defer owned_string.destroy(&unchanged_start);
+    if strings.equal(owned_string.view(&unchanged_start), slice("toolong" as *const u8, 7)) { ok += 1; }
+
+    let unchanged_end: String = strings.pad_end(slice("toolong" as *const u8, 7), 7, 46);
+    defer owned_string.destroy(&unchanged_end);
+    if strings.equal(owned_string.view(&unchanged_end), slice("toolong" as *const u8, 7)) { ok += 1; }
+
+    // An empty text is padded to the full width.
+    let from_empty: String = strings.pad_end(slice("" as *const u8, 0), 4, 120);
+    defer owned_string.destroy(&from_empty);
+    if from_empty.length == 4 && strings.equal(owned_string.view(&from_empty), slice("xxxx" as *const u8, 4)) { ok += 1; }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "padwidth.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "padwidth.exe" if os.name == "nt" else "padwidth")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "5"
+
+
+@needs_cc
 def test_std_strings_rsplit_once_returns_views_before_and_after_last_match():
     program = r'''import std.strings;
 

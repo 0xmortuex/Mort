@@ -646,6 +646,50 @@ pub fn repeat(text: []const u8, count: u64) -> String {
     return String { data: data, length: result_length };
 }
 
+// Returns a new owned buffer holding `text` left-padded with `pad` bytes
+// until it is at least `width` bytes long, matching Python's
+// `str.rjust(width, chr(pad))` (a single pad byte, not a pad string). If
+// `text.len >= width`, returns an unchanged owned copy -- never truncates.
+// The result is a freshly allocated buffer; the caller must call
+// `std.owned_string.destroy` on it.
+pub fn pad_start(text: []const u8, width: u64, pad: u8) -> String {
+    if text.len >= width {
+        return copy_view(text);
+    }
+    let padding: u64 = width - text.len;
+    let data: *u8 = alloc(width + 1) as *u8;
+    let destination: []u8 = slice(data, width + 1);
+    for offset: u64 in 0..padding {
+        destination[offset] = pad;
+    }
+    for offset: u64 in 0..text.len {
+        destination[padding + offset] = text[offset];
+    }
+    destination[width] = 0;
+    return String { data: data, length: width };
+}
+
+// Returns a new owned buffer holding `text` right-padded with `pad` bytes
+// until it is at least `width` bytes long, matching Python's
+// `str.ljust(width, chr(pad))`. If `text.len >= width`, returns an
+// unchanged owned copy -- never truncates. The result is a freshly
+// allocated buffer; the caller must call `std.owned_string.destroy` on it.
+pub fn pad_end(text: []const u8, width: u64, pad: u8) -> String {
+    if text.len >= width {
+        return copy_view(text);
+    }
+    let data: *u8 = alloc(width + 1) as *u8;
+    let destination: []u8 = slice(data, width + 1);
+    for offset: u64 in 0..text.len {
+        destination[offset] = text[offset];
+    }
+    for offset: u64 in text.len..width {
+        destination[offset] = pad;
+    }
+    destination[width] = 0;
+    return String { data: data, length: width };
+}
+
 // The two views produced by `split_once`: the text before and after the
 // first `separator` match. Both are borrowed views into the original text.
 struct SplitOnce {

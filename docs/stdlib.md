@@ -320,7 +320,14 @@ counterparts, stripping ASCII whitespace from only the leading or only the
 trailing edge respectively and returning a borrowed view, same as `trim`.
 `repeat(text, count)` returns a freshly allocated `std.owned_string.String`
 containing `text` repeated `count` times, matching Python's `text * count`
-(`count == 0` returns an empty owned string). `last_index_of(text, needle)`
+(`count == 0` returns an empty owned string). `pad_start(text, width, pad)`
+and `pad_end(text, width, pad)` each return a freshly allocated
+`std.owned_string.String` of at least `width` bytes, growing `text` with the
+single byte `pad` on the left or right respectively until it reaches
+`width` (Python's `str.rjust(width, chr(pad))` / `str.ljust(width, chr(pad))`
+with a single pad byte rather than a pad string); if `text.len >= width`
+already, both return an unchanged owned copy of `text` and never truncate.
+`last_index_of(text, needle)`
 is `index_of`'s reverse counterpart: it returns the *last* byte offset of
 `needle` as `Option<u64>`, scanning from the end so the rightmost occurrence
 wins (an empty `needle` matches at `text.len`, the last possible start
@@ -363,9 +370,10 @@ byte-by-byte; non-ASCII and non-letter bytes pass through unchanged) —
 unlike `std.ascii.upper_inplace`/`lower_inplace`, which mutate a `[]u8` in
 place, these take a `[]const u8` and always return a fresh copy, leaving
 `text` untouched.
-`replace`, `join`, `repeat`, `from_u64`, `from_i64`, `to_hex`, `to_upper`,
-and `to_lower` are the only functions here that allocate, so the caller
-must call `std.owned_string.destroy` on their results.
+`replace`, `replacen`, `join`, `repeat`, `pad_start`, `pad_end`, `from_u64`,
+`from_i64`, `to_hex`, `to_upper`, and `to_lower` are the only functions
+here that allocate, so the caller must call `std.owned_string.destroy` on
+their results.
 
 ## `std.thread`
 
