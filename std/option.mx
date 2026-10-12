@@ -76,6 +76,28 @@ pub fn and_then<T, U>(value: Option<T>, f: fn(T) -> Option<U>) -> Option<U> {
     }
 }
 
+// Consumes `value`; applies `predicate` to a reference to the `Some`
+// payload (via `&payload`, not by moving it in, unlike `map`/`and_then`'s
+// `f`) and, if `predicate` is true, returns `value` unchanged as
+// `Option<T>.Some(...)`; if `predicate` is false, the payload is dropped
+// (automatically, for a resource `T`) and `Option<T>.None` is returned.
+// `None` passes through unchanged without calling `predicate`. Taking the
+// payload by reference, rather than by value like `map`/`and_then`'s `f`,
+// is what lets the same payload be inspected and then still moved back out
+// into the returned `Some` — a by-value predicate would consume it on the
+// call and leave nothing to rewrap.
+pub fn filter<T>(value: Option<T>, predicate: fn(*T) -> bool) -> Option<T> {
+    match move value {
+        Option<T>.Some(payload) => {
+            if predicate(&payload) {
+                return Option<T>.Some(move payload);
+            }
+            return Option<T>.None;
+        }
+        Option<T>.None => { return Option<T>.None; }
+    }
+}
+
 // Consumes both `value` and `error`; converts to `std.result.Result`, the
 // natural counterpart to `std.result.ok`. A `Some` payload becomes `Ok`,
 // with `error` dropped unused (automatically, for a resource `Error`);

@@ -4935,6 +4935,87 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_filter_keeps_some_when_predicate_holds_else_becomes_none():
+    # filter consumes `value` via `match move` (see std/option.mx's doc
+    # comment) but calls `predicate` on a *reference* to the payload
+    # (`&payload`), not by moving it in like map/and_then's `f` -- that is
+    # what lets the same payload be inspected and then still moved back out
+    # into the returned Some. A None value passes through unchanged without
+    # calling `predicate`. Also checked with a resource Some payload (Res):
+    # when the predicate holds, the payload survives into the returned Some
+    # and is destroyed exactly once when that match arm's binding goes out
+    # of scope; when the predicate fails, the payload is dropped inside
+    # `filter` itself (destroyed exactly once there, never reaching the
+    # caller).
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn is_even(x: *i64) -> bool {
+    return (*x) % 2 == 0;
+}
+
+fn is_even_res(r: *Res) -> bool {
+    return (*r).id % 2 == 0;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.filter(Option<i64>.Some(4), is_even) {
+        Option<i64>.Some(v) => { if v == 4 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.filter(Option<i64>.Some(3), is_even) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match option.filter(Option<i64>.None, is_even) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 8 });
+    let filtered_even: Option<Res> = option.filter(move some_res, is_even_res);
+    match move filtered_even {
+        Option<Res>.Some(r) => { if r.id == 8 { ok += 1; } },
+        Option<Res>.None => {},
+    }
+
+    let some_res_odd: Option<Res> = Option<Res>.Some(Res { id: 7 });
+    let filtered_odd: Option<Res> = option.filter(move some_res_odd, is_even_res);
+    match move filtered_odd {
+        Option<Res>.Some(r) => {},
+        Option<Res>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionfilter.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionfilter.exe" if os.name == "nt" else "optionfilter")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "8" from the surviving Res's destroy (once, at scope exit of the Some
+    # arm), "7" from the dropped Res's destroy (inside filter itself), then
+    # "5" from the final ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["8", "7", "5"]
+
+
+@needs_cc
 def test_std_result_is_ok_is_err_and_unwrap_or():
     # Mirrors test_std_option_is_some_is_none_and_unwrap_or: is_ok/is_err/
     # unwrap_or all consume `value` via `match move` (see std/result.mx's
