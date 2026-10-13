@@ -99,6 +99,21 @@ pub fn remove<T>(value: *Vec<T>, index: u64) -> Option<T> {
     return move removed;
 }
 
+// Removes and returns the element at `index`, filling the gap by moving the
+// last element into its place instead of shifting every later element down
+// — O(1) instead of `remove`'s O(n), at the cost of not preserving order.
+// None and unchanged if `index` is out of bounds. Built on `swap` + `pop`,
+// so it moves rather than aliases the relocated slot and is resource-safe
+// the same way `swap`/`reverse`/`rotate_left`/`rotate_right` are (verified
+// under --sanitize address --sanitize leak with a resource struct).
+pub fn swap_remove<T>(value: *Vec<T>, index: u64) -> Option<T> {
+    if index >= (*value).length {
+        return Option<T>.None;
+    }
+    swap(value, index, (*value).length - 1);
+    return pop(value);
+}
+
 pub fn insert<T>(value: *Vec<T>, index: u64, item: T) -> bool {
     if index > (*value).length {
         return false;

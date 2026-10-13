@@ -4251,6 +4251,68 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_swap_remove_moves_last_element_into_the_removed_slot():
+    program = r'''import std.vec;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    let ok: i64 = 0;
+
+    for index: i64 in 0..5 { vec.push(&values, index * 10); }
+
+    // Removing a middle index returns its value; the last element (40)
+    // moves into the opened slot instead of shifting everything down.
+    if unwrap(vec.swap_remove(&values, 2)) == 20 { ok += 1; }
+    if unwrap(vec.get(&values, 2)) == 40 { ok += 1; }
+    if values.length == 4 { ok += 1; }
+
+    // Removing the last index is a no-op swap followed by a plain pop.
+    if unwrap(vec.swap_remove(&values, 3)) == 30 { ok += 1; }
+    if values.length == 3 { ok += 1; }
+
+    // Out-of-bounds returns None and leaves the vec unchanged.
+    match vec.swap_remove(&values, 999) {
+        Option<i64>.Some(item) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    if values.length == 3 { ok += 1; }
+
+    // A single-element vec: the removed element is also the "last" one.
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 99);
+    if unwrap(vec.swap_remove(&single, 0)) == 99 { ok += 1; }
+    if single.length == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecswapremove.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecswapremove.exe" if os.name == "nt" else "vecswapremove")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_insert_shifts_tail_up_and_opens_a_gap():
     program = r'''import std.vec;
 

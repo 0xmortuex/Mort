@@ -437,7 +437,12 @@ there); `pop` removes and returns the last element as `Option<T>`;
 an arbitrary position, growing the backing array if needed and shifting
 later elements up to open a gap (`index == length` appends, same as `push`;
 an out-of-bounds `index` returns `false` and leaves the vector unchanged,
-so the caller must otherwise drop or reuse `item`); `index_of(vec, item)`
+so the caller must otherwise drop or reuse `item`); `swap_remove(vec,
+index)` is `remove`'s O(1) counterpart for callers that don't need order
+preserved — it fills the gap by moving the last element into the removed
+slot (via `swap` then `pop`) instead of shifting every later element down,
+and is resource-safe for the same reason `swap`/`reverse` are (`None` and
+unchanged for an out-of-bounds `index`); `index_of(vec, item)`
 scans in order and returns the index of the first element equal to `item`
 as `Option<u64>` (`None` if none match), reading elements via the same
 aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
