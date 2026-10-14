@@ -5347,6 +5347,98 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_or_else_recovers_err_and_passes_through_ok():
+    # or_else is the error-side counterpart to and_then: an Ok value passes
+    # through unchanged (re-wrapped as Ok, never calling `f`); an Err value
+    # is handed to `f`, whose own Result<Value, MappedError> is returned
+    # directly (no extra Err-wrapping). Also checked with a resource Ok
+    # payload (Res), confirming it survives untouched when `f` is never
+    # called, and a resource Err payload consumed by `f` and either rebuilt
+    # as a fresh Ok (recoverable) or a fresh Err (unrecoverable).
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn recover(error: i64) -> Result<i64, i64> {
+    if error == 1 {
+        return Result<i64, i64>.Ok(99);
+    }
+    return Result<i64, i64>.Err(error * 10);
+}
+
+fn recover_res(error: Res) -> Result<Res, Res> {
+    let id = error.id;
+    if id == 1 {
+        return Result<Res, Res>.Ok(Res { id: 100 });
+    }
+    return Result<Res, Res>.Err(Res { id: 200 });
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.or_else(Result<i64, i64>.Ok(5), recover) {
+        Result<i64, i64>.Ok(v) => { if v == 5 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match result.or_else(Result<i64, i64>.Err(1), recover) {
+        Result<i64, i64>.Ok(v) => { if v == 99 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match result.or_else(Result<i64, i64>.Err(2), recover) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == 20 { ok += 1; } },
+    }
+
+    let ok_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 7 });
+    let after_ok: Result<Res, Res> = result.or_else(move ok_res, recover_res);
+    match move after_ok {
+        Result<Res, Res>.Ok(v) => { if v.id == 7 { ok += 1; } },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    let recoverable_res: Result<Res, Res> = Result<Res, Res>.Err(Res { id: 1 });
+    let after_recoverable: Result<Res, Res> = result.or_else(move recoverable_res, recover_res);
+    match move after_recoverable {
+        Result<Res, Res>.Ok(v) => { if v.id == 100 { ok += 1; } },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    let unrecoverable_res: Result<Res, Res> = Result<Res, Res>.Err(Res { id: 3 });
+    let after_unrecoverable: Result<Res, Res> = result.or_else(move unrecoverable_res, recover_res);
+    match move after_unrecoverable {
+        Result<Res, Res>.Ok(v) => {},
+        Result<Res, Res>.Err(e) => { if e.id == 200 { ok += 1; } },
+    }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultorelse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultorelse.exe" if os.name == "nt" else "resultorelse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from the untouched Ok(Res) payload's eventual destroy, "1"/"100"
+    # from recover_res's recoverable branch (the Err(Res{id:1})'s destroy,
+    # then the fresh Ok(Res{id:100})'s eventual destroy), "3"/"200" from the
+    # unrecoverable branch likewise, then "6" from the final ok count.
+    assert result.stdout.strip().splitlines()[-6:] == ["7", "1", "100", "3", "200", "6"]
+
+
+@needs_cc
 def test_std_result_ok_and_option_ok_or_convert_between_the_two_enums():
     # result.ok converts Result<Value, Error> to Option<Value> (Ok becomes
     # Some, Err's payload is dropped); option.ok_or is the inverse,

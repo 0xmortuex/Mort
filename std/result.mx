@@ -90,6 +90,22 @@ pub fn and_then<Value, Error, Mapped>(value: Result<Value, Error>, f: fn(Value) 
     }
 }
 
+// Consumes `value`; the error-side counterpart to `and_then`. Returns `value`
+// unchanged (re-wrapped as `Result<Value, MappedError>.Ok`, never calling
+// `f`) if `value` is `Ok`, or applies `f` to an `Err` payload and returns its
+// result directly (no extra `Err`-wrapping) if `value` is `Err` — the
+// `Result` counterpart to `std.option.and_then`/`unwrap_or_else`: lets a
+// caller recover from an error into a fresh `Result`, possibly with a
+// different error type. `f` is a plain top-level function reference (Mort
+// has no closures). See `is_ok`'s resource-drop note for `value`'s consuming
+// semantics.
+pub fn or_else<Value, Error, MappedError>(value: Result<Value, Error>, f: fn(Error) -> Result<Value, MappedError>) -> Result<Value, MappedError> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return Result<Value, MappedError>.Ok(move payload); }
+        Result<Value, Error>.Err(payload) => { return f(move payload); }
+    }
+}
+
 // Consumes `value`; converts to `std.option.Option`, the natural counterpart
 // to `std.option.ok_or`. An `Ok` payload becomes `Some`; an `Err` payload is
 // discarded (dropped automatically for a resource `Error`) and the result is
