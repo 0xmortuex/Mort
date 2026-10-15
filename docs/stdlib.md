@@ -225,7 +225,7 @@ randomness, use `std.crypto` instead.
 ## `std.result`
 
 Defines the `Result<Value, Error>` enum (`Ok(Value)` / `Err(Error)`) used
-for fallible operations, plus nine helpers mirroring `std.option`'s:
+for fallible operations, plus ten helpers mirroring `std.option`'s:
 `is_ok(value)` / `is_err(value)` (bool predicates),
 `unwrap_or(value, default)` (the `Ok` payload, or `default` if `Err`),
 `unwrap_or_else(value, f)` (the lazy counterpart to `unwrap_or`: the `Ok`
@@ -251,7 +251,9 @@ payload and rewraps the result as `Result<Value, MappedError>.Err(...)`, or
 passes the `Ok` payload through unchanged without calling `f`), and
 `ok(value)` (converts to `std.option.Option`: an `Ok` payload becomes
 `Some`, an `Err` payload is dropped and the result is `None` — the inverse
-of `std.option.ok_or`). All nine consume `value` via `match move`, since
+of `std.option.ok_or`), and `err(value)` (the error-side counterpart to
+`ok`: an `Err` payload becomes `Some(error)`, an `Ok` payload is dropped
+and the result is `None`). All ten consume `value` via `match move`, since
 Mort enums expose no tag-only inspection without a match; for a resource
 `Value`/`Error`, the payload not returned is dropped automatically —
 except `unwrap_or_else`'s `Err` payload and `or_else`'s `Err` payload,

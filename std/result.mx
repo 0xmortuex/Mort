@@ -116,3 +116,13 @@ pub fn ok<Value, Error>(value: Result<Value, Error>) -> Option<Value> {
         Result<Value, Error>.Err(payload) => { return Option<Value>.None; }
     }
 }
+
+// Consumes `value`; the error-side counterpart to `ok`. An `Err` payload
+// becomes `Some`; an `Ok` payload is discarded (dropped automatically for a
+// resource `Value`) and the result is `None`.
+pub fn err<Value, Error>(value: Result<Value, Error>) -> Option<Error> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return Option<Error>.None; }
+        Result<Value, Error>.Err(payload) => { return Option<Error>.Some(move payload); }
+    }
+}

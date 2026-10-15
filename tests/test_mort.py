@@ -5530,6 +5530,69 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_err_converts_err_to_some_and_drops_ok():
+    # err is the error-side counterpart to ok: an Err payload becomes
+    # Some(error); an Ok payload is discarded (dropped automatically for a
+    # resource Value) and the result is None. Checked with a resource Res
+    # payload on the kept side (an Err(Res) converted to Some and later
+    # destroyed) and on the discarded side (an Ok(Res) dropped automatically
+    # inside result.err) to confirm both are destroyed exactly once with no
+    # leak or double free.
+    program = r'''import std.result;
+import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.err(Result<i64, i64>.Ok(1)) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match result.err(Result<i64, i64>.Err(7)) {
+        Option<i64>.Some(v) => { if v == 7 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    let err_res: Result<i64, Res> = Result<i64, Res>.Err(Res { id: 9 });
+    let kept: Option<Res> = result.err(move err_res);
+    match move kept {
+        Option<Res>.Some(item) => { if item.id == 9 { ok += 1; } destroy(&item); },
+        Option<Res>.None => {},
+    }
+
+    let ok_res: Result<Res, i64> = Result<Res, i64>.Ok(Res { id: 3 });
+    match result.err(move ok_res) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resulterr.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resulterr.exe" if os.name == "nt" else "resulterr")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "9" (kept Res destroyed), "3" (Ok(Res) auto-dropped inside result.err),
+    # then "4" for the final ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["9", "3", "4"]
+
+
+@needs_cc
 def test_std_option_and_result_unwrap_or_else_computes_a_lazy_default():
     # unwrap_or_else is the lazy counterpart to unwrap_or: `f` is only
     # called on the "empty" side (None / Err), computing the fallback
