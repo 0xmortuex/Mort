@@ -98,6 +98,20 @@ pub fn filter<T>(value: Option<T>, predicate: fn(*T) -> bool) -> Option<T> {
     }
 }
 
+// Consumes `value`; returns `value` unchanged (re-wrapped as `Option<T>.Some`)
+// if it is `Some`, never calling `f`; otherwise calls `f()` and returns its
+// result directly. The `None`-side counterpart to `and_then`, matching
+// `std.result.or_else`'s shape (minus an error payload, since `f` here takes
+// no arguments, like `unwrap_or_else`'s). `f` is a plain top-level function
+// reference (Mort has no closures). See `is_some`'s resource-drop note for
+// `value`'s consuming semantics.
+pub fn or_else<T>(value: Option<T>, f: fn() -> Option<T>) -> Option<T> {
+    match move value {
+        Option<T>.Some(payload) => { return Option<T>.Some(move payload); }
+        Option<T>.None => { return f(); }
+    }
+}
+
 // Consumes both `value` and `error`; converts to `std.result.Result`, the
 // natural counterpart to `std.result.ok`. A `Some` payload becomes `Ok`,
 // with `error` dropped unused (automatically, for a resource `Error`);

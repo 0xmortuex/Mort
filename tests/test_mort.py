@@ -5439,6 +5439,88 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_or_else_passes_through_some_and_falls_back_on_none():
+    # or_else is the None-side counterpart to and_then, mirroring
+    # std.result.or_else's shape but with a no-argument `f` (matching
+    # unwrap_or_else's laziness convention): a Some value passes through
+    # unchanged (re-wrapped as Some, `f` never called); a None value calls
+    # `f()` and returns its Option directly (no extra Some-wrapping). Also
+    # checked with a resource Some payload (Res), confirming it survives
+    # untouched when `f` is never called, and a resource-returning `f`
+    # whose own Option is returned when the original value was None.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn fallback() -> Option<i64> {
+    return Option<i64>.Some(99);
+}
+
+fn no_fallback() -> Option<i64> {
+    return Option<i64>.None;
+}
+
+fn fallback_res() -> Option<Res> {
+    return Option<Res>.Some(Res { id: 100 });
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.or_else(Option<i64>.Some(5), fallback) {
+        Option<i64>.Some(v) => { if v == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.or_else(Option<i64>.None, fallback) {
+        Option<i64>.Some(v) => { if v == 99 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.or_else(Option<i64>.None, no_fallback) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 7 });
+    let after_some: Option<Res> = option.or_else(move some_res, fallback_res);
+    match move after_some {
+        Option<Res>.Some(v) => { if v.id == 7 { ok += 1; } },
+        Option<Res>.None => {},
+    }
+
+    let none_res: Option<Res> = Option<Res>.None;
+    let after_none: Option<Res> = option.or_else(move none_res, fallback_res);
+    match move after_none {
+        Option<Res>.Some(v) => { if v.id == 100 { ok += 1; } },
+        Option<Res>.None => {},
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionorelse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionorelse.exe" if os.name == "nt" else "optionorelse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from the untouched Some(Res) payload's eventual destroy, "100" from
+    # fallback_res's fresh Some(Res{id:100}) payload's eventual destroy, then
+    # "5" from the final ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["7", "100", "5"]
+
+
+@needs_cc
 def test_std_result_ok_and_option_ok_or_convert_between_the_two_enums():
     # result.ok converts Result<Value, Error> to Option<Value> (Ok becomes
     # Some, Err's payload is dropped); option.ok_or is the inverse,

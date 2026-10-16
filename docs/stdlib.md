@@ -155,7 +155,7 @@ called exactly once per value.
 ## `std.option`
 
 Defines the `Option<T>` enum (`Some(T)` / `None`) used throughout the
-standard library for values that may be absent, plus eight helpers:
+standard library for values that may be absent, plus nine helpers:
 `is_some(value)` / `is_none(value)` (bool predicates on the active variant),
 `unwrap_or(value, default)` (the `Some` payload, or `default` if
 `value` is `None`), `unwrap_or_else(value, f)` (the lazy counterpart to
@@ -173,19 +173,26 @@ function that can itself fail), `filter(value, predicate)` (keeps `value`
 unchanged as `Some` if a plain top-level function `predicate: fn(*T) ->
 bool` is true for a reference to the payload, or turns it into `None`,
 dropping the payload, if `predicate` is false; `None` passes through
-unchanged without calling `predicate`), and `ok_or(value, error)` (converts
+unchanged without calling `predicate`), `ok_or(value, error)` (converts
 to `std.result.Result`: a `Some` payload becomes `Ok`, with `error` dropped
-unused, or `None` becomes `Err(error)`). All eight take `value` by value
+unused, or `None` becomes `Err(error)`), and `or_else(value, f)` (the
+`None`-side counterpart to `and_then`: passes a `Some` payload through
+unchanged, re-wrapped as `Some` and never calling `f`, or calls a plain
+zero-argument function `f: fn() -> Option<T>` and returns its result
+directly — no extra `Some`-wrapping — if `value` is `None`; mirrors
+`std.result.or_else`'s shape, minus an error payload, since `f` here takes
+no arguments like `unwrap_or_else`'s does). All nine take `value` by value
 via `match move`, so they consume it; for a non-resource `T` (the common
 case) that costs nothing extra, since a non-resource `move` is just a copy
 and the original binding stays usable. For a resource `T`, the payload not
 returned (a matched `Some` for `is_some`/`is_none`, the unused side of
 `unwrap_or`, `unwrap_or_else`'s payload once `f`'s call returns it or is
 dropped inside `f`, `map`'s/`and_then`'s payload once `f` has consumed and
-returned from it, `filter`'s payload when `predicate` is false, or
-`ok_or`'s unused `error` argument when `value` is `Some`) is destroyed
-automatically — safe, but means these are consuming operations, not
-read-only inspection. `filter` is the one exception to "consuming": unlike
+returned from it, `filter`'s payload when `predicate` is false, `ok_or`'s
+unused `error` argument when `value` is `Some`, or `or_else`'s payload once
+`f`'s call returns it when `value` is `None`) is destroyed automatically —
+safe, but means these are consuming operations, not read-only inspection.
+`filter` is the one exception to "consuming": unlike
 `map`/`and_then`'s `f`, which take the payload by value (so it must be
 moved in and can't be used again), `filter`'s `predicate` takes a
 *reference* (`*T`) so the payload can be inspected and then still moved
