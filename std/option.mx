@@ -76,6 +76,23 @@ pub fn and_then<T, U>(value: Option<T>, f: fn(T) -> Option<U>) -> Option<U> {
     }
 }
 
+// Consumes both `value` and `other`; returns `other` unchanged if `value`
+// is `Some` (the `Some` payload itself is discarded — automatically dropped
+// for a resource `T` — only `value`'s tag matters), or returns
+// `Option<U>.None` if `value` is `None`, dropping `other` unused
+// (automatically, for a resource `U`). The eager counterpart to
+// `and_then`: `and_then` calls `f(payload)` to produce the next `Option`,
+// using `value`'s payload; `and` instead takes the next `Option` directly,
+// for the common case where the next step doesn't depend on `value`'s
+// contents at all (so there is no `f` to write, just a plain no-argument
+// fallback expression to pass in).
+pub fn and<T, U>(value: Option<T>, other: Option<U>) -> Option<U> {
+    match move value {
+        Option<T>.Some(payload) => { return move other; }
+        Option<T>.None => { return Option<U>.None; }
+    }
+}
+
 // Consumes `value`; applies `predicate` to a reference to the `Some`
 // payload (via `&payload`, not by moving it in, unlike `map`/`and_then`'s
 // `f`) and, if `predicate` is true, returns `value` unchanged as

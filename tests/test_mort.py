@@ -5521,6 +5521,79 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_and_returns_other_on_some_and_none_on_none():
+    # `and` is the eager counterpart to and_then: it takes the next Option
+    # directly instead of a function, for the common case where the next
+    # step doesn't depend on `value`'s payload at all. A Some `value`
+    # returns `other` unchanged (value's own payload is discarded); a None
+    # `value` returns None, dropping `other` unused. Also checked with
+    # resource Res payloads on both sides: a discarded Some payload (7), a
+    # kept `other` payload (42) returned and then explicitly destroyed by
+    # the caller, and a resource `other` (100) dropped automatically when
+    # `value` is None.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.and(Option<i64>.Some(5), Option<i64>.Some(9)) {
+        Option<i64>.Some(v) => { if v == 9 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.and(Option<i64>.None, Option<i64>.Some(9)) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match option.and(Option<i64>.Some(5), (Option<i64>.None)) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 7 });
+    let other_res: Option<Res> = Option<Res>.Some(Res { id: 42 });
+    let kept: Option<Res> = option.and(move some_res, move other_res);
+    match move kept {
+        Option<Res>.Some(v) => { if v.id == 42 { ok += 1; } destroy(&v); },
+        Option<Res>.None => {},
+    }
+
+    let none_res: Option<Res> = Option<Res>.None;
+    let discarded_res: Option<Res> = Option<Res>.Some(Res { id: 100 });
+    let dropped: Option<Res> = option.and(move none_res, move discarded_res);
+    match move dropped {
+        Option<Res>.Some(v) => {},
+        Option<Res>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionand.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionand.exe" if os.name == "nt" else "optionand")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from discarding some_res's payload, "42" from the caller's own
+    # destroy of the kept other_res payload, "100" from dropping the unused
+    # discarded_res automatically, then "5" from the final ok count.
+    assert result.stdout.strip().splitlines()[-4:] == ["7", "42", "100", "5"]
+
+
+@needs_cc
 def test_std_result_ok_and_option_ok_or_convert_between_the_two_enums():
     # result.ok converts Result<Value, Error> to Option<Value> (Ok becomes
     # Some, Err's payload is dropped); option.ok_or is the inverse,
