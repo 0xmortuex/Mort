@@ -90,6 +90,23 @@ pub fn and_then<Value, Error, Mapped>(value: Result<Value, Error>, f: fn(Value) 
     }
 }
 
+// Consumes both `value` and `other`; returns `other` unchanged if `value`
+// is `Ok` (the `Ok` payload itself is discarded — automatically dropped for
+// a resource `Value` — only `value`'s tag matters), or returns
+// `Result<Mapped, Error>.Err` with the original error payload (never
+// touching `other`, which is dropped unused for a resource `Mapped`) if
+// `value` is `Err`. The eager counterpart to `and_then`, matching
+// `std.option.and`'s relationship to `and_then`: `and_then` calls
+// `f(payload)` to produce the next `Result`; `and` instead takes the next
+// `Result` directly, for the common case where it doesn't depend on
+// `value`'s payload at all.
+pub fn and<Value, Error, Mapped>(value: Result<Value, Error>, other: Result<Mapped, Error>) -> Result<Mapped, Error> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return move other; }
+        Result<Value, Error>.Err(payload) => { return Result<Mapped, Error>.Err(move payload); }
+    }
+}
+
 // Consumes `value`; the error-side counterpart to `and_then`. Returns `value`
 // unchanged (re-wrapped as `Result<Value, MappedError>.Ok`, never calling
 // `f`) if `value` is `Ok`, or applies `f` to an `Err` payload and returns its
@@ -103,6 +120,22 @@ pub fn or_else<Value, Error, MappedError>(value: Result<Value, Error>, f: fn(Err
     match move value {
         Result<Value, Error>.Ok(payload) => { return Result<Value, MappedError>.Ok(move payload); }
         Result<Value, Error>.Err(payload) => { return f(move payload); }
+    }
+}
+
+// Consumes both `value` and `other`; returns `value` unchanged (re-wrapped
+// as `Result<Value, MappedError>.Ok`, with `other` dropped unused —
+// automatically, for a resource `MappedError` — never touching it) if
+// `value` is `Ok`; otherwise returns `other` directly (the original error
+// payload is discarded — automatically, for a resource `Error`). The eager
+// counterpart to `or_else`, matching `std.option.or`'s relationship to
+// `or_else`: `or_else` calls `f(error)` to produce the fallback `Result`
+// only when needed; `or` takes the fallback directly, for the common case
+// where it doesn't depend on the error payload at all.
+pub fn or<Value, Error, MappedError>(value: Result<Value, Error>, other: Result<Value, MappedError>) -> Result<Value, MappedError> {
+    match move value {
+        Result<Value, Error>.Ok(payload) => { return Result<Value, MappedError>.Ok(move payload); }
+        Result<Value, Error>.Err(payload) => { return move other; }
     }
 }
 

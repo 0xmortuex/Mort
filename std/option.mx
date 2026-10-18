@@ -129,6 +129,20 @@ pub fn or_else<T>(value: Option<T>, f: fn() -> Option<T>) -> Option<T> {
     }
 }
 
+// Consumes both `value` and `other`; returns `value` unchanged (re-wrapped
+// as `Option<T>.Some`) if it is `Some`, with `other` dropped unused
+// (automatically, for a resource `T`); otherwise returns `other` directly.
+// The eager counterpart to `or_else`, matching `and`'s relationship to
+// `and_then`: `or_else` calls `f()` to produce the fallback only when
+// needed, while `or` takes the fallback `Option` directly, for the common
+// case where it doesn't depend on anything computed lazily.
+pub fn or<T>(value: Option<T>, other: Option<T>) -> Option<T> {
+    match move value {
+        Option<T>.Some(payload) => { return Option<T>.Some(move payload); }
+        Option<T>.None => { return move other; }
+    }
+}
+
 // Consumes both `value` and `error`; converts to `std.result.Result`, the
 // natural counterpart to `std.result.ok`. A `Some` payload becomes `Ok`,
 // with `error` dropped unused (automatically, for a resource `Error`);

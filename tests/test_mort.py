@@ -5439,6 +5439,144 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_and_returns_other_on_ok_and_the_original_err_on_err():
+    # `and` is the eager counterpart to and_then: it takes the next Result
+    # directly instead of a function. An Ok `value` returns `other`
+    # unchanged (value's own Ok payload is discarded); an Err `value`
+    # returns Err with the original error payload, dropping `other` unused.
+    # Also checked with resource Res payloads on both sides: a discarded Ok
+    # payload (7) with a kept `other` Ok payload (42) returned and then
+    # explicitly destroyed by the caller, and an Err `value` (id 3) whose
+    # error payload is returned while a resource `other` (100) is dropped
+    # automatically unused.
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.and(Result<i64, i64>.Ok(5), Result<i64, i64>.Ok(9)) {
+        Result<i64, i64>.Ok(v) => { if v == 9 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match result.and(Result<i64, i64>.Err(1), Result<i64, i64>.Ok(9)) {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == 1 { ok += 1; } },
+    }
+
+    let ok_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 7 });
+    let other_ok_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 42 });
+    let kept: Result<Res, Res> = result.and(move ok_res, move other_ok_res);
+    match move kept {
+        Result<Res, Res>.Ok(v) => { if v.id == 42 { ok += 1; } destroy(&v); },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    let err_res: Result<Res, Res> = Result<Res, Res>.Err(Res { id: 3 });
+    let discarded_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 100 });
+    let propagated: Result<Res, Res> = result.and(move err_res, move discarded_res);
+    match move propagated {
+        Result<Res, Res>.Ok(v) => {},
+        Result<Res, Res>.Err(e) => { if e.id == 3 { ok += 1; } destroy(&e); },
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultand.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultand.exe" if os.name == "nt" else "resultand")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "7" from discarding the ok_res Ok payload, "42" from the caller's own
+    # destroy of the kept other_ok_res payload, "100" from dropping the
+    # unused discarded_res automatically, "3" from the caller's own destroy
+    # of the propagated error payload, then "4" from the final ok count.
+    assert result.stdout.strip().splitlines()[-5:] == ["7", "42", "100", "3", "4"]
+
+
+@needs_cc
+def test_std_result_or_returns_the_original_ok_on_ok_and_other_on_err():
+    # `or` is the eager counterpart to or_else: it takes the fallback Result
+    # directly instead of a function. An Ok `value` passes through
+    # unchanged (other is dropped unused); an Err `value` returns `other`
+    # directly, dropping the original error payload unused. Also checked
+    # with resource Res payloads on both sides: an untouched Ok payload (7)
+    # with an unused `other` (42) dropped automatically, and an Err `value`
+    # (id 3, dropped automatically) whose `other` Ok payload (100) is
+    # returned and then explicitly destroyed by the caller.
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match result.or(Result<i64, i64>.Ok(5), Result<i64, i64>.Ok(9)) {
+        Result<i64, i64>.Ok(v) => { if v == 5 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    match result.or(Result<i64, i64>.Err(1), Result<i64, i64>.Ok(9)) {
+        Result<i64, i64>.Ok(v) => { if v == 9 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    let ok_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 7 });
+    let other_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 42 });
+    let kept: Result<Res, Res> = result.or(move ok_res, move other_res);
+    match move kept {
+        Result<Res, Res>.Ok(v) => { if v.id == 7 { ok += 1; } destroy(&v); },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    let err_res: Result<Res, Res> = Result<Res, Res>.Err(Res { id: 3 });
+    let fallback_res: Result<Res, Res> = Result<Res, Res>.Ok(Res { id: 100 });
+    let fell_back: Result<Res, Res> = result.or(move err_res, move fallback_res);
+    match move fell_back {
+        Result<Res, Res>.Ok(v) => { if v.id == 100 { ok += 1; } destroy(&v); },
+        Result<Res, Res>.Err(e) => {},
+    }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultor.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultor.exe" if os.name == "nt" else "resultor")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "42" from dropping the unused other_res automatically, "7" from the
+    # caller's own destroy of the untouched kept payload, "3" from dropping
+    # the unused err_res error payload automatically, "100" from the
+    # caller's own destroy of the returned fallback payload, then "4" from
+    # the final ok count.
+    assert result.stdout.strip().splitlines()[-5:] == ["42", "7", "3", "100", "4"]
+
+
+@needs_cc
 def test_std_option_or_else_passes_through_some_and_falls_back_on_none():
     # or_else is the None-side counterpart to and_then, mirroring
     # std.result.or_else's shape but with a no-argument `f` (matching
@@ -5591,6 +5729,78 @@ fn main() -> i64 {
     # destroy of the kept other_res payload, "100" from dropping the unused
     # discarded_res automatically, then "5" from the final ok count.
     assert result.stdout.strip().splitlines()[-4:] == ["7", "42", "100", "5"]
+
+
+@needs_cc
+def test_std_option_or_passes_through_some_and_falls_back_to_other_on_none():
+    # `or` is the eager counterpart to or_else: it takes the fallback Option
+    # directly instead of a function. A Some `value` passes through
+    # unchanged (other is dropped unused); a None `value` returns `other`
+    # directly. Also checked with resource Res payloads on both sides: an
+    # untouched Some payload (7) with its unused `other` (42) dropped
+    # automatically, and a None `value` with its `other` (100) returned and
+    # then explicitly destroyed by the caller.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    match option.or(Option<i64>.Some(5), Option<i64>.Some(9)) {
+        Option<i64>.Some(v) => { if v == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.or(Option<i64>.None, Option<i64>.Some(9)) {
+        Option<i64>.Some(v) => { if v == 9 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match option.or(Option<i64>.None, (Option<i64>.None)) {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let some_res: Option<Res> = Option<Res>.Some(Res { id: 7 });
+    let other_res: Option<Res> = Option<Res>.Some(Res { id: 42 });
+    let kept: Option<Res> = option.or(move some_res, move other_res);
+    match move kept {
+        Option<Res>.Some(v) => { if v.id == 7 { ok += 1; } destroy(&v); },
+        Option<Res>.None => {},
+    }
+
+    let none_res: Option<Res> = Option<Res>.None;
+    let fallback_res: Option<Res> = Option<Res>.Some(Res { id: 100 });
+    let fell_back: Option<Res> = option.or(move none_res, move fallback_res);
+    match move fell_back {
+        Option<Res>.Some(v) => { if v.id == 100 { ok += 1; } destroy(&v); },
+        Option<Res>.None => {},
+    }
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optionor.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optionor.exe" if os.name == "nt" else "optionor")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "42" from dropping the unused other_res automatically, "7" from the
+    # caller's own destroy of the untouched kept payload, "100" from the
+    # caller's own destroy of the returned fallback payload, then "5" from
+    # the final ok count.
+    assert result.stdout.strip().splitlines()[-4:] == ["42", "7", "100", "5"]
 
 
 @needs_cc
