@@ -6045,6 +6045,115 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_take_and_replace_mutate_through_a_pointer():
+    # take/replace are the two Option helpers that read and write through a
+    # pointer (*Option<T>) instead of consuming `value` by name like every
+    # other helper in std.option -- the point being they work on an
+    # Option<T> stored in a struct field or a container slot that can't
+    # otherwise be moved out of directly. take(value) leaves None behind
+    # and returns whatever was there; replace(value, new_value) leaves
+    # Some(new_value) behind and returns whatever was there. Checked on
+    # both tags (Some/None) for each function, then spot-checked with a
+    # resource Res payload to confirm the old payload is moved out cleanly
+    # (never duplicated, never destroyed twice) regardless of whether the
+    # slot started Some or None.
+    program = r'''import std.option;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let a: Option<i64> = Option<i64>.Some(5);
+    let taken: Option<i64> = option.take(&a);
+    match move taken {
+        Option<i64>.Some(v) => { if v == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match move a {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let b: Option<i64> = Option<i64>.None;
+    let taken_none: Option<i64> = option.take(&b);
+    match move taken_none {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    match move b {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    let c: Option<i64> = Option<i64>.None;
+    let old_c: Option<i64> = option.replace(&c, 9);
+    match move old_c {
+        Option<i64>.Some(v) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+    match move c {
+        Option<i64>.Some(v) => { if v == 9 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    let d: Option<i64> = Option<i64>.Some(3);
+    let old_d: Option<i64> = option.replace(&d, 7);
+    match move old_d {
+        Option<i64>.Some(v) => { if v == 3 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match move d {
+        Option<i64>.Some(v) => { if v == 7 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    let e: Option<Res> = Option<Res>.Some(Res { id: 11 });
+    let taken_res: Option<Res> = option.take(&e);
+    match move taken_res {
+        Option<Res>.Some(r) => { if r.id == 11 { ok += 1; } destroy(&r); },
+        Option<Res>.None => {},
+    }
+    match move e {
+        Option<Res>.Some(r) => { destroy(&r); },
+        Option<Res>.None => { ok += 1; },
+    }
+
+    let f: Option<Res> = Option<Res>.None;
+    let old_f: Option<Res> = option.replace(&f, Res { id: 22 });
+    match move old_f {
+        Option<Res>.Some(r) => { destroy(&r); },
+        Option<Res>.None => { ok += 1; },
+    }
+    match move f {
+        Option<Res>.Some(r) => { if r.id == 22 { ok += 1; } destroy(&r); },
+        Option<Res>.None => {},
+    }
+
+    print(ok);
+    if ok == 12 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "optiontake.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "optiontake.exe" if os.name == "nt" else "optiontake")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "11" (taken Res destroyed), "22" (replaced-in Res destroyed), then
+    # "12" for the final ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["11", "22", "12"]
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 

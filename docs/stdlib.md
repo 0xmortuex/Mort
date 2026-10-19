@@ -155,7 +155,8 @@ called exactly once per value.
 ## `std.option`
 
 Defines the `Option<T>` enum (`Some(T)` / `None`) used throughout the
-standard library for values that may be absent, plus eleven helpers:
+standard library for values that may be absent, plus eleven value-consuming
+helpers and two pointer-based mutators:
 `is_some(value)` / `is_none(value)` (bool predicates on the active variant),
 `unwrap_or(value, default)` (the `Some` payload, or `default` if
 `value` is `None`), `unwrap_or_else(value, f)` (the lazy counterpart to
@@ -209,6 +210,20 @@ read-only inspection.
 moved in and can't be used again), `filter`'s `predicate` takes a
 *reference* (`*T`) so the payload can be inspected and then still moved
 back out into the returned `Some`.
+
+`take(value: *Option<T>)` and `replace(value: *Option<T>, new_value: T)` are
+different from the eleven above: they read and write through a pointer
+rather than consuming `value` by name, so they work on an `Option<T>`
+stored in a struct field or a container slot that can't otherwise be moved
+out of directly (mirroring Rust's `Option::take`/`Option::replace`).
+`take` leaves `Option<T>.None` behind and returns whatever was there;
+`replace` leaves `Option<T>.Some(new_value)` behind and returns whatever
+was there. Both are resource-safe the same way `Vec.remove`'s "move the
+slot out, then overwrite it" is: `*value` is read into a local first, and
+`*value` is only overwritten afterward, through the raw pointer (exempt
+from the "cannot overwrite a resource binding" check — the same exemption
+`Vec`/`Map`'s mutating helpers rely on), so the old payload is never
+duplicated and never destroyed twice.
 
 ## `std.owned_string`
 

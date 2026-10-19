@@ -153,3 +153,30 @@ pub fn ok_or<T, Error>(value: Option<T>, error: Error) -> Result<T, Error> {
         Option<T>.None => { return Result<T, Error>.Err(move error); }
     }
 }
+
+// Takes the value out of `*value`, leaving `Option<T>.None` in its place,
+// and returns what was there (Rust's `Option::take`). Unlike every helper
+// above, this reads through a pointer rather than consuming `value` by
+// name, so it works on an `Option<T>` stored in a struct field or a `Vec`
+// slot that can't otherwise be moved out of directly. Resource-safe the
+// same way `Vec.remove`'s "move the slot out, then overwrite it" does:
+// `*value` is read into a local first, `*value` is then overwritten with
+// `None` through the raw pointer (exempt from the "cannot overwrite a
+// resource binding" check, the same exemption `Vec`/`Map`'s mutating
+// helpers rely on) before the local is moved into the return value, so the
+// old payload is never duplicated and never destroyed twice.
+pub fn take<T>(value: *Option<T>) -> Option<T> {
+    let current = *value;
+    *value = Option<T>.None;
+    return move current;
+}
+
+// Moves `new_value` into `*value`, returning whatever was there before
+// (Rust's `Option::replace`). Built the same way as `take`, with the old
+// payload moved out before `*value` is overwritten with a fresh `Some`
+// instead of `None`.
+pub fn replace<T>(value: *Option<T>, new_value: T) -> Option<T> {
+    let current = *value;
+    *value = Option<T>.Some(move new_value);
+    return move current;
+}
