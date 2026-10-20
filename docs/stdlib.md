@@ -303,6 +303,18 @@ is dropped automatically — except `unwrap_or_else`'s `Err` payload and
 `or_else`'s `Err` payload, which are instead moved into `f` and are `f`'s
 responsibility to consume or drop.
 
+A thirteenth helper, `replace(value: *Result<Value, Error>, new_value:
+Result<Value, Error>) -> Result<Value, Error>`, reads and writes through a
+pointer instead: it moves `new_value` into `*value` and returns whatever
+was there before, so it works on a `Result` stored in a struct field or a
+container slot without having to move it out by name first — the
+`Result` counterpart to `std.option.replace`. There is no `Result.take`:
+`Option::take` leaves a cheap `None` behind for free, but `Result` has no
+equivalent "empty" variant (both `Ok` and `Err` always carry a real
+payload) and Mort has no `Default` trait to conjure a placeholder one
+from, so a caller wanting `take`-like behavior supplies the placeholder
+explicitly via `replace`.
+
 ## `std.sort`
 
 An in-place, stable insertion sort taking a caller-supplied `less_than`

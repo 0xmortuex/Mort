@@ -6154,6 +6154,92 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_result_replace_mutates_through_a_pointer():
+    # replace(value, new_value) is std.result's pointer-based counterpart to
+    # std.option.replace: it reads/writes through a pointer (*Result<Value,
+    # Error>) instead of consuming `value` by name, leaving `new_value`
+    # behind and returning whatever was there before. Unlike Option, Result
+    # has no cheap "empty" variant for a take() to leave behind (both Ok and
+    # Err always carry a real payload), so only replace is implemented --
+    # checked on all four Ok/Err starting-tag x Ok/Err-replacement
+    # combinations, plus a resource Res payload on both the Value and Error
+    # side to confirm the old payload moves out cleanly (never duplicated,
+    # never destroyed twice).
+    program = r'''import std.result;
+
+resource struct Res { id: i64 }
+fn destroy(r: *Res) -> void { print((*r).id); }
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let a: Result<i64, i64> = Result<i64, i64>.Ok(5);
+    let old_a: Result<i64, i64> = result.replace(&a, Result<i64, i64>.Err(9));
+    match move old_a {
+        Result<i64, i64>.Ok(v) => { if v == 5 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+    match move a {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == 9 { ok += 1; } },
+    }
+
+    let b: Result<i64, i64> = Result<i64, i64>.Err(-1);
+    let old_b: Result<i64, i64> = result.replace(&b, Result<i64, i64>.Ok(3));
+    match move old_b {
+        Result<i64, i64>.Ok(v) => {},
+        Result<i64, i64>.Err(e) => { if e == -1 { ok += 1; } },
+    }
+    match move b {
+        Result<i64, i64>.Ok(v) => { if v == 3 { ok += 1; } },
+        Result<i64, i64>.Err(e) => {},
+    }
+
+    let c: Result<Res, i64> = Result<Res, i64>.Ok(Res { id: 11 });
+    let old_c: Result<Res, i64> = result.replace(&c, Result<Res, i64>.Err(0));
+    match move old_c {
+        Result<Res, i64>.Ok(r) => { if r.id == 11 { ok += 1; } destroy(&r); },
+        Result<Res, i64>.Err(e) => {},
+    }
+    match move c {
+        Result<Res, i64>.Ok(r) => { destroy(&r); },
+        Result<Res, i64>.Err(e) => { ok += 1; },
+    }
+
+    let d: Result<i64, Res> = Result<i64, Res>.Err(Res { id: 22 });
+    let old_d: Result<i64, Res> = result.replace(&d, Result<i64, Res>.Ok(7));
+    match move old_d {
+        Result<i64, Res>.Ok(v) => {},
+        Result<i64, Res>.Err(r) => { ok += 1; destroy(&r); },
+    }
+    match move d {
+        Result<i64, Res>.Ok(v) => { if v == 7 { ok += 1; } },
+        Result<i64, Res>.Err(r) => {},
+    }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "resultreplace.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "resultreplace.exe" if os.name == "nt" else "resultreplace")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    # "11" (replaced-out Res destroyed), "22" (replaced-out Res destroyed),
+    # then "8" for the final ok count.
+    assert result.stdout.strip().splitlines()[-3:] == ["11", "22", "8"]
+
+
+@needs_cc
 def test_std_vec_reverse_reverses_elements_in_place():
     program = r'''import std.vec;
 

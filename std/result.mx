@@ -159,3 +159,25 @@ pub fn err<Value, Error>(value: Result<Value, Error>) -> Option<Error> {
         Result<Value, Error>.Err(payload) => { return Option<Error>.Some(move payload); }
     }
 }
+
+// Moves `new_value` into `*value`, returning whatever was there before.
+// Unlike every helper above, this reads/writes through a pointer rather
+// than consuming `value` by name, so it works on a `Result` stored in a
+// struct field or a `Vec` slot that can't otherwise be moved out of
+// directly. Resource-safe the same way `std.option.replace` is: `*value`
+// is read into a local before being overwritten through the raw pointer
+// (exempt from the "cannot overwrite a resource binding" check, the same
+// exemption `std.option.take`/`replace` and `Vec`/`Map`'s mutating helpers
+// rely on), so the old payload is never duplicated and never destroyed
+// twice.
+//
+// There is no `take` here: `Option::take` leaves a cheap `None` behind for
+// free, but `Result` has no equivalent "empty" variant — both `Ok` and
+// `Err` always carry a real payload, and Mort has no `Default` trait to
+// conjure a placeholder one from. A caller wanting `take`-like behavior
+// supplies the placeholder explicitly via `replace`.
+pub fn replace<Value, Error>(value: *Result<Value, Error>, new_value: Result<Value, Error>) -> Result<Value, Error> {
+    let current = *value;
+    *value = move new_value;
+    return move current;
+}
