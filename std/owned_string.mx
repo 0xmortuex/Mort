@@ -17,6 +17,17 @@ pub fn from(text: *u8) -> String {
     return String { data: data, length: length };
 }
 
+pub fn from_slice(text: []const u8) -> String {
+    let length: u64 = text.len;
+    let data: *u8 = alloc(length + 1) as *u8;
+    let destination: []u8 = slice(data, length + 1);
+    for index: u64 in 0..length {
+        destination[index] = text[index];
+    }
+    destination[length] = 0;
+    return String { data: data, length: length };
+}
+
 pub fn concat(left: *String, right: *String) -> String {
     let length: u64 = (*left).length + (*right).length;
     let data: *u8 = alloc(length + 1) as *u8;

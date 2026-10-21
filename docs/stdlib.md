@@ -229,11 +229,14 @@ duplicated and never destroyed twice.
 
 A heap-allocated, null-terminated, owned byte string, `String` (a
 `resource struct`). `from(text: *u8)` copies a C string into a new owned
-buffer; `concat(left, right)` allocates a new `String` holding the
+buffer; `from_slice(text: []const u8)` does the same from an arbitrary
+slice instead of a null-terminated C string, so a borrowed view (e.g. the
+result of `std.strings.trim` or `split_once`) can be turned into an owned
+copy directly; `concat(left, right)` allocates a new `String` holding the
 concatenation of two existing ones; `view(value: *String) -> []const u8`
 borrows the contents as a slice without copying; `destroy` frees the
-backing buffer. Every `String` returned by `from` or `concat` must eventually
-reach `destroy` exactly once.
+backing buffer. Every `String` returned by `from`, `from_slice`, or
+`concat` must eventually reach `destroy` exactly once.
 
 ## `std.process`
 

@@ -7294,6 +7294,57 @@ def test_typed_slices_and_owned_strings_run():
 
 
 @needs_cc
+def test_std_owned_string_from_slice_copies_an_arbitrary_slice():
+    program = r'''import std.owned_string;
+import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let text: []const u8 = slice("hello world" as *const u8, 11);
+    let owned: String = owned_string.from_slice(text);
+    if strings.equal(owned_string.view(&owned), text) { ok += 1; }
+    owned_string.destroy(&owned);
+
+    let padded: []const u8 = slice("  hi  " as *const u8, 6);
+    let trimmed: []const u8 = strings.trim(padded);
+    let from_view: String = owned_string.from_slice(trimmed);
+    if strings.equal(owned_string.view(&from_view), slice("hi" as *const u8, 2)) { ok += 1; }
+    owned_string.destroy(&from_view);
+
+    let empty: []const u8 = slice("x" as *const u8, 0);
+    let from_empty: String = owned_string.from_slice(empty);
+    if from_empty.length == 0 { ok += 1; }
+    owned_string.destroy(&from_empty);
+
+    let buffer: [u8; 5] = [104, 101, 108, 108, 111];
+    let buffer_view: []const u8 = slice(&buffer[0] as *const u8, 5);
+    let copied: String = owned_string.from_slice(buffer_view);
+    buffer[0] = 88;
+    if strings.equal(owned_string.view(&copied), slice("hello" as *const u8, 5)) { ok += 1; }
+    owned_string.destroy(&copied);
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "fromsliceuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "fromsliceuse.exe" if os.name == "nt" else "fromsliceuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_project_new_build_run_and_test_commands(capsys):
     with tempfile.TemporaryDirectory() as d:
         project_dir = os.path.join(d, "hello_mort")
