@@ -233,10 +233,17 @@ buffer; `from_slice(text: []const u8)` does the same from an arbitrary
 slice instead of a null-terminated C string, so a borrowed view (e.g. the
 result of `std.strings.trim` or `split_once`) can be turned into an owned
 copy directly; `concat(left, right)` allocates a new `String` holding the
-concatenation of two existing ones; `view(value: *String) -> []const u8`
-borrows the contents as a slice without copying; `destroy` frees the
-backing buffer. Every `String` returned by `from`, `from_slice`, or
-`concat` must eventually reach `destroy` exactly once.
+concatenation of two existing ones; `append(value: *String, text: []const
+u8) -> void` grows a `String` in place by reallocating its backing buffer
+to hold the existing content plus `text` and copying `text` onto the end —
+the same allocate-and-copy pattern `concat` uses, but mutating `value`
+through a pointer instead of returning a new `String`, so building a
+string piece-by-piece (e.g. a formatter appending several parts in a loop)
+no longer needs a `concat` + destroy-the-old-one dance on every append;
+`view(value: *String) -> []const u8` borrows the contents as a slice
+without copying; `destroy` frees the backing buffer. Every `String`
+returned by `from`, `from_slice`, or `concat`, and every `String` passed
+to `append`, must eventually reach `destroy` exactly once.
 
 ## `std.process`
 

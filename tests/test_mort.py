@@ -7345,6 +7345,54 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_owned_string_append_grows_the_buffer_in_place():
+    program = r'''import std.owned_string;
+import std.strings;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let message: String = owned_string.from_slice(slice("hello" as *const u8, 5));
+    owned_string.append(&message, slice(" world" as *const u8, 6));
+    if strings.equal(owned_string.view(&message), slice("hello world" as *const u8, 11)) { ok += 1; }
+    if message.length == 11 { ok += 1; }
+    owned_string.append(&message, slice("!" as *const u8, 1));
+    if strings.equal(owned_string.view(&message), slice("hello world!" as *const u8, 12)) { ok += 1; }
+    owned_string.destroy(&message);
+
+    let built: String = owned_string.from_slice(slice("x" as *const u8, 0));
+    owned_string.append(&built, slice("a" as *const u8, 1));
+    owned_string.append(&built, slice("b" as *const u8, 1));
+    owned_string.append(&built, slice("c" as *const u8, 1));
+    if strings.equal(owned_string.view(&built), slice("abc" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&built);
+
+    let unchanged: String = owned_string.from_slice(slice("same" as *const u8, 4));
+    owned_string.append(&unchanged, slice("x" as *const u8, 0));
+    if strings.equal(owned_string.view(&unchanged), slice("same" as *const u8, 4)) { ok += 1; }
+    owned_string.destroy(&unchanged);
+
+    print(ok);
+    if ok == 5 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "ownedstringappend.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "ownedstringappend.exe" if os.name == "nt" else "ownedstringappend")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "5"
+
+
+@needs_cc
 def test_project_new_build_run_and_test_commands(capsys):
     with tempfile.TemporaryDirectory() as d:
         project_dir = os.path.join(d, "hello_mort")
