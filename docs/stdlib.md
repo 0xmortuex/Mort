@@ -122,7 +122,15 @@ aliasing-copy caveat applies — not resource-safe for a resource `Key`/`Value`)
 — useful for e.g. sorting a map's keys or handing them to a function that
 wants a `Vec`/slice; `reserve` grows capacity ahead of time; `is_empty`
 checks whether the length is zero; `clear` resets the length without freeing
-backing storage; `destroy` frees both backing arrays.
+backing storage; `destroy` frees both backing arrays. **`Key = []const u8`
+does not work**: `insert`/`get`/`contains`/`remove` all look up an existing
+key by comparing it with `==`, and comparing two `[]const u8` slices with
+`==` typechecks but fails to compile in the C backend ("invalid operands to
+binary ==" on the generated slice struct) — so a `Map<[]const u8, Value>`
+compiles only until the first call to one of those functions, which then
+fails to build. Use content comparison (e.g. a linear scan with
+`std.strings.equal`, as `examples/word_frequency.mx` does) instead of
+`Map<[]const u8, Value>` until this is fixed.
 
 ## `std.math`
 
@@ -572,6 +580,13 @@ between the original and the copy); `destroy` frees the
 backing array only — it does
 **not** drop resource elements still in the vector, so a `Vec` of resources
 must be drained (e.g. by repeated `pop`/`remove`) before `destroy`.
+**`T = []const u8` breaks `index_of`/`contains`/`dedup`**: all three compare
+elements with `==`, and comparing two `[]const u8` slices with `==`
+typechecks but fails to compile in the C backend ("invalid operands to
+binary ==" on the generated slice struct) — so a `Vec<[]const u8>` compiles
+fine right up until the first call to one of those functions, which then
+fails to build. Use content comparison (e.g. a linear scan with
+`std.strings.equal`, as `examples/word_frequency.mx` does) instead.
 
 ## `std.map` and `std.vec`: resource caveats
 
