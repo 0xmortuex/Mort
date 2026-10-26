@@ -8696,6 +8696,42 @@ def test_std_algorithm_find_by_searches_a_slice_by_predicate():
 
 
 @needs_cc
+def test_std_algorithm_any_and_all_check_a_predicate_over_a_slice():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_any_all.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; "
+                "fn is_even(value: i64) -> bool { return value % 2 == 0; } "
+                "fn is_negative(value: i64) -> bool { return value < 0; } "
+                "fn main() -> int { "
+                "let evens: [i64; 3] = [2, 4, 6]; "
+                "let evens_view: []const i64 = slice(&evens[0] as *const i64, 3); "
+                "let mixed: [i64; 3] = [2, 3, 6]; "
+                "let mixed_view: []const i64 = slice(&mixed[0] as *const i64, 3); "
+                "let empty_view: []const i64 = slice(&evens[0] as *const i64, 0); "
+                "if algorithm.any(evens_view, is_negative) { print(1); } else { print(0); } "
+                "if algorithm.any(mixed_view, is_negative) { print(1); } else { print(0); } "
+                "if algorithm.all(evens_view, is_even) { print(1); } else { print(0); } "
+                "if algorithm.all(mixed_view, is_even) { print(1); } else { print(0); } "
+                "if algorithm.any(empty_view, is_even) { print(1); } else { print(0); } "
+                "if algorithm.all(empty_view, is_even) { print(1); } else { print(0); } "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__any_i64" in c_source
+        assert "mort_std__algorithm__all_i64" in c_source
+        cfile = os.path.join(d, "algorithm_any_all.c")
+        exe = os.path.join(d, "algorithm_any_all.exe" if os.name == "nt" else "algorithm_any_all")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "0\n0\n1\n0\n0\n1\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")

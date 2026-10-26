@@ -28,7 +28,12 @@ duplicate is not destroyed). `find_by<T>(values: []const T, predicate: fn(T)
 `predicate` is true, or `None` — unlike `index_of`/`contains`, it does not
 require `T` to support `==`, so it is the way to search a slice of a struct
 type (which generally can't be compared with `==` at all) for a matching
-element, mirroring `std.map.find_by`.
+element, mirroring `std.map.find_by`. `any<T>(values: []const T, predicate:
+fn(T) -> bool) -> bool` / `all<T>(values: []const T, predicate: fn(T) ->
+bool) -> bool` ask whether at least one / every element satisfies
+`predicate`, the same plain `for` loop shape as `find_by` but returning a
+`bool` instead of the matching index; an empty slice gives `any` → `false`
+and `all` → `true` (the standard vacuous-truth convention).
 
 ## `std.ascii`
 

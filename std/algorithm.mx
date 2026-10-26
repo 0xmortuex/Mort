@@ -61,6 +61,28 @@ pub fn find_by<T>(values: []const T, predicate: fn(T) -> bool) -> Option<u64> {
     return Option<u64>.None;
 }
 
+// True if `predicate` holds for at least one element, false for an empty
+// slice (vacuous-truth convention, matching e.g. Rust's `Iterator::any`).
+pub fn any<T>(values: []const T, predicate: fn(T) -> bool) -> bool {
+    for index: u64 in 0..values.len {
+        if predicate(values[index]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// True if `predicate` holds for every element, true for an empty slice
+// (vacuous-truth convention, matching e.g. Rust's `Iterator::all`).
+pub fn all<T>(values: []const T, predicate: fn(T) -> bool) -> bool {
+    for index: u64 in 0..values.len {
+        if !predicate(values[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 pub fn min<T>(values: []const T) -> Option<T> {
     if values.len == 0 {
         return Option<T>.None;
