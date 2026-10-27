@@ -4485,6 +4485,56 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_any_and_all_check_a_predicate_over_the_elements():
+    program = r'''import std.vec;
+
+fn is_even(value: i64) -> bool { return value % 2 == 0; }
+
+fn main() -> i64 {
+    let evens: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&evens);
+    vec.push(&evens, 2);
+    vec.push(&evens, 4);
+    vec.push(&evens, 6);
+
+    let mixed: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&mixed);
+    vec.push(&mixed, 2);
+    vec.push(&mixed, 3);
+    vec.push(&mixed, 6);
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+
+    let ok: i64 = 0;
+    if vec.any(&evens, is_even) { ok += 1; }
+    if vec.all(&evens, is_even) { ok += 1; }
+    if vec.any(&mixed, is_even) { ok += 1; }
+    if !vec.all(&mixed, is_even) { ok += 1; }
+    if !vec.any(&empty, is_even) { ok += 1; }
+    if vec.all(&empty, is_even) { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecanyall.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecanyall.exe" if os.name == "nt" else "vecanyall")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 

@@ -532,7 +532,11 @@ unchanged for an out-of-bounds `index`); `index_of(vec, item)`
 scans in order and returns the index of the first element equal to `item`
 as `Option<u64>` (`None` if none match), reading elements via the same
 aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
-`index_of`; `first(vec)` / `last(vec)` are thin wrappers over `get(vec, 0)`
+`index_of`; `any(vec, predicate)` / `all(vec, predicate)` are thin wrappers
+over `std.algorithm.any`/`all` run over `as_const_slice(vec)` ("does any/do
+all elements satisfy `predicate`", with the same vacuous-truth convention on
+an empty vector — `false` for `any`, `true` for `all`); `first(vec)` /
+`last(vec)` are thin wrappers over `get(vec, 0)`
 / `get(vec, length - 1)` that return `Option<T>` (`None` for an empty
 vector), sharing `get`'s aliasing-copy caveat for resource elements;
 `as_slice` /

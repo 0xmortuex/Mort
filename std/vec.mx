@@ -1,6 +1,7 @@
 module std.vec;
 
 import std.option;
+import std.algorithm;
 
 resource struct Vec<T> {
     data: *T,
@@ -286,6 +287,18 @@ pub fn contains<T>(value: *Vec<T>, item: T) -> bool {
         Option<u64>.Some(index) => { return true; },
         Option<u64>.None => { return false; },
     }
+}
+
+// True if `predicate` holds for at least one element, false for an empty
+// Vec. A thin wrapper over algorithm.any(as_const_slice(value), predicate).
+pub fn any<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> bool {
+    return algorithm.any(as_const_slice(value), predicate);
+}
+
+// True if `predicate` holds for every element, true for an empty Vec. A
+// thin wrapper over algorithm.all(as_const_slice(value), predicate).
+pub fn all<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> bool {
+    return algorithm.all(as_const_slice(value), predicate);
 }
 
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
