@@ -4857,6 +4857,48 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_is_even_and_is_odd():
+    # is_even uses value % two == zero (generic locals, not literal 0/2
+    # directly against T, matching sign's/is_power_of_two's style);
+    # is_odd is just !is_even.
+    program = r'''import std.math;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math.is_even(4) == true { ok += 1; }
+    if math.is_even(3) == false { ok += 1; }
+    if math.is_odd(3) == true { ok += 1; }
+    if math.is_odd(4) == false { ok += 1; }
+    if math.is_even(0) == true { ok += 1; }
+    if math.is_even(0 - 4) == true { ok += 1; }
+    if math.is_odd(0 - 3) == true { ok += 1; }
+    let uzero: u64 = 0;
+    if math.is_even(uzero) == true { ok += 1; }
+    let uone: u64 = 7;
+    if math.is_odd(uone) == true { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathparity.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathparity.exe" if os.name == "nt" else "mathparity")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_option_is_some_is_none_and_unwrap_or():
     # is_some/is_none/unwrap_or all consume `value` via `match move` (see
     # std/option.mx's doc comments); for a plain, non-resource T this needs

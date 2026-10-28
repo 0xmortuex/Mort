@@ -147,9 +147,13 @@ right)) * right`; returns `0` if either argument is `0`, since `0` has no
 nonzero multiple), `sign<T>` (returns `1`/`0`/`-1` for positive/zero/negative;
 for an unsigned `T` the negative branch never triggers, so no wraparound is
 observed), `is_power_of_two<T>` (`value > 0 && (value & (value - 1)) == 0`,
-requiring bitwise `&` so `T` must be an integer type), and
+requiring bitwise `&` so `T` must be an integer type),
 `pow<T>(base, exponent: u64)` (binary
-exponentiation, `exponent` is always unsigned).
+exponentiation, `exponent` is always unsigned), and
+`is_even<T>`/`is_odd<T>` (`value % 2 == 0`, via generic zero/two locals
+rather than literal `0`/`2` directly against `T`, matching `sign`'s and
+`is_power_of_two`'s style; `is_odd` is just `!is_even`; correct for a
+negative signed `T` since `%` is a sign-independent remainder here).
 
 ## `std.memory`
 

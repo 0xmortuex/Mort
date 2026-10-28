@@ -82,3 +82,13 @@ pub fn is_power_of_two<T>(value: T) -> bool {
     }
     return (value & (value - 1)) == 0;
 }
+
+pub fn is_even<T>(value: T) -> bool {
+    let two: T = 2;
+    let zero: T = 0;
+    return value % two == zero;
+}
+
+pub fn is_odd<T>(value: T) -> bool {
+    return !is_even(value);
+}
