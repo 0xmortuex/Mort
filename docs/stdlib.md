@@ -70,6 +70,11 @@ u8) -> Option<std.vec.Vec<u8>>` is its inverse, accepting both lowercase and
 uppercase `a`-`f`/`A`-`F` digits and returning `None` for odd-length or
 non-hex-digit input (validated up front, so a rejected `text` never
 allocates); the caller must `std.vec.destroy` a `Some` result.
+`compare(left: []const u8, right: []const u8) -> i64` lexicographically
+orders two buffers byte-by-byte (compared as unsigned `u8`), returning a
+negative/zero/positive value on the first differing byte, or the length
+difference if one buffer is a prefix of the other (so a shorter prefix
+sorts first).
 
 ## `std.crypto`
 

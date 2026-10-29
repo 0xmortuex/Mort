@@ -37,6 +37,24 @@ pub fn equal(left: []const u8, right: []const u8) -> bool {
     return true;
 }
 
+// Lexicographically compares `left` and `right` byte-by-byte, returning a
+// negative value if `left` sorts before `right`, zero if they are equal,
+// and a positive value if `left` sorts after `right`. The first differing
+// byte decides the result (compared as unsigned `u8`); if one buffer is a
+// prefix of the other, the shorter one sorts first.
+pub fn compare(left: []const u8, right: []const u8) -> i64 {
+    let count = left.len;
+    if right.len < count {
+        count = right.len;
+    }
+    for index: u64 in 0..count {
+        if left[index] != right[index] {
+            return (left[index] as i64) - (right[index] as i64);
+        }
+    }
+    return (left.len as i64) - (right.len as i64);
+}
+
 // Returns the lowercase hex-digit character for `nibble` (0-15). A private
 // helper for `to_hex`.
 fn hex_digit_char(nibble: u64) -> u8 {

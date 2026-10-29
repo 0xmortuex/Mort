@@ -3852,6 +3852,53 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_bytes_compare_lexicographically_orders_two_buffers():
+    program = r'''import std.bytes;
+
+fn sign(value: i64) -> i64 {
+    if value < 0 { return -1; }
+    if value > 0 { return 1; }
+    return 0;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // A differing byte decides the result.
+    if sign(bytes.compare(slice("abc" as *const u8, 3), slice("abd" as *const u8, 3))) == -1 { ok += 1; }
+    if sign(bytes.compare(slice("abd" as *const u8, 3), slice("abc" as *const u8, 3))) == 1 { ok += 1; }
+
+    // Equal buffers compare equal.
+    if bytes.compare(slice("abc" as *const u8, 3), slice("abc" as *const u8, 3)) == 0 { ok += 1; }
+
+    // A prefix sorts before the longer buffer that extends it.
+    if sign(bytes.compare(slice("abc" as *const u8, 3), slice("abcd" as *const u8, 4))) == -1 { ok += 1; }
+    if sign(bytes.compare(slice("abcd" as *const u8, 4), slice("abc" as *const u8, 3))) == 1 { ok += 1; }
+
+    // Two empty buffers compare equal.
+    if bytes.compare(slice("" as *const u8, 0), slice("" as *const u8, 0)) == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "bytescompare.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "bytescompare.exe" if os.name == "nt" else "bytescompare")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 
