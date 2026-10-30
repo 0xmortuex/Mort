@@ -55,6 +55,25 @@ pub fn compare(left: []const u8, right: []const u8) -> i64 {
     return (left.len as i64) - (right.len as i64);
 }
 
+// Writes the byte-wise XOR of `a` and `b` into `destination`, one byte per
+// index: `destination[i] = a[i] ^ b[i]`. The number of bytes written is the
+// minimum of `destination.len`, `a.len`, and `b.len` (mirroring `copy`'s
+// convention), so a caller passing same-length buffers needs no extra
+// bounds check. Returns the count written.
+pub fn xor(destination: []u8, a: []const u8, b: []const u8) -> u64 {
+    let count = destination.len;
+    if a.len < count {
+        count = a.len;
+    }
+    if b.len < count {
+        count = b.len;
+    }
+    for index: u64 in 0..count {
+        destination[index] = a[index] ^ b[index];
+    }
+    return count;
+}
+
 // Returns the lowercase hex-digit character for `nibble` (0-15). A private
 // helper for `to_hex`.
 fn hex_digit_char(nibble: u64) -> u8 {

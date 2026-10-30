@@ -74,7 +74,11 @@ allocates); the caller must `std.vec.destroy` a `Some` result.
 orders two buffers byte-by-byte (compared as unsigned `u8`), returning a
 negative/zero/positive value on the first differing byte, or the length
 difference if one buffer is a prefix of the other (so a shorter prefix
-sorts first).
+sorts first). `xor(destination: []u8, a: []const u8, b: []const u8) -> u64`
+writes the byte-wise XOR of `a` and `b` into `destination`
+(`destination[i] = a[i] ^ b[i]`), writing `min(destination.len, a.len,
+b.len)` bytes and returning that count, the same capped-at-the-shortest
+convention as `copy`.
 
 ## `std.crypto`
 
