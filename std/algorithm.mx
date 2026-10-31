@@ -83,6 +83,19 @@ pub fn all<T>(values: []const T, predicate: fn(T) -> bool) -> bool {
     return true;
 }
 
+// Number of elements for which `predicate` holds, 0 for an empty slice.
+// The counting counterpart to `any`/`all`: those stop at the first
+// true/false result, this scans the whole slice and tallies.
+pub fn count<T>(values: []const T, predicate: fn(T) -> bool) -> u64 {
+    let total: u64 = 0;
+    for index: u64 in 0..values.len {
+        if predicate(values[index]) {
+            total += 1;
+        }
+    }
+    return total;
+}
+
 pub fn min<T>(values: []const T) -> Option<T> {
     if values.len == 0 {
         return Option<T>.None;

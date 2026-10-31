@@ -4644,6 +4644,54 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_count_counts_elements_matching_a_predicate():
+    program = r'''import std.vec;
+
+fn is_even(value: i64) -> bool { return value % 2 == 0; }
+
+fn main() -> i64 {
+    let mixed: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&mixed);
+    vec.push(&mixed, 1);
+    vec.push(&mixed, 2);
+    vec.push(&mixed, 3);
+    vec.push(&mixed, 4);
+    vec.push(&mixed, 5);
+
+    let evens: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&evens);
+    vec.push(&evens, 2);
+    vec.push(&evens, 4);
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+
+    let ok: i64 = 0;
+    if vec.count(&mixed, is_even) == 2 { ok += 1; }
+    if vec.count(&evens, is_even) == 2 { ok += 1; }
+    if vec.count(&empty, is_even) == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 3 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "veccount.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "veccount.exe" if os.name == "nt" else "veccount")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "3"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 
@@ -8930,6 +8978,37 @@ def test_std_algorithm_any_and_all_check_a_predicate_over_a_slice():
         result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert result.stdout == "0\n0\n1\n0\n0\n1\n"
+
+
+@needs_cc
+def test_std_algorithm_count_counts_elements_matching_a_predicate():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_count.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; "
+                "fn is_even(value: i64) -> bool { return value % 2 == 0; } "
+                "fn main() -> int { "
+                "let mixed: [i64; 5] = [1, 2, 3, 4, 5]; "
+                "let mixed_view: []const i64 = slice(&mixed[0] as *const i64, 5); "
+                "let evens: [i64; 3] = [2, 4, 6]; "
+                "let evens_view: []const i64 = slice(&evens[0] as *const i64, 3); "
+                "let empty_view: []const i64 = slice(&evens[0] as *const i64, 0); "
+                "print(algorithm.count(mixed_view, is_even)); "
+                "print(algorithm.count(evens_view, is_even)); "
+                "print(algorithm.count(empty_view, is_even)); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__count_i64" in c_source
+        cfile = os.path.join(d, "algorithm_count.c")
+        exe = os.path.join(d, "algorithm_count.exe" if os.name == "nt" else "algorithm_count")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "2\n3\n0\n"
 
 
 @needs_cc

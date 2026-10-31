@@ -301,6 +301,12 @@ pub fn all<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> bool {
     return algorithm.all(as_const_slice(value), predicate);
 }
 
+// Number of elements for which `predicate` holds, 0 for an empty Vec. A
+// thin wrapper over algorithm.count(as_const_slice(value), predicate).
+pub fn count<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> u64 {
+    return algorithm.count(as_const_slice(value), predicate);
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }

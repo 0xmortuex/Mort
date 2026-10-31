@@ -33,7 +33,11 @@ fn(T) -> bool) -> bool` / `all<T>(values: []const T, predicate: fn(T) ->
 bool) -> bool` ask whether at least one / every element satisfies
 `predicate`, the same plain `for` loop shape as `find_by` but returning a
 `bool` instead of the matching index; an empty slice gives `any` → `false`
-and `all` → `true` (the standard vacuous-truth convention).
+and `all` → `true` (the standard vacuous-truth convention). `count<T>(values:
+[]const T, predicate: fn(T) -> bool) -> u64` is the counting counterpart to
+`any`/`all` — instead of stopping at the first true/false result, it scans
+the whole slice and tallies how many elements satisfy `predicate` (0 for an
+empty slice).
 
 ## `std.ascii`
 
@@ -548,7 +552,10 @@ aliasing copy as `get`; `contains(vec, item)` is a thin wrapper over
 `index_of`; `any(vec, predicate)` / `all(vec, predicate)` are thin wrappers
 over `std.algorithm.any`/`all` run over `as_const_slice(vec)` ("does any/do
 all elements satisfy `predicate`", with the same vacuous-truth convention on
-an empty vector — `false` for `any`, `true` for `all`); `first(vec)` /
+an empty vector — `false` for `any`, `true` for `all`); `count(vec,
+predicate)` is likewise a thin wrapper over `std.algorithm.count` run over
+`as_const_slice(vec)`, tallying how many elements satisfy `predicate` (0 for
+an empty vector); `first(vec)` /
 `last(vec)` are thin wrappers over `get(vec, 0)`
 / `get(vec, length - 1)` that return `Option<T>` (`None` for an empty
 vector), sharing `get`'s aliasing-copy caveat for resource elements;
