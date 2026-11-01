@@ -4692,6 +4692,66 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_find_by_returns_the_index_of_the_first_match():
+    program = r'''import std.vec;
+import std.option;
+
+fn is_big(value: i64) -> bool { return value > 10; }
+
+fn main() -> i64 {
+    let mixed: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&mixed);
+    vec.push(&mixed, 1);
+    vec.push(&mixed, 20);
+    vec.push(&mixed, 3);
+    vec.push(&mixed, 40);
+
+    let none_match: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&none_match);
+    vec.push(&none_match, 1);
+    vec.push(&none_match, 2);
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+
+    let ok: i64 = 0;
+
+    match vec.find_by(&mixed, is_big) {
+        Option<u64>.Some(index) => { if index == 1 { ok += 1; } },
+        Option<u64>.None => {},
+    }
+
+    match vec.find_by(&none_match, is_big) {
+        Option<u64>.Some(index) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    match vec.find_by(&empty, is_big) {
+        Option<u64>.Some(index) => {},
+        Option<u64>.None => { ok += 1; },
+    }
+
+    print(ok);
+    if ok == 3 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecfindby.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecfindby.exe" if os.name == "nt" else "vecfindby")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "3"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 

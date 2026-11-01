@@ -307,6 +307,15 @@ pub fn count<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> u64 {
     return algorithm.count(as_const_slice(value), predicate);
 }
 
+// Index of the first element for which `predicate` holds, or None if no
+// element matches (or the Vec is empty). A thin wrapper over
+// algorithm.find_by(as_const_slice(value), predicate) — the predicate-based
+// counterpart to `index_of`, so it works for element types that don't
+// support `==` (e.g. struct T).
+pub fn find_by<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> Option<u64> {
+    return algorithm.find_by(as_const_slice(value), predicate);
+}
+
 pub fn as_slice<T>(value: *Vec<T>) -> []T {
     return slice((*value).data, (*value).length);
 }
