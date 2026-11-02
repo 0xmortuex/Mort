@@ -122,6 +122,39 @@ pub fn max<T>(values: []const T) -> Option<T> {
     return Option<T>.Some(best);
 }
 
+// The comparator-taking counterparts to `min`/`max`: those require `T` to
+// support `<`/`>`, so they can't find the smallest/largest element by a
+// caller-supplied order (e.g. the shortest string in a `[]const []const
+// u8` by `.len`, or a struct by one of its fields). Built the same
+// single-pass-keeping-the-best-so-far loop as `min`/`max`, mirroring how
+// `std.sort.sort` takes an explicit `less_than` where `std.algorithm.sort`
+// requires `<`. `None` for an empty slice.
+pub fn min_by<T>(values: []const T, less_than: fn(T, T) -> bool) -> Option<T> {
+    if values.len == 0 {
+        return Option<T>.None;
+    }
+    let best = values[0];
+    for index: u64 in 1..values.len {
+        if less_than(values[index], best) {
+            best = values[index];
+        }
+    }
+    return Option<T>.Some(best);
+}
+
+pub fn max_by<T>(values: []const T, less_than: fn(T, T) -> bool) -> Option<T> {
+    if values.len == 0 {
+        return Option<T>.None;
+    }
+    let best = values[0];
+    for index: u64 in 1..values.len {
+        if less_than(best, values[index]) {
+            best = values[index];
+        }
+    }
+    return Option<T>.Some(best);
+}
+
 // Collapses *consecutive* equal elements of `values` in place, the
 // slice-level counterpart to `std.vec.dedup`. Keeps the first element of
 // each run and returns the new logical length; unlike a `Vec`, a slice has

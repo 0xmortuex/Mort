@@ -8973,6 +8973,42 @@ def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
 
 
 @needs_cc
+def test_std_algorithm_min_by_and_max_by_find_the_extremes_by_a_comparator():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_min_max_by.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; import std.option; "
+                "struct Person { age: i64 } "
+                "fn by_age(a: Person, b: Person) -> bool { return a.age < b.age; } "
+                "fn main() -> int { "
+                "let people: [Person; 3] = [Person { age: 40 }, Person { age: 5 }, Person { age: 21 }]; "
+                "let view: []const Person = slice(&people[0] as *const Person, 3); "
+                "print(option.unwrap_or(algorithm.min_by(view, by_age), Person { age: -1 }).age); "
+                "print(option.unwrap_or(algorithm.max_by(view, by_age), Person { age: -1 }).age); "
+                "let empty_view: []const Person = slice(&people[0] as *const Person, 0); "
+                "if option.is_none(algorithm.min_by(empty_view, by_age)) { print(1); } else { print(0); } "
+                "if option.is_none(algorithm.max_by(empty_view, by_age)) { print(1); } else { print(0); } "
+                "let single: [Person; 1] = [Person { age: 99 }]; "
+                "let single_view: []const Person = slice(&single[0] as *const Person, 1); "
+                "print(option.unwrap_or(algorithm.min_by(single_view, by_age), Person { age: -1 }).age); "
+                "print(option.unwrap_or(algorithm.max_by(single_view, by_age), Person { age: -1 }).age); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "min_by" in c_source
+        assert "max_by" in c_source
+        cfile = os.path.join(d, "algorithm_min_max_by.c")
+        exe = os.path.join(d, "algorithm_min_max_by.exe" if os.name == "nt" else "algorithm_min_max_by")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "5\n40\n1\n1\n99\n99\n"
+
+
+@needs_cc
 def test_std_algorithm_find_by_searches_a_slice_by_predicate():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_find_by.mx")

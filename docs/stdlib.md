@@ -37,7 +37,14 @@ and `all` → `true` (the standard vacuous-truth convention). `count<T>(values:
 []const T, predicate: fn(T) -> bool) -> u64` is the counting counterpart to
 `any`/`all` — instead of stopping at the first true/false result, it scans
 the whole slice and tallies how many elements satisfy `predicate` (0 for an
-empty slice).
+empty slice). `min_by<T>(values: []const T, less_than: fn(T, T) -> bool) ->
+Option<T>` / `max_by<T>(values: []const T, less_than: fn(T, T) -> bool) ->
+Option<T>` are the comparator-taking counterparts to `min`/`max` — the same
+single-pass scan, but ordering by a caller-supplied `less_than` instead of
+requiring `T` to support `<`/`>`, so they work for element types with no
+built-in order (e.g. the shortest string in a `[]const []const u8` by
+`.len`, or a struct by one of its fields). `None` for an empty slice, same
+convention as `min`/`max`.
 
 ## `std.ascii`
 
