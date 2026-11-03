@@ -89,7 +89,11 @@ sorts first). `xor(destination: []u8, a: []const u8, b: []const u8) -> u64`
 writes the byte-wise XOR of `a` and `b` into `destination`
 (`destination[i] = a[i] ^ b[i]`), writing `min(destination.len, a.len,
 b.len)` bytes and returning that count, the same capped-at-the-shortest
-convention as `copy`.
+convention as `copy`. `and(destination: []u8, a: []const u8, b: []const
+u8) -> u64` and `or(destination: []u8, a: []const u8, b: []const u8) ->
+u64` are the bitwise AND/OR counterparts, built exactly the same way
+(`destination[i] = a[i] & b[i]` / `a[i] | b[i]`, same capped-at-the-
+shortest convention and return value).
 
 ## `std.crypto`
 

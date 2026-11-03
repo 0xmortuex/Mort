@@ -3961,6 +3961,74 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_bytes_and_or_write_the_byte_wise_combination_capped_at_the_shortest_buffer():
+    program = r'''import std.bytes;
+
+fn main() -> i64 {
+    let a: [u8; 4] = [0; 4];
+    a[0] = 255; a[1] = 15; a[2] = 0; a[3] = 170;
+    let b: [u8; 4] = [0; 4];
+    b[0] = 15; b[1] = 255; b[2] = 255; b[3] = 85;
+
+    let a_const: []const u8 = slice(&a[0] as *const u8, 4);
+    let b_const: []const u8 = slice(&b[0] as *const u8, 4);
+
+    let ok: i64 = 0;
+
+    // Same-length buffers: every byte is ANDed/ORed, count equals the length.
+    let out_and: [u8; 4] = [0; 4];
+    let out_and_slice: []u8 = slice(&out_and[0], 4);
+    if bytes.and(out_and_slice, a_const, b_const) == 4 { ok += 1; }
+    if out_and[0] == 15 && out_and[1] == 15 && out_and[2] == 0 && out_and[3] == 0 { ok += 1; }
+
+    let out_or: [u8; 4] = [0; 4];
+    let out_or_slice: []u8 = slice(&out_or[0], 4);
+    if bytes.or(out_or_slice, a_const, b_const) == 4 { ok += 1; }
+    if out_or[0] == 255 && out_or[1] == 255 && out_or[2] == 255 && out_or[3] == 255 { ok += 1; }
+
+    // A shorter destination caps the count written and leaves the rest alone.
+    let short: [u8; 3] = [0; 3];
+    short[2] = 9;
+    let short_slice: []u8 = slice(&short[0], 2);
+    if bytes.and(short_slice, a_const, b_const) == 2 { ok += 1; }
+    if short[0] == 15 && short[1] == 15 && short[2] == 9 { ok += 1; }
+
+    // A shorter `a`/`b` also caps the count written.
+    let short_a: []const u8 = slice(&a[0] as *const u8, 2);
+    let out2: [u8; 4] = [0; 4];
+    out2[2] = 7;
+    let out2_slice: []u8 = slice(&out2[0], 4);
+    if bytes.or(out2_slice, short_a, b_const) == 2 { ok += 1; }
+    if out2[0] == 255 && out2[1] == 255 && out2[2] == 7 { ok += 1; }
+
+    // Empty buffers write nothing.
+    let empty_dest: [u8; 1] = [0; 1];
+    let empty_dest_slice: []u8 = slice(&empty_dest[0], 0);
+    let empty_const: []const u8 = slice(&a[0] as *const u8, 0);
+    if bytes.and(empty_dest_slice, empty_const, empty_const) == 0 { ok += 1; }
+    if bytes.or(empty_dest_slice, empty_const, empty_const) == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 10 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "bytesandor.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "bytesandor.exe" if os.name == "nt" else "bytesandor")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "10"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

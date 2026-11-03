@@ -74,6 +74,42 @@ pub fn xor(destination: []u8, a: []const u8, b: []const u8) -> u64 {
     return count;
 }
 
+// Writes the byte-wise AND of `a` and `b` into `destination`, one byte per
+// index: `destination[i] = a[i] & b[i]`. The number of bytes written is the
+// minimum of `destination.len`, `a.len`, and `b.len`, the same capped-at-
+// the-shortest convention as `copy`/`xor`. Returns the count written.
+pub fn and(destination: []u8, a: []const u8, b: []const u8) -> u64 {
+    let count = destination.len;
+    if a.len < count {
+        count = a.len;
+    }
+    if b.len < count {
+        count = b.len;
+    }
+    for index: u64 in 0..count {
+        destination[index] = a[index] & b[index];
+    }
+    return count;
+}
+
+// Writes the byte-wise OR of `a` and `b` into `destination`, one byte per
+// index: `destination[i] = a[i] | b[i]`. The number of bytes written is the
+// minimum of `destination.len`, `a.len`, and `b.len`, the same capped-at-
+// the-shortest convention as `copy`/`xor`. Returns the count written.
+pub fn or(destination: []u8, a: []const u8, b: []const u8) -> u64 {
+    let count = destination.len;
+    if a.len < count {
+        count = a.len;
+    }
+    if b.len < count {
+        count = b.len;
+    }
+    for index: u64 in 0..count {
+        destination[index] = a[index] | b[index];
+    }
+    return count;
+}
+
 // Returns the lowercase hex-digit character for `nibble` (0-15). A private
 // helper for `to_hex`.
 fn hex_digit_char(nibble: u64) -> u8 {
