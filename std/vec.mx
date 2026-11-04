@@ -2,6 +2,7 @@ module std.vec;
 
 import std.option;
 import std.algorithm;
+import std.sort;
 
 resource struct Vec<T> {
     data: *T,
@@ -314,6 +315,15 @@ pub fn count<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> u64 {
 // support `==` (e.g. struct T).
 pub fn find_by<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> Option<u64> {
     return algorithm.find_by(as_const_slice(value), predicate);
+}
+
+// In-place insertion sort ordered by the caller-supplied `less_than`
+// predicate — a thin wrapper over sort.sort(as_slice(value), less_than),
+// the one-line counterpart to calling sort.sort on a manually-built
+// slice. Same complexity/stability as sort.sort: stable, O(n) best case
+// (already sorted), O(n^2) average/worst case, no extra allocation.
+pub fn sort_by<T>(value: *Vec<T>, less_than: fn(T, T) -> bool) -> void {
+    sort.sort(as_slice(value), less_than);
 }
 
 pub fn as_slice<T>(value: *Vec<T>) -> []T {

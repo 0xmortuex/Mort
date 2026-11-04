@@ -4820,6 +4820,76 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_sort_by_orders_in_place_by_the_comparator():
+    program = r'''import std.vec;
+
+fn less_i64(a: i64, b: i64) -> bool {
+    return a < b;
+}
+
+fn greater_i64(a: i64, b: i64) -> bool {
+    return a > b;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let ascending: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&ascending);
+    vec.push(&ascending, 5);
+    vec.push(&ascending, 3);
+    vec.push(&ascending, 1);
+    vec.push(&ascending, 4);
+    vec.push(&ascending, 2);
+    vec.sort_by(&ascending, less_i64);
+    if *vec.get_ref(&ascending, 0) == 1 && *vec.get_ref(&ascending, 1) == 2
+        && *vec.get_ref(&ascending, 2) == 3 && *vec.get_ref(&ascending, 3) == 4
+        && *vec.get_ref(&ascending, 4) == 5 { ok += 1; }
+
+    let descending: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&descending);
+    vec.push(&descending, 5);
+    vec.push(&descending, 3);
+    vec.push(&descending, 1);
+    vec.push(&descending, 4);
+    vec.push(&descending, 2);
+    vec.sort_by(&descending, greater_i64);
+    if *vec.get_ref(&descending, 0) == 5 && *vec.get_ref(&descending, 1) == 4
+        && *vec.get_ref(&descending, 2) == 3 && *vec.get_ref(&descending, 3) == 2
+        && *vec.get_ref(&descending, 4) == 1 { ok += 1; }
+
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 42);
+    vec.sort_by(&single, less_i64);
+    if *vec.get_ref(&single, 0) == 42 { ok += 1; }
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.sort_by(&empty, less_i64);
+    if vec.as_const_slice(&empty).len == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecsortby.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecsortby.exe" if os.name == "nt" else "vecsortby")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 
