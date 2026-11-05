@@ -571,6 +571,13 @@ an empty vector); `find_by(vec, predicate)` is likewise a thin wrapper over
 of the first element satisfying `predicate` as `Option<u64>` (`None` if none
 match or the vector is empty) — the predicate-based counterpart to
 `index_of`, so it works for element types that don't support `==`;
+`min_by(vec, less_than)` / `max_by(vec, less_than)` are likewise thin
+wrappers over `std.algorithm.min_by`/`max_by` run over `as_const_slice(vec)`,
+returning the smallest/largest element as `Option<T>` ordered by the
+caller-supplied `less_than` comparator (`None` for an empty vector) — the
+comparator-taking counterparts to a `<`/`>`-based min/max, for element
+types that don't support those operators directly (e.g. ordering by one
+field of a struct);
 `sort_by(vec, less_than)` is a thin wrapper over `std.sort.sort` run over
 `as_slice(vec)`, sorting the vector in place by the caller-supplied
 `less_than` comparator (same stability/complexity as `std.sort.sort`:

@@ -317,6 +317,18 @@ pub fn find_by<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> Option<u64> {
     return algorithm.find_by(as_const_slice(value), predicate);
 }
 
+// The smallest/largest element by a caller-supplied `less_than` order, or
+// None for an empty Vec. Thin wrappers over
+// algorithm.min_by/max_by(as_const_slice(value), less_than), mirroring how
+// `any`/`all`/`count`/`find_by` wrap their `std.algorithm` counterparts.
+pub fn min_by<T>(value: *Vec<T>, less_than: fn(T, T) -> bool) -> Option<T> {
+    return algorithm.min_by(as_const_slice(value), less_than);
+}
+
+pub fn max_by<T>(value: *Vec<T>, less_than: fn(T, T) -> bool) -> Option<T> {
+    return algorithm.max_by(as_const_slice(value), less_than);
+}
+
 // In-place insertion sort ordered by the caller-supplied `less_than`
 // predicate — a thin wrapper over sort.sort(as_slice(value), less_than),
 // the one-line counterpart to calling sort.sort on a manually-built

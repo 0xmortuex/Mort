@@ -4890,6 +4890,84 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_min_by_and_max_by_find_the_extremes_by_a_comparator():
+    program = r'''import std.vec;
+
+struct Person {
+    age: i64,
+}
+
+fn by_age(a: Person, b: Person) -> bool {
+    return a.age < b.age;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let people: Vec<Person> = vec.new<Person>();
+    defer vec.destroy(&people);
+    vec.push(&people, Person { age: 30 });
+    vec.push(&people, Person { age: 20 });
+    vec.push(&people, Person { age: 40 });
+
+    match vec.min_by(&people, by_age) {
+        Option<Person>.Some(p) => { if p.age == 20 { ok += 1; } },
+        Option<Person>.None => {},
+    }
+
+    match vec.max_by(&people, by_age) {
+        Option<Person>.Some(p) => { if p.age == 40 { ok += 1; } },
+        Option<Person>.None => {},
+    }
+
+    let empty: Vec<Person> = vec.new<Person>();
+    defer vec.destroy(&empty);
+
+    match vec.min_by(&empty, by_age) {
+        Option<Person>.Some(p) => {},
+        Option<Person>.None => { ok += 1; },
+    }
+
+    match vec.max_by(&empty, by_age) {
+        Option<Person>.Some(p) => {},
+        Option<Person>.None => { ok += 1; },
+    }
+
+    let single: Vec<Person> = vec.new<Person>();
+    defer vec.destroy(&single);
+    vec.push(&single, Person { age: 99 });
+
+    match vec.min_by(&single, by_age) {
+        Option<Person>.Some(p) => { if p.age == 99 { ok += 1; } },
+        Option<Person>.None => {},
+    }
+
+    match vec.max_by(&single, by_age) {
+        Option<Person>.Some(p) => { if p.age == 99 { ok += 1; } },
+        Option<Person>.None => {},
+    }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecminmaxby.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecminmaxby.exe" if os.name == "nt" else "vecminmaxby")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 
