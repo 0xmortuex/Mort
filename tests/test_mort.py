@@ -4968,6 +4968,82 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_min_max_and_sort_wrap_algorithm_by_less_than_greater_than():
+    program = r'''import std.vec;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    vec.push(&values, 3);
+    vec.push(&values, 1);
+    vec.push(&values, 4);
+    vec.push(&values, 1);
+    vec.push(&values, 5);
+
+    match vec.min(&values) {
+        Option<i64>.Some(value) => { if value == 1 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    match vec.max(&values) {
+        Option<i64>.Some(value) => { if value == 5 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    vec.sort(&values);
+    if *vec.get_ref(&values, 0) == 1 && *vec.get_ref(&values, 1) == 1
+        && *vec.get_ref(&values, 2) == 3 && *vec.get_ref(&values, 3) == 4
+        && *vec.get_ref(&values, 4) == 5 { ok += 1; }
+
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+
+    match vec.min(&empty) {
+        Option<i64>.Some(value) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    match vec.max(&empty) {
+        Option<i64>.Some(value) => {},
+        Option<i64>.None => { ok += 1; },
+    }
+
+    vec.sort(&empty);
+    if vec.as_const_slice(&empty).len == 0 { ok += 1; }
+
+    let single: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&single);
+    vec.push(&single, 42);
+    vec.sort(&single);
+    match vec.min(&single) {
+        Option<i64>.Some(value) => { if value == 42 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    if *vec.get_ref(&single, 0) == 42 { ok += 1; }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecminmaxsort.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecminmaxsort.exe" if os.name == "nt" else "vecminmaxsort")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_std_vec_clone_copies_elements_independently_of_the_original():
     program = r'''import std.vec;
 

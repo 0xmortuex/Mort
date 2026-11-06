@@ -317,6 +317,20 @@ pub fn find_by<T>(value: *Vec<T>, predicate: fn(T) -> bool) -> Option<u64> {
     return algorithm.find_by(as_const_slice(value), predicate);
 }
 
+// The smallest/largest element by `<`/`>` (T must support them), or None
+// for an empty Vec. Thin wrappers over
+// algorithm.min/max(as_const_slice(value)), mirroring how
+// `any`/`all`/`count`/`find_by` wrap their `std.algorithm` counterparts.
+// For a `T` that doesn't support `<`/`>` directly, use `min_by`/`max_by`
+// below with a caller-supplied comparator instead.
+pub fn min<T>(value: *Vec<T>) -> Option<T> {
+    return algorithm.min(as_const_slice(value));
+}
+
+pub fn max<T>(value: *Vec<T>) -> Option<T> {
+    return algorithm.max(as_const_slice(value));
+}
+
 // The smallest/largest element by a caller-supplied `less_than` order, or
 // None for an empty Vec. Thin wrappers over
 // algorithm.min_by/max_by(as_const_slice(value), less_than), mirroring how
@@ -327,6 +341,14 @@ pub fn min_by<T>(value: *Vec<T>, less_than: fn(T, T) -> bool) -> Option<T> {
 
 pub fn max_by<T>(value: *Vec<T>, less_than: fn(T, T) -> bool) -> Option<T> {
     return algorithm.max_by(as_const_slice(value), less_than);
+}
+
+// In-place sort by `<` (T must support it) — a thin wrapper over
+// algorithm.sort(as_slice(value)), the insertion sort `std.algorithm.sort`
+// already implements. For a `T` that doesn't support `<` directly, use
+// `sort_by` below with a caller-supplied comparator instead.
+pub fn sort<T>(value: *Vec<T>) -> void {
+    algorithm.sort(as_slice(value));
 }
 
 // In-place insertion sort ordered by the caller-supplied `less_than`

@@ -571,6 +571,11 @@ an empty vector); `find_by(vec, predicate)` is likewise a thin wrapper over
 of the first element satisfying `predicate` as `Option<u64>` (`None` if none
 match or the vector is empty) — the predicate-based counterpart to
 `index_of`, so it works for element types that don't support `==`;
+`min(vec)` / `max(vec)` are thin wrappers over `std.algorithm.min`/`max` run
+over `as_const_slice(vec)`, returning the smallest/largest element as
+`Option<T>` by `<`/`>` (`None` for an empty vector; `T` must support those
+operators) — for an element type that doesn't, use `min_by`/`max_by` below
+instead;
 `min_by(vec, less_than)` / `max_by(vec, less_than)` are likewise thin
 wrappers over `std.algorithm.min_by`/`max_by` run over `as_const_slice(vec)`,
 returning the smallest/largest element as `Option<T>` ordered by the
@@ -578,12 +583,14 @@ caller-supplied `less_than` comparator (`None` for an empty vector) — the
 comparator-taking counterparts to a `<`/`>`-based min/max, for element
 types that don't support those operators directly (e.g. ordering by one
 field of a struct);
+`sort(vec)` is a thin wrapper over `std.algorithm.sort` run over
+`as_slice(vec)`, sorting the vector in place by `<` (`T` must support it);
 `sort_by(vec, less_than)` is a thin wrapper over `std.sort.sort` run over
 `as_slice(vec)`, sorting the vector in place by the caller-supplied
 `less_than` comparator (same stability/complexity as `std.sort.sort`:
 stable, O(n) best case, O(n^2) average/worst case, no extra allocation) —
 the one-line counterpart to calling `std.sort.sort` on a manually-built
-slice; `first(vec)` /
+slice, for an element type that doesn't support `<` directly; `first(vec)` /
 `last(vec)` are thin wrappers over `get(vec, 0)`
 / `get(vec, length - 1)` that return `Option<T>` (`None` for an empty
 vector), sharing `get`'s aliasing-copy caveat for resource elements;
