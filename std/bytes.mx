@@ -110,6 +110,22 @@ pub fn or(destination: []u8, a: []const u8, b: []const u8) -> u64 {
     return count;
 }
 
+// Writes the byte-wise complement (bitwise NOT) of `source` into
+// `destination`, one byte per index: `destination[i] = ~source[i]`. The
+// number of bytes written is the minimum of `destination.len` and
+// `source.len`, the same capped-at-the-shortest convention as
+// `copy`/`xor`/`and`/`or`. Returns the count written.
+pub fn not(destination: []u8, source: []const u8) -> u64 {
+    let count = destination.len;
+    if source.len < count {
+        count = source.len;
+    }
+    for index: u64 in 0..count {
+        destination[index] = ~source[index];
+    }
+    return count;
+}
+
 // Returns the lowercase hex-digit character for `nibble` (0-15). A private
 // helper for `to_hex`.
 fn hex_digit_char(nibble: u64) -> u8 {

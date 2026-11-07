@@ -4029,6 +4029,65 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_bytes_not_writes_the_byte_wise_complement_capped_at_the_shortest_buffer():
+    program = r'''import std.bytes;
+
+fn main() -> i64 {
+    let a: [u8; 4] = [0; 4];
+    a[0] = 255; a[1] = 15; a[2] = 0; a[3] = 170;
+
+    let a_const: []const u8 = slice(&a[0] as *const u8, 4);
+
+    let ok: i64 = 0;
+
+    // Same-length buffers: every byte is complemented, count equals the length.
+    let out: [u8; 4] = [0; 4];
+    let out_slice: []u8 = slice(&out[0], 4);
+    if bytes.not(out_slice, a_const) == 4 { ok += 1; }
+    if out[0] == 0 && out[1] == 240 && out[2] == 255 && out[3] == 85 { ok += 1; }
+
+    // A shorter destination caps the count written and leaves the rest alone.
+    let short: [u8; 3] = [0; 3];
+    short[2] = 9;
+    let short_slice: []u8 = slice(&short[0], 2);
+    if bytes.not(short_slice, a_const) == 2 { ok += 1; }
+    if short[0] == 0 && short[1] == 240 && short[2] == 9 { ok += 1; }
+
+    // A shorter `source` also caps the count written.
+    let short_a: []const u8 = slice(&a[0] as *const u8, 2);
+    let out2: [u8; 4] = [0; 4];
+    out2[2] = 7;
+    let out2_slice: []u8 = slice(&out2[0], 4);
+    if bytes.not(out2_slice, short_a) == 2 { ok += 1; }
+    if out2[0] == 0 && out2[1] == 240 && out2[2] == 7 { ok += 1; }
+
+    // Empty buffers write nothing.
+    let empty_dest: [u8; 1] = [0; 1];
+    let empty_dest_slice: []u8 = slice(&empty_dest[0], 0);
+    let empty_const: []const u8 = slice(&a[0] as *const u8, 0);
+    if bytes.not(empty_dest_slice, empty_const) == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "bytesnot.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "bytesnot.exe" if os.name == "nt" else "bytesnot")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_map_remove_moves_value_out_and_shifts_remaining_entries():
     program = r'''import std.map;
 

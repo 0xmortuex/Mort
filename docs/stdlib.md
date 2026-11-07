@@ -93,7 +93,11 @@ convention as `copy`. `and(destination: []u8, a: []const u8, b: []const
 u8) -> u64` and `or(destination: []u8, a: []const u8, b: []const u8) ->
 u64` are the bitwise AND/OR counterparts, built exactly the same way
 (`destination[i] = a[i] & b[i]` / `a[i] | b[i]`, same capped-at-the-
-shortest convention and return value).
+shortest convention and return value). `not(destination: []u8, source:
+[]const u8) -> u64` is the unary bitwise-complement counterpart
+(`destination[i] = ~source[i]`), writing `min(destination.len,
+source.len)` bytes and returning that count, the same capped-at-the-
+shortest convention.
 
 ## `std.crypto`
 
