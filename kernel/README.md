@@ -136,7 +136,7 @@ bootloader (which loads our multiboot1 kernel unchanged) and `xorriso`. Both are
 portable Windows binaries, downloaded and cached under `kernel/tools/` on first
 run — no WSL or MSYS2 needed. The result, `mort.iso`, is a BIOS **and** UEFI
 hybrid image: boot it in QEMU (`-cdrom`) or VirtualBox, or write it byte-for-byte
-to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
+to a USB stick (e.g. Rufus in "DD image" mode). It is built to boot from USB, but only QEMU has been tested so far.
 
 ## Status & roadmap
 
@@ -158,7 +158,7 @@ to a USB stick (e.g. Rufus in "DD image" mode) and boot it on real hardware.
 - [x] Command history: Up/Down arrows recall previous commands (a ring of 8),
       decoded from the 0xE0 extended-scancode prefix.
 - [x] A real bootable ISO (Limine + xorriso) — BIOS/UEFI hybrid, USB-writable,
-      boots on real hardware, not just QEMU's `-kernel` shortcut.
+      built to boot from USB (tested in QEMU only), not just QEMU's `-kernel` shortcut.
 - [x] Loading a file from disk: the bootloader loads a file off the ISO as a
       multiboot module; the kernel reads the multiboot info (passed in EBX) and
       the `readme` command prints the file's contents.
