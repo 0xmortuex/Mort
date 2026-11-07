@@ -6,6 +6,12 @@
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
 
+**The proof it's a real language: an operating system written in it.** Here is [MORT OS](https://github.com/0xmortuex/MortOS) booting in QEMU, a graphical desktop with a terminal, file manager, browser and settings, all compiled by this compiler. You can [build and boot it yourself](https://github.com/0xmortuex/MortOS#try-it) with one command.
+
+<p align="center">
+  <img src="docs/mortos-demo.gif" alt="MORT OS, written in Mort, booting to its desktop and running a terminal session in QEMU" width="640" />
+</p>
+
 > **Status: alpha.** Mort is useful for native programs, C interoperability,
 > experiments, and its own operating system, but it is not yet honest to call
 > it error-free or suitable for every possible project. Releases are gated by
