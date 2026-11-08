@@ -332,7 +332,7 @@ DIAGNOSTIC_MESSAGES = [
     "unexpected character '@'", "", "caf\u00e9 \u20ac \U0001f600", "100% {done}",
     "a, b: c",
 ]
-DIAGNOSTIC_PATHS = ["input.mx", "dir/sub/file name.mx", "C:\\repo\\caf\u00e9.mx"]
+DIAGNOSTIC_PATHS = ["", "input.mx", "dir/sub/file name.mx", "C:\\repo\\caf\u00e9.mx"]
 
 
 @pytest.mark.parametrize("path", DIAGNOSTIC_PATHS)

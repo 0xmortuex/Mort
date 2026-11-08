@@ -272,16 +272,27 @@ fn ptrvec_pop(v: *PtrVec) -> *void {
 // the rest of the message.
 
 fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
-    buf_push_z(out, path);
-    if line != 0 {
-        buf_push(out, ':');
-        buf_push_u64(out, line);
-        if col != 0 {
-            buf_push(out, ':');
-            buf_push_u64(out, col);
+    if path[0] == 0 {
+        // MortError with no filename: `error (line N): message`, no column.
+        buf_push_z(out, "error");
+        if line != 0 {
+            buf_push_z(out, " (line ");
+            buf_push_u64(out, line);
+            buf_push(out, ')');
         }
+        buf_push_z(out, ": ");
+    } else {
+        buf_push_z(out, path);
+        if line != 0 {
+            buf_push(out, ':');
+            buf_push_u64(out, line);
+            if col != 0 {
+                buf_push(out, ':');
+                buf_push_u64(out, col);
+            }
+        }
+        buf_push_z(out, ": error: ");
     }
-    buf_push_z(out, ": error: ");
     for i: u64 in 0..message.len {
         if message.data[i] == 0 {
             buf_push_z(out, "\\x00");
