@@ -255,8 +255,7 @@ Exact errors are in `BLOCKERS.md`.
 | G2, writing to stderr | Fixed: builtin `eprintln(*u8)` |
 | G3, `extern fn` prototypes clash with libc headers | Open and not needed: the support layer's only extern is `exit` |
 
-`lex_main.mx` and its tests still use environment variables and stdout. T8 and
-T3's drivers should use the new builtins.
+`lex_main.mx` uses both builtins, and later drivers should too.
 
 ## 9. Support layer
 

@@ -119,6 +119,23 @@ fn hex_digit(nibble: u8) -> u8 {
     return 'a' + nibble - 10;
 }
 
+// A push that overruns its allocation leaves len above cap; heap corruption
+// itself is not observable from here, so this check is what catches it.
+fn check_capacities(st: *State) {
+    if (*st).bytes.len > (*st).bytes.cap {
+        sup_die("support_test_main: buf length exceeds capacity");
+    }
+    if (*st).numbers.len > (*st).numbers.cap {
+        sup_die("support_test_main: u64vec length exceeds capacity");
+    }
+    if (*st).pointers.len > (*st).pointers.cap {
+        sup_die("support_test_main: ptrvec length exceeds capacity");
+    }
+    if !intern_within_capacity(&(*st).names) {
+        sup_die("support_test_main: interner count exceeds capacity");
+    }
+}
+
 fn run_buffer_op(st: *State, name: Span, c: *Cursor) -> bool {
     if span_eq_z(name, "buf_new") {
         (*st).bytes = buf_new(parse_number(c));
@@ -126,6 +143,7 @@ fn run_buffer_op(st: *State, name: Span, c: *Cursor) -> bool {
         let bytes = parse_hex(c);
         for i: u64 in 0..bytes.len {
             buf_push(&(*st).bytes, bytes.data[i]);
+            check_capacities(st);
         }
     } else if span_eq_z(name, "buf_push_z") {
         let bytes = parse_hex(c);
@@ -276,6 +294,7 @@ fn run_ops(ops_path: *u8, out_path: *u8) -> int {
             && !run_diagnostic_op(&state, name, &cursor) {
             sup_die("support_test_main: unknown operation");
         }
+        check_capacities(&state);
         end_line(&cursor);
     }
     let handle = file_open(out_path, "wb");
@@ -321,6 +340,26 @@ fn run_fatal(name: Span) -> int {
         diag_report("dir/input.mx", 4, 1, span_z("second problem"));
         println("continued");
         return 0;
+    } else if span_eq_z(name, "grow_capacity_overflow") {
+        print(sup_grown_capacity(0x8000000000000000) as i64);
+    } else if span_eq_z(name, "buf_capacity_overflow") {
+        let huge = Buf { data: 0 as *u8, len: 0x8000000000000000, cap: 0x8000000000000000 };
+        buf_push(&huge, 1);
+    } else if span_eq_z(name, "alloc_past_size_t") {
+        let bytes = sup_alloc(0x100000008) as *u8;
+        for i: u64 in 0..64 {
+            bytes[i] = 1;
+        }
+    } else if span_eq_z(name, "alloc_array_past_size_t") {
+        sup_alloc_array(0x20000000, 8);
+    } else if span_eq_z(name, "vec_grow_past_size_t") {
+        let huge = U64Vec { data: 0 as *u64, len: 0x20000000, cap: 0x20000000 };
+        u64vec_push(&huge, 1);
+    } else if span_eq_z(name, "ptr_grow_past_size_t") {
+        let huge = PtrVec { data: 0 as **void, len: 0x40000000, cap: 0x40000000 };
+        ptrvec_push(&huge, 0 as *void);
+    } else if span_eq_z(name, "grow_past_size_t") {
+        print(sup_grown_capacity(0x80000000) as i64);
     } else if span_eq_z(name, "alloc_impossible") {
         sup_alloc(0xFFFFFFFFFFFFFFF0);
     } else if span_eq_z(name, "alloc_array_overflow") {

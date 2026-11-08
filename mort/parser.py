@@ -643,6 +643,7 @@ class Parser:
         return self._postfix()
 
     def _postfix(self):
+        start = self._peek()
         expr = self._primary()
         while True:
             if self._at(T.LT) and self._looks_like_call_type_args():
@@ -664,6 +665,7 @@ class Parser:
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
                 expr = A.Call(name, args, lp.line, type_args)
+                expr.name_pos = (start.line, start.col)
             elif self._at(T.LPAREN):
                 name = self._qualified_name(expr)
                 if name is None:
@@ -677,6 +679,7 @@ class Parser:
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
                 expr = A.Call(name, args, lp.line)
+                expr.name_pos = (start.line, start.col)
             elif self._at(T.DOT):
                 dot = self._advance()
                 if self._at(T.INT):

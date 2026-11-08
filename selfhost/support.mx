@@ -35,7 +35,20 @@ fn sup_die_index(kind: *u8, index: u64, length: u64) {
     sup_die(text.data);
 }
 
+// The largest byte count the target's size_t can hold. `alloc` narrows its u64
+// argument to size_t, so a larger request would silently become a small one.
+fn sup_size_limit() -> u64 {
+    let width = sizeof<*void>();
+    if width >= 8 {
+        return U64_LIMIT;
+    }
+    return ((1 as u64) << (width * 8)) - 1;
+}
+
 fn sup_alloc(size: u64) -> *void {
+    if size > sup_size_limit() {
+        sup_die("mort: out of memory");
+    }
     // malloc(0) may legally return null, which must not read as exhaustion.
     let request = size;
     if request == 0 {
@@ -49,7 +62,7 @@ fn sup_alloc(size: u64) -> *void {
 }
 
 fn sup_alloc_array(count: u64, size: u64) -> *void {
-    if size != 0 && count > U64_LIMIT / size {
+    if size != 0 && count > sup_size_limit() / size {
         sup_die("mort: internal error: allocation size overflow");
     }
     return sup_alloc(count * size);
@@ -59,7 +72,7 @@ fn sup_grown_capacity(capacity: u64) -> u64 {
     if capacity == 0 {
         return 8;
     }
-    if capacity > U64_LIMIT / 2 {
+    if capacity > sup_size_limit() / 2 {
         sup_die("mort: internal error: capacity overflow");
     }
     return capacity * 2;
@@ -259,16 +272,27 @@ fn ptrvec_pop(v: *PtrVec) -> *void {
 // the rest of the message.
 
 fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
-    buf_push_z(out, path);
-    if line != 0 {
-        buf_push(out, ':');
-        buf_push_u64(out, line);
-        if col != 0 {
-            buf_push(out, ':');
-            buf_push_u64(out, col);
+    if path[0] == 0 {
+        // MortError with no filename: `error (line N): message`, no column.
+        buf_push_z(out, "error");
+        if line != 0 {
+            buf_push_z(out, " (line ");
+            buf_push_u64(out, line);
+            buf_push(out, ')');
         }
+        buf_push_z(out, ": ");
+    } else {
+        buf_push_z(out, path);
+        if line != 0 {
+            buf_push(out, ':');
+            buf_push_u64(out, line);
+            if col != 0 {
+                buf_push(out, ':');
+                buf_push_u64(out, col);
+            }
+        }
+        buf_push_z(out, ": error: ");
     }
-    buf_push_z(out, ": error: ");
     for i: u64 in 0..message.len {
         if message.data[i] == 0 {
             buf_push_z(out, "\\x00");
@@ -517,4 +541,9 @@ fn intern_text(it: *Interner, handle: u64) -> Span {
 
 fn intern_count(it: *Interner) -> u64 {
     return (*it).in_count;
+}
+
+// True while the entry arrays hold every handle.
+fn intern_within_capacity(it: *Interner) -> bool {
+    return (*it).in_count <= (*it).in_capacity;
 }

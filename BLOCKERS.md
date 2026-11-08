@@ -10,14 +10,13 @@ stopped the lexer. Status: `selfhost/PLAN.md` section 8.
 Fixed by the hosted builtins `arg_count()` and `arg_get(u64)`. An out-of-range
 index is a located runtime error. C `main` only takes arguments in programs that
 use them, so generated C for all other programs is unchanged.
-`selfhost/lex_main.mx` still reads `MORT_LEX_IN` and `MORT_LEX_OUT`; its tests
-assert that and nothing needs it changed yet.
+`selfhost/lex_main.mx` takes its paths as arguments.
+`selfhost/unicode_dump_main.mx`, a test helper, still reads `MORT_LEX_OUT`.
 
 ### G2: no way to write to stderr (resolved)
 
 Fixed by the hosted builtin `eprintln(*u8)`, with `selfhost/support.mx`'s
-diagnostics using it. `selfhost/lex_main.mx` still reports on stdout; its tests
-assert that and nothing needs it changed yet.
+diagnostics and `selfhost/lex_main.mx` using it.
 
 ### G3: `extern fn` prototypes clash with libc headers
 
