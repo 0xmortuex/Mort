@@ -532,6 +532,7 @@ FLOAT_TEXTS = [
     "4503599627370497.5", "3.141592653589793", "2.718281828459045",
     "1.0000000000000002", "0.9999999999999999", "123.456", "1e100",
     "1.2345678901234567e100", "8.41e21", "2e22", "1_000.5",
+    "7.120236347223045e-307",
 ]
 
 
@@ -552,6 +553,75 @@ def test_float_repr_random_doubles(parse_exe, tmp_path):
         result = assert_source_agrees(
             parse_exe, tmp_path, f"import {text};".encode())
         assert result.dump is None
+
+
+@pytest.fixture(scope="session")
+def float_repr_exe(tmp_path_factory):
+    build = tmp_path_factory.mktemp("selfhost-float-build")
+    exe = build / ("float_repr_main.exe" if os.name == "nt" else "float_repr_main")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"),
+         str(HERE / "float_repr_main.mx"), "-o", str(exe)],
+        capture_output=True, text=True, cwd=build)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return exe
+
+
+def assert_reprs_match(exe, tmp_path, patterns):
+    """Compare the Mort repr of each binary64 bit pattern with Python's."""
+    source = tmp_path / "bits.bin"
+    source.write_bytes(b"".join(struct.pack("<Q", bits) for bits in patterns))
+    out = tmp_path / "reprs.txt"
+    subprocess.run([str(exe), str(source), str(out)], check=True, timeout=300)
+    actual = out.read_text(encoding="ascii").splitlines()
+    expected = [repr(struct.unpack("<d", struct.pack("<Q", bits))[0])
+                for bits in patterns]
+    assert len(actual) == len(expected)
+    wrong = [(hex(bits), want, got) for bits, want, got
+             in zip(patterns, expected, actual) if want != got]
+    assert not wrong, f"{len(wrong)} of {len(patterns)} differ, first: {wrong[:5]}"
+
+
+MAX_FINITE_BITS = 0x7FEFFFFFFFFFFFFF
+
+
+def power_of_two_bits():
+    """Every power of two representable as a double: 2^-1074 to 2^1023."""
+    subnormal = [1 << shift for shift in range(52)]
+    normal = [biased << 52 for biased in range(1, 2047)]
+    return subnormal + normal
+
+
+def test_float_repr_every_power_of_two(float_repr_exe, tmp_path):
+    patterns = power_of_two_bits()
+    assert len(patterns) == 2098
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_neighbours_of_powers_of_two(float_repr_exe, tmp_path):
+    patterns = sorted({
+        neighbour for bits in power_of_two_bits()
+        for neighbour in (bits - 1, bits + 1)
+        if 0 <= neighbour <= MAX_FINITE_BITS
+    })
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_random_bit_patterns(float_repr_exe, tmp_path):
+    rng = random.Random(20261108)
+    patterns = [rng.randrange(MAX_FINITE_BITS + 1) for _ in range(20_000)]
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_short_decimals_and_integers(float_repr_exe, tmp_path):
+    rng = random.Random(20261109)
+    values = [float(f"{rng.randrange(1, 10**rng.randint(1, 17))}e{rng.randint(-320, 290)}")
+              for _ in range(10_000)]
+    values += [float(rng.randrange(1, 1 << 63)) for _ in range(5_000)]
+    values += [10.0 ** power for power in range(-307, 309)] + [0.0]
+    patterns = [struct.unpack("<Q", struct.pack("<d", value))[0]
+                for value in values if value != float("inf")]
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
 
 
 # ----- deep nesting -----
