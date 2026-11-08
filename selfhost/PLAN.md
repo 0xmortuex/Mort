@@ -288,8 +288,8 @@ Two Python-side defects found by this work; separate tasks, not fixed here:
 
 `selfhost/ast.mx` (130 lines), `parser.mx` (1212), `pyrepr.mx` (287), `ast_dump.mx`
 (395) and `parse_main.mx` (82, the driver: `parse_main INPUT OUTPUT`). The Python
-parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.3 with the
-diagnostic `repr`, the dump and the driver. Time: about 40 minutes of agent time
+parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.4 with the
+AST, the diagnostic `repr`, the dump and the driver. Time: about 40 minutes of agent time
 against the 10 to 16 hours estimated, because the Python parser is regular and
 the test harness already existed from T1. T4 and T5 should not assume this ratio
 carries over: the checker's logic is far less mechanical.
@@ -303,8 +303,9 @@ carries over: the checker's logic is far less mechanical.
 - Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
   expressions, unary, blocks, `if`). Python's own limit is a side effect of its
   frame count, so the reference is the unmodified Python parser plus the same
-  counter (`GuardedParser`). Message and line match. Python's unguarded parser
-  accepts about 66 nested parentheses, so this limit rejects nothing it accepts.
+  counter (`GuardedParser`). Message and line match. Measured limits of the
+  unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
+  975 unary operators, all within 1000 units, so this rejects nothing it accepts.
   Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
   `-O0`.
 - `<` lookahead is one precomputed pass over the tokens, not a scan per `<`. The
