@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import socket
 import ssl
@@ -32,6 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import mortc
+from mort import fuzz as fuzz_module
 from mort.errors import MortError
 from mort.formatter import format_source
 from mort.fuzz import run_fuzz
@@ -10243,3 +10245,44 @@ def test_comparing_void_values_is_a_checker_diagnostic(operator):
         "tuple-literal", "unexpected-token", "empty-array"])
 def test_syntax_errors_carry_line_and_column(source):
     assert_located(source)
+
+
+def test_fuzzer_generates_every_hostile_input_class():
+    generators = fuzz_module._HOSTILE
+    assert {g.__name__ for g in generators} == {
+        "_huge_literal", "_invalid_bytes", "_deep_nesting", "_long_chain", "_big_array_repeat",
+    }
+    for generator in generators:
+        rng = random.Random(7)
+        cases = [generator(rng) for _ in range(40)]
+        assert all(isinstance(case, (str, bytes)) for case in cases)
+        assert len(set(cases)) > 1, generator.__name__
+    assert all(isinstance(fuzz_module._invalid_bytes(random.Random(i)), bytes) for i in range(5))
+
+
+def test_fuzzer_is_deterministic_and_clean_on_hostile_inputs():
+    # Every 20th case is adversarial, so 400 cases draw about 15 hostile inputs.
+    assert run_fuzz(cases=400, seed=11) == run_fuzz(cases=400, seed=11)
+
+
+def test_fuzzer_reports_a_crash_and_a_hang(monkeypatch):
+    def crash(source):
+        raise ValueError("boom")
+
+    def hang(source):
+        time.sleep(0.5)
+
+    monkeypatch.setattr(mortc, "compile_to_c", crash)
+    with pytest.raises(AssertionError, match="crashed with ValueError"):
+        run_fuzz(cases=20, seed=1)
+    monkeypatch.setattr(mortc, "compile_to_c", hang)
+    with pytest.raises(AssertionError, match="hung"):
+        run_fuzz(cases=20, seed=1, case_timeout=0.05)
+
+
+def test_fuzzer_oracle_requires_a_location_on_limit_errors():
+    limit = "source nesting exceeds the compiler safety limit"
+    fuzz_module._check_located(MortError(limit, 1, 1), "case")
+    for unlocated in (MortError(limit), MortError(limit, 1)):
+        with pytest.raises(AssertionError, match="without line and column"):
+            fuzz_module._check_located(unlocated, "case")
