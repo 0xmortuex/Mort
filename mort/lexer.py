@@ -4,6 +4,10 @@ import math
 from .errors import MortError
 from .tokens import KEYWORDS, T, Token
 
+# int() refuses longer decimal strings (CPython's int/str digit limit), and no
+# Mort integer type comes anywhere near this many digits.
+MAX_DECIMAL_DIGITS = 4300
+
 _TWO_CHAR = {
     "->": T.ARROW,
     "=>": T.FAT_ARROW,
@@ -133,7 +137,7 @@ class Lexer:
                 digits += self._advance()
             if self._peek().isalpha() or self._peek() == "_":
                 raise MortError("tuple index must be a decimal integer", line, col)
-            self._add(T.INT, int(digits), line, col)
+            self._add(T.INT, self._decimal(digits, line, col), line, col)
             return
         # hex literal, e.g. 0xB8000
         if self._peek() == "0" and self._peek(1) in "xX":
@@ -204,7 +208,16 @@ class Lexer:
         # reject things like 12abc
         if self._peek().isalpha() or self._peek() == "_":
             raise MortError(f"invalid number literal near {s + self._peek()!r}", line, col)
-        self._add(T.INT, int(s.replace("_", "")), line, col)
+        self._add(T.INT, self._decimal(s.replace("_", ""), line, col), line, col)
+
+    @staticmethod
+    def _decimal(digits, line, col):
+        if len(digits) > MAX_DECIMAL_DIGITS:
+            raise MortError(
+                f"decimal integer literal has {len(digits)} digits; "
+                f"the limit is {MAX_DECIMAL_DIGITS}",
+                line, col)
+        return int(digits)
 
     def _block_comment(self):
         line, col = self.line, self.col

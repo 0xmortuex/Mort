@@ -1916,7 +1916,7 @@ class Checker:
                     self._error(f"operator '{op}' requires int operands", e)
                 count = self._const_value(e.right)
                 if count is not None and count < 0:
-                    self._error(f"shift count cannot be negative ({count})", e)
+                    self._error(f"shift count cannot be negative ({self._value_str(count)})", e)
                 e.is_lit = e.left.is_lit and e.right.is_lit
                 return lt
             if op in ("==", "!="):
@@ -2053,7 +2053,8 @@ class Checker:
             constant = self._const_value(e.index)
             if constant is not None and not (0 <= constant < length):
                 self._error(
-                    f"array index {constant} is out of bounds for length {length}", e)
+                    f"array index {self._value_str(constant)} is out of bounds "
+                    f"for length {length}", e)
             return elem
 
         if isinstance(e, (A.ArrayLit, A.ArrayRepeat)):

@@ -9989,3 +9989,51 @@ def test_examples_run(name, expected):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ----- malformed-input hardening: every failure is a located MortError -----
+def assert_located(source, *messages):
+    """Compile source; it must fail with a MortError carrying line and column."""
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    error = caught.value
+    assert error.line is not None and error.col is not None, error.format()
+    for message in messages:
+        assert message in error.msg, error.msg
+    return error
+
+
+def test_oversized_decimal_literal_is_a_located_diagnostic():
+    digits = "9" * 5000
+    error = assert_located(
+        f"fn main() -> int {{\n  let x: i64 = {digits};\n  return 0;\n}}",
+        "decimal integer literal", "4300",
+    )
+    assert (error.line, error.col) == (2, 16)
+    # Separators do not count toward the limit but cannot hide digits from it.
+    assert_located(f"fn main() -> int {{ let x = {'1_' * 5000}1; return 0; }}",
+                   "decimal integer literal")
+
+
+def test_oversized_tuple_index_is_a_located_diagnostic():
+    assert_located(
+        "fn main() -> int { let t = (1, 2); let y = t." + "1" * 5000 + "; return 0; }",
+        "decimal integer literal",
+    )
+
+
+def test_decimal_literal_at_the_digit_limit_still_compiles():
+    # 4300 nines divided down to a value that fits: arbitrary-precision folding
+    # must keep working right up to the limit.
+    digits = "9" * 4300
+    c_of(f"fn main() -> int {{ let x: i64 = {digits} / {digits}; return x as int; }}")
+
+
+@pytest.mark.parametrize("expression", [
+    "a[0x" + "F" * 20000 + "]",
+    "1 << (-0x" + "F" * 20000 + ")",
+], ids=["array-index", "negative-shift"])
+def test_huge_constant_in_a_diagnostic_message_does_not_crash(expression):
+    with pytest.raises(MortError):
+        c_of("fn main() -> int { let a: [i64; 1] = [1]; "
+             f"let y = {expression}; return 0; }}")
