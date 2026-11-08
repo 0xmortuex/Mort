@@ -247,7 +247,9 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.41.
+the programmer's responsibility in Mort 0.41. A pointer type `*T` where `T` is
+an array type is rejected, as is `&a` where `a` has an array type; use `&a[0]`
+to point at the first element.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not

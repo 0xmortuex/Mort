@@ -35,6 +35,7 @@ sys.path.insert(0, ROOT)
 import mortc
 from mort import codegen as codegen_module
 from mort import fuzz as fuzz_module
+from mort import typechecker as typechecker_module
 from mort.errors import MortError
 from mort.formatter import format_source
 from mort.fuzz import run_fuzz
@@ -10758,3 +10759,43 @@ def test_generic_argument_with_commas_is_one_argument():
     source = ("struct W<T> { v: T } "
               "fn main() -> int { let x: *W<[(u8, u8); 2]> = null; return 0; }")
     assert "main" in c_of(source)
+
+
+_ARRAY_ADDRESS_SOURCES = {
+    "local": "fn main() -> int {\n  let x: [u8; 1] = [1];\n  let p = &x;\n  return 0;\n}",
+    "parenthesised": "fn main() -> int {\n  let x: [u8; 1] = [1];\n  let p = &(x);\n  return 0;\n}",
+    "field": ("struct S { a: [u8; 1] } fn main() -> int {\n  let s = S { a: [1] };\n"
+              "  let p = &s.a;\n  return 0;\n}"),
+    "global": "let G: [u8; 2] = [1, 2]; fn main() -> int {\n  let p = &G;\n  return 0;\n}",
+    "alias": ("type A = [u8; 1]; fn main() -> int {\n  let x: A = [1];\n"
+              "  let p = &x;\n  return 0;\n}"),
+    "through-pointer": ("struct W { a: [u8; 2] } fn main() -> int {\n"
+                        "  let q: *W = null;\n  let p = &q[0].a;\n  return 0;\n}"),
+    "slice-element": ("fn main() -> int {\n  let q: *[][i64; 2] = null;\n"
+                      "  let p = &(*q)[0];\n  return 0;\n}"),
+    "tuple-element": ("fn main() -> int {\n  let q: *(i64, [u8; 1]) = null;\n"
+                      "  let p = &(*q).1;\n  return 0;\n}"),
+    "generic-body": ("struct W<T> { v: T } fn f<T>(w: *W<T>) -> i64 {\n"
+                     "  let p = &(*w).v;\n  return 1;\n}\n"
+                     "fn main() -> int { let w: *W<[u8; 1]> = null; return f(w) as int; }"),
+}
+
+
+@pytest.mark.parametrize(
+    "source", _ARRAY_ADDRESS_SOURCES.values(), ids=_ARRAY_ADDRESS_SOURCES.keys())
+def test_address_of_an_array_is_a_located_diagnostic(source):
+    error = assert_located(source, "address of an array")
+    assert error.line in (2, 3)
+
+
+def test_address_of_an_array_element_still_compiles():
+    assert "main" in c_of("fn main() -> int { let x: [u8; 1] = [1]; let p = &x[0]; return 0; }")
+
+
+def test_spec_states_pointers_to_arrays_are_rejected():
+    assert "`*T` where `T` is an array type is rejected" in _spec_text()
+
+
+def _spec_text():
+    with open(os.path.join(ROOT, "docs", "language-specification.md"), encoding="utf-8") as spec:
+        return " ".join(spec.read().split())

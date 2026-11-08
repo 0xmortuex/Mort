@@ -1945,6 +1945,10 @@ class Checker:
                 ot = self._check_expr(e.operand)
                 if not self._is_lvalue(e.operand):
                     self._error("cannot take the address of this expression", e)
+                if is_array(self._resolve_alias_type(ot)):
+                    self._error(
+                        f"cannot take the address of an array ({ot}); take the "
+                        "address of an element instead, such as &a[0]", e)
                 root_name = self._assignment_root(e.operand)
                 prefix = (
                     "*const "
