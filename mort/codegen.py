@@ -14,8 +14,11 @@ from .errors import MortError
 from .typechecker import BUILTIN_NAMES
 
 # [value; n] is written out element by element in the generated C, so a short
-# source line can demand gigabytes. This bounds the total across the program.
-MAX_ARRAY_REPEAT_BYTES = 32 * 1024 * 1024
+# source line can demand gigabytes. This bounds that C text across the program.
+# Zero-filled arrays above _ZERO_REPEAT_MIN are emitted as {0} and cost nothing.
+MAX_ARRAY_REPEAT_BYTES = 256 * 1024 * 1024
+_ZERO_REPEAT_MIN = 256
+_ZERO_ELEMENTS = frozenset(("0", "0.0", "0.0f", "false", "NULL"))
 
 # Runtime-backed builtin families. Membership must be exact: a user function
 # such as a kernel's own `net_send` shares the prefix but is not a builtin,
@@ -2579,6 +2582,8 @@ class CodeGen:
             return "{" + ", ".join(self._gen_expr(el) for el in e.elements) + "}"
         if isinstance(e, A.ArrayRepeat):
             v = self._gen_expr(e.value)
+            if e.count > _ZERO_REPEAT_MIN and v in _ZERO_ELEMENTS:
+                return "{0}"
             self.array_repeat_bytes += e.count * (len(v) + 2)
             if self.array_repeat_bytes > MAX_ARRAY_REPEAT_BYTES:
                 raise MortError(

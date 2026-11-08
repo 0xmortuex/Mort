@@ -33,6 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import mortc
+from mort import codegen as codegen_module
 from mort import fuzz as fuzz_module
 from mort.errors import MortError
 from mort.formatter import format_source
@@ -10309,18 +10310,16 @@ def test_invalid_utf8_is_reported_by_the_formatter(tmp_path, capsys):
     assert "not valid UTF-8" in capsys.readouterr().err
 
 
-def test_huge_array_repeat_is_a_located_diagnostic():
-    error = assert_located(
-        "fn main() -> int {\n  let x: [i64; 2000000000] = [0; 2000000000];\n  return 0;\n}",
-        "array repeat", "2000000000",
-    )
-    assert (error.line, error.col) == (2, 30)
+def test_huge_zero_array_repeat_costs_no_memory():
+    code = c_of("fn main() -> int { let x: [i64; 2000000000] = [0; 2000000000]; return 0; }")
+    assert "{0}" in code and len(code) < 1_000_000
 
 
-def test_array_repeat_budget_is_shared_across_the_program():
-    # Each repeat alone is modest; together they would exhaust memory, which a
+def test_array_repeat_budget_is_shared_across_the_program(monkeypatch):
+    # Each repeat alone fits; together they pass the budget, which a
     # per-literal cap would miss.
-    repeats = " ".join(f"let a{i}: [u8; 5000000] = [0; 5000000];" for i in range(100))
+    monkeypatch.setattr(codegen_module, "MAX_ARRAY_REPEAT_BYTES", 1024 * 1024)
+    repeats = " ".join(f"let a{i}: [u8; 100000] = [1; 100000];" for i in range(10))
     assert_located(f"fn main() -> int {{ {repeats} return 0; }}", "array repeat")
 
 
@@ -10334,8 +10333,9 @@ def test_array_repeat_budget_counts_the_element_text():
     assert error.line == 1
 
 
-def test_large_array_repeat_within_the_budget_still_compiles():
-    assert "0, 0" in c_of("fn main() -> int { let x: [u8; 100000] = [0; 100000]; return 0; }")
+def test_large_zero_array_repeat_collapses_and_nonzero_expands():
+    assert "{0}" in c_of("fn main() -> int { let x: [u8; 100000] = [0; 100000]; return 0; }")
+    assert "1, 1" in c_of("fn main() -> int { let x: [u8; 1000] = [1; 1000]; return 0; }")
 
 
 def test_generic_lookahead_is_linear_on_long_less_than_chains():
@@ -10689,3 +10689,29 @@ def test_deep_type_names_do_not_hang(source):
     error, seconds = _compile_bounded(source, 8)
     assert error is None or isinstance(error, MortError), repr(error)
     assert seconds < 8
+
+
+def test_zero_initialised_array_does_not_expand_its_c_text():
+    source = "let frame: [u8; 12000000] = [0; 12000000]; fn main() -> int { return 0; }"
+    code = c_of(source)
+    assert "{0}" in code
+    assert len(code) < 1_000_000
+
+
+def test_two_zeroed_rgba_framebuffers_compile():
+    pixels = 1920 * 1080 * 4
+    source = (f"let a: [u8; {pixels}] = [0; {pixels}]; "
+              f"let b: [u8; {pixels}] = [0; {pixels}]; fn main() -> int {{ return 0; }}")
+    assert len(c_of(source)) < 1_000_000
+
+
+def test_small_array_repeat_output_is_unchanged():
+    assert "= {0, 0, 0, 0};" in c_of("fn main() -> int { let a: [u8; 4] = [0; 4]; return 0; }")
+
+
+def test_nonzero_array_repeat_past_the_budget_is_located():
+    error = assert_located(
+        "fn main() -> int {\n  let x: [i64; 2000000000] = [1; 2000000000];\n  return 0;\n}",
+        "array repeat", "2000000000",
+    )
+    assert (error.line, error.col) == (2, 30)
