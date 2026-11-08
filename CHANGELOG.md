@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `volatile_read<T>(pointer)` and `volatile_write<T>(pointer, value)` builtins
+  for `u8`..`u64` and `i8`..`i64`, usable in hosted and freestanding code, with
+  misuse reported at the call's line and column. Plain `*p` at `-O2` can delete
+  MMIO stores and poll loops; these accesses are not elided or reordered
+  relative to each other. Specified in section 7.4 of the language
+  specification.
+
 ## 0.54.0 - 2026-08-01
 
 Standard library addition. The compiler version moves to 0.54 while
