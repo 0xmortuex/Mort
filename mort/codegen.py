@@ -2339,8 +2339,8 @@ class CodeGen:
                     payload = f"{temporary}.data.v_{arm.variant_name}"
                     if arm.payload_arity > 1:
                         payload += f".f_{binding_index}"
-                    self._emit(
-                        f"{self._ct(binding_type)} m_{binding_name} = {payload};")
+                    self._emit(self._var_decl(
+                        binding_type, f"m_{binding_name}", payload) + ";")
                     if destructor is not None:
                         live = f"mort_live_m_{binding_name}"
                         self._emit(f"bool {live} = true;")
