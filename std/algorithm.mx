@@ -17,6 +17,62 @@ pub fn reverse<T>(values: []T) -> void {
     }
 }
 
+// Reverses the half-open range [start, end) of `values` in place, via a
+// moved-out temporary per swapped pair (see `reverse`). Shared by
+// `rotate_left`/`rotate_right` below.
+fn reverse_range<T>(values: []T, start: u64, end: u64) -> void {
+    let count = end - start;
+    for index: u64 in 0..(count / 2) {
+        let temporary = values[start + index];
+        values[start + index] = values[end - 1 - index];
+        values[end - 1 - index] = move temporary;
+    }
+}
+
+// Rotates `values` in place so the element at `count` becomes the new
+// first element; the first `count` elements move to the end, preserving
+// their relative order (matching Rust's `slice::rotate_left`), the
+// bare-slice counterpart to `std.vec.rotate_left`. `count` is taken modulo
+// `values.len` (so `count >= values.len` wraps rather than being a no-op
+// or out-of-bounds), and an empty slice is always a no-op. Built on the
+// standard three-reversal trick — reverse [0, count), reverse [count,
+// length), then reverse the whole slice. Like `slice_reverse`, this is
+// *not* usable for a resource element type: the typechecker's
+// resource-overwrite check only exempts assignment through a raw pointer,
+// not through a slice, so `values[index] = ...` on a resource `T` is
+// rejected at compile time.
+pub fn rotate_left<T>(values: []T, count: u64) -> void {
+    let length = values.len;
+    if length == 0 {
+        return;
+    }
+    let amount = count % length;
+    if amount == 0 {
+        return;
+    }
+    reverse_range(values, 0, amount);
+    reverse_range(values, amount, length);
+    reverse_range(values, 0, length);
+}
+
+// Rotates `values` in place so the last `count` elements move to the
+// front, preserving their relative order (matching Rust's
+// `slice::rotate_right`), the bare-slice counterpart to
+// `std.vec.rotate_right`. Equivalent to `rotate_left(values, length -
+// count % length)`; see `rotate_left` for the wraparound, empty-slice, and
+// resource-element caveats.
+pub fn rotate_right<T>(values: []T, count: u64) -> void {
+    let length = values.len;
+    if length == 0 {
+        return;
+    }
+    let amount = count % length;
+    if amount == 0 {
+        return;
+    }
+    rotate_left(values, length - amount);
+}
+
 pub fn sort<T>(values: []T) -> void {
     for index: u64 in 1..values.len {
         let position = index;

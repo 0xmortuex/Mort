@@ -9459,6 +9459,46 @@ def test_std_algorithm_count_counts_elements_matching_a_predicate():
 
 
 @needs_cc
+def test_std_algorithm_rotate_left_and_rotate_right_rotate_a_bare_slice_in_place():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_rotate.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; "
+                "fn main() -> int { "
+                "let values: [i64; 5] = [1, 2, 3, 4, 5]; "
+                "let view: []i64 = slice(&values[0], 5); "
+                "algorithm.rotate_left(view, 2); "
+                "print(values[0]); print(values[2]); print(values[4]); "
+                "algorithm.rotate_right(view, 2); "
+                "print(values[0]); print(values[4]); "
+                "algorithm.rotate_left(view, 7); "
+                "print(values[0]); "
+                "algorithm.rotate_left(view, 0); "
+                "print(values[0]); "
+                "let empty_view: []i64 = slice(&values[0], 0); "
+                "algorithm.rotate_left(empty_view, 3); "
+                "algorithm.rotate_right(empty_view, 3); "
+                "let single: [i64; 1] = [42]; "
+                "let single_view: []i64 = slice(&single[0], 1); "
+                "algorithm.rotate_left(single_view, 5); "
+                "print(single[0]); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__rotate_left_i64" in c_source
+        assert "mort_std__algorithm__rotate_right_i64" in c_source
+        cfile = os.path.join(d, "algorithm_rotate.c")
+        exe = os.path.join(d, "algorithm_rotate.exe" if os.name == "nt" else "algorithm_rotate")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "3\n5\n2\n1\n5\n3\n3\n42\n"
+
+
+@needs_cc
 def test_generic_option_and_result_enums_run():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "generic_enums.mx")

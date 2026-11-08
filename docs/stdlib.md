@@ -44,7 +44,17 @@ single-pass scan, but ordering by a caller-supplied `less_than` instead of
 requiring `T` to support `<`/`>`, so they work for element types with no
 built-in order (e.g. the shortest string in a `[]const []const u8` by
 `.len`, or a struct by one of its fields). `None` for an empty slice, same
-convention as `min`/`max`.
+convention as `min`/`max`. `rotate_left<T>(values: []T, count: u64) -> void`
+/ `rotate_right<T>(values: []T, count: u64) -> void` rotate a bare slice in
+place — the first/last `count` elements move to the opposite end,
+preserving relative order (matching Rust's `slice::rotate_left`/
+`rotate_right`) — the slice-level counterpart to `std.vec.rotate_left`/
+`rotate_right`; `count` is taken modulo `values.len` (so `count >=
+values.len` wraps rather than being rejected) and an empty slice is always
+a no-op. Not resource-safe for the same reason `slice_reverse` isn't: the
+typechecker's resource-overwrite check only exempts assignment through a
+raw pointer, not through a slice, so neither function compiles for a
+resource element type.
 
 ## `std.ascii`
 
