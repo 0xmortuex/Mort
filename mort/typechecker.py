@@ -857,7 +857,8 @@ class Checker:
                 self.globals[g.name] = g.var_type
                 self.global_mutable[g.name] = g.mutable
                 continue
-            t = self._check_expr(g.expr)
+            # A declared type range-checks the literal below, naming that type.
+            t = self._check_expr(g.expr, literal_operand=bool(g.decl_type))
             if t == "void":
                 self._error("cannot bind a void value to a global", g)
             if t == "null" and not g.decl_type:
@@ -1356,7 +1357,8 @@ class Checker:
                     s.destructor_symbol = self._resource_destructor(
                         s.var_type, s)
                 return
-            t = self._check_expr(s.expr)
+            # A declared type range-checks the literal below, naming that type.
+            t = self._check_expr(s.expr, literal_operand=bool(s.decl_type))
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if t == "null" and not s.decl_type:
