@@ -21,23 +21,11 @@ error: call to undefined function 'args'
 Interim: `selfhost/lex_main.mx` reads `MORT_LEX_IN` and `MORT_LEX_OUT` from the
 environment.
 
-### G2: no way to write to stderr
+### G2: no way to write to stderr (resolved)
 
-No builtin exists, and C's `stderr` cannot be reached from Mort.
-
-```
-eprintln("x");
-error: call to undefined function 'eprintln'
-
-extern let stderr: *void;
-error: expected 'fn', got 'let'
-
-extern fn fdopen(fd: c_int, mode: *const c_char) -> *void;
-error: conflicting types for 'fdopen'
-  (C backend; stdio.h declares it as returning FILE*)
-```
-
-Interim: diagnostics go to stdout via `println`.
+Fixed by the hosted builtin `eprintln(*u8)`, with `selfhost/support.mx`'s
+diagnostics using it. `selfhost/lex_main.mx` still reports on stdout; its tests
+assert that and nothing needs it changed yet.
 
 ### G3: `extern fn` prototypes clash with libc headers
 

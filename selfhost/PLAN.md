@@ -64,7 +64,7 @@ tests show each exclusion is detected.
   (`! - ~ & *`), all binary operators, calls, `as` casts (including enum to
   integer), struct literals, field access, indexing, `sizeof<T>()`,
   `Enum.Variant`.
-- Builtins: `alloc`, `free`, `sizeof`, `println`, `print`, `file_open`,
+- Builtins: `alloc`, `free`, `sizeof`, `println`, `eprintln`, `print`, `file_open`,
   `file_read`, `file_write`, `file_close`.
 
 **Deliberately out, and why.**

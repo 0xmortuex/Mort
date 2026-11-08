@@ -24,7 +24,7 @@ F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
 BUILTIN_NAMES = {
-    "print", "println", "assert", "alloc", "free", "len", "slice",
+    "print", "println", "eprintln", "assert", "alloc", "free", "len", "slice",
     "sizeof",
     "unix_time", "cpu_millis",
     "file_open", "file_close", "file_read", "file_write", "file_flush",
@@ -2526,14 +2526,14 @@ class Checker:
             if at not in INT_TYPES and at not in FLOAT_TYPES:
                 self._error(f"print expects an integer or float, got {at}", e)
             return "void"
-        if e.name == "println":
+        if e.name in ("println", "eprintln"):
             if self.freestanding:
-                self._error("println is not available in freestanding mode", e)
+                self._error(f"{e.name} is not available in freestanding mode", e)
             if len(e.args) != 1:
-                self._error("println expects exactly 1 argument", e)
+                self._error(f"{e.name} expects exactly 1 argument", e)
             at = self._check_expr(e.args[0])
             if at != "*u8":
-                self._error(f"println expects a string (*u8), got {at}", e)
+                self._error(f"{e.name} expects a string (*u8), got {at}", e)
             return "void"
         if e.name == "assert":
             if self.freestanding:

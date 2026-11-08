@@ -441,6 +441,7 @@ Hosted builtins:
 | --- | --- |
 | `print(value)` | print an integer, bool, or float followed by newline |
 | `println(*u8)` | print a zero-terminated byte string followed by newline |
+| `eprintln(*u8)` | like `println`, on standard error |
 | `assert(bool)` | terminate with a source-line diagnostic when false |
 | `alloc(u64)` | allocate bytes, returning `*void` |
 | `free(*void)` | release a prior allocation |

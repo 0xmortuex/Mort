@@ -27,7 +27,7 @@ ALLOWED_NODES = {
     "IntLit", "CharLit", "StrLit", "BoolLit", "Var", "Unary", "Binary", "Call",
     "Cast", "StructLit", "FieldAccess", "Index", "ArrayLit",
 }
-ALLOWED_BUILTINS = {"alloc", "free", "sizeof", "println", "print",
+ALLOWED_BUILTINS = {"alloc", "free", "sizeof", "println", "eprintln", "print",
                     "file_open", "file_close", "file_read", "file_write"}
 
 

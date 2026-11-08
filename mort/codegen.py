@@ -1528,6 +1528,7 @@ class CodeGen:
         self.used_inl = False
         self.used_outl = False
         self.used_println = False
+        self.used_eprintln = False
         self.used_print = False
         self.used_print_float = False
         self.used_assert = False
@@ -1796,6 +1797,10 @@ class CodeGen:
                     'static void mort_print_float(double v) { printf("%.17g\\n", v); }')
             if self.used_println:
                 self._emit("static void mort_println(uint8_t* text) { puts((char*)text); }")
+            if self.used_eprintln:
+                self._emit(
+                    'static void mort_eprintln(uint8_t* text) { '
+                    'fprintf(stderr, "%s\\n", (char*)text); }')
             if self.used_assert:
                 self._emit("static void mort_assert(bool condition, int64_t line) {")
                 self._emit('    if (!condition) { fprintf(stderr, "assertion failed at Mort line %lld\\n", (long long)line); exit(1); }')
@@ -2619,6 +2624,8 @@ class CodeGen:
                 self.used_outl = True
             elif e.name == "println":
                 self.used_println = True
+            elif e.name == "eprintln":
+                self.used_eprintln = True
             elif e.name == "print" and e.args[0].type in ("f32", "f64"):
                 self.used_print_float = True
             elif e.name == "print":
@@ -2659,6 +2666,8 @@ class CodeGen:
                     if e.args[0].type in ("f32", "f64") else "mort_print")
             elif e.name == "println":
                 name = "mort_println"
+            elif e.name == "eprintln":
+                name = "mort_eprintln"
             elif e.name == "assert":
                 return f"mort_assert({args}, {e.line})"
             elif e.name == "alloc":

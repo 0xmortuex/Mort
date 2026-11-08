@@ -9985,6 +9985,45 @@ def test_examples_run(name, expected):
     assert result.stdout == expected
 
 
+# ---------- process builtins: eprintln, arg_count, arg_get ----------
+
+def _build_and_run(source, arguments=()):
+    with tempfile.TemporaryDirectory() as directory:
+        cfile = os.path.join(directory, "program.c")
+        exe = os.path.join(directory, "program.exe" if os.name == "nt" else "program")
+        with open(cfile, "w", encoding="utf-8") as handle:
+            handle.write(mortc.compile_to_c(source))
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        return subprocess.run(
+            [exe, *arguments], capture_output=True, text=True, check=False)
+
+
+@needs_cc
+def test_eprintln_writes_only_to_stderr():
+    result = _build_and_run(
+        'fn main() -> int { println("out"); eprintln("err"); return 3; }')
+    assert result.returncode == 3
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+
+
+def test_eprintln_is_rejected_for_non_strings_and_bad_arity():
+    with pytest.raises(MortError, match=r"eprintln expects a string \(\*u8\), got i64"):
+        c_of("fn main() -> int { eprintln(1); return 0; }")
+    with pytest.raises(MortError, match="eprintln expects exactly 1 argument"):
+        c_of('fn main() -> int { eprintln("a", "b"); return 0; }')
+
+
+def test_eprintln_is_rejected_in_freestanding_mode():
+    with pytest.raises(MortError, match="eprintln is not available in freestanding mode"):
+        mortc.compile_to_c('fn f() { eprintln("x"); }', freestanding=True)
+
+
+def test_eprintln_helper_is_emitted_only_when_used():
+    assert "mort_eprintln" not in c_of('fn main() -> int { println("x"); return 0; }')
+    assert "mort_eprintln" in c_of('fn main() -> int { eprintln("x"); return 0; }')
+
+
 # ---------- allow running without pytest ----------
 
 if __name__ == "__main__":
