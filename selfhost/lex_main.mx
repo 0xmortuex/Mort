@@ -1,0 +1,105 @@
+// Standalone lexer driver: dumps the tokens of one Mort source file.
+//
+// Takes its paths from MORT_LEX_IN and MORT_LEX_OUT because Mort programs have
+// no command-line access yet (BLOCKERS.md). The diagnostic goes to stdout for
+// the same kind of reason: there is no stderr builtin.
+//
+// Exit status: 0 tokenized, 1 lexical error (dump still written), 2 usage or
+// I/O failure.
+
+import lexer;
+
+extern fn getenv(name: *const c_char) -> *c_char;
+
+fn env_path(name: *u8) -> *u8 {
+    return getenv(name as *const c_char) as *u8;
+}
+
+fn read_all(path: *u8) -> Buf {
+    let handle = file_open(path, "rb");
+    let contents = buf_new(1);
+    if handle == (0 as *void) {
+        contents.cap = 0;
+        return contents;
+    }
+    let chunk = alloc(65536) as *u8;
+    loop {
+        let got = file_read(handle, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            buf_push(&contents, chunk[i]);
+        }
+    }
+    file_close(handle);
+    return contents;
+}
+
+fn print_diagnostic(path: *u8, line: u64, col: u64, message: Span) {
+    let text = buf_new(256);
+    buf_push_z(&text, path);
+    buf_push(&text, ':');
+    buf_push_u64(&text, line);
+    buf_push(&text, ':');
+    buf_push_u64(&text, col);
+    buf_push_z(&text, ": error: ");
+    dump_escaped(&text, message);
+    buf_push(&text, 0);
+    println(text.data);
+}
+
+fn write_dump(path: *u8, dump: *Buf) -> bool {
+    let handle = file_open(path, "wb");
+    if handle == (0 as *void) {
+        return false;
+    }
+    let written = file_write(handle, (*dump).data, (*dump).len);
+    file_close(handle);
+    return written == (*dump).len;
+}
+
+fn main() -> int {
+    let in_path = env_path("MORT_LEX_IN");
+    let out_path = env_path("MORT_LEX_OUT");
+    if in_path == (0 as *u8) || out_path == (0 as *u8) {
+        println("lex_main: set MORT_LEX_IN and MORT_LEX_OUT");
+        return 2;
+    }
+    let raw = read_all(in_path);
+    if raw.cap == 0 {
+        let text = buf_new(256);
+        buf_push_z(&text, "lex_main: cannot read ");
+        buf_push_z(&text, in_path);
+        buf_push(&text, 0);
+        println(text.data);
+        return 2;
+    }
+    let dump = buf_new(4096);
+    let status = 0;
+    let source = lx_decode_source(buf_span(&raw));
+    if source.valid {
+        let lexer = lx_new(source.bytes);
+        if !lx_tokenize(&lexer) {
+            status = 1;
+            print_diagnostic(in_path, lexer.err_line, lexer.err_col, lexer.err_message);
+        }
+        dump_tokens(&dump, &lexer);
+    } else {
+        status = 1;
+        let message = lx_invalid_utf8_message(source.err_byte);
+        print_diagnostic(in_path, source.err_line, source.err_col, message);
+        buf_push_z(&dump, "ERROR ");
+        buf_push_u64(&dump, source.err_line);
+        buf_push(&dump, ':');
+        buf_push_u64(&dump, source.err_col);
+        buf_push(&dump, ' ');
+        dump_escaped(&dump, message);
+        buf_push(&dump, 10);
+    }
+    if !write_dump(out_path, &dump) {
+        println("lex_main: cannot write output");
+        return 2;
+    }
+    return status;
+}
