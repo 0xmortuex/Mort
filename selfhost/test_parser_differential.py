@@ -120,6 +120,13 @@ def type_case(text):
 
 
 EDGE_CASES = {
+    # --- call name positions
+    "call_name_pos_split_line": fragment("    g\n  (1);"),
+    "call_name_pos_parenthesized": fragment("  (g)(1);"),
+    "call_name_pos_qualified": fragment("    a.b.c(1);"),
+    "call_name_pos_generic_split": fragment("  g\n<u8>\n(1);"),
+    "call_name_pos_nested": fragment("g(\n  h(\n    k()));"),
+    "call_name_pos_after_non_ascii": fragment("/* é世 */ g();"),
     # --- top level
     "empty": b"",
     "comment_only": b"// nothing\n/* here */",
@@ -933,6 +940,12 @@ def test_every_ast_class_is_exercised():
     assert classes - seen == set()
 
 
+def test_reference_dumps_the_call_name_position():
+    program = py_ast_dump.parse_source("fn f() {\n    g\n  (1);\n}\n")
+    dump = py_ast_dump.dump_program(program)
+    assert 'Call name="g" args=[1 line=#3 type_args=[0 name_pos=2:5\n' in dump
+
+
 def test_reference_rejects_a_parser_set_checker_field():
     program = py_ast_dump.parse_source("fn f() { let a = 1; }")
     program.funcs[0].body.stmts[0].var_type = "i64"
@@ -947,8 +960,7 @@ def f64_locals(root, monkeypatch):
     """Locals the checker typed f64, as (file name, line), for one program.
 
     Reads the checker's result, so an inferred type is seen as well as a
-    written one. lexer.mx is left out: its strtod local is gone on
-    feat/selfhost-plan, which replaces that code.
+    written one.
     """
     captured = []
 
@@ -972,7 +984,7 @@ def f64_locals(root, monkeypatch):
                 found.add((Path(item.filename).name, item.line))
             stack.extend(value for field, value in vars(item).items()
                          if isinstance(value, (A.Node, list, tuple)))
-    return sorted(entry for entry in found if entry[0] != "lexer.mx")
+    return sorted(found)
 
 
 @pytest.mark.parametrize("root", ["parse_main.mx", "float_repr_main.mx"])

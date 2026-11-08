@@ -921,7 +921,7 @@ fn ps_call_args(p: *Parser, call: *Node) {
     ps_expect(p, Tok.RPAREN, "')'");
 }
 
-fn ps_generic_call(p: *Parser, expr: *Node) -> *Node {
+fn ps_generic_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
     let name = ps_qualified_name(p, expr);
     if name == NO_TEXT {
         ps_fail_z(p, (*ps_peek(p)).line, "only named functions can have type arguments");
@@ -937,11 +937,13 @@ fn ps_generic_call(p: *Parser, expr: *Node) -> *Node {
     let call = ast_new(NodeKind.CALL, (*ps_expect(p, Tok.LPAREN, "'('")).line);
     (*call).name = name;
     (*call).names = type_args;
+    (*call).name_line = (*start).line;
+    (*call).name_col = (*start).col;
     ps_call_args(p, call);
     return call;
 }
 
-fn ps_plain_call(p: *Parser, expr: *Node) -> *Node {
+fn ps_plain_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
     let name = ps_qualified_name(p, expr);
     if name == NO_TEXT {
         ps_fail_z(p, (*ps_peek(p)).line, "only named functions can be called");
@@ -949,6 +951,8 @@ fn ps_plain_call(p: *Parser, expr: *Node) -> *Node {
     let call = ast_new(NodeKind.CALL, (*ps_advance(p)).line);
     (*call).name = name;
     (*call).names = ast_new_names();
+    (*call).name_line = (*start).line;
+    (*call).name_col = (*start).col;
     ps_call_args(p, call);
     return call;
 }
@@ -973,13 +977,14 @@ fn ps_index(p: *Parser, expr: *Node) -> *Node {
 }
 
 fn ps_postfix(p: *Parser) -> *Node {
+    let start = ps_peek(p);
     let expr = ps_primary(p);
     loop {
         let kind = ps_kind(p);
         if kind == Tok.LT && ps_looks_like_call_type_args(p) {
-            expr = ps_generic_call(p, expr);
+            expr = ps_generic_call(p, expr, start);
         } else if kind == Tok.LPAREN {
-            expr = ps_plain_call(p, expr);
+            expr = ps_plain_call(p, expr, start);
         } else if kind == Tok.DOT {
             expr = ps_field_access(p, expr);
         } else if kind == Tok.LBRACKET {
