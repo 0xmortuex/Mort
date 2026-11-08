@@ -237,7 +237,7 @@ one measured ratio.
   verified over every code point. A different Python's Unicode data skips that
   one test.
 
-Test: `python -m pytest selfhost -q` runs against every `.mx` in the repo, 219
+Test: `python -m pytest selfhost -q` runs against every `.mx` in the repo, 198
 edge cases, a seeded mutation test, the Unicode check and the subset gate.
 
 ## 8. Language and stdlib gaps
