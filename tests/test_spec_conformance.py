@@ -1445,3 +1445,10 @@ def test_freestanding_arithmetic_failures_trap_and_indexing_is_unchecked():
         freestanding=True)
     assert "__builtin_trap" in c_source
     assert "mort_bounds" not in c_source
+
+
+def test_a_function_value_can_be_a_match_subject():
+    assert _run_program(
+        "fn g() -> void {} fn h() -> void {} fn main() -> int { let p = g;"
+        " match p { h => { print(1); } g => { print(2); } _ => { print(3); } } return 0; }"
+    ).stdout == "2\n"

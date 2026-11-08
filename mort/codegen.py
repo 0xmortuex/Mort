@@ -2311,7 +2311,8 @@ class CodeGen:
             temporary = f"mort_match_{match_id}"
             self._emit("{")
             self.indent += 1
-            self._emit(f"{self._ct(s.expr.type)} {temporary} = {self._gen_expr(s.expr)};")
+            self._emit(self._var_decl(
+                s.expr.type, temporary, self._gen_expr(s.expr)) + ";")
             emitted_condition = False
             for arm_index, arm in enumerate(s.arms):
                 if arm.pattern is None:
