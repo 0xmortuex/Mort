@@ -27,6 +27,10 @@ REL_OPS = {"<", ">", "<=", ">="}
 # Each multiplication's cost grows with its operands, so an unbounded constant
 # chain can stall compilation. No value this wide can fit an integer type.
 MAX_CONSTANT_BITS = 2 ** 18
+# A generic call can instantiate itself at ever-growing types forever. A finite
+# program stops long before this: types this nested exhaust the recursive type
+# helpers anyway.
+MAX_INSTANTIATION_DEPTH = 256
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
     "sizeof",
@@ -257,6 +261,7 @@ class Checker:
         self.warnings = []
         self.current_ret = None
         self.current_node = None  # where a stack overflow is reported
+        self.instantiation_depth = 0  # of the function being checked
         self.extern_names = set()
         self.loop_depth = 0
         self.current_module = None
@@ -656,7 +661,16 @@ class Checker:
         concrete_symbol = resolved + "<" + ",".join(type_args) + ">"
         if concrete_symbol in self.funcs:
             return concrete_symbol
+        depth = self.instantiation_depth + 1
+        if depth > MAX_INSTANTIATION_DEPTH:
+            raise MortError(
+                f"generic instantiation of {template.name!r} is nested more than "
+                f"{MAX_INSTANTIATION_DEPTH} levels deep",
+                node.line, getattr(node, "paren_col", None) or getattr(node, "col", None),
+                filename=getattr(node, "filename", None),
+            )
         instance = copy.deepcopy(template)
+        instance.instantiation_depth = depth
         self._substitute_function_types(instance, mapping)
         instance.generic_params = []
         instance.symbol_name = concrete_symbol
@@ -1162,6 +1176,7 @@ class Checker:
         return expr.type
 
     def _check_fn(self, f):
+        self.instantiation_depth = getattr(f, "instantiation_depth", 0)
         self.current_ret = f.ret
         self.current_module = f.module
         self.current_import_aliases = f.import_aliases

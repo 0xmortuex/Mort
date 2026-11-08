@@ -325,11 +325,12 @@ class Binary(Node):
 
 
 class Call(Node):
-    def __init__(self, name, args, line, type_args=None):
+    def __init__(self, name, args, line, type_args=None, paren_col=None):
         super().__init__()
         self.name = name
         self.args = args
         self.line = line
+        self.paren_col = paren_col
         self.resolved_name = None
         self.enum_name = None
         self.enum_variant = None

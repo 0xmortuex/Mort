@@ -681,7 +681,7 @@ class Parser:
                         self._advance()
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
-                expr = A.Call(name, args, lp.line, type_args)
+                expr = A.Call(name, args, lp.line, type_args, paren_col=lp.col)
                 expr.name_pos = (start.line, start.col)
             elif self._at(T.LPAREN):
                 name = self._qualified_name(expr)
@@ -696,7 +696,7 @@ class Parser:
                         self._advance()
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
-                expr = A.Call(name, args, lp.line)
+                expr = A.Call(name, args, lp.line, paren_col=lp.col)
                 expr.name_pos = (start.line, start.col)
             elif self._at(T.DOT):
                 dot = self._advance()

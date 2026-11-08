@@ -10662,3 +10662,19 @@ def test_constant_folding_is_not_repeated_at_every_level():
     error, seconds = _compile_bounded(
         f"fn main() -> int {{ let x = ({chain}) / ({chain}); return x as int; }}", 5)
     assert error is None and seconds < 5
+
+
+@pytest.mark.parametrize("source", [
+    "fn g<T>(x:T,n:i64)->i64{return g(&x,n);} fn main() -> int { return g(1,2) as int; }",
+    "fn a<T>(x:T)->i64{return b(&x);} fn b<T>(x:T)->i64{return a(&x);} "
+    "fn main() -> int { return a(1) as int; }",
+], ids=["self", "mutual"])
+def test_runaway_instantiation_is_a_located_diagnostic(source):
+    assert_located_quickly(source, 10, "instantiation")
+
+
+def test_bounded_generic_recursion_still_compiles():
+    source = ("fn g<T>(x: T) -> i64 { return 1; } "
+              "fn main() -> int { let a: i64 = 1; let p = &a; let q = &p; "
+              "return (g(a) + g(p) + g(q)) as int; }")
+    assert "main" in c_of(source)
