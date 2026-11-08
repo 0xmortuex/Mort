@@ -10,6 +10,7 @@ in a context that expects one (let annotations, assignments, returns, args, and
 the other operand of a binary op). Everything else needs an explicit ``as`` cast.
 """
 import copy
+import itertools
 
 from . import mort_ast as A
 from .errors import MortError, MortWarning
@@ -937,6 +938,7 @@ class Checker:
             if f.generic_params:
                 continue
             self._check_fn(f)
+        functions_before_tests = len(self.program.funcs)
         test_names = set()
         for test in self.program.tests:
             if test.name in test_names:
@@ -951,6 +953,9 @@ class Checker:
             for statement in test.body.stmts:
                 self._check_stmt(statement)
             self._finish_binding_scope()
+        # Test bodies can instantiate generics; those instances still need checking.
+        for instance in itertools.islice(self.program.funcs, functions_before_tests, None):
+            self._check_fn(instance)
         return self.program
 
     # ----- scopes -----

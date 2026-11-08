@@ -10799,3 +10799,44 @@ def test_spec_states_pointers_to_arrays_are_rejected():
 def _spec_text():
     with open(os.path.join(ROOT, "docs", "language-specification.md"), encoding="utf-8") as spec:
         return " ".join(spec.read().split())
+
+
+_GENERIC_IN_TEST = ('fn g<T>(x: T) -> i64 { return 1; }\n'
+                    'test "t" { assert(g(1) == 1); }\n')
+_GENERIC_CHAIN_IN_TEST = ('fn g<T>(x: T) -> i64 { return h(&x); }\n'
+                          'fn h<T>(x: T) -> i64 { return 1; }\n'
+                          'test "t" { assert(g(1) == 1); }\n')
+_MAIN = "fn main() -> int { return 0; }\n"
+
+
+@pytest.mark.parametrize("test_mode", [False, True], ids=["normal", "test-mode"])
+@pytest.mark.parametrize("source", [_GENERIC_IN_TEST, _GENERIC_CHAIN_IN_TEST],
+                         ids=["direct", "through-another-generic"])
+def test_generic_called_only_from_a_test_block_compiles(source, test_mode):
+    assert "mort_g" in mortc.compile_sources_to_c([source + _MAIN], test_mode=test_mode)
+
+
+def test_generic_body_reached_only_from_a_test_block_is_checked():
+    source = 'fn g<T>(x: T) -> i64 { return nope; }\ntest "t" { g(1); }\n' + _MAIN
+    with pytest.raises(MortError) as caught:
+        mortc.compile_sources_to_c([source], test_mode=True)
+    assert "nope" in caught.value.msg and caught.value.line == 1
+
+
+def test_check_accepts_a_generic_called_only_from_a_test_block(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(_GENERIC_IN_TEST + _MAIN, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "mortc.py"), str(path), "--check"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr[-400:]
+
+
+@needs_cc
+def test_generic_called_from_a_test_block_runs(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(_GENERIC_CHAIN_IN_TEST + _MAIN, encoding="utf-8")
+    output = tmp_path / ("main" + (".exe" if os.name == "nt" else ""))
+    assert mortc._compile_main([str(path), "-o", str(output)], test_mode=True) == 0
+    assert subprocess.run([str(output)], check=False).returncode == 0
