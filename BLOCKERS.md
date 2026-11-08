@@ -3,8 +3,7 @@
 ## Self-hosting
 
 Language and stdlib gaps found while writing the Mort lexer (`selfhost/`). None
-stopped the lexer. Plan and ranking: `selfhost/PLAN.md` section 8. Each is a
-separate task and is not fixed on this branch.
+stopped the lexer. Status: `selfhost/PLAN.md` section 8.
 
 ### G1: no command-line access (resolved)
 
