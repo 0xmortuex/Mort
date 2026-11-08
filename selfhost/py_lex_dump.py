@@ -19,6 +19,9 @@ two backslashes; every other byte becomes \\xNN (lowercase hex).
 Lines and columns are 1-based and count Unicode code points, as the Python
 lexer does.
 
+Integer literals are limited to 4300 digits in any base (leading zeros count,
+the prefix and `_` separators do not). See PLAN.md section 7.
+
 A lexical error stops the dump after the tokens already produced, with:
 
     ERROR <line>:<col> <escaped message>
@@ -46,6 +49,34 @@ if hasattr(sys, "set_int_max_str_digits"):
 
 INVALID_UTF8 = "ERROR 0:0 source is not valid UTF-8\n"
 
+MAX_INTEGER_DIGITS = 4300
+_PREFIX_KINDS = {"0x": "hex", "0b": "binary", "0o": "octal"}
+
+
+class ReferenceLexer(Lexer):
+    """The Python lexer plus the integer literal limit from PLAN.md.
+
+    mort/lexer.py on main has no limit (it crashes past 4300 decimal digits).
+    fix/frontend-crashes adds the decimal half with this exact message. Applied
+    here, after the normal checks, so the order matches that branch.
+    """
+
+    def _number(self, line, col):
+        start = self.i
+        count = len(self.tokens)
+        super()._number(line, col)
+        if len(self.tokens) == count or self.tokens[-1].type != T.INT:
+            return
+        spelling = self.src[start:self.i].replace("_", "")
+        kind = _PREFIX_KINDS.get(spelling[:2].lower())
+        digits = spelling[2:] if kind else spelling
+        if len(digits) > MAX_INTEGER_DIGITS:
+            self.tokens.pop()
+            raise MortError(
+                f"{kind or 'decimal'} integer literal has {len(digits)} digits; "
+                f"the limit is {MAX_INTEGER_DIGITS}",
+                line, col)
+
 
 def escape(raw):
     out = []
@@ -72,7 +103,7 @@ def format_token(token):
 
 def dump_source(source):
     """Dump already-decoded source text."""
-    lexer = Lexer(source)
+    lexer = ReferenceLexer(source)
     error = None
     try:
         lexer.tokenize()
