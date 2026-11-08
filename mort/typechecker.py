@@ -141,7 +141,7 @@ def generic_parts(t):
     for index, char in enumerate(inner):
         if char == "<":
             depth += 1
-        elif char == ">":
+        elif char == ">" and inner[index - 1:index] != "-":
             depth -= 1
         elif char == "," and depth == 0:
             args.append(inner[start:index])
@@ -159,7 +159,7 @@ def _split_type_list(inner):
     for index, char in enumerate(inner):
         if char == "<":
             angle += 1
-        elif char == ">":
+        elif char == ">" and inner[index - 1:index] != "-":
             angle -= 1
         elif char == "(":
             paren += 1

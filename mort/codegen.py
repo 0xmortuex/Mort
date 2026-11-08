@@ -89,7 +89,7 @@ def _split_type_list(inner):
     for index, char in enumerate(inner):
         if char == "<":
             angle += 1
-        elif char == ">":
+        elif char == ">" and inner[index - 1:index] != "-":
             angle -= 1
         elif char == "(":
             paren += 1

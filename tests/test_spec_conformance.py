@@ -1314,3 +1314,25 @@ def test_reading_plain_fields_and_raw_storage_of_a_resource_stays_legal():
         + "struct H { r: R, n: i64 } fn main() -> int {"
           " let h = H { r: R { v: 1 }, n: 2 }; let n = h.n; print(n);"
           " let p = alloc(8) as *R; let q = &h.r; let s = p; free(p as *void); return 0; }")
+
+
+@pytest.mark.parametrize("program,expected", [
+    ("fn h(x: i64) -> i64 { return x + 1; }"
+     " fn g(f: fn(i64) -> i64, x: i64) -> i64 { return f(x); }"
+     " fn main() -> int { let p: fn(fn(i64) -> i64, i64) -> i64 = g; print(p(h, 2)); return 0; }",
+     "3\n"),
+    ("fn h() -> i64 { return 4; }"
+     " fn main() -> int { let t: (fn() -> i64, i64) = (h, 2); let f = t.0;"
+     " print(f()); return 0; }",
+     "4\n"),
+    ("struct P<A, B> { a: A, b: B } fn h() -> i64 { return 5; }"
+     " fn main() -> int { let t = P<fn() -> i64, i64> { a: h, b: 2 }; let f = t.a;"
+     " print(f()); return 0; }",
+     "5\n"),
+    ("enum E { A(fn() -> i64, i64), B } fn h() -> i64 { return 6; }"
+     " fn main() -> int { let e = E.A(h, 2);"
+     " match e { E.A(f, x) => { print(f()); } E.B => {} } return 0; }",
+     "6\n"),
+])
+def test_function_types_followed_by_another_type_in_a_list(program, expected):
+    assert _run_program(program).stdout == expected
