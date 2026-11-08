@@ -25,6 +25,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
+import mortc  # noqa: E402
 import py_ast_dump  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
@@ -366,6 +367,9 @@ EDGE_CASES = {
     "move_expr": fragment("let v = move a;"),
     "move_stack": fragment("let v = move -a;"),
     "binary_multiline_line": fragment("let v = a\n+ b\n* c;"),
+    "binary_line_is_the_operator": fragment("let v = a +\nb;"),
+    "cast_line_is_the_as": fragment("let v = a\nas u8;"),
+    "shr_split_leaves_one_angle": b"let x: A<u8>> = 0;",
     "binary_missing_rhs": fragment("let v = a + ;"),
     "binary_missing_lhs": fragment("let v = * ;"),
     "binary_double_op": fragment("let v = a + * b;"),
@@ -934,6 +938,46 @@ def test_reference_rejects_a_parser_set_checker_field():
     program.funcs[0].body.stmts[0].var_type = "i64"
     with pytest.raises(AssertionError, match="var_type"):
         py_ast_dump.dump_program(program)
+
+
+# ----- the bootstrap subset -----
+
+
+def f64_locals(root, monkeypatch):
+    """Locals the checker typed f64, as (file name, line), for one program.
+
+    Reads the checker's result, so an inferred type is seen as well as a
+    written one. lexer.mx is left out: its strtod local is gone on
+    feat/selfhost-plan, which replaces that code.
+    """
+    captured = []
+
+    class CaptureProgram:
+        def __init__(self, program, **options):
+            captured.append(program)
+
+        def generate(self):
+            return ""
+
+    monkeypatch.setattr(mortc, "CodeGen", CaptureProgram)
+    mortc.compile_files_to_c([str(root)])
+    found = set()
+    stack = list(captured[0].funcs)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (list, tuple)):
+            stack.extend(item)
+        elif isinstance(item, A.Node):
+            if isinstance(item, A.Let) and item.var_type == "f64":
+                found.add((Path(item.filename).name, item.line))
+            stack.extend(value for field, value in vars(item).items()
+                         if isinstance(value, (A.Node, list, tuple)))
+    return sorted(entry for entry in found if entry[0] != "lexer.mx")
+
+
+@pytest.mark.parametrize("root", ["parse_main.mx", "float_repr_main.mx"])
+def test_no_f64_locals(root, monkeypatch):
+    assert f64_locals(HERE / root, monkeypatch) == []
 
 
 # ----- driver behaviour -----
