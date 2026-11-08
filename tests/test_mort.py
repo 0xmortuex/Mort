@@ -10284,6 +10284,18 @@ def test_type_arguments_stay_valid_on_generic_builtins():
     assert "sizeof" in c_of("fn main() -> int { print(sizeof<u8>() as i64); return 0; }")
 
 
+def test_builtin_type_arguments_follow_the_declared_generic_property():
+    accepted = (
+        "fn main() -> int { let x: u32 = 7; let p = &x; "
+        "print(volatile_read<u32>(p) as i64); return 0; }"
+    )
+    assert "volatile" in c_of(accepted)
+    with pytest.raises(MortError) as raised:
+        c_of("fn main() -> int {\n  let n = 1;\n  print<u32>(n);\n  return 0; }")
+    assert raised.value.msg == "builtin 'print' is not generic and cannot take type arguments"
+    assert raised.value.line == 3
+
+
 ARGUMENT_ECHO = (
     "fn main() -> int { "
     "let count = arg_count(); "

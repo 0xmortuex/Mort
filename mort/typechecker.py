@@ -24,9 +24,11 @@ VOLATILE_WIDTHS = ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64")
 F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
-BUILTIN_NAMES = {
-    "print", "println", "eprintln", "assert", "alloc", "free", "len", "slice",
-    "sizeof",
+# Builtins that accept explicit type arguments. Every other builtin rejects them,
+# so a new generic builtin must be declared here and only here.
+GENERIC_BUILTINS = frozenset({"sizeof", "slice", "volatile_read", "volatile_write"})
+BUILTIN_NAMES = GENERIC_BUILTINS | {
+    "print", "println", "eprintln", "assert", "alloc", "free", "len",
     "unix_time", "cpu_millis",
     "file_open", "file_close", "file_read", "file_write", "file_flush",
     "arg_count", "arg_get",
@@ -46,7 +48,6 @@ BUILTIN_NAMES = {
     "tls_client_connect", "tls_client_connect_with_ca", "tls_send", "tls_recv",
     "tls_protocol_version", "tls_close",
     "outb", "inb", "outw", "inw", "outl", "inl",
-    "volatile_read", "volatile_write",
 }
 C_KEYWORDS = {
     "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -2169,7 +2170,7 @@ class Checker:
                 e.enum_variant = variant_name
                 e.enum_payload_type = payload_type
                 return enum_name
-        if e.type_args and e.name in BUILTIN_NAMES and e.name not in ("sizeof", "slice"):
+        if e.type_args and e.name in BUILTIN_NAMES - GENERIC_BUILTINS:
             self._error(
                 f"builtin {e.name!r} is not generic and cannot take type arguments", e)
         if e.name == "sizeof":
