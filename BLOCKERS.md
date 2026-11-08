@@ -6,20 +6,13 @@ Language and stdlib gaps found while writing the Mort lexer (`selfhost/`). None
 stopped the lexer. Plan and ranking: `selfhost/PLAN.md` section 8. Each is a
 separate task and is not fixed on this branch.
 
-### G1: no command-line access
+### G1: no command-line access (resolved)
 
-A Mort program cannot read its arguments.
-
-```
-fn main(argc: i32, argv: **u8) -> int { ... }
-mortc: error: 'main' must take no parameters
-
-let a = args();
-error: call to undefined function 'args'
-```
-
-Interim: `selfhost/lex_main.mx` reads `MORT_LEX_IN` and `MORT_LEX_OUT` from the
-environment.
+Fixed by the hosted builtins `arg_count()` and `arg_get(u64)`. An out-of-range
+index is a located runtime error. C `main` only takes arguments in programs that
+use them, so generated C for all other programs is unchanged.
+`selfhost/lex_main.mx` still reads `MORT_LEX_IN` and `MORT_LEX_OUT`; its tests
+assert that and nothing needs it changed yet.
 
 ### G2: no way to write to stderr (resolved)
 

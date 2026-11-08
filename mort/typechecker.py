@@ -28,6 +28,7 @@ BUILTIN_NAMES = {
     "sizeof",
     "unix_time", "cpu_millis",
     "file_open", "file_close", "file_read", "file_write", "file_flush",
+    "arg_count", "arg_get",
     "thread_spawn", "thread_join", "thread_sleep_millis",
     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock",
     "atomic_i64_create", "atomic_i64_destroy", "atomic_i64_load",
@@ -2137,6 +2138,19 @@ class Checker:
             if e.args or e.type_args:
                 self._error(f"{e.name} expects no arguments", e)
             return "i64" if e.name == "unix_time" else "u64"
+        if e.name in ("arg_count", "arg_get"):
+            if self.freestanding:
+                self._error(f"{e.name} is not available in freestanding mode", e)
+            if e.name == "arg_count":
+                if e.args or e.type_args:
+                    self._error("arg_count expects no arguments", e)
+                return "u64"
+            if len(e.args) != 1:
+                self._error("arg_get expects exactly 1 argument", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u64", e.args[0]):
+                self._error(f"arg_get index must be u64, got {e.args[0].type}", e)
+            return "*u8"
         if e.name == "file_open":
             if self.freestanding:
                 self._error("file I/O is not available in freestanding mode", e)

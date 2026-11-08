@@ -65,7 +65,7 @@ tests show each exclusion is detected.
   integer), struct literals, field access, indexing, `sizeof<T>()`,
   `Enum.Variant`.
 - Builtins: `alloc`, `free`, `sizeof`, `println`, `eprintln`, `print`, `file_open`,
-  `file_read`, `file_write`, `file_close`.
+  `file_read`, `file_write`, `file_close`, `arg_count`, `arg_get`.
 
 **Deliberately out, and why.**
 
