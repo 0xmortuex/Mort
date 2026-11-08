@@ -23,6 +23,8 @@ quoted form from ``py_ast_dump.py``:
     destructor q(symbol)
     extern q(name)
     global q(name) q(decl_type)|- mutable
+    struct-decl q(name) resource q(destructor_symbol)|-   program.structs, in order
+    enum-decl q(name)                                     program.enums, in order
     --events--
     fn q(symbol)                 a function body begins
     bind q(name) q(kind) dN LM   a binding is declared (scope depth, decl line)
@@ -279,6 +281,14 @@ class _DumpChecker(Checker):
                 decl_type = q(declaration.decl_type) if declaration.decl_type else "-"
                 mutable = 1 if self.global_mutable[declaration.name] else 0
                 out.append(f"global {q(declaration.name)} {decl_type} {mutable}\n")
+        for declaration in self.program.structs:
+            resource = 1 if declaration.resource else 0
+            symbol = declaration.destructor_symbol
+            out.append(
+                f"struct-decl {q(declaration.name)} {resource} "
+                f"{q(symbol) if symbol else '-'}\n")
+        for declaration in self.program.enums:
+            out.append(f"enum-decl {q(declaration.name)}\n")
         self.tables = "".join(out)
 
     @staticmethod

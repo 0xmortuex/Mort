@@ -214,7 +214,28 @@ DECL_CASES = {
     "generic_array_arg": OK_MAIN + "struct G<T> { x: T }\nstruct S { g: G<[u8; 3]> }\n",
     "generic_fn_arg": OK_MAIN + "struct G<T> { x: T }\nstruct S { g: G<fn(u8) -> u8> }\n",
     "generic_two_args": OK_MAIN + "struct G<A, B> { a: A, b: B }\nstruct S { g: G<u8, *u8> }\n",
-    "generic_infinite_expansion": OK_MAIN + "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n",
+    "generic_shape_ptr": OK_MAIN + "struct G<T> { f: *T }\nstruct S { g: G<u8> }\n",
+    "generic_shape_const_ptr": OK_MAIN + "struct G<T> { f: *const T }\nstruct S { g: G<u8> }\n",
+    "generic_shape_slice": OK_MAIN + "struct G<T> { f: []T }\nstruct S { g: G<u8> }\n",
+    "generic_shape_const_slice": OK_MAIN + "struct G<T> { f: []const T }\nstruct S { g: G<u8> }\n",
+    "generic_shape_tuple": OK_MAIN + "struct G<T> { f: (T, *T, u8) }\nstruct S { g: G<u8> }\n",
+    "generic_shape_fn": OK_MAIN + "struct G<T> { f: fn(T, *const T) -> []T }\nstruct S { g: G<u8> }\n",
+    "generic_shape_array": OK_MAIN + "struct G<T> { f: [T; 3], h: [[*T; 2]; 3] }\nstruct S { g: G<u8> }\n",
+    "generic_shape_nested_generic": OK_MAIN + "struct H<A, B> { a: A, b: B }\nstruct G<T> { f: H<T, *T> }\nstruct S { g: G<u8> }\n",
+    "generic_tuple_comma_split_quirk": OK_MAIN + "struct D<T> { a: *D<(T, T)> }\nstruct S { d: D<u8> }\n",
+    "generic_enum_shape_tuple": OK_MAIN + "enum O<T> { A((T, *const T)), B(T, []T) }\nstruct S { o: O<u8> }\n",
+    "instance_order": OK_MAIN + "struct G<T> { x: T }\nstruct H<T> { y: T }\nenum E<T> { A(T) }\nstruct S { a: H<u8>, b: G<u8>, c: E<i64>, d: H<i64>, e: E<u8> }\n",
+    "instance_order_nested": OK_MAIN + "struct G<T> { x: T }\nstruct H<T> { y: G<T> }\nstruct S { a: H<*u8> }\n",
+    "instance_resource_flag": OK_MAIN + "resource struct R<T> { x: T }\nstruct P<T> { x: T }\nfn destroy<T>(value: *R<T>) -> void {}\nstruct S { a: *R<u8>, b: P<u8> }\n",
+    "instance_resource_from_global": OK_MAIN + "resource struct R<T> { x: T }\nfn destroy<T>(value: *R<T>) -> void {}\nlet g: *R<u8> = null;\n",
+    "resource_generic_other_param_name": OK_MAIN + "resource struct R<T> { x: T }\nfn destroy<U>(value: *R<T>) -> void {}\n",
+    "resource_generic_extra_param": OK_MAIN + "resource struct R<T> { x: T }\nfn destroy<T, U>(value: *R<T>) -> void {}\n",
+    "resource_generic_destroy_for_plain": OK_MAIN + "resource struct R { x: u8 }\nfn destroy<T>(value: *R) -> void {}\n",
+    "resource_destroy_wrong_return": OK_MAIN + "resource struct R { x: u8 }\nfn destroy(value: *R) -> i64 { return 0; }\n",
+    "resource_destroy_two_params": OK_MAIN + "resource struct R { x: u8 }\nfn destroy(value: *R, n: u8) -> void {}\n",
+    "alias_multi_payload": OK_MAIN + "type A0 = u8;\nenum E { A(A0, *A0), B(A0) }\n",
+    "alias_multi_payload_generic": OK_MAIN + "type A0 = u8;\nenum E<T> { A(A0, T) }\nstruct S { e: E<A0> }\n",
+    "alias_to_tuple_payload": OK_MAIN + "type P = (u8, *u8);\nenum E { A(P) }\n",
     "resource_ok": OK_MAIN + "resource struct R { x: u8 }\nfn destroy(value: *R) -> void {}\n",
     "resource_no_destroy": OK_MAIN + "resource struct R { x: u8 }\n",
     "resource_wrong_destroy": OK_MAIN + "resource struct R { x: u8 }\nfn destroy(value: R) -> void {}\n",
@@ -435,6 +456,27 @@ BODY_CASES = {
     "body_volatile_bad_width": "let p = 0 as *u32; let v = volatile_read<bool>(p);",
     "body_volatile_undefined_arg": "let v = volatile_read<u32>(missing);",
     "body_volatile_write_undefined_value": "let p = 0 as *u32; volatile_write<u32>(p, missing);",
+    "body_try_nested_in_defer_call": "defer g3(1, 2, t()?);",
+    "body_try_nested_in_defer_binary": "defer 1 + t()?;",
+    "body_try_nested_in_defer_struct": "defer S { a: t()? };",
+    "body_try_nested_in_defer_tuple": "defer (1, t()?);",
+    "body_try_nested_in_defer_index": "let p = 0 as *i64; defer p[t()?];",
+    "body_try_nested_in_defer_cast": "defer t()? as u8;",
+    "body_try_nested_in_defer_field": "defer t()?.a;",
+    "body_try_nested_in_pattern": "let e = 1; match e { g3(1, t()?, 2) => { } _ => { } }",
+    "body_try_nested_in_payload_pattern": "let p = P.A(1); match p { P.A(t()?) => { } P.B => { } }",
+    "body_alias_enum_ctor": "let p = PA.A(1);",
+    "body_alias_chain_enum_ctor": "let p = PB.A(1);",
+    "body_alias_enum_ctor_unknown_variant": "let p = PA.Z(1);",
+    "body_alias_pattern": "let p = PA.A(1); match p { PA.A(v) => { let w = v; } PA.B => { } }",
+    "body_alias_generic_enum_ctor": "let o = OA.Some(1);",
+    "body_alias_generic_enum_variant": "let o = OA.None;",
+    "body_alias_generic_pattern": "let o = OA.Some(1); match o { OA.Some(v) => { let w = v; } OA.None => { } }",
+    "body_alias_unit_variant": "let e = EA.A;",
+    "body_alias_unit_variant_unknown": "let e = EA.Z;",
+    "body_alias_struct_literal_generic": "let s = GA { x: 1 };",
+    "body_alias_type_argument": "let n = sizeof<A0>();",
+    "body_alias_generic_call_type_argument": "tm<A0>(1);",
     "body_mixed_order": "let a = g(); let b = a; { let c = b; g3(a, b, c); }",
 }
 
@@ -453,6 +495,11 @@ struct T2 { p: i64 }
 struct T3 { x: i64, y: i64, z: i64 }
 type SA = S;
 type A0 = i64;
+type PA = P;
+type PB = PA;
+type EA = E;
+type OA = O<u8>;
+type GA = G<u8>;
 fn g() -> i64 { return 0; }
 fn g2() -> i64 { return 1; }
 fn g3(a: i64, b: i64, c: i64) -> i64 { return a; }
@@ -465,17 +512,6 @@ fn t() -> i64 { return 0; }
 @pytest.mark.parametrize("name", sorted(DECL_CASES))
 def test_declarations(check_exe, tmp_path, name):
     source = DECL_CASES[name]
-    # infinite expansion recurses without end; run it at the compiler's own limit
-    limit_note = name == "generic_infinite_expansion"
-    if limit_note:
-        expected = py_check_dump.run_reference(
-            _written(tmp_path, source), "hosted", recursion_limit=2000)
-        assert expected.error == (
-            "error: source nesting exceeds the compiler safety limit")
-        code, stderr, _dump = run_mort(check_exe, expected.manifest, tmp_path)
-        assert code == 1
-        assert stderr.decode("utf-8") == expected.error
-        return
     assert_source_agrees(check_exe, tmp_path, source)
 
 
@@ -489,6 +525,216 @@ def _written(tmp_path, source):
 def test_bodies(check_exe, tmp_path, name):
     source = f"{BODY_PRELUDE}\nfn main() -> int {{\n{BODY_CASES[name]}\nreturn 0;\n}}\n"
     assert_source_agrees(check_exe, tmp_path, source)
+
+
+TEST_BLOCK_CASES = {
+    "valid": 'test "a" { let x = 1; let y = x; }\n' + OK_MAIN,
+    "valid_no_main": 'test "a" { let x = 1; }\n',
+    "undefined": 'test "a" { let x = missing; }\n' + OK_MAIN,
+    "undefined_line": 'test "a" {\n\nlet x = missing;\n}\n' + OK_MAIN,
+    "duplicate_name": 'test "a" { }\ntest "a" { }\n' + OK_MAIN,
+    "duplicate_after_error": 'test "a" { let x = missing; }\ntest "a" { }\n' + OK_MAIN,
+    "two_blocks_same_local": 'test "a" { let x = 1; }\ntest "b" { let x = 2; let y = x; }\n' + OK_MAIN,
+    "redeclare": 'test "a" { let x = 1; let x = 2; }\n' + OK_MAIN,
+    "calls_function": 'fn f() -> i64 { return 1; }\ntest "a" { let x = f(); }\n' + OK_MAIN,
+    "uses_global": 'let g: i64 = 1;\ntest "a" { let x = g; }\n' + OK_MAIN,
+    "shadows_global": 'let g: i64 = 1;\ntest "a" { let g = 2; let x = g; }\n' + OK_MAIN,
+    "control_flow": 'test "a" { for i in 0..3 { if i == 1 { break; } } while false { continue; } }\n' + OK_MAIN,
+    "match_payload": 'enum P { A(i64), B }\ntest "a" { let p = P.A(1); match p { P.A(v) => { let w = v; } P.B => { } } }\n' + OK_MAIN,
+    "break_outside": 'test "a" { break; }\n' + OK_MAIN,
+    "in_module": 'module m;\nfn g() -> i64 { return 1; }\ntest "a" { let x = g(); }\n',
+    "after_function_error": 'fn f() { missing_a(); }\ntest "a" { missing_b(); }\n' + OK_MAIN,
+    "function_then_block_order": 'fn f() { let a = 1; }\ntest "a" { let b = 2; }\nfn h() { let c = 3; }\n' + OK_MAIN,
+    "generic_call": 'fn tm<T>(a: T) -> T { return a; }\ntest "a" { let x = tm(1); }\n' + OK_MAIN,
+    "builtins": 'test "a" { assert(true); println("x"); }\n' + OK_MAIN,
+}
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("name", sorted(TEST_BLOCK_CASES))
+def test_test_blocks_in_every_mode(check_exe, tmp_path, name, mode):
+    assert_source_agrees(check_exe, tmp_path, TEST_BLOCK_CASES[name], mode=mode)
+
+
+def test_invalid_test_block_is_rejected_when_hosted(check_exe, tmp_path):
+    """Regression: test blocks are checked whatever the mode."""
+    source = 'test "a" { let x = missing; }\n' + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
+    assert assert_source_agrees(check_exe, tmp_path, source, mode="freestanding") == "error"
+
+
+def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024):
+    """Run the Mort checker under a hard memory limit: past it, allocation
+    fails and the checker exits 2 instead of taking the machine down."""
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_bytes(manifest_text.encode("utf-8"))
+    out = tmp_path / "out.txt"
+    command = [str(exe), str(manifest), str(out)]
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in (
+                "ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("Basic", BasicLimits),
+                ("Io", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel32.CreateJobObjectW(None, None)
+        assert job, ctypes.get_last_error()
+        info = ExtendedLimits()
+        info.Basic.LimitFlags = 0x100  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        info.ProcessMemoryLimit = limit
+        assert kernel32.SetInformationJobObject(
+            job, 9, ctypes.byref(info), ctypes.sizeof(info)), ctypes.get_last_error()
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert kernel32.AssignProcessToJobObject(job, int(process._handle)), (
+            ctypes.get_last_error())
+        try:
+            _stdout, stderr = process.communicate(timeout=60)
+        finally:
+            process.kill()
+            kernel32.CloseHandle(job)
+    else:
+        import resource
+
+        def apply_limit():
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            preexec_fn=apply_limit)
+        _stdout, stderr = process.communicate(timeout=60)
+    return process.returncode, stderr.replace(b"\r\n", b"\n").rstrip(b"\n")
+
+
+def assert_generic_limit(exe, tmp_path, source, line, template, problem):
+    """The limits are the specification's; Python on main has none yet and
+    cannot run these inputs, so the expected text is built from the rule."""
+    path = _written(tmp_path, source)
+    code, stderr = run_mort_bounded(exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    assert stderr.decode("utf-8") == (
+        f"{path}:{line}: error: generic instantiation of {template!r} {problem}")
+
+
+NESTED_TOO_DEEP = "has a type argument nested more than 256 levels deep"
+
+
+def test_unbounded_generic_struct_expansion_is_rejected(check_exe, tmp_path):
+    assert_generic_limit(
+        check_exe, tmp_path, "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n" + OK_MAIN,
+        1, "G", NESTED_TOO_DEEP)
+
+
+def test_unbounded_generic_enum_expansion_is_rejected(check_exe, tmp_path):
+    assert_generic_limit(
+        check_exe, tmp_path, "enum O<T> { S(*O<*T>), N }\nstruct S { g: O<u8> }\n" + OK_MAIN,
+        1, "O", NESTED_TOO_DEEP)
+
+
+def test_deeply_nested_generic_arguments_are_rejected(check_exe, tmp_path):
+    depth = 900
+    nested = "G<" * depth + "u8" + ">" * depth
+    assert_generic_limit(
+        check_exe, tmp_path,
+        f"struct G<T> {{ x: T }}\nstruct S {{ a: {nested} }}\n" + OK_MAIN,
+        1, "G", NESTED_TOO_DEEP)
+
+
+def test_doubling_generic_arguments_are_rejected(check_exe, tmp_path):
+    assert_generic_limit(
+        check_exe, tmp_path,
+        "struct H<A, B> { a: *A, b: *B }\nstruct D<T> { a: *D<H<T, T>> }\n"
+        "struct S { d: D<u8> }\n" + OK_MAIN,
+        2, "D", "has a type argument longer than 4096 characters")
+
+
+def test_too_many_generic_instances_are_rejected(check_exe, tmp_path):
+    count = 16385
+    declarations = "".join(f"struct T{i} {{ }}\n" for i in range(count))
+    fields = ", ".join(f"f{i}: G<T{i}>" for i in range(count))
+    assert_generic_limit(
+        check_exe, tmp_path,
+        f"struct G<T> {{ x: T }}\n{declarations}struct S {{ {fields} }}\n" + OK_MAIN,
+        1, "G", "exceeds the limit of 16384 in one program")
+
+
+def test_generic_work_budget_is_enforced(check_exe, tmp_path):
+    template = ", ".join(f"f{i}: T" for i in range(9999))
+    uses = ", ".join(f"g{i}: W<T{i}>" for i in range(150))
+    declarations = "".join(f"struct T{i} {{ }}\n" for i in range(150))
+    assert_generic_limit(
+        check_exe, tmp_path,
+        f"struct W<T> {{ {template} }}\n{declarations}struct S {{ {uses} }}\n" + OK_MAIN,
+        1, "W", "exceeds the limit of 1000000 work units in one program")
+
+
+def test_nesting_at_the_limit_still_agrees_with_python(check_exe, tmp_path):
+    depth = 200
+    nested = "G<" * depth + "u8" + ">" * depth
+    source = f"struct G<T> {{ x: *T }}\nstruct S {{ a: *{nested} }}\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
+
+
+def mortc_check(tmp_path, source):
+    """The real command-line compiler, at Python's own recursion limit."""
+    path = _written(tmp_path, source)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"), str(path), "--check"],
+        capture_output=True, text=True)
+    return result.returncode, result.stderr.strip()
+
+
+@pytest.mark.parametrize(
+    "star,accepted", [("", 991), ("*", 495)], ids=["direct", "pointer"])
+def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
+    def chain(count):
+        links = "".join(f"type A{i} = {star}A{i + 1};\n" for i in range(count))
+        return links + f"type A{count} = u8;\n" + OK_MAIN
+
+    for count, rejected in ((accepted, False), (accepted + 1, True), (1500, True)):
+        source = chain(count)
+        python_code, python_error = mortc_check(tmp_path, source)
+        assert (python_code != 0) == rejected, python_error
+        path = _written(tmp_path, source)
+        code, stderr, _dump = run_mort(
+            check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+        if rejected:
+            assert code == 1, stderr
+            assert python_error == (
+                "mortc: error: source nesting exceeds the compiler safety limit")
+            assert stderr == b"error: source nesting exceeds the compiler safety limit"
+        else:
+            assert code == 0, stderr
 
 
 def test_bad_test_block_is_located(check_exe, tmp_path):
@@ -551,6 +797,26 @@ def test_multi_file_module_program(check_exe, tmp_path):
     main_path = tmp_path / "main.mx"
     main_path.write_text(
         "import lib as u;\nfn main() -> int { return u.add(1, 2); }\n",
+        encoding="utf-8")
+    assert compare(check_exe, main_path, "hosted", tmp_path) == "ok"
+
+
+def test_private_function_taken_as_a_value_across_modules(check_exe, tmp_path):
+    (tmp_path / "lib.mx").write_text(
+        "module util;\nfn hidden() -> i64 { return 0; }\n", encoding="utf-8")
+    main_path = tmp_path / "main.mx"
+    main_path.write_text(
+        "import lib as u;\nfn main() -> int { let f = u.hidden; return 0; }\n",
+        encoding="utf-8")
+    assert compare(check_exe, main_path, "hosted", tmp_path) == "error"
+
+
+def test_public_function_taken_as_a_value_across_modules(check_exe, tmp_path):
+    (tmp_path / "lib.mx").write_text(
+        "module util;\npub fn shown() -> i64 { return 0; }\n", encoding="utf-8")
+    main_path = tmp_path / "main.mx"
+    main_path.write_text(
+        "import lib as u;\nfn main() -> int { let f = u.shown; return 0; }\n",
         encoding="utf-8")
     assert compare(check_exe, main_path, "hosted", tmp_path) == "ok"
 
