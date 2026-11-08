@@ -1336,3 +1336,10 @@ def test_reading_plain_fields_and_raw_storage_of_a_resource_stays_legal():
 ])
 def test_function_types_followed_by_another_type_in_a_list(program, expected):
     assert _run_program(program).stdout == expected
+
+
+def test_sizeof_accepts_array_types():
+    assert _run_program(
+        "type A = [u16; 4]; type B = [[u8; 3]; 2];"
+        " fn main() -> int { print(sizeof<A>() as i64); print(sizeof<B>() as i64); return 0; }"
+    ).stdout == "8\n6\n"

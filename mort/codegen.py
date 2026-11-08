@@ -311,6 +311,12 @@ class CodeGen:
         return c_type(
             t, self.struct_names, self.enum_names, self.payload_enum_names)
 
+    def _sizeof(self, t):
+        if _is_array(t):
+            element, count = _array_parts(t)
+            return f"({count}ULL * {self._sizeof(element)})"
+        return f"sizeof({self._ct(t)})"
+
     _U64_MAX = (1 << 64) - 1
     _I64_MAX = (1 << 63) - 1
     _I32_MAX = (1 << 31) - 1
@@ -2689,7 +2695,7 @@ class CodeGen:
                 return f"((void)(*(volatile {c_access}*)({pointer}) = ({value})))"
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
-                return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
+                return f"((uint64_t){self._sizeof(e.type_args[0])})"
             if e.name == "print":
                 name = (
                     "mort_print_float"
