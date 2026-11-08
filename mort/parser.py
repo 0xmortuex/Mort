@@ -598,70 +598,70 @@ class Parser:
         left = self._logic_and()
         while self._at(T.OR):
             op = self._advance()
-            left = A.Binary("||", left, self._logic_and(), op.line)
+            left = A.Binary("||", left, self._logic_and(), op.line, op.col)
         return left
 
     def _logic_and(self):
         left = self._bitor()
         while self._at(T.AND):
             op = self._advance()
-            left = A.Binary("&&", left, self._bitor(), op.line)
+            left = A.Binary("&&", left, self._bitor(), op.line, op.col)
         return left
 
     def _bitor(self):
         left = self._bitxor()
         while self._at(T.PIPE):
             op = self._advance()
-            left = A.Binary("|", left, self._bitxor(), op.line)
+            left = A.Binary("|", left, self._bitxor(), op.line, op.col)
         return left
 
     def _bitxor(self):
         left = self._bitand()
         while self._at(T.CARET):
             op = self._advance()
-            left = A.Binary("^", left, self._bitand(), op.line)
+            left = A.Binary("^", left, self._bitand(), op.line, op.col)
         return left
 
     def _bitand(self):
         left = self._equality()
         while self._at(T.AMP):
             op = self._advance()
-            left = A.Binary("&", left, self._equality(), op.line)
+            left = A.Binary("&", left, self._equality(), op.line, op.col)
         return left
 
     def _equality(self):
         left = self._comparison()
         while self._peek().type in (T.EQ, T.NE):
             op = self._advance()
-            left = A.Binary(op.value, left, self._comparison(), op.line)
+            left = A.Binary(op.value, left, self._comparison(), op.line, op.col)
         return left
 
     def _comparison(self):
         left = self._shift()
         while self._peek().type in (T.LT, T.GT, T.LE, T.GE):
             op = self._advance()
-            left = A.Binary(op.value, left, self._shift(), op.line)
+            left = A.Binary(op.value, left, self._shift(), op.line, op.col)
         return left
 
     def _shift(self):
         left = self._term()
         while self._peek().type in (T.SHL, T.SHR):
             op = self._advance()
-            left = A.Binary(op.value, left, self._term(), op.line)
+            left = A.Binary(op.value, left, self._term(), op.line, op.col)
         return left
 
     def _term(self):
         left = self._factor()
         while self._peek().type in (T.PLUS, T.MINUS):
             op = self._advance()
-            left = A.Binary(op.value, left, self._factor(), op.line)
+            left = A.Binary(op.value, left, self._factor(), op.line, op.col)
         return left
 
     def _factor(self):
         left = self._cast()
         while self._peek().type in (T.STAR, T.SLASH, T.PERCENT):
             op = self._advance()
-            left = A.Binary(op.value, left, self._cast(), op.line)
+            left = A.Binary(op.value, left, self._cast(), op.line, op.col)
         return left
 
     def _cast(self):
@@ -676,7 +676,7 @@ class Parser:
         if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR, T.TILDE):
             op = self._advance()
             op_str = "&" if op.type == T.AMP else op.value
-            return A.Unary(op_str, self._unary(), op.line)
+            return A.Unary(op_str, self._unary(), op.line, op.col)
         if self._at(T.TRY):
             line = self._advance().line
             return A.Try(self._unary(), line)
@@ -784,13 +784,13 @@ class Parser:
         t = self._peek()
         if t.type == T.INT:
             self._advance()
-            return A.IntLit(t.value, t.line)
+            return A.IntLit(t.value, t.line, t.col)
         if t.type == T.FLOAT:
             self._advance()
             return A.FloatLit(t.value, t.line)
         if t.type == T.CHAR:
             self._advance()
-            return A.CharLit(t.value, t.line)
+            return A.CharLit(t.value, t.line, t.col)
         if t.type == T.NULL:
             self._advance()
             # `null` is reserved as a value, but keeping it contextual in call

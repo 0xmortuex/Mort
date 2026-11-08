@@ -265,6 +265,7 @@ class Checker:
         raise MortError(
             msg,
             getattr(node, "line", None),
+            getattr(node, "col", None),
             filename=getattr(node, "filename", None),
         )
 
@@ -869,6 +870,8 @@ class Checker:
                         f"global {g.name!r} is {g.decl_type} but its value is {t}", g)
                 g.var_type = g.decl_type
             else:
+                if g.expr.is_lit:
+                    self._coerce(t, g.expr)
                 g.var_type = t
             if self._needs_drop_type(g.var_type):
                 self._error(
@@ -1306,6 +1309,16 @@ class Checker:
         value must actually fit, so hardware writes like outb(0x12345, ...) or a
         `let x: u8 = 300;` are compile errors, not silent truncation.
         """
+        if expected in INT_TYPES and expr.is_lit:
+            value = self._const_value(expr)
+            if value is not None:
+                lo, hi = INT_RANGES[expected]
+                if not (lo <= value <= hi):
+                    self._error(
+                        f"integer literal {self._value_str(value)} does not fit in "
+                        f"{expected} (range {lo}..{hi})", expr)
+            expr.type = expected  # untyped literal adopts the expected int type
+            return True
         if expr.type == expected:
             self._require_explicit_move(expected, expr)
             return True
@@ -1330,16 +1343,6 @@ class Checker:
         if (is_const_ptr(expected) and is_ptr(expr.type)
                 and pointee(expected) == pointee(expr.type)):
             expr.type = expected
-            return True
-        if expected in INT_TYPES and expr.is_lit:
-            value = self._const_value(expr)
-            if value is not None:
-                lo, hi = INT_RANGES[expected]
-                if not (lo <= value <= hi):
-                    self._error(
-                        f"integer literal {self._value_str(value)} does not fit in "
-                        f"{expected} (range {lo}..{hi})", expr)
-            expr.type = expected  # untyped literal adopts the expected int type
             return True
         return False
 
@@ -1370,6 +1373,8 @@ class Checker:
                         f"but the value is {t}", s)
                 s.var_type = s.decl_type
             else:
+                if s.expr.is_lit:
+                    self._coerce(t, s.expr)
                 s.var_type = t
             self._require_explicit_move(s.var_type, s.expr)
             self._declare(s.name, s.var_type, s, mutable=s.mutable)
@@ -1695,7 +1700,7 @@ class Checker:
                         return True
         return False
 
-    def _check_expr(self, e):
+    def _check_expr(self, e, literal_operand=False):
         e.is_lit = False
         t = self._infer(e)
         e.type = t
@@ -1703,7 +1708,19 @@ class Checker:
         # emit it directly (needed for shifts, whose C form is otherwise UB).
         if t in INT_TYPES and e.is_lit:
             e.const_val = self._const_value(e)
+            # Inside a constant expression values are arbitrary-precision; only
+            # the finished value has to be representable.
+            if not literal_operand:
+                self._require_representable(e)
         return t
+
+    def _require_representable(self, e):
+        """Reject a finished literal no Mort integer type can hold."""
+        value = self._const_value(e)
+        if value is not None and not (INT_RANGES["i64"][0] <= value <= INT_RANGES["u64"][1]):
+            self._error(
+                f"integer literal {self._value_str(value)} does not fit in "
+                "any integer type", e)
 
     @staticmethod
     def _is_lvalue(e):
@@ -1852,7 +1869,7 @@ class Checker:
                     self._error(f"cannot dereference a non-pointer value of type {ot}", e)
                 return pointee(ot)
             if e.op == "-":
-                ot = self._check_expr(e.operand)
+                ot = self._check_expr(e.operand, literal_operand=True)
                 if ot not in INT_TYPES and ot not in FLOAT_TYPES:
                     self._error("unary '-' requires a numeric value", e)
                 e.is_lit = e.operand.is_lit if ot in INT_TYPES else False
@@ -1862,15 +1879,16 @@ class Checker:
                     self._error("unary '!' requires a bool", e)
                 return "bool"
             if e.op == "~":
-                ot = self._check_expr(e.operand)
+                ot = self._check_expr(e.operand, literal_operand=True)
                 if ot not in INT_TYPES:
                     self._error("unary '~' requires an integer", e)
                 e.is_lit = e.operand.is_lit
                 return ot
 
         if isinstance(e, A.Binary):
-            lt = self._check_expr(e.left)
-            rt = self._check_expr(e.right)
+            folds = e.op in ARITH_OPS or e.op in ("&", "|", "^", "<<", ">>")
+            lt = self._check_expr(e.left, literal_operand=folds)
+            rt = self._check_expr(e.right, literal_operand=folds)
             op = e.op
             if op in ARITH_OPS or op in REL_OPS:
                 if lt in FLOAT_TYPES or rt in FLOAT_TYPES:
@@ -1918,6 +1936,10 @@ class Checker:
                 if count is not None and count < 0:
                     self._error(f"shift count cannot be negative ({self._value_str(count)})", e)
                 e.is_lit = e.left.is_lit and e.right.is_lit
+                if not e.is_lit:
+                    for operand in (e.left, e.right):
+                        if operand.is_lit:
+                            self._require_representable(operand)
                 return lt
             if op in ("==", "!="):
                 if lt == "null" and (is_ptr(rt) or function_parts(rt)):
@@ -2087,13 +2109,13 @@ class Checker:
         """Both operands must end up the same integer type; literals adapt."""
         if lt not in INT_TYPES or rt not in INT_TYPES:
             self._error(f"operator '{op}' requires int operands", e)
-        if lt == rt:
-            return lt
         if e.left.is_lit and not e.right.is_lit:
             self._retag_literal(e.left, rt)
             return rt
         if e.right.is_lit and not e.left.is_lit:
             self._retag_literal(e.right, lt)
+            return lt
+        if lt == rt:
             return lt
         if e.left.is_lit and e.right.is_lit:
             return "i64"

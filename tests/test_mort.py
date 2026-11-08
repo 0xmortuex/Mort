@@ -10163,3 +10163,54 @@ def test_nesting_limit_reports_file_line_and_column(tmp_path, capsys):
 ], ids=["plus", "cast", "unary", "blocks", "if", "else-if"])
 def test_nesting_inside_the_limit_still_compiles(body):
     c_of(f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}")
+
+
+_I64 = "let a: i64 = 1; let u: u64 = 1; "
+
+
+@pytest.mark.parametrize("body,col", [
+    ("let x: i64 = 18446744073709551616;", 14),
+    ("let x: i64 = 9223372036854775808;", 14),
+    ("let x = 9223372036854775808;", 9),
+    ("let x = 18446744073709551616;", 9),
+    ("let x = -0x" + "F" * 20000 + ";", 9),
+    ("print(18446744073709551616);", 7),
+    ("let x = 18446744073709551616 as u64;", 9),
+    ("let x = a + 9223372036854775808;", 13),
+    ("let x = 18446744073709551616 == 1;", 9),
+    ("let x = u + 18446744073709551616;", 13),
+    ("let x = a == 9223372036854775808;", 14),
+    ("let x = a << 0x" + "F" * 20000 + ";", 14),
+    ("let x: [i64; 1] = [9223372036854775808];", 20),
+    ("let x: i64 = 18446744073709551616 / 2;", 35),
+], ids=["2^64", "2^63", "untyped-2^63", "untyped-2^64", "huge-negative-hex", "print",
+        "cast", "binary-signed", "both-literal-compare", "binary-unsigned-overflow",
+        "compare-signed", "shift-count", "array-element", "folded-expression"])
+def test_out_of_range_integer_literal_is_a_checker_diagnostic(body, col):
+    error = assert_located(f"{_I64}\n{body}".join(["fn main() -> int { ", " return 0; }"]),
+                           "does not fit")
+    assert (error.line, error.col) == (2, col)
+
+
+def test_out_of_range_literal_argument_and_return_are_rejected():
+    source = "fn f() -> i64 { return 18446744073709551616; } fn main() -> int { return 0; }"
+    assert_located(source, "does not fit")
+    source = ("fn f(v: i64) -> i64 { return v; } "
+              "fn main() -> int { return f(9223372036854775808) as int; }")
+    assert_located(source, "does not fit")
+
+
+@pytest.mark.parametrize("body", [
+    "let x: i64 = 9223372036854775807;",
+    "let x: i64 = -9223372036854775808;",
+    "let x: u64 = 18446744073709551615;",
+    "let x = 0xFFFFFFFFFFFFFFFF as u64;",
+    "let x = u + 18446744073709551615;",
+    "let x = u == 18446744073709551615;",
+    "let x: i64 = 18446744073709551616 / 4;",
+    "let x: i64 = 2^64;",  # '^' is XOR in Mort, so this is 66.
+    "let x = a << 3;",
+], ids=["i64-max", "i64-min", "u64-max", "cast-u64-max", "binary-u64-max",
+        "compare-u64-max", "folded-down", "xor", "shift"])
+def test_in_range_integer_literals_stay_accepted(body):
+    c_of(f"fn main() -> int {{ {_I64} {body} return 0; }}")

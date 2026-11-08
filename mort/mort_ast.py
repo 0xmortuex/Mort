@@ -10,6 +10,7 @@ class Node:
         self.type = None      # resolved by the checker for expressions
         self.is_lit = False   # True for untyped integer-literal expressions
         self.const_val = None  # folded value for a constant integer expression
+        self.col = None       # source column, where the parser records one
 
 
 # ----- top level -----
@@ -252,10 +253,11 @@ class Match(Node):
 
 # ----- expressions -----
 class IntLit(Node):
-    def __init__(self, value, line):
+    def __init__(self, value, line, col=None):
         super().__init__()
         self.value = value
         self.line = line
+        self.col = col
 
 
 class FloatLit(Node):
@@ -266,10 +268,11 @@ class FloatLit(Node):
 
 
 class CharLit(Node):
-    def __init__(self, value, line):
+    def __init__(self, value, line, col=None):
         super().__init__()
         self.value = value
         self.line = line
+        self.col = col
 
 
 class NullLit(Node):
@@ -301,20 +304,22 @@ class Var(Node):
 
 
 class Unary(Node):
-    def __init__(self, op, operand, line):
+    def __init__(self, op, operand, line, col=None):
         super().__init__()
         self.op = op
         self.operand = operand
         self.line = line
+        self.col = col
 
 
 class Binary(Node):
-    def __init__(self, op, left, right, line):
+    def __init__(self, op, left, right, line, col=None):
         super().__init__()
         self.op = op
         self.left = left
         self.right = right
         self.line = line
+        self.col = col
         self.lowered_name = None
 
 
