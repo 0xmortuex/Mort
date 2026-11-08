@@ -10214,3 +10214,10 @@ def test_out_of_range_literal_argument_and_return_are_rejected():
         "compare-u64-max", "folded-down", "xor", "shift"])
 def test_in_range_integer_literals_stay_accepted(body):
     c_of(f"fn main() -> int {{ {_I64} {body} return 0; }}")
+
+
+@pytest.mark.parametrize("operator", ["==", "!="])
+def test_comparing_void_values_is_a_checker_diagnostic(operator):
+    source = f"fn f() {{}} fn main() -> int {{ if f() {operator} f() {{ return 1; }} return 0; }}"
+    error = assert_located(source, "void")
+    assert error.col == source.index(operator) + 1

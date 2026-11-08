@@ -1964,6 +1964,8 @@ class Checker:
                                 f"mismatched float types {lt} and {rt}; add an 'as' cast", e)
                 elif lt != rt:
                     self._error(f"operator '{op}' needs operands of the same type", e)
+                elif lt == "void":
+                    self._error(f"operator '{op}' cannot compare void values", e)
                 elif lt in self.structs or (
                         lt in self.enums
                         and any(value is not None for value in self.enums[lt].values())
