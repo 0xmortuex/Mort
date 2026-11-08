@@ -205,7 +205,7 @@ measured data point.
 | --- | --- | --- | ---: |
 | T1 | Lexer with differential test | none | done |
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | 3 to 5 |
-| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
+| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | done (about 1 hour; estimated 4 to 8) |
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | 10 to 16 |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
@@ -309,6 +309,29 @@ Test: `python -m pytest selfhost -q` runs against every `.mx` in the repo,
 time bound, token-level mutation (at least 75% of cases must carry 10 or more
 dump lines), a separate invalid-bytes mutation class, the Unicode check, and the
 subset gate with a negative test per excluded construct.
+
+## 7b. Bignum status (T2b)
+
+- `selfhost/bignum.mx` (765 lines), driver `selfhost/bignum_test_main.mx`, test
+  `selfhost/test_bignum.py`. It does not share lexer_float's `Big`: both are the
+  same limb layout, but flat-namespace names stay apart (`bn_`, `BigInt`), and a
+  test links the two together.
+- Covers everything `Checker._fold_binary` and `_const_value` need, through
+  `bn_fold_binary` (Python's `_c_div`/`_c_mod` for `/` and `%`, the `1 << 65` cap),
+  plus Python's flooring `//` and `%`, `bn_not`, `bn_neg`, `bn_bit_length` and
+  `bn_cmp`. Parsing takes bases 2 to 36 and decimal formatting matches `str`.
+- `bn_parse` must accept more than 4300 digits: a maximal 4300-digit hex literal
+  reaches the checker as 5178 canonical decimal digits.
+- The checker owns `MAX_CONSTANT_BITS` (2^18), checked after the fold as Python
+  does, so a product can reach 2^19 bits. Library hard limit: `BN_MAX_BITS`, 2^20
+  bits, an internal-error exit that a checked program cannot reach.
+- `support.mx` on this branch is a two-function placeholder for T2's; take T2's
+  whole at merge (T2 has `eprintln` and the same `sup_die`/`sup_alloc_array`).
+- Test: 300,000 seeded operations per run against Python `int` and the real
+  checker fold (fresh driver build), a boundary cross product, all bases, diagnostics
+  and 18 seeded mutants. Allocation failure is a real `malloc` null: the size comes
+  from input and the pointer escapes, because clang otherwise deletes the unused
+  `malloc` and its check.
 
 ## 8. Language and stdlib gaps
 
