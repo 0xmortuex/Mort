@@ -365,7 +365,8 @@ carries over: the checker's logic is far less mechanical.
 - Dump format: defined at the top of `py_ast_dump.py`. One line per node with no
   indentation, so a deep tree stays linear in size. Fields the checker fills in
   are excluded, and the dumper asserts they still hold their initial values.
-- Positions: `line` only, because that is all the Python AST records.
+- Positions: `line`, plus `Call.name_pos` (line and column of the callee), because
+  that is all the Python AST records.
 - Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
   of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
   (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
