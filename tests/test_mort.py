@@ -10678,3 +10678,14 @@ def test_bounded_generic_recursion_still_compiles():
               "fn main() -> int { let a: i64 = 1; let p = &a; let q = &p; "
               "return (g(a) + g(p) + g(q)) as int; }")
     assert "main" in c_of(source)
+
+
+@pytest.mark.parametrize("source", [
+    "struct W<T> { v: T } fn main() -> int { let x: *" + "W<" * 200 + "i64" + ">" * 200
+    + " = null; return 0; }",
+    "fn main() -> int { let x: " + "fn(" * 390 + "i64" + ")->i64" * 390 + " = null; return 0; }",
+], ids=["generic-struct", "function-type"])
+def test_deep_type_names_do_not_hang(source):
+    error, seconds = _compile_bounded(source, 8)
+    assert error is None or isinstance(error, MortError), repr(error)
+    assert seconds < 8

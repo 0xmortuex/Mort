@@ -262,6 +262,7 @@ class Checker:
         self.current_ret = None
         self.current_node = None  # where a stack overflow is reported
         self.instantiation_depth = 0  # of the function being checked
+        self.alias_cache = {}
         self.extern_names = set()
         self.loop_depth = 0
         self.current_module = None
@@ -309,25 +310,33 @@ class Checker:
                 or t in self.structs or t in self.enums)
 
     def _resolve_alias_type(self, t, stack=()):
+        """Expand aliases in a type string, cached per type name.
+
+        Every level of a nested type re-resolves its whole inner type, so
+        without the cache a deep type costs cubic time. A resolved name depends
+        only on the fixed alias table; `stack` is non-empty only while tracing
+        an alias body for cycles, and those results are not cached.
+        """
+        if not stack and t in self.alias_cache:
+            return self.alias_cache[t]
         if t in self.aliases:
             if t in stack:
                 declaration = self.alias_decls[t]
                 self._error(
                     "cyclic type alias: " + " -> ".join((*stack, t)), declaration)
-            return self._resolve_alias_type(self.aliases[t], (*stack, t))
-        if is_ptr(t):
+            resolved = self._resolve_alias_type(self.aliases[t], (*stack, t))
+        elif is_ptr(t):
             prefix = "*const " if is_const_ptr(t) else "*"
-            return prefix + self._resolve_alias_type(pointee(t), stack)
-        if is_slice(t):
+            resolved = prefix + self._resolve_alias_type(pointee(t), stack)
+        elif is_slice(t):
             prefix = "[]const " if is_const_slice(t) else "[]"
-            return prefix + self._resolve_alias_type(slice_elem(t), stack)
-        if is_array(t):
+            resolved = prefix + self._resolve_alias_type(slice_elem(t), stack)
+        elif is_array(t):
             element, count = array_parts(t)
-            return f"[{self._resolve_alias_type(element, stack)};{count}]"
-        callable_type = function_parts(t)
-        if callable_type:
+            resolved = f"[{self._resolve_alias_type(element, stack)};{count}]"
+        elif callable_type := function_parts(t):
             parameters, result = callable_type
-            return (
+            resolved = (
                 "fn(" + ",".join(
                     self._resolve_alias_type(item, stack) for item in parameters
                 ) + ")->" + (
@@ -335,18 +344,20 @@ class Checker:
                     else self._resolve_alias_type(result, stack)
                 )
             )
-        tuple_type = tuple_parts(t)
-        if tuple_type:
-            return "(" + ",".join(
+        elif tuple_type := tuple_parts(t):
+            resolved = "(" + ",".join(
                 self._resolve_alias_type(item, stack) for item in tuple_type
             ) + ")"
-        parts = generic_parts(t)
-        if parts:
+        elif parts := generic_parts(t):
             base, arguments = parts
-            return base + "<" + ",".join(
+            resolved = base + "<" + ",".join(
                 self._resolve_alias_type(argument, stack) for argument in arguments
             ) + ">"
-        return t
+        else:
+            resolved = t
+        if not stack:
+            self.alias_cache[t] = resolved
+        return resolved
 
     def _apply_type_aliases(self):
         seen = set()
