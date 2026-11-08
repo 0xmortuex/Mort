@@ -275,7 +275,10 @@ class Checker:
         """A type is usable if its (possibly pointed-to / element) base is known."""
         t = self._resolve_alias_type(t)
         if is_ptr(t):
-            return pointee(t) == "void" or self._valid_type(pointee(t))
+            # C spells a pointer to an array inside out, so codegen has no form
+            # for it; an array is passed by pointer to its first element.
+            return pointee(t) == "void" or (
+                not is_array(pointee(t)) and self._valid_type(pointee(t)))
         if is_array(t):
             elem, n = array_parts(t)
             return n > 0 and self._valid_type(elem)

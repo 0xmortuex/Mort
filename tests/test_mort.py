@@ -10581,3 +10581,12 @@ def test_array_size_past_u64_is_a_located_diagnostic(body):
 
 def test_caret_is_xor_so_two_caret_sixty_three_is_sixty_one():
     assert "61" in c_of("fn main() -> int { let x: i64 = 2^63; return x as int; }")
+
+
+@pytest.mark.parametrize("body", [
+    "let p: *[i64; 1] = null;",
+    "let p: *const [i64; 1] = null;",
+    "let p: **[i64; 1] = null;",
+], ids=["pointer", "const-pointer", "pointer-pointer"])
+def test_pointer_to_array_type_is_a_located_diagnostic(body):
+    assert_located(f"fn main() -> int {{ {body} return 0; }}", "unknown type")

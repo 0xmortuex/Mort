@@ -510,7 +510,8 @@ class Parser:
         return A.Asm(text, line)
 
     def _let_stmt(self, mutable=True):
-        line = self._advance().line
+        keyword = self._advance()
+        line = keyword.line
         name = self._expect(T.IDENT, "variable name").value
         decl = None
         if self._at(T.COLON):
@@ -519,7 +520,7 @@ class Parser:
         self._expect(T.ASSIGN, "'='")
         expr = self._expression()
         self._expect(T.SEMI, "';'")
-        return A.Let(name, decl, expr, line, mutable=mutable)
+        return A.Let(name, decl, expr, line, mutable=mutable, col=keyword.col)
 
     def _return_stmt(self):
         line = self._advance().line
