@@ -253,6 +253,7 @@ class Checker:
         self.binding_scopes = []
         self.warnings = []
         self.current_ret = None
+        self.current_node = None  # where a stack overflow is reported
         self.extern_names = set()
         self.loop_depth = 0
         self.current_module = None
@@ -352,6 +353,8 @@ class Checker:
             if id(value) in seen:
                 return
             seen.add(id(value))
+            if getattr(value, "line", None) is not None:
+                self.current_node = value
             if isinstance(value, A.TypeAliasDecl):
                 value.target = self._resolve_alias_type(value.target)
             elif isinstance(value, (A.FnDecl, A.ExternFnDecl)):
@@ -1396,6 +1399,7 @@ class Checker:
 
     # ----- statements -----
     def _check_stmt(self, s):
+        self.current_node = s
         if isinstance(s, A.Let):
             if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
@@ -1750,6 +1754,7 @@ class Checker:
         return False
 
     def _check_expr(self, e, literal_operand=False):
+        self.current_node = e
         e.is_lit = False
         t = self._infer(e)
         e.type = t

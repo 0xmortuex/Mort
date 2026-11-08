@@ -10590,3 +10590,30 @@ def test_caret_is_xor_so_two_caret_sixty_three_is_sixty_one():
 ], ids=["pointer", "const-pointer", "pointer-pointer"])
 def test_pointer_to_array_type_is_a_located_diagnostic(body):
     assert_located(f"fn main() -> int {{ {body} return 0; }}", "unknown type")
+
+
+def test_generic_body_past_the_copy_depth_has_a_location():
+    source = ("fn g<T>(x: T) -> i64 {\n  let a: i64 = 1;\n  return "
+              + " + ".join(["a"] * 300)
+              + ";\n}\nfn main() -> int { return g(1) as int; }")
+    error = assert_located(source, "compiler safety limit")
+    assert error.line is not None
+
+
+@pytest.mark.parametrize("name,body", [
+    ("sum", "let x = " + " + ".join(["a"] * 495) + ";"),
+    ("if", "if b { " * 324 + "}" * 324),
+    ("else-if", "if b { } " + "else if b { } " * 970),
+    ("blocks", "{ " * 493 + "}" * 493),
+], ids=["sum", "if", "else-if", "blocks"])
+def test_cli_compiles_every_depth_main_compiled(tmp_path, name, body):
+    path = tmp_path / f"{name}.mx"
+    path.write_text(
+        f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "mortc.py"), str(path), "--check"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr[:300]

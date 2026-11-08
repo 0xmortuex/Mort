@@ -30,11 +30,6 @@ FIXED_INT_TYPES = {
 }
 FLOAT_TYPES = {"f32", "f64"}
 
-# The checker and code generator recurse over the AST, spending about two
-# Python frames per node. Rejecting deeper trees here, under the default
-# 1000-frame limit, lets the diagnostic say where the problem is.
-MAX_NESTING_COST = 800
-
 MAX_ARRAY_SIZE = 2 ** 64 - 1
 
 ASSIGNMENT_OPS = {
@@ -110,43 +105,6 @@ class Parser:
 
     # ----- entry -----
     def parse(self):
-        try:
-            program = self._program()
-        except RecursionError:
-            tok = self._peek()
-            raise MortError(
-                "source nesting exceeds the compiler safety limit",
-                tok.line, tok.col) from None
-        self._check_nesting(program)
-        return program
-
-    def _check_nesting(self, program):
-        """Reject an AST too deep for the later recursive passes.
-
-        Iterative, because operator and postfix chains build deep left-leaning
-        trees without the parser itself recursing. An `else if` link costs one
-        frame downstream rather than two.
-        """
-        stack = [(program, 0, None)]
-        while stack:
-            value, cost, line = stack.pop()
-            if isinstance(value, (list, tuple)):
-                stack.extend((item, cost, line) for item in value)
-                continue
-            if not isinstance(value, A.Node):
-                continue
-            line = getattr(value, "line", line)
-            if cost > MAX_NESTING_COST:
-                col = getattr(value, "col", None)
-                if col is None:
-                    col = next(tok.col for tok in self.toks if tok.line == line)
-                raise MortError(
-                    "source nesting exceeds the compiler safety limit", line, col)
-            for name, child in vars(value).items():
-                if isinstance(child, (A.Node, list, tuple)):
-                    stack.append((child, cost + (1 if name == "els" else 2), line))
-
-    def _program(self):
         funcs = []
         structs = []
         globals_ = []

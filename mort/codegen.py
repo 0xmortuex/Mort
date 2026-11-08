@@ -206,6 +206,7 @@ class CodeGen:
         self.tuple_types = self._collect_tuple_types(program)
         self.drop_destructors = getattr(program, "drop_destructors", {})
         self.array_repeat_bytes = 0
+        self.current_node = None  # where a stack overflow is reported
 
     @staticmethod
     def _collect_slice_types(program):
@@ -2125,6 +2126,7 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _gen_stmt(self, s):
+        self.current_node = s
         self._coverage_point(s)
         if isinstance(s, A.Let):
             self._prepare_try_expr(s.expr)
@@ -2470,6 +2472,7 @@ class CodeGen:
         return s
 
     def _gen_expr(self, e):
+        self.current_node = e
         if isinstance(e, A.IntLit):
             if e.value > self._I64_MAX:
                 return self._c_int_literal(e.value, e.type)
