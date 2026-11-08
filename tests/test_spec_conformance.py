@@ -1285,3 +1285,9 @@ def test_nested_generic_struct_literal_closes_with_a_shift_token():
         "struct B<T> { v: T } fn main() -> int {"
         " let a = B<B<i64>> { v: B<i64> { v: 7 } }; return a.v.v; }"
     ).returncode == 7
+
+
+def test_comparison_before_a_block_is_not_read_as_type_arguments():
+    _check_program(
+        "fn main() -> int { let a = 1; let b = 2; let c = 3; let d = 4;"
+        " if a < b { if c > (d) { return 1; } } return 0; }")
