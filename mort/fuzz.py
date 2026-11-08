@@ -100,8 +100,11 @@ def _long_chain(rng):
     term = rng.choice(("a", "b", "1", "'x'", "null"))
     shape = rng.randrange(6)
     if shape == 5:
-        big = "0x" + "F" * rng.choice((16, 500, 4300))
-        return _in_main("let x = " + f" {rng.choice(('*', '+', '|'))} ".join([big] * size) + ";")
+        digits = rng.choice((16, 500, 4300))
+        big = "0x" + "F" * digits
+        # Bound the source: lexing is linear, so a bigger one only measures that.
+        terms = min(size, 256_000 // digits)
+        return _in_main("let x = " + f" {rng.choice(('*', '+', '|'))} ".join([big] * terms) + ";")
     if shape == 0:
         operator = rng.choice(_BINARY_OPERATORS)
         chain = f" {operator} ".join([term] * size)
