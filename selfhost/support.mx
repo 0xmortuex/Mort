@@ -1,0 +1,250 @@
+// Support layer for the Mort compiler written in Mort (PLAN.md, task T2).
+//
+// Failure policy: misuse (a bad index, an allocation that cannot succeed) prints
+// one line to stderr and exits with status 2. Nothing here returns a null
+// pointer or reads out of bounds.
+//
+// Memory discipline: a compiler is a short batch process, so only growth frees
+// memory; everything else is released at exit.
+//
+// Determinism: nothing depends on addresses, hash seeds, time or environment.
+
+extern fn exit(status: c_int) -> void;
+
+const EXIT_INTERNAL: c_int = 2;
+const U64_LIMIT: u64 = 0xFFFFFFFFFFFFFFFF;
+
+// ----- failure and allocation -----
+
+// Uses no heap memory, so that it is safe to call when allocation has failed.
+fn sup_die(message: *u8) {
+    eprintln(message);
+    exit(EXIT_INTERNAL);
+}
+
+fn sup_die_index(kind: *u8, index: u64, length: u64) {
+    let text = buf_new(128);
+    buf_push_z(&text, "mort: internal error: index ");
+    buf_push_u64(&text, index);
+    buf_push_z(&text, " out of range for ");
+    buf_push_z(&text, kind);
+    buf_push_z(&text, " of length ");
+    buf_push_u64(&text, length);
+    buf_push(&text, 0);
+    sup_die(text.data);
+}
+
+fn sup_alloc(size: u64) -> *void {
+    // malloc(0) may legally return null, which must not read as exhaustion.
+    let request = size;
+    if request == 0 {
+        request = 1;
+    }
+    let pointer = alloc(request);
+    if pointer == (0 as *void) {
+        sup_die("mort: out of memory");
+    }
+    return pointer;
+}
+
+fn sup_alloc_array(count: u64, size: u64) -> *void {
+    if size != 0 && count > U64_LIMIT / size {
+        sup_die("mort: internal error: allocation size overflow");
+    }
+    return sup_alloc(count * size);
+}
+
+fn sup_grown_capacity(capacity: u64) -> u64 {
+    if capacity == 0 {
+        return 8;
+    }
+    if capacity > U64_LIMIT / 2 {
+        sup_die("mort: internal error: capacity overflow");
+    }
+    return capacity * 2;
+}
+
+// ----- byte spans -----
+
+struct Span {
+    data: *u8,
+    len: u64,
+}
+
+fn span_z(text: *u8) -> Span {
+    let n: u64 = 0;
+    while text[n] != 0 {
+        n += 1;
+    }
+    return Span { data: text, len: n };
+}
+
+fn span_eq(a: Span, b: Span) -> bool {
+    if a.len != b.len {
+        return false;
+    }
+    for i: u64 in 0..a.len {
+        if a.data[i] != b.data[i] {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn span_eq_z(a: Span, text: *u8) -> bool {
+    return span_eq(a, span_z(text));
+}
+
+// ----- growable byte buffers -----
+
+struct Buf {
+    data: *u8,
+    len: u64,
+    cap: u64,
+}
+
+fn buf_new(cap: u64) -> Buf {
+    return Buf { data: sup_alloc(cap) as *u8, len: 0, cap: cap };
+}
+
+fn buf_push(b: *Buf, byte: u8) {
+    if (*b).len == (*b).cap {
+        let cap = sup_grown_capacity((*b).cap);
+        let data = sup_alloc(cap) as *u8;
+        for i: u64 in 0..(*b).len {
+            data[i] = (*b).data[i];
+        }
+        free((*b).data as *void);
+        (*b).data = data;
+        (*b).cap = cap;
+    }
+    (*b).data[(*b).len] = byte;
+    (*b).len += 1;
+}
+
+fn buf_push_z(b: *Buf, text: *u8) {
+    let i: u64 = 0;
+    while text[i] != 0 {
+        buf_push(b, text[i]);
+        i += 1;
+    }
+}
+
+fn buf_push_span(b: *Buf, s: Span) {
+    for i: u64 in 0..s.len {
+        buf_push(b, s.data[i]);
+    }
+}
+
+fn buf_push_u64(b: *Buf, value: u64) {
+    if value >= 10 {
+        buf_push_u64(b, value / 10);
+    }
+    buf_push(b, 48 + (value % 10) as u8);
+}
+
+fn buf_span(b: *Buf) -> Span {
+    return Span { data: (*b).data, len: (*b).len };
+}
+
+// ----- vectors -----
+//
+// Hand-written per element type because the subset has no generics. Every
+// access is checked, and an element's position never depends on anything but
+// the order of pushes.
+
+struct U64Vec {
+    data: *u64,
+    len: u64,
+    cap: u64,
+}
+
+fn u64vec_new() -> U64Vec {
+    let cap: u64 = 8;
+    return U64Vec { data: sup_alloc_array(cap, sizeof<u64>()) as *u64, len: 0, cap: cap };
+}
+
+fn u64vec_push(v: *U64Vec, value: u64) {
+    if (*v).len == (*v).cap {
+        let cap = sup_grown_capacity((*v).cap);
+        let data = sup_alloc_array(cap, sizeof<u64>()) as *u64;
+        for i: u64 in 0..(*v).len {
+            data[i] = (*v).data[i];
+        }
+        free((*v).data as *void);
+        (*v).data = data;
+        (*v).cap = cap;
+    }
+    (*v).data[(*v).len] = value;
+    (*v).len += 1;
+}
+
+fn u64vec_get(v: *U64Vec, index: u64) -> u64 {
+    if index >= (*v).len {
+        sup_die_index("u64vec", index, (*v).len);
+    }
+    return (*v).data[index];
+}
+
+fn u64vec_set(v: *U64Vec, index: u64, value: u64) {
+    if index >= (*v).len {
+        sup_die_index("u64vec", index, (*v).len);
+    }
+    (*v).data[index] = value;
+}
+
+fn u64vec_pop(v: *U64Vec) -> u64 {
+    if (*v).len == 0 {
+        sup_die("mort: internal error: pop from an empty u64vec");
+    }
+    (*v).len -= 1;
+    return (*v).data[(*v).len];
+}
+
+struct PtrVec {
+    data: **void,
+    len: u64,
+    cap: u64,
+}
+
+fn ptrvec_new() -> PtrVec {
+    let cap: u64 = 8;
+    return PtrVec { data: sup_alloc_array(cap, sizeof<*void>()) as **void, len: 0, cap: cap };
+}
+
+fn ptrvec_push(v: *PtrVec, value: *void) {
+    if (*v).len == (*v).cap {
+        let cap = sup_grown_capacity((*v).cap);
+        let data = sup_alloc_array(cap, sizeof<*void>()) as **void;
+        for i: u64 in 0..(*v).len {
+            data[i] = (*v).data[i];
+        }
+        free((*v).data as *void);
+        (*v).data = data;
+        (*v).cap = cap;
+    }
+    (*v).data[(*v).len] = value;
+    (*v).len += 1;
+}
+
+fn ptrvec_get(v: *PtrVec, index: u64) -> *void {
+    if index >= (*v).len {
+        sup_die_index("ptrvec", index, (*v).len);
+    }
+    return (*v).data[index];
+}
+
+fn ptrvec_set(v: *PtrVec, index: u64, value: *void) {
+    if index >= (*v).len {
+        sup_die_index("ptrvec", index, (*v).len);
+    }
+    (*v).data[index] = value;
+}
+
+fn ptrvec_pop(v: *PtrVec) -> *void {
+    if (*v).len == 0 {
+        sup_die("mort: internal error: pop from an empty ptrvec");
+    }
+    (*v).len -= 1;
+    return (*v).data[(*v).len];
+}

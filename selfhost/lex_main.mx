@@ -22,7 +22,7 @@ fn read_all(path: *u8) -> Buf {
         contents.cap = 0;
         return contents;
     }
-    let chunk = alloc(65536) as *u8;
+    let chunk = sup_alloc(65536) as *u8;
     loop {
         let got = file_read(handle, chunk, 65536);
         if got == 0 {
