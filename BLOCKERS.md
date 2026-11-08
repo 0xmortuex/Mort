@@ -44,3 +44,9 @@ Interim: declare the exact C signature (`end: **c_char`).
   `let G: [u8; 2] = [1, 2]; fn main() -> int { let p = &G; return 0; }`. The
   subset gate rejects this program; the compiler crash itself is not fixed on
   this branch.
+- `mort/codegen.py:205` (`_collect_slice_types`) walks every string in the AST
+  and treats any that starts with `[]` as a slice type, string literals included.
+  `fn main() -> int { println("[]"); return 0; }` raises an uncaught
+  `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
+  emits the two characters with separate pushes instead. T6 and T7 reproduce this
+  scan's output, so fixing it changes what they must match.

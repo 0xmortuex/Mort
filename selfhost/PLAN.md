@@ -149,8 +149,9 @@ differential tests:
 Each phase has a Python reference and a defined text dump, like the lexer:
 
 - Tokens: `py_lex_dump.py` format (done, see section 7).
-- AST: a structural dump of every node's kind, fields and line, generated
-  reflectively from the Python AST and produced directly by the Mort parser.
+- AST: `py_ast_dump.py` format (done, see section 10): every node's kind, fields
+  and line, generated reflectively from the Python AST and produced directly by
+  the Mort parser.
 - Checked AST: per-expression resolved type (the Python type string) and folded
   constant, keyed by source order.
 - C text: compared to `CodeGen(...).generate()` byte for byte, over the subset
@@ -207,7 +208,7 @@ measured data point.
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
 | T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
-| T3 | AST in flat structs, parser, AST dump | T2, T2c | 10 to 16 |
+| T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
@@ -239,8 +240,9 @@ Acceptance criteria:
   and `PYTHONHASHSEED` values. Every generated program passes `check_subset.py`
   and compiles with the Python compiler, and a test asserts the node-kind and
   operator coverage and the section 5.1 size floors, so a shrinking corpus fails.
-- **T3.** Mort parser output matches the Python AST dump over the subset corpus
-  and all `selfhost/*.mx`, including source lines. Parse errors in the corpus
+- **T3.** Mort parser output matches the Python AST dump over every `.mx` in the
+  repo (widened from the subset corpus and `selfhost/*.mx`, so the parser reads
+  the whole language), including source lines. Parse errors in the corpus
   produce a located diagnostic and exit 1, never a crash, with a recursion-depth
   limit in place of Python's `RecursionError` handling. Seeded mutation test.
 - **T4.** Declaration tables and scope resolution match a Python-side dump over
@@ -347,3 +349,45 @@ Two Python-side defects found by this work; separate tasks, not fixed here:
   uses the spec's arbitrary-precision behavior.
 - `mortc.py` crashes with a `UnicodeDecodeError` traceback on source that is not
   UTF-8; the Mort lexer gives a clean diagnostic.
+- `mort/codegen.py` treats every AST string starting with `[]` as a slice type,
+  so `println("[]")` raises `KeyError`. Found by T3; see `BLOCKERS.md`.
+
+## 10. Parser status (T3)
+
+`selfhost/ast.mx` (130 lines), `parser.mx` (1212), `pyrepr.mx` (419), `ast_dump.mx`
+(395) and `parse_main.mx` (82, the driver: `parse_main INPUT OUTPUT`). The Python
+parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.6 with the
+AST, the diagnostic `repr`, the dump and the driver. Time: about 40 minutes of agent time
+against the 10 to 16 hours estimated, because the Python parser is regular and
+the test harness already existed from T1. T4 and T5 should not assume this ratio
+carries over: the checker's logic is far less mechanical.
+
+- Dump format: defined at the top of `py_ast_dump.py`. One line per node with no
+  indentation, so a deep tree stays linear in size. Fields the checker fills in
+  are excluded, and the dumper asserts they still hold their initial values.
+- Positions: `line` only, because that is all the Python AST records.
+- Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
+  of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
+  (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
+  The first error exits 1 with no dump.
+- Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
+  expressions, unary, blocks, `if`). Python's own limit is a side effect of its
+  frame count, so the reference is the unmodified Python parser plus the same
+  counter (`GuardedParser`). Message and line match. Measured limits of the
+  unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
+  975 unary operators, all within 1000 units, so this rejects nothing it accepts.
+  Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
+  `-O0`.
+- `<` lookahead is one precomputed pass over the tokens, not a scan per `<`. The
+  tokens a scan can see are never yet split by a type close, so the answers match.
+- Tree depth is not bounded by `MAX_NESTING`: operator, postfix and cast chains
+  are built by loops. The parser and dump never recurse over the tree.
+
+For T4: **chains make left-deep trees of any depth, so a recursive checker over
+the AST will overflow the C stack.** It needs an AST-depth check or iteration.
+
+Reconciling with `fix/frontend-crashes` (not merged here): it adds a `col` to
+parser diagnostics and to some nodes, an AST-depth rejection (`_check_nesting`,
+cost 800) and a located nesting error. On merge, the Mort parser must add
+columns and that check, and `GuardedParser` should be dropped or reduced. The
+dump's reflection will flag the new fields by itself, as a mismatch.
