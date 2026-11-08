@@ -150,6 +150,24 @@ def _c_symbol(name):
     return _type_tag(name.replace(".", "__"))
 
 
+def _possible_types(node):
+    """Attribute values of an AST node that can hold type strings.
+
+    The slice and tuple collectors look at every string they reach, so text
+    from the source must be excluded: only its form can resemble a type.
+    """
+    for name, value in vars(node).items():
+        if name == "filename":
+            continue
+        if isinstance(node, A.StrLit) and name == "value":
+            continue
+        if isinstance(node, A.Asm) and name == "text":
+            continue
+        if isinstance(node, A.TestDecl) and name == "name":
+            continue
+        yield value
+
+
 def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
            payload_enum_names=frozenset()):
     """Map a Mort type string to its C spelling.
@@ -231,7 +249,7 @@ class CodeGen:
                 return
             if hasattr(value, "__dict__") and id(value) not in seen:
                 seen.add(id(value))
-                for item in vars(value).values():
+                for item in _possible_types(value):
                     visit(item)
 
         visit(program.globals)
@@ -303,7 +321,7 @@ class CodeGen:
                 return
             if hasattr(value, "__dict__") and id(value) not in seen:
                 seen.add(id(value))
-                for item in vars(value).values():
+                for item in _possible_types(value):
                     visit(item)
 
         visit(program.globals)

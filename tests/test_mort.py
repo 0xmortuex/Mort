@@ -10617,3 +10617,37 @@ def test_cli_compiles_every_depth_main_compiled(tmp_path, name, body):
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr[:300]
+
+
+_TYPE_LIKE_TEXT = [
+    "[]", "[]x", "[][]", "[]const ", "[", "[;", "[x;y]", "[u8;3]", "(", ")", "(a,b)", "(,)",
+    "*", "*const ", "fn(", "fn(x)->y", "fn()->", "W<", "W<>", "W<x>", "<>",
+]
+
+
+@pytest.mark.parametrize("text", _TYPE_LIKE_TEXT)
+def test_string_contents_are_never_read_as_types(text):
+    assert "main" in c_of(f'fn main() -> int {{ println("{text}"); return 0; }}')
+
+
+@pytest.mark.parametrize("text", _TYPE_LIKE_TEXT)
+def test_asm_text_is_never_read_as_a_type(text):
+    assert "main" in c_of(f'fn main() -> int {{ asm("{text}"); return 0; }}')
+
+
+@pytest.mark.parametrize("folder", ["[]", "(a,b)", "[x;y]", "fn(x)->y"],
+                         ids=["slice", "tuple", "array", "function"])
+def test_source_paths_are_never_read_as_types(tmp_path, folder):
+    source = tmp_path / folder / "main.mx"
+    source.parent.mkdir()
+    source.write_text("fn main() -> int { return 0; }", encoding="utf-8")
+    # The tag holds the absolute path, so make the whole path start type-like.
+    assert "main" in mortc.compile_sources_to_c(
+        ["fn main() -> int { return 0; }"], filenames=[f"{folder}/main.mx"])
+
+
+def test_test_names_are_never_read_as_types(tmp_path):
+    source = tmp_path / "main.mx"
+    source.write_text('test "[]" { assert(true); } fn main() -> int { return 0; }',
+                      encoding="utf-8")
+    assert "main" in mortc.compile_files_to_c([str(source)], test_mode=True)
