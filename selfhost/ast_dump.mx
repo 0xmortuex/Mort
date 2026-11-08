@@ -1,0 +1,395 @@
+// Dumps a parsed program in the format defined in py_ast_dump.py.
+//
+// Iterative: operator chains make trees as deep as the source is long, and a
+// recursive walk over one would overflow the C stack.
+
+import support;
+import ast;
+import lexer;
+
+struct Dumper {
+    out: *Buf,
+    strings: *Interner,
+    stack: PtrVec,
+    pending: PtrVec,
+}
+
+fn ad_label(d: *Dumper, field: *u8) {
+    buf_push((*d).out, ' ');
+    buf_push_z((*d).out, field);
+    buf_push((*d).out, '=');
+}
+
+// Every byte outside 0x20..0x7E, and both backslash and double quote, as \xNN.
+fn ad_quoted(d: *Dumper, handle: u64) {
+    let out = (*d).out;
+    let text = intern_text((*d).strings, handle);
+    buf_push(out, '"');
+    for i: u64 in 0..text.len {
+        let b = text.data[i];
+        if b == 92 || b == 34 || b < 0x20 || b > 0x7E {
+            buf_push_z(out, "\\x");
+            buf_push_hex2(out, b);
+        } else {
+            buf_push(out, b);
+        }
+    }
+    buf_push(out, '"');
+}
+
+fn ad_text(d: *Dumper, field: *u8, handle: u64) {
+    ad_label(d, field);
+    if handle == NO_TEXT {
+        buf_push_z((*d).out, "none");
+    } else {
+        ad_quoted(d, handle);
+    }
+}
+
+fn ad_bool(d: *Dumper, field: *u8, value: bool) {
+    ad_label(d, field);
+    if value {
+        buf_push_z((*d).out, "true");
+    } else {
+        buf_push_z((*d).out, "false");
+    }
+}
+
+fn ad_u64(d: *Dumper, field: *u8, value: u64) {
+    ad_label(d, field);
+    buf_push((*d).out, '#');
+    buf_push_u64((*d).out, value);
+}
+
+// An integer held as canonical decimal text.
+fn ad_decimal(d: *Dumper, field: *u8, handle: u64) {
+    ad_label(d, field);
+    buf_push((*d).out, '#');
+    buf_push_span((*d).out, intern_text((*d).strings, handle));
+}
+
+fn ad_line(d: *Dumper, n: *Node) {
+    ad_u64(d, "line", (*n).line);
+}
+
+fn ad_child(d: *Dumper, field: *u8, child: *Node) {
+    ad_label(d, field);
+    if child == (0 as *Node) {
+        buf_push_z((*d).out, "none");
+    } else {
+        buf_push((*d).out, '@');
+        ptrvec_push(&(*d).pending, child as *void);
+    }
+}
+
+fn ad_items(d: *Dumper, field: *u8, list: *PtrVec) {
+    ad_label(d, field);
+    buf_push((*d).out, '[');
+    buf_push_u64((*d).out, (*list).len);
+    for i: u64 in 0..(*list).len {
+        ptrvec_push(&(*d).pending, ptrvec_get(list, i));
+    }
+}
+
+fn ad_names(d: *Dumper, field: *u8, list: *U64Vec) {
+    ad_label(d, field);
+    if (*list).len == 0 {
+        buf_push_z((*d).out, "[0");
+        return;
+    }
+    buf_push((*d).out, '[');
+    for i: u64 in 0..(*list).len {
+        if i > 0 {
+            buf_push((*d).out, ',');
+        }
+        ad_quoted(d, u64vec_get(list, i));
+    }
+    buf_push((*d).out, ']');
+}
+
+fn ad_head(d: *Dumper, kind: *u8) {
+    buf_push_z((*d).out, kind);
+}
+
+// Field order is constructor order in mort/mort_ast.py.
+fn ad_decl(d: *Dumper, n: *Node) -> bool {
+    let kind = (*n).kind;
+    if kind == NodeKind.IMPORT_DECL {
+        ad_head(d, "ImportDecl");
+        ad_names(d, "parts", (*n).names);
+        ad_line(d, n);
+        ad_text(d, "alias", (*n).name);
+    } else if kind == NodeKind.STRUCT_DECL {
+        ad_head(d, "StructDecl");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "fields", (*n).items);
+        ad_line(d, n);
+        ad_names(d, "generic_params", (*n).names);
+        ad_bool(d, "resource", (*n).flag);
+    } else if kind == NodeKind.STRUCT_FIELD {
+        ad_head(d, "StructField");
+        ad_text(d, "name", (*n).name);
+        ad_text(d, "typ", (*n).ty);
+    } else if kind == NodeKind.TYPE_ALIAS_DECL {
+        ad_head(d, "TypeAliasDecl");
+        ad_text(d, "name", (*n).name);
+        ad_text(d, "target", (*n).ty);
+        ad_line(d, n);
+    } else if kind == NodeKind.FN_DECL {
+        ad_head(d, "FnDecl");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "params", (*n).items);
+        ad_text(d, "ret", (*n).ty);
+        ad_child(d, "body", (*n).a);
+        ad_line(d, n);
+        ad_bool(d, "public", (*n).flag);
+        ad_names(d, "generic_params", (*n).names);
+    } else if kind == NodeKind.PARAM {
+        ad_head(d, "Param");
+        ad_text(d, "name", (*n).name);
+        ad_text(d, "typ", (*n).ty);
+    } else if kind == NodeKind.ENUM_DECL {
+        ad_head(d, "EnumDecl");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "variants", (*n).items);
+        ad_line(d, n);
+        ad_names(d, "generic_params", (*n).names);
+    } else if kind == NodeKind.ENUM_VARIANT {
+        ad_head(d, "EnumVariant");
+        ad_text(d, "name", (*n).name);
+        ad_names(d, "payload_types", (*n).names);
+        ad_text(d, "payload_type", (*n).ty);
+    } else if kind == NodeKind.EXTERN_FN_DECL {
+        ad_head(d, "ExternFnDecl");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "params", (*n).items);
+        ad_text(d, "ret", (*n).ty);
+        ad_line(d, n);
+    } else if kind == NodeKind.TEST_DECL {
+        ad_head(d, "TestDecl");
+        ad_text(d, "name", (*n).name);
+        ad_child(d, "body", (*n).a);
+        ad_line(d, n);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+fn ad_stmt(d: *Dumper, n: *Node) -> bool {
+    let kind = (*n).kind;
+    if kind == NodeKind.LET {
+        ad_head(d, "Let");
+        ad_text(d, "name", (*n).name);
+        ad_text(d, "decl_type", (*n).ty);
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+        ad_bool(d, "mutable", (*n).flag);
+    } else if kind == NodeKind.ASSIGN {
+        ad_head(d, "Assign");
+        ad_child(d, "target", (*n).a);
+        ad_child(d, "expr", (*n).b);
+        ad_text(d, "op", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.RETURN {
+        ad_head(d, "Return");
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.IF {
+        ad_head(d, "If");
+        ad_child(d, "cond", (*n).a);
+        ad_child(d, "then", (*n).b);
+        ad_child(d, "els", (*n).c);
+        ad_line(d, n);
+    } else if kind == NodeKind.WHILE {
+        ad_head(d, "While");
+        ad_child(d, "cond", (*n).a);
+        ad_child(d, "body", (*n).b);
+        ad_line(d, n);
+    } else if kind == NodeKind.FOR {
+        ad_head(d, "For");
+        ad_text(d, "var", (*n).name);
+        ad_text(d, "decl_type", (*n).ty);
+        ad_child(d, "start", (*n).a);
+        ad_child(d, "end", (*n).b);
+        ad_bool(d, "inclusive", (*n).flag);
+        ad_child(d, "body", (*n).c);
+        ad_line(d, n);
+    } else if kind == NodeKind.BLOCK {
+        ad_head(d, "Block");
+        ad_items(d, "stmts", (*n).items);
+        ad_line(d, n);
+    } else if kind == NodeKind.EXPR_STMT {
+        ad_head(d, "ExprStmt");
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.ASM {
+        ad_head(d, "Asm");
+        ad_text(d, "text", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.BREAK {
+        ad_head(d, "Break");
+        ad_line(d, n);
+    } else if kind == NodeKind.CONTINUE {
+        ad_head(d, "Continue");
+        ad_line(d, n);
+    } else if kind == NodeKind.DEFER {
+        ad_head(d, "Defer");
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.MATCH_ARM {
+        ad_head(d, "MatchArm");
+        ad_child(d, "pattern", (*n).a);
+        ad_child(d, "body", (*n).b);
+        ad_line(d, n);
+    } else if kind == NodeKind.MATCH {
+        ad_head(d, "Match");
+        ad_child(d, "expr", (*n).a);
+        ad_items(d, "arms", (*n).items);
+        ad_line(d, n);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+fn ad_expr(d: *Dumper, n: *Node) {
+    let kind = (*n).kind;
+    if kind == NodeKind.INT_LIT {
+        ad_head(d, "IntLit");
+        ad_decimal(d, "value", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.FLOAT_LIT {
+        ad_head(d, "FloatLit");
+        ad_label(d, "value");
+        buf_push((*d).out, 'f');
+        dump_hex64((*d).out, (*n).num);
+        ad_line(d, n);
+    } else if kind == NodeKind.CHAR_LIT {
+        ad_head(d, "CharLit");
+        ad_u64(d, "value", (*n).num);
+        ad_line(d, n);
+    } else if kind == NodeKind.NULL_LIT {
+        ad_head(d, "NullLit");
+        ad_line(d, n);
+    } else if kind == NodeKind.BOOL_LIT {
+        ad_head(d, "BoolLit");
+        ad_bool(d, "value", (*n).flag);
+        ad_line(d, n);
+    } else if kind == NodeKind.STR_LIT {
+        ad_head(d, "StrLit");
+        ad_text(d, "value", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.VAR {
+        ad_head(d, "Var");
+        ad_text(d, "name", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.UNARY {
+        ad_head(d, "Unary");
+        ad_text(d, "op", (*n).name);
+        ad_child(d, "operand", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.BINARY {
+        ad_head(d, "Binary");
+        ad_text(d, "op", (*n).name);
+        ad_child(d, "left", (*n).a);
+        ad_child(d, "right", (*n).b);
+        ad_line(d, n);
+    } else if kind == NodeKind.CALL {
+        ad_head(d, "Call");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "args", (*n).items);
+        ad_line(d, n);
+        ad_names(d, "type_args", (*n).names);
+    } else if kind == NodeKind.CAST {
+        ad_head(d, "Cast");
+        ad_child(d, "expr", (*n).a);
+        ad_text(d, "target_type", (*n).ty);
+        ad_line(d, n);
+    } else if kind == NodeKind.TRY {
+        ad_head(d, "Try");
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.MOVE {
+        ad_head(d, "Move");
+        ad_child(d, "expr", (*n).a);
+        ad_line(d, n);
+    } else if kind == NodeKind.STRUCT_LIT {
+        ad_head(d, "StructLit");
+        ad_text(d, "name", (*n).name);
+        ad_items(d, "fields", (*n).items);
+        ad_line(d, n);
+    } else if kind == NodeKind.STRUCT_LIT_FIELD {
+        ad_head(d, "Tuple");
+        ad_text(d, "0", (*n).name);
+        ad_child(d, "1", (*n).a);
+    } else if kind == NodeKind.TUPLE_LIT {
+        ad_head(d, "TupleLit");
+        ad_items(d, "elements", (*n).items);
+        ad_line(d, n);
+    } else if kind == NodeKind.FIELD_ACCESS {
+        ad_head(d, "FieldAccess");
+        ad_child(d, "obj", (*n).a);
+        ad_text(d, "field", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.ARRAY_LIT {
+        ad_head(d, "ArrayLit");
+        ad_items(d, "elements", (*n).items);
+        ad_line(d, n);
+    } else if kind == NodeKind.ARRAY_REPEAT {
+        ad_head(d, "ArrayRepeat");
+        ad_child(d, "value", (*n).a);
+        ad_decimal(d, "count", (*n).name);
+        ad_line(d, n);
+    } else if kind == NodeKind.INDEX {
+        ad_head(d, "Index");
+        ad_child(d, "obj", (*n).a);
+        ad_child(d, "index", (*n).b);
+        ad_line(d, n);
+    } else {
+        sup_die("mort: internal error: unknown node kind in dump");
+    }
+}
+
+// Writes one node's line and queues its children to come next, in field order.
+fn ad_visit(d: *Dumper, n: *Node) {
+    (*d).pending.len = 0;
+    if !ad_decl(d, n) && !ad_stmt(d, n) {
+        ad_expr(d, n);
+    }
+    buf_push((*d).out, 10);
+    let k = (*d).pending.len;
+    while k > 0 {
+        k -= 1;
+        ptrvec_push(&(*d).stack, ptrvec_get(&(*d).pending, k));
+    }
+}
+
+fn ad_program_line(d: *Dumper, program: *Program) {
+    ad_head(d, "Program");
+    ad_items(d, "funcs", (*program).funcs);
+    ad_items(d, "structs", (*program).structs);
+    ad_items(d, "globals", (*program).globals);
+    ad_items(d, "externs", (*program).externs);
+    ad_items(d, "imports", (*program).imports);
+    ad_items(d, "enums", (*program).enums);
+    ad_items(d, "tests", (*program).tests);
+    ad_text(d, "module_name", (*program).module_name);
+    ad_items(d, "aliases", (*program).aliases);
+    buf_push((*d).out, 10);
+}
+
+fn dump_program_ast(out: *Buf, strings: *Interner, program: *Program) {
+    let dumper = Dumper {
+        out: out, strings: strings, stack: ptrvec_new(), pending: ptrvec_new(),
+    };
+    ad_program_line(&dumper, program);
+    let k = dumper.pending.len;
+    while k > 0 {
+        k -= 1;
+        ptrvec_push(&dumper.stack, ptrvec_get(&dumper.pending, k));
+    }
+    while dumper.stack.len > 0 {
+        ad_visit(&dumper, ptrvec_pop(&dumper.stack) as *Node);
+    }
+}

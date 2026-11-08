@@ -1,0 +1,82 @@
+// Standalone parser driver: writes the AST dump of one Mort source file.
+//
+// Usage: parse_main INPUT OUTPUT
+//
+// Exit status: 0 parsed and dumped, 1 a lexical or syntax error (a located
+// diagnostic on stderr and no dump), 2 usage or I/O failure.
+
+import support;
+import lexer;
+import ast;
+import parser;
+import ast_dump;
+
+fn pm_read_all(path: *u8) -> Buf {
+    let handle = file_open(path, "rb");
+    let contents = buf_new(1);
+    if handle == (0 as *void) {
+        contents.cap = 0;
+        return contents;
+    }
+    let chunk = sup_alloc(65536) as *u8;
+    loop {
+        let got = file_read(handle, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            buf_push(&contents, chunk[i]);
+        }
+    }
+    file_close(handle);
+    return contents;
+}
+
+fn pm_write_all(path: *u8, dump: *Buf) -> bool {
+    let handle = file_open(path, "wb");
+    if handle == (0 as *void) {
+        return false;
+    }
+    let written = file_write(handle, (*dump).data, (*dump).len);
+    file_close(handle);
+    return written == (*dump).len;
+}
+
+fn main() -> int {
+    if arg_count() != 3 {
+        eprintln("usage: parse_main INPUT OUTPUT");
+        return 2;
+    }
+    let in_path = arg_get(1);
+    let out_path = arg_get(2);
+    let raw = pm_read_all(in_path);
+    if raw.cap == 0 {
+        let text = buf_new(256);
+        buf_push_z(&text, "parse_main: cannot read ");
+        buf_push_z(&text, in_path);
+        buf_push(&text, 0);
+        eprintln(text.data);
+        return 2;
+    }
+    let source = lx_decode_source(buf_span(&raw));
+    if !source.valid {
+        diag_fatal(in_path, 0, 0, span_z("source is not valid UTF-8"));
+    }
+    let lexer = lx_new(source.bytes);
+    if !lx_tokenize(&lexer) {
+        diag_fatal(in_path, lexer.err_line, lexer.err_col, lexer.err_message);
+    }
+    let strings = intern_new();
+    let program = parse_program(&lexer.tokens, &strings, in_path);
+    let dump = buf_new(4096);
+    dump_program_ast(&dump, &strings, &program);
+    if !pm_write_all(out_path, &dump) {
+        let text = buf_new(256);
+        buf_push_z(&text, "parse_main: cannot write ");
+        buf_push_z(&text, out_path);
+        buf_push(&text, 0);
+        eprintln(text.data);
+        return 2;
+    }
+    return 0;
+}
