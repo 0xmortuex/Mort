@@ -376,7 +376,7 @@ def test_diag_report_does_not_end_the_program(driver):
 PUBLIC_TABLE_API = {
     "map_new", "map_put", "map_get", "map_has", "map_len",
     "intern_new", "intern", "intern_z", "intern_hash", "intern_hashed",
-    "intern_text", "intern_count",
+    "intern_text", "intern_count", "intern_within_capacity",
 }
 INTERNAL_TABLE_FUNCTIONS = {
     "map_with_capacity", "map_mix", "map_find_slot", "map_grow",
@@ -549,6 +549,8 @@ FATAL_CASES = {
     "ptr_set_past_end": range_message(1, 1, "ptrvec"),
     "ptr_pop_empty": "mort: internal error: pop from an empty ptrvec",
     "intern_text_bad": range_message(1, 1, "interner"),
+    "grow_capacity_overflow": "mort: internal error: capacity overflow",
+    "buf_capacity_overflow": "mort: internal error: capacity overflow",
     "alloc_impossible": "mort: out of memory",
     "alloc_array_overflow": "mort: internal error: allocation size overflow",
 }

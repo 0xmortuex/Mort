@@ -531,3 +531,8 @@ fn intern_text(it: *Interner, handle: u64) -> Span {
 fn intern_count(it: *Interner) -> u64 {
     return (*it).in_count;
 }
+
+// True while the entry arrays hold every handle.
+fn intern_within_capacity(it: *Interner) -> bool {
+    return (*it).in_count <= (*it).in_capacity;
+}
