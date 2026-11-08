@@ -24,6 +24,9 @@ VOLATILE_WIDTHS = ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64")
 F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
+# Each multiplication's cost grows with its operands, so an unbounded constant
+# chain can stall compilation. No value this wide can fit an integer type.
+MAX_CONSTANT_BITS = 2 ** 18
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
     "sizeof",
@@ -1266,6 +1269,8 @@ class Checker:
         checked against its target type — `1 << 8`, `200 << 4`, `~0` etc. are
         caught exactly like a bare out-of-range literal. (Runtime expressions
         wrap instead; see codegen's _narrow.)"""
+        if e.const_val is not None:  # folding is pure, so one pass per node is enough
+            return e.const_val
         if isinstance(e, A.IntLit):
             return e.value
         if isinstance(e, A.CharLit):
@@ -1281,34 +1286,42 @@ class Checker:
             rv = self._const_value(e.right)
             if lv is None or rv is None:
                 return None
-            op = e.op
-            if op == "+":
-                return lv + rv
-            if op == "-":
-                return lv - rv
-            if op == "*":
-                return lv * rv
-            # Fold / and % with C semantics so the checked value matches the
-            # value the generated C actually computes (esp. for negatives and
-            # near the 64-bit limits).
-            if op == "/" and rv != 0:
-                return _c_div(lv, rv)
-            if op == "%" and rv != 0:
-                return _c_mod(lv, rv)
-            if op == "&":
-                return lv & rv
-            if op == "|":
-                return lv | rv
-            if op == "^":
-                return lv ^ rv
-            if op == "<<" and rv >= 0:
-                if lv == 0:
-                    return 0
-                if rv > 64:
-                    return 1 << 65   # cap: already out of range for any Mort int
-                return lv << rv
-            if op == ">>" and rv >= 0:
-                return lv >> rv
+            value = self._fold_binary(e.op, lv, rv)
+            if value is not None and value.bit_length() > MAX_CONSTANT_BITS:
+                self._error(
+                    f"constant expression needs more than {MAX_CONSTANT_BITS} bits", e)
+            return value
+        return None
+
+    @staticmethod
+    def _fold_binary(op, lv, rv):
+        if op == "+":
+            return lv + rv
+        if op == "-":
+            return lv - rv
+        if op == "*":
+            return lv * rv
+        # Fold / and % with C semantics so the checked value matches the
+        # value the generated C actually computes (esp. for negatives and
+        # near the 64-bit limits).
+        if op == "/" and rv != 0:
+            return _c_div(lv, rv)
+        if op == "%" and rv != 0:
+            return _c_mod(lv, rv)
+        if op == "&":
+            return lv & rv
+        if op == "|":
+            return lv | rv
+        if op == "^":
+            return lv ^ rv
+        if op == "<<" and rv >= 0:
+            if lv == 0:
+                return 0
+            if rv > 64:
+                return 1 << 65   # cap: already out of range for any Mort int
+            return lv << rv
+        if op == ">>" and rv >= 0:
+            return lv >> rv
         return None
 
     def _check_volatile_call(self, e):

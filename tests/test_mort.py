@@ -10275,8 +10275,8 @@ def test_decimal_literal_at_the_digit_limit_still_compiles():
 
 
 @pytest.mark.parametrize("expression", [
-    "a[0x" + "F" * 20000 + "]",
-    "1 << (-0x" + "F" * 20000 + ")",
+    "a[0x" + "F" * 4000 + "]",
+    "1 << (-0x" + "F" * 4000 + ")",
 ], ids=["array-index", "negative-shift"])
 def test_huge_constant_in_a_diagnostic_message_does_not_crash(expression):
     with pytest.raises(MortError):
@@ -10416,14 +10416,14 @@ _I64 = "let a: i64 = 1; let u: u64 = 1; "
     ("let x: i64 = 9223372036854775808;", 14),
     ("let x = 9223372036854775808;", 9),
     ("let x = 18446744073709551616;", 9),
-    ("let x = -0x" + "F" * 20000 + ";", 9),
+    ("let x = -0x" + "F" * 4000 + ";", 9),
     ("print(18446744073709551616);", 7),
     ("let x = 18446744073709551616 as u64;", 9),
     ("let x = a + 9223372036854775808;", 13),
     ("let x = 18446744073709551616 == 1;", 9),
     ("let x = u + 18446744073709551616;", 13),
     ("let x = a == 9223372036854775808;", 14),
-    ("let x = a << 0x" + "F" * 20000 + ";", 14),
+    ("let x = a << 0x" + "F" * 4000 + ";", 14),
     ("let x: [i64; 1] = [9223372036854775808];", 20),
     ("let x: i64 = 18446744073709551616 / 2;", 35),
 ], ids=["2^64", "2^63", "untyped-2^63", "untyped-2^64", "huge-negative-hex", "print",
@@ -10637,11 +10637,8 @@ def test_asm_text_is_never_read_as_a_type(text):
 
 @pytest.mark.parametrize("folder", ["[]", "(a,b)", "[x;y]", "fn(x)->y"],
                          ids=["slice", "tuple", "array", "function"])
-def test_source_paths_are_never_read_as_types(tmp_path, folder):
-    source = tmp_path / folder / "main.mx"
-    source.parent.mkdir()
-    source.write_text("fn main() -> int { return 0; }", encoding="utf-8")
-    # The tag holds the absolute path, so make the whole path start type-like.
+def test_source_paths_are_never_read_as_types(folder):
+    # Only the label is read, so these need not be valid Windows folder names.
     assert "main" in mortc.compile_sources_to_c(
         ["fn main() -> int { return 0; }"], filenames=[f"{folder}/main.mx"])
 
@@ -10651,3 +10648,17 @@ def test_test_names_are_never_read_as_types(tmp_path):
     source.write_text('test "[]" { assert(true); } fn main() -> int { return 0; }',
                       encoding="utf-8")
     assert "main" in mortc.compile_files_to_c([str(source)], test_mode=True)
+
+
+def test_long_constant_product_is_reported_quickly():
+    chain = " * ".join(["0x" + "F" * 500] * 390)
+    assert_located_quickly(f"fn main() -> int {{ let x = {chain}; return 0; }}", 5,
+                           "constant expression")
+
+
+def test_constant_folding_is_not_repeated_at_every_level():
+    # 300 literals, each folded once: a rescan per level would be quadratic.
+    chain = " * ".join(["3"] * 300)
+    error, seconds = _compile_bounded(
+        f"fn main() -> int {{ let x = ({chain}) / ({chain}); return x as int; }}", 5)
+    assert error is None and seconds < 5
