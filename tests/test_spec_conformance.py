@@ -1343,3 +1343,17 @@ def test_sizeof_accepts_array_types():
         "type A = [u16; 4]; type B = [[u8; 3]; 2];"
         " fn main() -> int { print(sizeof<A>() as i64); print(sizeof<B>() as i64); return 0; }"
     ).stdout == "8\n6\n"
+
+
+def test_a_repeated_enum_variant_arm_is_rejected():
+    with pytest.raises(MortError, match="more than once"):
+        _check_program(
+            "enum E { A, B } fn main() -> int {"
+            " match E.A { E.A => {} E.A => {} E.B => {} } return 0; }")
+
+
+def test_a_repeated_payload_variant_arm_is_rejected():
+    with pytest.raises(MortError, match="more than once"):
+        _check_program(
+            "enum E { A(i64), B } fn main() -> int {"
+            " match E.B { E.A(x) => {} E.A(y) => {} E.B => {} } return 0; }")

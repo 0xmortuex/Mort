@@ -1653,6 +1653,10 @@ class Checker:
                         if len(binding_names) == 1:
                             arm.binding_name = binding_names[0]
                             arm.binding_type = binding_types[0]
+                        if variant_name in enum_variants:
+                            self._error(
+                                f"match names variant {variant_name!r} more than once",
+                                arm)
                         enum_variants.add(variant_name)
                     else:
                         pattern_type = self._check_expr(arm.pattern)
@@ -1662,6 +1666,10 @@ class Checker:
                     if (isinstance(arm.pattern, A.FieldAccess)
                             and isinstance(arm.pattern.obj, A.Var)
                             and arm.pattern.obj.name == subject_type):
+                        if arm.pattern.field in enum_variants:
+                            self._error(
+                                f"match names variant {arm.pattern.field!r} more than once",
+                                arm)
                         enum_variants.add(arm.pattern.field)
                         arm.variant_name = arm.pattern.field
                 self.scopes.append(dict(zip(binding_names, binding_types)))
