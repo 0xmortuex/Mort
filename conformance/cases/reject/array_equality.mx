@@ -1,0 +1,1 @@
+fn main() -> int { let a = [1, 2]; if a == a {} return 0; }

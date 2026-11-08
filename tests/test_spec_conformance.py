@@ -1407,3 +1407,41 @@ def test_a_repeated_payload_variant_arm_is_rejected():
 def test_array_and_slice_equality_are_rejected(body):
     with pytest.raises(MortError, match="cannot compare aggregate"):
         _check_program("fn main() -> int { " + body + " return 0; }")
+
+
+# ----- driver statuses and the freestanding failure path (section 22) ---------
+
+def _driver(*arguments):
+    return subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"), *arguments],
+        capture_output=True, text=True, check=False, timeout=120)
+
+
+def test_driver_exit_statuses(tmp_path):
+    good = tmp_path / "good.mx"
+    bad = tmp_path / "bad.mx"
+    unused = tmp_path / "unused.mx"
+    good.write_text("fn main() -> int { return 0; }\n", encoding="utf-8")
+    bad.write_text("fn main() -> int { return nope; }\n", encoding="utf-8")
+    unused.write_text("fn main() -> int { let a = 1; return 0; }\n", encoding="utf-8")
+    assert _driver("--check", str(good)).returncode == 0
+    assert _driver("--check", str(unused)).returncode == 0
+    failed = _driver("--check", str(bad))
+    assert failed.returncode == 1
+    assert "nope" in failed.stderr
+    assert _driver("--check", "--deny-warnings", str(unused)).returncode == 1
+
+
+def test_a_failed_assertion_in_a_test_block_ends_with_status_one(tmp_path):
+    source = tmp_path / "suite.mx"
+    source.write_text('test "fails" { assert(false); }\n', encoding="utf-8")
+    assert _driver("test", str(source)).returncode == 1
+
+
+def test_freestanding_arithmetic_failures_trap_and_indexing_is_unchecked():
+    c_source = mortc.compile_to_c(
+        "fn f(a: i64, b: i64) -> i64 { return a / b; }"
+        " fn g(s: []i64, i: u64) -> i64 { return s[i]; }",
+        freestanding=True)
+    assert "__builtin_trap" in c_source
+    assert "mort_bounds" not in c_source
