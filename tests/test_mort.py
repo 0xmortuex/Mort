@@ -10024,6 +10024,24 @@ def test_eprintln_helper_is_emitted_only_when_used():
     assert "mort_eprintln" in c_of('fn main() -> int { eprintln("x"); return 0; }')
 
 
+@pytest.mark.parametrize("call", [
+    'arg_get<u8>(0)', 'eprintln<u8>("x")', 'println<u8>("x")',
+    'alloc<u8>(1)', 'free<u8>(0 as *void)', 'len<u8>("x")', 'print<u8>(1)',
+    'assert<u8>(true)', 'file_open<u8>("a", "r")', 'file_flush<u8>(0 as *void)',
+])
+def test_type_arguments_on_a_non_generic_builtin_are_a_located_error(call):
+    name = call.split("<")[0]
+    source = f"fn main() -> int {{\n{call};\nreturn 0; }}"
+    with pytest.raises(MortError) as raised:
+        c_of(source)
+    assert raised.value.msg == f"builtin {name!r} is not generic and cannot take type arguments"
+    assert raised.value.line == 2
+
+
+def test_type_arguments_stay_valid_on_generic_builtins():
+    assert "sizeof" in c_of("fn main() -> int { print(sizeof<u8>() as i64); return 0; }")
+
+
 ARGUMENT_ECHO = (
     "fn main() -> int { "
     "let count = arg_count(); "

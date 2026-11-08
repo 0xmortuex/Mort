@@ -2125,6 +2125,9 @@ class Checker:
                 e.enum_variant = variant_name
                 e.enum_payload_type = payload_type
                 return enum_name
+        if e.type_args and e.name in BUILTIN_NAMES and e.name not in ("sizeof", "slice"):
+            self._error(
+                f"builtin {e.name!r} is not generic and cannot take type arguments", e)
         if e.name == "sizeof":
             if e.args or len(e.type_args) != 1:
                 self._error("sizeof expects exactly one type argument and no values", e)
