@@ -248,3 +248,95 @@ fn ptrvec_pop(v: *PtrVec) -> *void {
     (*v).len -= 1;
     return (*v).data[(*v).len];
 }
+
+// ----- hash map from u64 to u64 -----
+//
+// Lookup only: the API has no way to visit entries, so table order can never
+// reach the output. Linear probing over a power-of-two table. `map_mix` hashes
+// the key's value alone.
+
+struct Map {
+    map_keys: *u64,
+    map_values: *u64,
+    map_live: *bool,
+    map_capacity: u64,
+    map_count: u64,
+}
+
+fn map_with_capacity(capacity: u64) -> Map {
+    let live = sup_alloc_array(capacity, sizeof<bool>()) as *bool;
+    for i: u64 in 0..capacity {
+        live[i] = false;
+    }
+    return Map {
+        map_keys: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        map_values: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        map_live: live,
+        map_capacity: capacity,
+        map_count: 0,
+    };
+}
+
+fn map_new() -> Map {
+    return map_with_capacity(16);
+}
+
+fn map_mix(key: u64) -> u64 {
+    let z = key;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
+    return z ^ (z >> 31);
+}
+
+fn map_find_slot(m: *Map, key: u64) -> u64 {
+    let mask = (*m).map_capacity - 1;
+    let slot = map_mix(key) & mask;
+    while (*m).map_live[slot] && (*m).map_keys[slot] != key {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+fn map_grow(m: *Map) {
+    let bigger = map_with_capacity(sup_grown_capacity((*m).map_capacity));
+    for i: u64 in 0..(*m).map_capacity {
+        if (*m).map_live[i] {
+            map_put(&bigger, (*m).map_keys[i], (*m).map_values[i]);
+        }
+    }
+    free((*m).map_keys as *void);
+    free((*m).map_values as *void);
+    free((*m).map_live as *void);
+    *m = bigger;
+}
+
+fn map_put(m: *Map, key: u64, value: u64) {
+    if ((*m).map_count + 1) * 4 > (*m).map_capacity * 3 {
+        map_grow(m);
+    }
+    let slot = map_find_slot(m, key);
+    if !(*m).map_live[slot] {
+        (*m).map_live[slot] = true;
+        (*m).map_keys[slot] = key;
+        (*m).map_count += 1;
+    }
+    (*m).map_values[slot] = value;
+}
+
+// On a hit, stores the value through `out`; `out` is left alone on a miss.
+fn map_get(m: *Map, key: u64, out: *u64) -> bool {
+    let slot = map_find_slot(m, key);
+    if !(*m).map_live[slot] {
+        return false;
+    }
+    *out = (*m).map_values[slot];
+    return true;
+}
+
+fn map_has(m: *Map, key: u64) -> bool {
+    return (*m).map_live[map_find_slot(m, key)];
+}
+
+fn map_len(m: *Map) -> u64 {
+    return (*m).map_count;
+}

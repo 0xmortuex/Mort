@@ -144,6 +144,58 @@ def test_vector_matches_model(driver, tmp_path, prefix):
     assert run_ops(driver, tmp_path, all_ops) == all_expected
 
 
+# ----- hash map -----
+
+def map_keys(rng, count):
+    keys = [0, 1, U64_MAX, U64_MAX - 1, 2**32, 2**63]
+    keys += [i for i in range(count)]
+    keys += [i << 48 for i in range(count)]
+    keys += [rng.randrange(2**64) for _ in range(count)]
+    return keys
+
+
+def map_script(rng, count):
+    """Random map operations and the results a Python dict gives."""
+    keys = map_keys(rng, count)
+    ops = ["map_new", "map_len"]
+    expected = ["0"]
+    model = {}
+    for _ in range(count * 8):
+        key = rng.choice(keys)
+        roll = rng.random()
+        if roll < 0.55:
+            value = rng.choice((0, U64_MAX, rng.randrange(2**64)))
+            ops.append(f"map_put {key} {value}")
+            model[key] = value
+        elif roll < 0.8:
+            ops.append(f"map_get {key}")
+            expected.append(str(model[key]) if key in model else "none")
+        elif roll < 0.95:
+            ops.append(f"map_has {key}")
+            expected.append("1" if key in model else "0")
+        else:
+            ops.append("map_len")
+            expected.append(str(len(model)))
+    for key in sorted(model):
+        ops.append(f"map_get {key}")
+        expected.append(str(model[key]))
+    ops.append("map_len")
+    expected.append(str(len(model)))
+    return ops, expected
+
+
+@pytest.mark.parametrize("count", [1, 12, 13, 100, 5000])
+def test_map_matches_model(driver, tmp_path, count):
+    rng = random.Random(SEED + count)
+    ops, expected = map_script(rng, count)
+    assert run_ops(driver, tmp_path, ops) == expected
+
+
+def test_map_get_of_a_missing_key_leaves_nothing_behind(driver, tmp_path):
+    ops = ["map_new", "map_get 5", "map_len", "map_has 5", "map_put 5 9", "map_get 5"]
+    assert run_ops(driver, tmp_path, ops) == ["none", "0", "0", "9"]
+
+
 def range_message(index, length, what):
     return f"mort: internal error: index {index} out of range for {what} of length {length}"
 

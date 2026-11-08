@@ -15,6 +15,7 @@ struct State {
     bytes: Buf,
     numbers: U64Vec,
     pointers: PtrVec,
+    table: Map,
 }
 
 struct Cursor {
@@ -172,6 +173,34 @@ fn run_vector_op(st: *State, name: Span, c: *Cursor) -> bool {
     return true;
 }
 
+fn run_map_op(st: *State, name: Span, c: *Cursor) -> bool {
+    if span_eq_z(name, "map_new") {
+        (*st).table = map_new();
+    } else if span_eq_z(name, "map_put") {
+        let key = parse_number(c);
+        map_put(&(*st).table, key, parse_number(c));
+    } else if span_eq_z(name, "map_get") {
+        let value: u64 = 0;
+        if map_get(&(*st).table, parse_number(c), &value) {
+            emit_u64(st, value);
+        } else {
+            buf_push_z(&(*st).out, "none");
+            buf_push(&(*st).out, 10);
+        }
+    } else if span_eq_z(name, "map_has") {
+        if map_has(&(*st).table, parse_number(c)) {
+            emit_u64(st, 1);
+        } else {
+            emit_u64(st, 0);
+        }
+    } else if span_eq_z(name, "map_len") {
+        emit_u64(st, map_len(&(*st).table));
+    } else {
+        return false;
+    }
+    return true;
+}
+
 fn new_cell(value: u64) -> *void {
     let cell = sup_alloc(sizeof<u64>()) as *u64;
     *cell = value;
@@ -184,6 +213,7 @@ fn new_state() -> State {
         bytes: buf_new(16),
         numbers: u64vec_new(),
         pointers: ptrvec_new(),
+        table: map_new(),
     };
 }
 
@@ -194,7 +224,8 @@ fn run_ops(ops_path: *u8, out_path: *u8) -> int {
     while cursor.at < cursor.len {
         let name = next_word(&cursor);
         if !run_buffer_op(&state, name, &cursor)
-            && !run_vector_op(&state, name, &cursor) {
+            && !run_vector_op(&state, name, &cursor)
+            && !run_map_op(&state, name, &cursor) {
             sup_die("support_test_main: unknown operation");
         }
         end_line(&cursor);
