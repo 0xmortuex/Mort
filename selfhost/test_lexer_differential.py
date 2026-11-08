@@ -763,7 +763,6 @@ SUBSET_SCOPE_ACCEPTED = {
     "match_arm_shadow": ("enum E { A } fn g() { } fn f(e: E) { match e { "
                          "E.A => { let g = 1; let h = g; } _ => { } } g(); }"),
     "else_shadow": "fn g() { } fn f() { if true { } else { let g = 1; let h = g; } }",
-    "global_shadows_function": "fn g() { } let g: u64 = 1; fn f() -> u64 { return g; }",
     "direct_call_after_shadow_ended": ("fn g() -> u64 { return 1; } "
                                        "fn f() -> u64 { { let g = 1; } return g(); }"),
     "array_index": "let G: [u8; 2] = [1, 2]; fn f(i: u64) -> u8 { G[i] = 3; return G[i]; }",
@@ -805,6 +804,19 @@ def test_subset_checker_has_no_scope_false_rejects(tmp_path, name):
          "mortc.compile_files_to_c([sys.argv[2]])", str(ROOT), str(path)],
         capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_global_cannot_shadow_function_so_gate_need_not_model_it(tmp_path):
+    path = tmp_path / "bad.mx"
+    path.write_text("fn g() { } let g: u64 = 1; fn main() -> int { return 0; }",
+                    encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import mortc; "
+         "mortc.compile_files_to_c([sys.argv[2]])", str(ROOT), str(path)],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "conflicts with another name" in result.stderr
 
 
 def test_subset_checker_sees_array_declared_in_sibling_file(tmp_path):

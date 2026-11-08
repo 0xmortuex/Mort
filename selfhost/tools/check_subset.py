@@ -56,7 +56,7 @@ def check_type(type_text, names, where, problems, global_array=False):
     if type_text is None:
         return
     base = base_type(type_text)
-    if global_array and base.startswith("[") and ";" in base:
+    if global_array and type_text.strip().startswith("[") and ";" in base:
         check_type(base[1:base.rindex(";")], names, where, problems)
         return
     if base in ALLOWED_SCALARS or base in names:
@@ -88,11 +88,13 @@ def check_file(path, stats):
     enum_names = {e.name for e in program.enums}
     types = {s.name for s in program.structs} | enum_names
     callables = {f.name for f in program.funcs} | {f.name for f in program.externs}
+    global_arrays = {g.name for g in program.globals if is_array_global(g)}
     for sibling in path.parent.glob("*.mx"):
         other = Parser(Lexer(sibling.read_text(encoding="utf-8")).tokenize()).parse()
         enum_names |= {e.name for e in other.enums}
         types |= {s.name for s in other.structs} | {e.name for e in other.enums}
         callables |= {f.name for f in other.funcs} | {f.name for f in other.externs}
+        global_arrays |= {g.name for g in other.globals if is_array_global(g)}
 
     for declaration in program.structs:
         if declaration.generic_params:
@@ -147,11 +149,14 @@ def check_file(path, stats):
             check_match(node, enum_names, where, problems)
         if isinstance(node, A.ArrayLit) and id(node) not in global_nodes:
             problems.append(f"{where}: array literal outside a global")
+        if isinstance(node, A.ArrayLit) and any(
+                isinstance(element, A.ArrayLit) for element in node.elements):
+            problems.append(f"{where}: nested array literal")
         if isinstance(node, A.Let):
             if id(node) not in global_nodes:
                 check_type(node.decl_type, types, where, problems)
     check_builtins(program, name, problems)
-    check_function_values(program, callables | BUILTIN_NAMES, name, problems)
+    check_name_uses(program, callables | BUILTIN_NAMES, global_arrays, name, problems)
     return problems
 
 
@@ -173,24 +178,72 @@ def check_match(node, enum_names, where, problems):
         problems.append(f"{where}: match with no enum variant arm")
 
 
-def check_function_values(program, callables, name, problems):
-    """A callable's name may only appear as the target of a direct call."""
-    def scan(root, local_names):
-        for node in walk(root):
-            if (isinstance(node, A.Var) and node.name in callables
-                    and node.name not in local_names):
+def is_array_global(binding):
+    return ((binding.decl_type or "").strip().startswith("[")
+            or isinstance(binding.expr, A.ArrayLit))
+
+
+def check_name_uses(program, callables, global_arrays, name, problems):
+    """Resolve each variable the way Checker._lookup does, then apply two rules.
+
+    A local hides a global or function; the checker refuses a global and a
+    function with one name. A callable's name may only appear as the target of
+    a direct call, and a global array may only be indexed: any other use would
+    make a function or array value. A `let` binds from the next statement to
+    the end of its block.
+    """
+    def check_expr(expr, scopes):
+        if expr is None:
+            return
+        indexed = set()
+        for node in walk(expr):  # walk yields a parent before its children
+            if isinstance(node, A.Index) and isinstance(node.obj, A.Var):
+                indexed.add(id(node.obj))
+            if not isinstance(node, A.Var) or any(node.name in s for s in scopes):
+                continue
+            if node.name in global_arrays:
+                if id(node) not in indexed:
+                    problems.append(f"{name}:{node.line}: array value {node.name}")
+            elif node.name in callables:
                 problems.append(f"{name}:{node.line}: function value {node.name}")
 
+    def check_scoped(statement, scopes, bound):
+        scopes.append(bound)
+        check_stmt(statement, scopes)
+        scopes.pop()
+
+    def check_stmt(statement, scopes):
+        if isinstance(statement, A.Block):
+            scopes.append(set())
+            for inner in statement.stmts:
+                check_stmt(inner, scopes)
+            scopes.pop()
+        elif isinstance(statement, A.Let):
+            check_expr(statement.expr, scopes)
+            scopes[-1].add(statement.name)
+        elif isinstance(statement, A.If):
+            check_expr(statement.cond, scopes)
+            check_scoped(statement.then, scopes, set())
+            if statement.els is not None:
+                check_scoped(statement.els, scopes, set())
+        elif isinstance(statement, A.While):
+            check_expr(statement.cond, scopes)
+            check_scoped(statement.body, scopes, set())
+        elif isinstance(statement, A.For):
+            check_expr(statement.start, scopes)
+            check_expr(statement.end, scopes)
+            check_scoped(statement.body, scopes, {statement.var})
+        elif isinstance(statement, A.Match):
+            check_expr(statement.expr, scopes)
+            for arm in statement.arms:
+                check_scoped(arm.body, scopes, set())
+        else:
+            check_expr(statement, scopes)
+
     for function in program.funcs:
-        local_names = {param.name for param in function.params}
-        for node in walk(function.body):
-            if isinstance(node, A.Let):
-                local_names.add(node.name)
-            elif isinstance(node, A.For):
-                local_names.add(node.var)
-        scan(function.body, local_names)
+        check_stmt(function.body, [{param.name for param in function.params}])
     for binding in program.globals:
-        scan(binding, set())
+        check_expr(binding.expr, [])
 
 
 def walk(root):

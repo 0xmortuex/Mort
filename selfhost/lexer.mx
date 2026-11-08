@@ -184,9 +184,14 @@ fn tokens_push(v: *TokenVec, t: Token) {
 
 // ----- source loading -----
 
+// When `valid` is false, `err_line` and `err_col` locate the first invalid byte
+// (counted as mort/lexer.py's decode_source counts) and `err_byte` holds it.
 struct Source {
     bytes: Span,
     valid: bool,
+    err_line: u64,
+    err_col: u64,
+    err_byte: u8,
 }
 
 // Strict UTF-8 validation of the sequence starting at `at`. Returns its length
@@ -232,10 +237,18 @@ fn lx_decode_source(raw: Span) -> Source {
     let out = alloc(raw.len + 1) as *u8;
     let i: u64 = 0;
     let o: u64 = 0;
+    let line: u64 = 1;
+    let col: u64 = 1;
     while i < raw.len {
         let size = lx_utf8_length(raw.data, raw.len, i);
         if size == 0 {
-            return Source { bytes: Span { data: out, len: 0 }, valid: false };
+            return Source {
+                bytes: Span { data: out, len: 0 },
+                valid: false,
+                err_line: line,
+                err_col: col,
+                err_byte: raw.data[i],
+            };
         }
         let b = raw.data[i];
         if b == 13 {
@@ -245,6 +258,8 @@ fn lx_decode_source(raw: Span) -> Source {
             if i < raw.len && raw.data[i] == 10 {
                 i += 1;
             }
+            line += 1;
+            col = 1;
             continue;
         }
         for k: u64 in 0..size {
@@ -252,9 +267,30 @@ fn lx_decode_source(raw: Span) -> Source {
             o += 1;
         }
         i += size;
+        if b == 10 {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
     }
     out[o] = 0;
-    return Source { bytes: Span { data: out, len: o }, valid: true };
+    return Source {
+        bytes: Span { data: out, len: o },
+        valid: true,
+        err_line: 0,
+        err_col: 0,
+        err_byte: 0,
+    };
+}
+
+// The message mort/lexer.py's decode_source reports for this byte.
+fn lx_invalid_utf8_message(byte: u8) -> Span {
+    let text = buf_new(32);
+    buf_push_z(&text, "source is not valid UTF-8 (byte 0x");
+    buf_push_hex2(&text, byte);
+    buf_push(&text, ')');
+    return Span { data: text.data, len: text.len };
 }
 
 // ----- character classes -----
