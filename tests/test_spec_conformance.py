@@ -1291,3 +1291,26 @@ def test_comparison_before_a_block_is_not_read_as_type_arguments():
     _check_program(
         "fn main() -> int { let a = 1; let b = 2; let c = 3; let d = 4;"
         " if a < b { if c > (d) { return 1; } } return 0; }")
+
+
+RESOURCE = "resource struct R { v: i64 } fn destroy(r: *R) -> void { print((*r).v); } "
+
+
+@pytest.mark.parametrize("body", [
+    "struct H { r: R } fn main() -> int { let h = H { r: R { v: 1 } }; let a = h.r; return 0; }",
+    "struct H { r: R } fn f(r: R) -> void {} "
+    "fn main() -> int { let h = H { r: R { v: 1 } }; f(h.r); return 0; }",
+    "fn main() -> int { let t = (R { v: 1 }, 2); let a = t.0; return 0; }",
+    "fn main() -> int { let t = [R { v: 1 }, R { v: 2 }]; let a = t[0]; return 0; }",
+])
+def test_a_resource_cannot_be_copied_out_of_its_owner(body):
+    with pytest.raises(MortError, match="cannot be copied out of"):
+        _check_program(RESOURCE + body)
+
+
+def test_reading_plain_fields_and_raw_storage_of_a_resource_stays_legal():
+    _check_program(
+        RESOURCE
+        + "struct H { r: R, n: i64 } fn main() -> int {"
+          " let h = H { r: R { v: 1 }, n: 2 }; let n = h.n; print(n);"
+          " let p = alloc(8) as *R; let q = &h.r; let s = p; free(p as *void); return 0; }")

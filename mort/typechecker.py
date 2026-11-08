@@ -1060,12 +1060,22 @@ class Checker:
                 self._resource_destructor(child, node)
 
     def _require_explicit_move(self, expected, expr):
-        if (self._needs_drop_type(expected) and isinstance(expr, A.Var)):
+        if not self._needs_drop_type(expected):
+            return
+        if isinstance(expr, A.Var):
             self._error(
                 f"resource {expr.name!r} must be transferred with "
                 f"'move {expr.name}'",
                 expr,
             )
+        if isinstance(expr, (A.FieldAccess, A.Index)):
+            # A field or element of a local owner has no independent liveness
+            # flag, so a by-value read would be destroyed twice. Storage behind
+            # a raw pointer or slice is manually managed and rooted elsewhere.
+            root_type, _ = self._local_binding(self._assignment_root(expr))
+            if root_type is not None and self._needs_drop_type(root_type):
+                self._error(
+                    "a resource cannot be copied out of its owning binding", expr)
 
     def _binding_mutable(self, name):
         for scope, bindings in zip(
