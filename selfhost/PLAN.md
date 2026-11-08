@@ -286,9 +286,9 @@ Two Python-side defects found by this work; separate tasks, not fixed here:
 
 ## 10. Parser status (T3)
 
-`selfhost/ast.mx` (130 lines), `parser.mx` (1212), `pyrepr.mx` (287), `ast_dump.mx`
+`selfhost/ast.mx` (130 lines), `parser.mx` (1212), `pyrepr.mx` (419), `ast_dump.mx`
 (395) and `parse_main.mx` (82, the driver: `parse_main INPUT OUTPUT`). The Python
-parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.4 with the
+parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.6 with the
 AST, the diagnostic `repr`, the dump and the driver. Time: about 40 minutes of agent time
 against the 10 to 16 hours estimated, because the Python parser is regular and
 the test harness already existed from T1. T4 and T5 should not assume this ratio
@@ -299,7 +299,9 @@ carries over: the checker's logic is far less mechanical.
   are excluded, and the dumper asserts they still hold their initial values.
 - Positions: `line` only, because that is all the Python AST records.
 - Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
-  of a token's value, floats included. The first error exits 1 with no dump.
+  of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
+  (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
+  The first error exits 1 with no dump.
 - Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
   expressions, unary, blocks, `if`). Python's own limit is a side effect of its
   frame count, so the reference is the unmodified Python parser plus the same
