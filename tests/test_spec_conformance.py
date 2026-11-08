@@ -1452,3 +1452,11 @@ def test_a_function_value_can_be_a_match_subject():
         "fn g() -> void {} fn h() -> void {} fn main() -> int { let p = g;"
         " match p { h => { print(1); } g => { print(2); } _ => { print(3); } } return 0; }"
     ).stdout == "2\n"
+
+
+def test_a_balanced_angle_before_a_paren_is_read_as_type_arguments():
+    program = Parser(Lexer("fn f() { g(a < b, c > (d)); }").tokenize()).parse()
+    outer = program.funcs[0].body.stmts[0].expr
+    inner = outer.args[0]
+    assert (outer.name, len(outer.args)) == ("g", 1)
+    assert (inner.name, inner.type_args) == ("a", ["b", "c"])

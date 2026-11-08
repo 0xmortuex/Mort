@@ -8,7 +8,8 @@ Last updated: 2026-11-08
 This document defines the source language accepted by a conforming Mort 0.41
 implementation. The words **must**, **must not**, **should**, **should not**, and
 **may** are normative. Examples are informative unless explicitly identified as
-conformance cases.
+conformance cases. Fenced `mort` examples are nevertheless compiled, and run where
+marked, by `tests/test_spec_conformance.py`, so they cannot drift from the compiler.
 
 The executable suite in `conformance/` is part of this specification. If prose
 and a conformance case disagree, the prose controls and the case is a defect.
@@ -1638,6 +1639,24 @@ fn main() -> int {
 7
 ```
 
+```mort run
+fn g() -> void {}
+fn h() -> void {}
+fn main() -> int {
+    let p = g;
+    match p { h => { print(1); } g => { print(2); } _ => { print(3); } }
+    match 2.5 { 2.5 => { print(4); } _ => { print(5); } }
+    match true { false => { print(6); } true => { print(7); } }
+    return 0;
+}
+```
+
+```output
+2
+4
+7
+```
+
 ```mort reject="non-exhaustive match on E; missing: B"
 enum E { A, B }
 fn main() -> int { match E.A { E.A => {} } return 0; }
@@ -2014,8 +2033,8 @@ Every value of a non-`void` type occupies an object. Storage has one of these du
 An object has no address separate from its storage. Automatic storage is not initialised
 by the language beyond the required initializer, so every local has a value when it comes
 into scope, but memory from `alloc` is uninitialised and must be written before it is read
-at a given type. String literal storage is writable, and each evaluation yields the same
-object. `alloc` may return a null pointer on failure, and the language does not check it;
+at a given type. String literal storage is writable, and every evaluation of one literal occurrence
+yields the same object. `alloc` may return a null pointer on failure, and the language does not check it;
 `free(null)` is a no-op.
 
 ### 21.2 Value semantics
@@ -2218,6 +2237,12 @@ fn main() -> int {
 9
 6
 5
+```
+
+```mort reject="use of moved resource 'a'"
+resource struct R { v: i64 }
+fn destroy(r: *R) -> void {}
+fn main() -> int { let a = R { v: 1 }; destroy(&a); return a.v; }
 ```
 
 ```mort reject="an owning enum match must name every variant"
@@ -2459,7 +2484,7 @@ A program with these errors is ill-formed, and the reference implementation curr
 reports them only through the C backend, as a failed compilation rather than a Mort
 diagnostic:
 
-- a `match` whose subject has type `void`;
+- a `match` whose subject has type `void`, or `==` on `void` values;
 - binding an array by name with `let b = a;` where `a` is an array;
 - a cast between a pointer and a float;
 - a string escape that the backend's C compiler does not accept, such as `"\xZZ"`.

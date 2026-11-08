@@ -18,6 +18,7 @@ Commit hashes below are on branch `docs/spec`.
 | 5 | `sizeof` on an array type raised `KeyError` | Bug. The spec defines `sizeof` of any concrete type | `7b9df23` |
 | 6 | A variant named by two arms was accepted | Bug. The spec already called this a compile-time error | `ac2ae7b` |
 | 7 | `==` on arrays compared addresses silently, and on slices failed in C | Bug. The spec defines no aggregate equality | `dfbfc56` |
+| 7a | A `match` on a function value passed the checker and then failed in C | Bug. The same declaration spelling as the match binding fix | `d9f06f1` |
 
 ## Document changed
 
