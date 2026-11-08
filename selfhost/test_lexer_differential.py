@@ -750,6 +750,11 @@ SUBSET_SCOPE_VIOLATIONS = {
                             "array value G"),
     "array_pointer_global_type": ("let P: *[u8; 2] = 0 as *u8;", "outside the subset"),
     "array_nested_inferred_global": ("let G = [[1, 2], [3, 4]];", "nested array"),
+    # An enum path head is exempt; the same name used bare is still a value.
+    "fn_bare_with_enum_of_same_name": ("enum g { A } fn g() { } fn f() { let h = g; }",
+                                       "function value g"),
+    "builtin_bare_with_enum_of_same_name": ("enum len { A } fn f() { let h = len; }",
+                                            "function value len"),
 }
 
 SUBSET_SCOPE_ACCEPTED = {
@@ -765,6 +770,9 @@ SUBSET_SCOPE_ACCEPTED = {
     "else_shadow": "fn g() { } fn f() { if true { } else { let g = 1; let h = g; } }",
     "direct_call_after_shadow_ended": ("fn g() -> u64 { return 1; } "
                                        "fn f() -> u64 { { let g = 1; } return g(); }"),
+    "enum_path_named_like_builtin": "enum len { A, B } fn f() -> int { let e = len.B; return e as int; }",
+    "enum_path_named_like_function": ("enum g { A, B } fn g() { } "
+                                      "fn f() -> int { let e = g.B; return e as int; }"),
     "array_index": "let G: [u8; 2] = [1, 2]; fn f(i: u64) -> u8 { G[i] = 3; return G[i]; }",
     "array_element_address": "let G: [u8; 2] = [1, 2]; fn f() -> *u8 { return &G[0]; }",
     "array_name_shadowed_by_local": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { let G: u64 = 1; "

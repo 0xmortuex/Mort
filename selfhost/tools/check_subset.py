@@ -156,7 +156,8 @@ def check_file(path, stats):
             if id(node) not in global_nodes:
                 check_type(node.decl_type, types, where, problems)
     check_builtins(program, name, problems)
-    check_name_uses(program, callables | BUILTIN_NAMES, global_arrays, name, problems)
+    check_name_uses(program, callables | BUILTIN_NAMES, global_arrays, enum_names,
+                    name, problems)
     return problems
 
 
@@ -183,7 +184,7 @@ def is_array_global(binding):
             or isinstance(binding.expr, A.ArrayLit))
 
 
-def check_name_uses(program, callables, global_arrays, name, problems):
+def check_name_uses(program, callables, global_arrays, enum_names, name, problems):
     """Resolve each variable the way Checker._lookup does, then apply two rules.
 
     A local hides a global or function; the checker refuses a global and a
@@ -196,10 +197,16 @@ def check_name_uses(program, callables, global_arrays, name, problems):
         if expr is None:
             return
         indexed = set()
+        enum_heads = set()
         for node in walk(expr):  # walk yields a parent before its children
             if isinstance(node, A.Index) and isinstance(node.obj, A.Var):
                 indexed.add(id(node.obj))
-            if not isinstance(node, A.Var) or any(node.name in s for s in scopes):
+            # The checker tries `E.Variant` before any variable lookup.
+            if (isinstance(node, A.FieldAccess) and isinstance(node.obj, A.Var)
+                    and node.obj.name in enum_names):
+                enum_heads.add(id(node.obj))
+            if (not isinstance(node, A.Var) or id(node) in enum_heads
+                    or any(node.name in s for s in scopes)):
                 continue
             if node.name in global_arrays:
                 if id(node) not in indexed:
