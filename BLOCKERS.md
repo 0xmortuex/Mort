@@ -38,6 +38,12 @@ Interim: declare the exact C signature (`end: **c_char`).
   Reproduce with `let x: u8 = 999...;` (5000 nines).
 - `mortc.py:197`: source that is not UTF-8 raises an uncaught
   `UnicodeDecodeError` traceback instead of a diagnostic.
+- `mort/codegen.py:179` (`c_type`): taking the address of a global array crashes
+  codegen with an uncaught `KeyError: '[u8;2]'`, because the type checks but no
+  C type exists for a pointer to an array. Reproduce with
+  `let G: [u8; 2] = [1, 2]; fn main() -> int { let p = &G; return 0; }`. The
+  subset gate rejects this program; the compiler crash itself is not fixed on
+  this branch.
 - `mort/codegen.py:205` (`_collect_slice_types`) walks every string in the AST
   and treats any that starts with `[]` as a slice type, string literals included.
   `fn main() -> int { println("[]"); return 0; }` raises an uncaught

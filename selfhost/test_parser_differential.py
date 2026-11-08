@@ -25,6 +25,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
+import mortc  # noqa: E402
 import py_ast_dump  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
@@ -119,6 +120,13 @@ def type_case(text):
 
 
 EDGE_CASES = {
+    # --- call name positions
+    "call_name_pos_split_line": fragment("    g\n  (1);"),
+    "call_name_pos_parenthesized": fragment("  (g)(1);"),
+    "call_name_pos_qualified": fragment("    a.b.c(1);"),
+    "call_name_pos_generic_split": fragment("  g\n<u8>\n(1);"),
+    "call_name_pos_nested": fragment("g(\n  h(\n    k()));"),
+    "call_name_pos_after_non_ascii": fragment("/* é世 */ g();"),
     # --- top level
     "empty": b"",
     "comment_only": b"// nothing\n/* here */",
@@ -366,6 +374,9 @@ EDGE_CASES = {
     "move_expr": fragment("let v = move a;"),
     "move_stack": fragment("let v = move -a;"),
     "binary_multiline_line": fragment("let v = a\n+ b\n* c;"),
+    "binary_line_is_the_operator": fragment("let v = a +\nb;"),
+    "cast_line_is_the_as": fragment("let v = a\nas u8;"),
+    "shr_split_leaves_one_angle": b"let x: A<u8>> = 0;",
     "binary_missing_rhs": fragment("let v = a + ;"),
     "binary_missing_lhs": fragment("let v = * ;"),
     "binary_double_op": fragment("let v = a + * b;"),
@@ -532,6 +543,7 @@ FLOAT_TEXTS = [
     "4503599627370497.5", "3.141592653589793", "2.718281828459045",
     "1.0000000000000002", "0.9999999999999999", "123.456", "1e100",
     "1.2345678901234567e100", "8.41e21", "2e22", "1_000.5",
+    "7.120236347223045e-307",
 ]
 
 
@@ -552,6 +564,75 @@ def test_float_repr_random_doubles(parse_exe, tmp_path):
         result = assert_source_agrees(
             parse_exe, tmp_path, f"import {text};".encode())
         assert result.dump is None
+
+
+@pytest.fixture(scope="session")
+def float_repr_exe(tmp_path_factory):
+    build = tmp_path_factory.mktemp("selfhost-float-build")
+    exe = build / ("float_repr_main.exe" if os.name == "nt" else "float_repr_main")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"),
+         str(HERE / "float_repr_main.mx"), "-o", str(exe)],
+        capture_output=True, text=True, cwd=build)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return exe
+
+
+def assert_reprs_match(exe, tmp_path, patterns):
+    """Compare the Mort repr of each binary64 bit pattern with Python's."""
+    source = tmp_path / "bits.bin"
+    source.write_bytes(b"".join(struct.pack("<Q", bits) for bits in patterns))
+    out = tmp_path / "reprs.txt"
+    subprocess.run([str(exe), str(source), str(out)], check=True, timeout=300)
+    actual = out.read_text(encoding="ascii").splitlines()
+    expected = [repr(struct.unpack("<d", struct.pack("<Q", bits))[0])
+                for bits in patterns]
+    assert len(actual) == len(expected)
+    wrong = [(hex(bits), want, got) for bits, want, got
+             in zip(patterns, expected, actual) if want != got]
+    assert not wrong, f"{len(wrong)} of {len(patterns)} differ, first: {wrong[:5]}"
+
+
+MAX_FINITE_BITS = 0x7FEFFFFFFFFFFFFF
+
+
+def power_of_two_bits():
+    """Every power of two representable as a double: 2^-1074 to 2^1023."""
+    subnormal = [1 << shift for shift in range(52)]
+    normal = [biased << 52 for biased in range(1, 2047)]
+    return subnormal + normal
+
+
+def test_float_repr_every_power_of_two(float_repr_exe, tmp_path):
+    patterns = power_of_two_bits()
+    assert len(patterns) == 2098
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_neighbours_of_powers_of_two(float_repr_exe, tmp_path):
+    patterns = sorted({
+        neighbour for bits in power_of_two_bits()
+        for neighbour in (bits - 1, bits + 1)
+        if 0 <= neighbour <= MAX_FINITE_BITS
+    })
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_random_bit_patterns(float_repr_exe, tmp_path):
+    rng = random.Random(20261108)
+    patterns = [rng.randrange(MAX_FINITE_BITS + 1) for _ in range(20_000)]
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
+
+
+def test_float_repr_short_decimals_and_integers(float_repr_exe, tmp_path):
+    rng = random.Random(20261109)
+    values = [float(f"{rng.randrange(1, 10**rng.randint(1, 17))}e{rng.randint(-320, 290)}")
+              for _ in range(10_000)]
+    values += [float(rng.randrange(1, 1 << 63)) for _ in range(5_000)]
+    values += [10.0 ** power for power in range(-307, 309)] + [0.0]
+    patterns = [struct.unpack("<Q", struct.pack("<d", value))[0]
+                for value in values if value != float("inf")]
+    assert_reprs_match(float_repr_exe, tmp_path, patterns)
 
 
 # ----- deep nesting -----
@@ -859,11 +940,56 @@ def test_every_ast_class_is_exercised():
     assert classes - seen == set()
 
 
+def test_reference_dumps_the_call_name_position():
+    program = py_ast_dump.parse_source("fn f() {\n    g\n  (1);\n}\n")
+    dump = py_ast_dump.dump_program(program)
+    assert 'Call name="g" args=[1 line=#3 type_args=[0 name_pos=2:5\n' in dump
+
+
 def test_reference_rejects_a_parser_set_checker_field():
     program = py_ast_dump.parse_source("fn f() { let a = 1; }")
     program.funcs[0].body.stmts[0].var_type = "i64"
     with pytest.raises(AssertionError, match="var_type"):
         py_ast_dump.dump_program(program)
+
+
+# ----- the bootstrap subset -----
+
+
+def f64_locals(root, monkeypatch):
+    """Locals the checker typed f64, as (file name, line), for one program.
+
+    Reads the checker's result, so an inferred type is seen as well as a
+    written one.
+    """
+    captured = []
+
+    class CaptureProgram:
+        def __init__(self, program, **options):
+            captured.append(program)
+
+        def generate(self):
+            return ""
+
+    monkeypatch.setattr(mortc, "CodeGen", CaptureProgram)
+    mortc.compile_files_to_c([str(root)])
+    found = set()
+    stack = list(captured[0].funcs)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (list, tuple)):
+            stack.extend(item)
+        elif isinstance(item, A.Node):
+            if isinstance(item, A.Let) and item.var_type == "f64":
+                found.add((Path(item.filename).name, item.line))
+            stack.extend(value for field, value in vars(item).items()
+                         if isinstance(value, (A.Node, list, tuple)))
+    return sorted(found)
+
+
+@pytest.mark.parametrize("root", ["parse_main.mx", "float_repr_main.mx"])
+def test_no_f64_locals(root, monkeypatch):
+    assert f64_locals(HERE / root, monkeypatch) == []
 
 
 # ----- driver behaviour -----

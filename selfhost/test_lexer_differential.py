@@ -7,13 +7,18 @@ Run from the repository root:
 Every expected value here comes from running the Python lexer; nothing is
 hardcoded. See py_lex_dump.py for the dump format.
 """
+import ast
 import collections
+import math
 import os
 import random
 import re
+import struct
 import subprocess
 import sys
+import time
 import unicodedata
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -203,6 +208,38 @@ EDGE_CASES = {
     "number_dotdot": b"1..2 1..=2 1...3",
     "number_dot_eof": b"1.",
     "number_dot_e": b"1.e5",
+    "float_tie_regression": b"27966680151194.158203125",
+    "float_fraction_zeros_cancel": b"0." + b"0" * 5200 + b"1e5201",
+    "float_mantissa_zeros_cancel": b"1" + b"0" * 5201 + b"e-5201",
+    "float_zero_huge_exponents": b"0e99999999999 0.0e-99999999999 0.000e400",
+    "float_huge_positive_exponent": b"1e99999999999999999999999999",
+    "float_huge_negative_exponent": b"1e-99999999999999999999999999",
+    # 2**1024 - 2**970 is the tie between the largest double and overflow.
+    "float_overflow_tie": str(2**1024 - 2**970).encode() + b".0",
+    "float_below_overflow_tie": str(2**1024 - 2**970 - 1).encode() + b".0",
+    "float_tie_sticky_past_800_digits": (
+        str(2**1024 - 2**970 - 2**969).encode() + b".0" + b"0" * 900 + b"1"),
+    # 2**-1075 is the tie between zero and the smallest subnormal.
+    "float_smallest_tie": str(5**1075).encode() + b"e-1075",
+    "float_smallest_tie_sticky": (
+        str(5**1075).encode() + b"0" * 900 + b"1e-1976"),
+    # --- integer literal length limit, every base and both sides of it
+    "limit_decimal_at": b"1" * 4300,
+    "limit_decimal_over": b"1" * 4301,
+    "limit_decimal_leading_zeros_count": b"0" * 4300 + b"1",
+    "limit_decimal_separators_ignored": b"1_" * 4300 + b"1",
+    "limit_decimal_scanner_error_first": b"1" * 4301 + b"a",
+    "limit_tuple_index_at": b"a." + b"1" * 4300,
+    "limit_tuple_index_over": b"a." + b"1" * 4301,
+    "limit_hex_at": b"0x" + b"f" * 4300,
+    "limit_hex_over": b"0X" + b"f" * 4301,
+    "limit_hex_separators_ignored": b"0x" + b"f_" * 4300 + b"f",
+    "limit_hex_scanner_error_first": b"0x" + b"f" * 4301 + b"g",
+    "limit_binary_at": b"0b" + b"1" * 4300,
+    "limit_binary_over": b"0B" + b"1" * 4301,
+    "limit_octal_at": b"0o" + b"7" * 4300,
+    "limit_octal_over": b"0O" + b"7" * 4301,
+    "limit_tokens_before_kept": b"let x = " + b"1" * 4301,
     # --- tuple index context
     "tuple_index": b"a.0 a.1.2 m.0.1",
     "tuple_index_zeros": b"a.007",
@@ -316,6 +353,13 @@ EDGE_CASES = {
     "utf8_bad_second": b"\xe2\x28\xa1",
     "utf8_in_comment": b"// \xff\nfn",
     "utf8_in_string": b'"\xff"',
+    "utf8_located_after_lf": b"let x;\n  \xff",
+    "utf8_located_after_crlf": b"let x;\r\n  \xff",
+    "utf8_located_after_lone_cr": b"let x;\r  \xff",
+    "utf8_located_after_cr_before_bad_byte": b"\r\xff",
+    "utf8_located_after_multibyte": "é€\U0001f600".encode() + b"\xff",
+    "utf8_located_truncated_on_line_3": b"a\nb\nc\xe2\x82",
+    "utf8_located_bad_second_on_line_2": b"\n\xe2\x28\xa1",
     "utf8_valid_edges": (b"\xc2\x80 \xdf\xbf \xe0\xa0\x80 \xed\x9f\xbf "
                          b"\xee\x80\x80 \xf0\x90\x80\x80 \xf4\x8f\xbf\xbf"),
     # --- realistic fragments
@@ -332,38 +376,72 @@ def test_edge_case(lex_exe, tmp_path, name):
     assert_agrees(lex_exe, source, tmp_path / "out.txt")
 
 
-def _mutate(rng, data):
-    """Byte-level mutations, biased toward lexically interesting bytes."""
-    alphabet = (b"\"'\\/*\n\r\t._-+=<>!&|^%~0123456789eExXbBoOaz{}()[];:,@#$`?"
-                b"\x00\x7f\x80\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80\xed\xa0\xff")
-    text = bytearray(data)
-    for _ in range(rng.randint(1, 12)):
+TEXT_ALPHABET = list("\"'\\/*\n\t._-+=<>!&|^%~0123456789eExXbBoOaz{}()[];:,@#$`?") + [
+    "\r", "\r\n", "\x00", "\x7f", "é", "€", "\U0001f600", "٣",
+    " ", "﻿", "let ", "0x", "1e5", "1.5", "..=", ">>=", "/*", "*/", "//",
+]
+BYTE_ALPHABET = b"\x80\xbf\xc0\xc3\xe2\xed\xa0\xf0\xf4\xf5\xff"
+
+
+def _mutate_text(rng, text):
+    """Edits on code points, so the result is always valid UTF-8."""
+    chars = list(text)
+    for _ in range(rng.randint(1, 4)):
         operation = rng.choice(("insert", "delete", "replace", "dup"))
-        position = rng.randrange(len(text) + 1)
+        position = rng.randrange(len(chars) + 1)
         if operation == "insert":
-            text[position:position] = bytes([rng.choice(alphabet)])
-        elif operation == "delete" and text:
-            del text[min(position, len(text) - 1)]
-        elif operation == "replace" and text:
-            text[min(position, len(text) - 1)] = rng.choice(alphabet)
-        elif operation == "dup" and text:
-            end = min(len(text), position + rng.randint(1, 16))
-            text[position:position] = text[position:end]
+            chars[position:position] = [rng.choice(TEXT_ALPHABET)]
+        elif operation == "delete" and chars:
+            del chars[min(position, len(chars) - 1)]
+        elif operation == "replace" and chars:
+            chars[min(position, len(chars) - 1)] = rng.choice(TEXT_ALPHABET)
+        elif operation == "dup" and chars:
+            end = min(len(chars), position + rng.randint(1, 16))
+            chars[position:position] = chars[position:end]
+    return "".join(chars)
+
+
+def _mutate_bytes(rng, data):
+    """Raw byte corruption, for the decoder rather than the token scanner."""
+    text = bytearray(data)
+    for _ in range(rng.randint(1, 3)):
+        position = rng.randrange(len(text) + 1)
+        text[position:position] = bytes([rng.choice(BYTE_ALPHABET)])
     return bytes(text)
 
 
 FUZZ_CASES = int(os.environ.get("MORT_SELFHOST_FUZZ_CASES", "400"))
+BYTE_FUZZ_CASES = int(os.environ.get("MORT_SELFHOST_BYTE_FUZZ_CASES", "60"))
 FUZZ_SEED = int(os.environ.get("MORT_SELFHOST_FUZZ_SEED", "20261108"))
 
 
-def test_mutation_differential(lex_exe, tmp_path):
+def _text_seeds():
+    """Files big enough that mutants still carry many tokens, then small cases."""
+    large = []
+    for path in REPO_FILES:
+        text = path.read_bytes().decode("utf-8")
+        if len(text) >= 1500:
+            large.append(text[:4000])
+    small = []
+    for value in EDGE_CASES.values():
+        if len(value) < 4000:
+            try:
+                small.append(value.decode("utf-8"))
+            except UnicodeDecodeError:
+                pass
+    return large, small
+
+
+def test_mutation_differential_at_token_level(lex_exe, tmp_path):
     rng = random.Random(FUZZ_SEED)
-    seeds = [path.read_bytes()[:4000] for path in REPO_FILES[:40]]
-    seeds += [value for value in EDGE_CASES.values() if len(value) < 4000]
+    large, small = _text_seeds()
+    assert len(large) >= 30
     source = tmp_path / "input.mx"
     out = tmp_path / "out.txt"
+    rich = 0
     for index in range(FUZZ_CASES):
-        data = _mutate(rng, rng.choice(seeds))
+        pool = small if index % 8 == 0 else large
+        data = _mutate_text(rng, rng.choice(pool)).encode("utf-8")
         source.write_bytes(data)
         try:
             assert_agrees(lex_exe, source, out)
@@ -371,6 +449,94 @@ def test_mutation_differential(lex_exe, tmp_path):
             raise AssertionError(
                 f"fuzz case {index} (seed {FUZZ_SEED}), input {data!r}:\n{error}"
             ) from error
+        if out.read_bytes().count(b"\n") >= 10:
+            rich += 1
+    # The point of this class is comparing token streams, so prove it did.
+    assert rich >= FUZZ_CASES * 3 // 4, f"only {rich} of {FUZZ_CASES} had 10+ lines"
+
+
+def test_mutation_differential_invalid_bytes(lex_exe, tmp_path):
+    rng = random.Random(FUZZ_SEED + 1)
+    seeds = [path.read_bytes()[:4000] for path in REPO_FILES[:40]]
+    source = tmp_path / "input.mx"
+    out = tmp_path / "out.txt"
+    for index in range(BYTE_FUZZ_CASES):
+        data = _mutate_bytes(rng, rng.choice(seeds))
+        source.write_bytes(data)
+        try:
+            assert_agrees(lex_exe, source, out)
+        except AssertionError as error:
+            raise AssertionError(
+                f"byte fuzz case {index} (seed {FUZZ_SEED}), input {data!r}:\n{error}"
+            ) from error
+
+
+def _random_double(rng):
+    """A finite positive double, uniform over the exponent range."""
+    while True:
+        bits = (rng.randrange(0, 2047) << 52) | rng.getrandbits(52)
+        value = struct.unpack(">d", struct.pack(">Q", bits))[0]
+        if value > 0:
+            return value
+
+
+def _as_decimal_literal(fraction, extra=""):
+    """Exact decimal literal of a dyadic Fraction, with digits appended."""
+    power = fraction.denominator.bit_length() - 1
+    digits = str(fraction.numerator * 5 ** power) + extra
+    return f"{digits}e-{power + len(extra)}"
+
+
+def float_rounding_corpus(rng, count):
+    """Ties between adjacent doubles, and values just either side of a tie."""
+    literals = []
+    for _ in range(count):
+        value = _random_double(rng)
+        low = Fraction(value)
+        high = Fraction(math.nextafter(value, math.inf))
+        tie = (low + high) / 2
+        literals.append(_as_decimal_literal(tie))
+        literals.append(_as_decimal_literal(tie, "0" * 40 + "1"))
+        power = tie.denominator.bit_length() - 1
+        below = tie.numerator * 5 ** power * 10 - 1
+        literals.append(f"{below}e-{power + 1}")
+        literals.append(repr(value).replace("e+", "e"))
+    usable = [text for text in literals if math.isfinite(float(text))]
+    return " ".join(lit for lit in usable if "." in lit or "e" in lit).encode()
+
+
+def test_float_rounding_ties_match_python(lex_exe, tmp_path):
+    rng = random.Random(FUZZ_SEED + 2)
+    source = tmp_path / "input.mx"
+    source.write_bytes(float_rounding_corpus(rng, 1500))
+    assert_agrees(lex_exe, source, tmp_path / "out.txt")
+    assert (tmp_path / "out.txt").read_bytes().count(b" FLOAT ") > 4000
+
+
+HUGE_LITERALS = {
+    "decimal": b"1" * 400_000,
+    "hex": b"0x" + b"f" * 400_000,
+    "binary": b"0b" + b"1" * 400_000,
+    "octal": b"0o" + b"7" * 400_000,
+    "float_fraction": b"1." + b"3" * 400_000,
+    "float_integer_part": b"3" * 300 + b"." + b"3" * 400_000,
+    "float_exponent_digits": b"1e" + b"0" * 400_000 + b"5",
+}
+
+
+@pytest.mark.parametrize("name", sorted(HUGE_LITERALS))
+def test_huge_literal_is_fast_and_agrees(lex_exe, tmp_path, name):
+    source = tmp_path / "input.mx"
+    source.write_bytes(HUGE_LITERALS[name])
+    started = time.monotonic()
+    try:
+        code, _, _ = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{name} timed out")
+    elapsed = time.monotonic() - started
+    assert code in (0, 1)
+    assert elapsed < 10, f"{name} took {elapsed:.1f}s"
+    assert_agrees(lex_exe, source, tmp_path / "out.txt")
 
 
 def unicode_table_version():
@@ -444,7 +610,83 @@ SUBSET_VIOLATIONS = {
     "import_std": "import std.vec;",
     "import_alias": "import other as x;",
     "unlisted_builtin": "fn f() { thread_sleep_millis(1); }",
+    "port_io_builtin": "fn f() { outb(1 as u16, 2 as u8); }",
+    "f64_param": "fn f(x: f64) { }",
+    "f64_return": "extern fn g() -> f64;",
+    "f64_field": "struct S { x: f64 }",
+    "f64_local": "fn f(p: *u64) { let x: f64 = *(p as *f64); }",
+    "f64_cast": "fn f(p: *u8) -> u64 { return *(p as *f64) as u64; }",
+    "f64_global": "let G: *f64 = 0 as *f64;",
+    "cast_to_narrow_int": "fn f(x: u64) -> u64 { return (x as i32) as u64; }",
+    "cast_to_tuple_pointer": "fn f(x: *u8) { let p = x as *(u8, u8); }",
+    "cast_to_array_pointer": "fn f(x: *u8) { let p = x as *[u8; 4]; }",
+    "cast_to_slice_pointer": "fn f(x: *u8) { let p = x as *[]u8; }",
+    "cast_to_fn_type": "fn f(x: *u8) { let p = x as fn(u8)->u8; }",
+    "sizeof_narrow_int": "fn f() -> u64 { return sizeof<i32>(); }",
+    "sizeof_array": "fn f() -> u64 { return sizeof<[u8; 4]>(); }",
+    "sizeof_tuple": "fn f() -> u64 { return sizeof<(u8, u8)>(); }",
+    "sizeof_generic": "fn f() -> u64 { return sizeof<Vec<u8>>(); }",
+    "for_narrow_type": "fn f() { for i: i32 in 0..3 { } }",
+    "for_f64_type": "fn f() { for i: f64 in 0..3 { } }",
+    "match_integer": "fn f(x: u64) { match x { 1 => { } _ => { } } }",
+    "match_only_wildcard": "fn f(x: u64) { match x { _ => { } } }",
+    "match_bool": "fn f(x: bool) { match x { true => { } _ => { } } }",
+    "match_char": "fn f(x: u8) { match x { 'a' => { } _ => { } } }",
+    "match_variable_pattern": "fn f(x: u64, y: u64) { match x { y => { } _ => { } } }",
+    "match_unknown_enum": "fn f(x: u64) { match x { Other.A => { } _ => { } } }",
+    "function_value_let": "fn g() { } fn f() { let h = g; }",
+    "function_value_arg": "fn g() { } fn k(x: *void) { } fn f() { k(g); }",
+    "function_value_return": "fn g() { } fn f() -> *void { return g as *void; }",
+    "function_value_global": "fn g() { } let H: *void = g as *void;",
+    "extern_function_value": "extern fn g() -> c_int; fn f() { let h = g; }",
+    "builtin_function_value": "fn f() { let h = println; }",
+    "tuple_index": "struct S { a: u8 } fn f(s: S) -> u8 { return s.0; }",
+    "generic_call": "fn g(x: u8) -> u8 { return x; } fn f() -> u8 { return g<u8>(1); }",
+    "payload_constructor": "enum E { A, B } fn f() { let e = E.A(1); }",
+    "qualified_call": "fn f() { other.g(); }",
+    "generic_struct_literal": "struct S { a: u8 } fn f() { let s = S<u8> { a: 1 }; }",
+    "nested_global_array": "let G: [[u8; 2]; 2] = [[1, 2], [3, 4]];",
+    "array_field": "struct S { a: [u8; 4] }",
+    "array_param": "fn f(a: [u8; 4]) { }",
 }
+
+SUBSET_ACCEPTED = """
+enum Color { Red, Green }
+struct Span { data: *u8, len: u64 }
+const LIMIT: u64 = 4;
+let TABLE: [u32; 2] = [1, 2];
+let NAMES: [*u8; 2] = ["a", "b"];
+let COLORS: [Color; 1] = [Color.Green];
+extern fn getenv(name: *const c_char) -> *c_char;
+fn helper(x: u64) -> u64 { return x + 1; }
+fn name_of(c: Color) -> *u8 {
+    match c {
+        Color.Red => { return "r"; }
+        _ => { return "g"; }
+    }
+}
+fn shadow(helper: u64) -> u64 { return helper; }
+fn main() -> int {
+    let s = Span { data: alloc(sizeof<u64>()) as *u8, len: 0 };
+    for i: u64 in 0..=LIMIT { s.len += helper(i); }
+    let n = 0;
+    loop { n += 1; if n > 3 { break; } else { continue; } }
+    while n > 0 { n -= 1; }
+    let shadowed = helper(TABLE[0] as u64);
+    let c = COLORS[0] as u64;
+    if s.data[0] == 'x' && shadowed != c { println(name_of(Color.Red)); }
+    free(s.data as *void);
+    return 0;
+}
+"""
+
+
+def test_subset_checker_accepts_every_included_construct(tmp_path):
+    sys.path.insert(0, str(HERE / "tools"))
+    import check_subset
+    path = tmp_path / "good.mx"
+    path.write_text(SUBSET_ACCEPTED, encoding="utf-8")
+    assert check_subset.check_file(path, collections.Counter()) == []
 
 
 @pytest.mark.parametrize("name", sorted(SUBSET_VIOLATIONS))
@@ -454,6 +696,207 @@ def test_subset_checker_rejects(tmp_path, name):
     path = tmp_path / "bad.mx"
     path.write_text(SUBSET_VIOLATIONS[name], encoding="utf-8")
     assert check_subset.check_file(path, collections.Counter()), name
+
+
+# Each entry is (source, text one reported problem must contain), so a sample
+# cannot pass by tripping some unrelated rule.
+SUBSET_SCOPE_VIOLATIONS = {
+    # A shadow must end with its block and must not start before its `let`.
+    "fn_after_if_block": ("fn g() { } fn main() -> int { if true { let g = 1; } "
+                          "let h = g; return 0; }", "function value g"),
+    "fn_in_else_of_shadowing_then": ("fn g() { } fn f() { if true { let g = 1; } "
+                                     "else { let h = g; } }", "function value g"),
+    "fn_after_nested_block": ("fn g() { } fn f() { { let g = 1; } let h = g; }",
+                              "function value g"),
+    "fn_after_while_body": ("fn g() { } fn f() { while true { let g = 1; } "
+                            "let h = g; }", "function value g"),
+    "fn_after_loop_body": ("fn g() { } fn f() { loop { let g = 1; } let h = g; }",
+                           "function value g"),
+    "fn_after_for_loop_variable": ("fn g() { } fn f() { for g: u64 in 0..3 { } "
+                                   "let h = g; }", "function value g"),
+    "fn_in_for_bound_of_same_name": ("fn g() { } fn f() { for g: u64 in 0..(g as u64) "
+                                     "{ } }", "function value g"),
+    "fn_after_match_arm": ("enum E { A } fn g() { } fn f(e: E) { match e { "
+                           "E.A => { let g = 1; } _ => { } } let h = g; }",
+                           "function value g"),
+    "fn_in_other_match_arm": ("enum E { A, B } fn g() { } fn f(e: E) { match e { "
+                              "E.A => { let g = 1; } E.B => { let h = g; } "
+                              "_ => { } } }", "function value g"),
+    "fn_used_before_let": ("fn g() { } fn f() { let h = g; let g = 1; }",
+                           "function value g"),
+    "fn_in_own_initializer": ("fn g() { } fn f() { let g = g; }", "function value g"),
+    # A global array may only be indexed; any other use makes an array value.
+    "array_let": ("let G: [u8; 2] = [1, 2]; fn main() -> int { let a = G; return 0; }",
+                  "array value G"),
+    "array_address": ("let G: [u8; 2] = [1, 2]; fn f() { let p = &G; }", "array value G"),
+    "array_argument": ("let G: [u8; 2] = [1, 2]; fn k(x: u64) { } fn f() { k(G); }",
+                       "array value G"),
+    "array_return": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { return G; }",
+                     "array value G"),
+    "array_cast": ("let G: [u8; 2] = [1, 2]; fn f() { let p = G as *u8; }",
+                   "array value G"),
+    "array_field": ("let G: [u8; 2] = [1, 2]; fn f() { let n = G.len; }", "array value G"),
+    "array_assignment_source": ("let G: [u8; 2] = [1, 2]; fn f() { let a = 0; a = G; }",
+                                "array value G"),
+    "array_as_index": ("let G: [u8; 2] = [1, 2]; fn f(p: *u8) { let a = p[G]; }",
+                       "array value G"),
+    "array_global_alias": ("let G: [u8; 2] = [1, 2]; let H = G;", "array value G"),
+    "array_inferred_global": ("let G = [1, 2]; fn f() { let a = G; }", "array value G"),
+    "array_after_shadow_block": ("let G: [u8; 2] = [1, 2]; fn f() { if true { let G = 1; } "
+                                 "let a = G; }", "array value G"),
+    "array_before_shadow": ("let G: [u8; 2] = [1, 2]; fn f() { let a = G; let G = 1; }",
+                            "array value G"),
+    "array_pointer_global_type": ("let P: *[u8; 2] = 0 as *u8;", "outside the subset"),
+    "array_nested_inferred_global": ("let G = [[1, 2], [3, 4]];", "nested array"),
+    # An enum path head is exempt; the same name used bare is still a value.
+    "fn_bare_with_enum_of_same_name": ("enum g { A } fn g() { } fn f() { let h = g; }",
+                                       "function value g"),
+    "builtin_bare_with_enum_of_same_name": ("enum len { A } fn f() { let h = len; }",
+                                            "function value len"),
+}
+
+SUBSET_SCOPE_ACCEPTED = {
+    "local_shadow_in_scope": "fn g() { } fn f() { let g = 1; let h = g; g = h; }",
+    "shadow_inside_inner_block": ("fn g() { } fn f() { if true { let g = 1; let h = g; } "
+                                  "g(); }"),
+    "shadow_visible_in_nested_block": ("fn g() { } fn f() { let g = 1; "
+                                       "if true { let h = g; } while g > 2 { g -= 1; } }"),
+    "parameter_shadow": "fn g() { } fn f(g: u64) -> u64 { return g; }",
+    "for_variable_shadow": "fn g() { } fn f() { for g: u64 in 0..3 { let h = g; } g(); }",
+    "match_arm_shadow": ("enum E { A } fn g() { } fn f(e: E) { match e { "
+                         "E.A => { let g = 1; let h = g; } _ => { } } g(); }"),
+    "else_shadow": "fn g() { } fn f() { if true { } else { let g = 1; let h = g; } }",
+    "direct_call_after_shadow_ended": ("fn g() -> u64 { return 1; } "
+                                       "fn f() -> u64 { { let g = 1; } return g(); }"),
+    "enum_path_named_like_builtin": "enum len { A, B } fn f() -> int { let e = len.B; return e as int; }",
+    "enum_path_named_like_function": ("enum g { A, B } fn g() { } "
+                                      "fn f() -> int { let e = g.B; return e as int; }"),
+    "array_index": "let G: [u8; 2] = [1, 2]; fn f(i: u64) -> u8 { G[i] = 3; return G[i]; }",
+    "array_element_address": "let G: [u8; 2] = [1, 2]; fn f() -> *u8 { return &G[0]; }",
+    "array_name_shadowed_by_local": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { let G: u64 = 1; "
+                                     "let a = G; return a; }"),
+    "array_name_shadowed_by_parameter": ("let G: [u8; 2] = [1, 2]; fn f(G: u64) -> u64 { "
+                                         "return G; }"),
+    "array_index_after_shadow_ended": ("let G: [u8; 2] = [1, 2]; fn f() -> u8 { "
+                                       "if true { let G: u64 = 1; } return G[0]; }"),
+}
+
+
+def _gate():
+    sys.path.insert(0, str(HERE / "tools"))
+    import check_subset
+    return check_subset
+
+
+@pytest.mark.parametrize("name", sorted(SUBSET_SCOPE_VIOLATIONS))
+def test_subset_checker_rejects_scope_holes(tmp_path, name):
+    source, reason = SUBSET_SCOPE_VIOLATIONS[name]
+    path = tmp_path / "bad.mx"
+    path.write_text(source, encoding="utf-8")
+    problems = _gate().check_file(path, collections.Counter())
+    assert any(reason in problem for problem in problems), (name, problems)
+
+
+@pytest.mark.parametrize("name", sorted(SUBSET_SCOPE_ACCEPTED))
+def test_subset_checker_has_no_scope_false_rejects(tmp_path, name):
+    path = tmp_path / "good.mx"
+    path.write_text(SUBSET_SCOPE_ACCEPTED[name] + " fn main() -> int { return 0; }",
+                    encoding="utf-8")
+    assert _gate().check_file(path, collections.Counter()) == []
+    # The sample must be a real program, or accepting it would prove nothing.
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import mortc; "
+         "mortc.compile_files_to_c([sys.argv[2]])", str(ROOT), str(path)],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_global_cannot_shadow_function_so_gate_need_not_model_it(tmp_path):
+    path = tmp_path / "bad.mx"
+    path.write_text("fn g() { } let g: u64 = 1; fn main() -> int { return 0; }",
+                    encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import mortc; "
+         "mortc.compile_files_to_c([sys.argv[2]])", str(ROOT), str(path)],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "conflicts with another name" in result.stderr
+
+
+def test_subset_checker_sees_array_declared_in_sibling_file(tmp_path):
+    (tmp_path / "tables.mx").write_text("let G: [u8; 2] = [1, 2];", encoding="utf-8")
+    path = tmp_path / "user.mx"
+    path.write_text("import tables; fn f() { let a = G; }", encoding="utf-8")
+    problems = _gate().check_file(path, collections.Counter())
+    assert any("array value G" in problem for problem in problems), problems
+
+
+FRONTEND_BRANCH = "fix/frontend-crashes"
+
+
+def real_decode_source():
+    """The Python compiler's own decoder, from this tree or its branch.
+
+    mort/lexer.py gains decode_source when fix/frontend-crashes merges. Until
+    then its text comes from that branch, never from a copy in this directory,
+    and a missing branch is an error: passing without it would prove nothing.
+    """
+    from mort import lexer as python_lexer
+    from mort.errors import MortError
+    if hasattr(python_lexer, "decode_source"):
+        return python_lexer.decode_source
+    text = subprocess.run(
+        ["git", "show", f"{FRONTEND_BRANCH}:mort/lexer.py"],
+        capture_output=True, encoding="utf-8", cwd=ROOT, check=True).stdout
+    function = next(
+        node for node in ast.parse(text).body
+        if isinstance(node, ast.FunctionDef) and node.name == "decode_source")
+    namespace = {"MortError": MortError}
+    exec(compile(ast.Module([function], []), "decode_source", "exec"), namespace)
+    return namespace["decode_source"]
+
+
+INVALID_UTF8_CASES = sorted(
+    name for name in EDGE_CASES
+    if name.startswith("utf8_") and name != "utf8_valid_edges")
+
+
+@pytest.mark.parametrize("name", INVALID_UTF8_CASES)
+def test_invalid_utf8_diagnostic_is_the_python_compilers(lex_exe, tmp_path, name):
+    from mort.errors import MortError
+    data = EDGE_CASES[name]
+    with pytest.raises(MortError) as caught:
+        real_decode_source()(data)
+    error = caught.value
+    assert error.line >= 1 and error.col >= 1
+    source = tmp_path / "input.mx"
+    source.write_bytes(data)
+    expected = f"ERROR {error.line}:{error.col} {error.msg}\n"
+    assert py_lex_dump.dump_file(source) == expected
+    code, stdout, actual = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
+    assert actual == expected
+    assert code == 1
+    diagnostic = f"{source}:{error.line}:{error.col}: error: {error.msg}"
+    assert diagnostic.encode("utf-8") in stdout, stdout
+
+
+def test_reference_decoder_matches_the_python_compilers():
+    from mort.errors import MortError
+    real = real_decode_source()
+
+    def outcome(decoder, data):
+        try:
+            return decoder(data)
+        except MortError as error:
+            return (error.msg, error.line, error.col)
+
+    rng = random.Random(FUZZ_SEED + 2)
+    alphabet = b"\r\n ab\x80\xbf\xc0\xc3\xe0\xe2\xed\xa0\xf0\xf4\xf5\xff"
+    for _ in range(5000):
+        data = bytes(rng.choice(alphabet) for _ in range(rng.randrange(12)))
+        assert outcome(py_lex_dump.decode_source, data) == outcome(real, data), data
 
 
 def test_diagnostic_has_file_line_col(lex_exe, tmp_path):

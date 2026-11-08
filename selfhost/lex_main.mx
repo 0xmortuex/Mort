@@ -79,10 +79,14 @@ fn main() -> int {
         dump_tokens(&dump, &lexer);
     } else {
         status = 1;
-        let message = "source is not valid UTF-8";
-        print_diagnostic(in_path, 0, 0, Span { data: message, len: 25 });
-        buf_push_z(&dump, "ERROR 0:0 ");
-        buf_push_z(&dump, message);
+        let message = lx_invalid_utf8_message(source.err_byte);
+        print_diagnostic(in_path, source.err_line, source.err_col, message);
+        buf_push_z(&dump, "ERROR ");
+        buf_push_u64(&dump, source.err_line);
+        buf_push(&dump, ':');
+        buf_push_u64(&dump, source.err_col);
+        buf_push(&dump, ' ');
+        dump_escaped(&dump, message);
         buf_push(&dump, 10);
     }
     if !write_dump(out_path, &dump) {

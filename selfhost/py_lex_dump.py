@@ -19,15 +19,18 @@ two backslashes; every other byte becomes \\xNN (lowercase hex).
 Lines and columns are 1-based and count Unicode code points, as the Python
 lexer does.
 
+Integer literals are limited to 4300 digits in any base (leading zeros count,
+the prefix and `_` separators do not). See PLAN.md section 7.
+
 A lexical error stops the dump after the tokens already produced, with:
 
     ERROR <line>:<col> <escaped message>
 
 Source that is not valid UTF-8 has no tokens and the single line
 
-    ERROR 0:0 source is not valid UTF-8
+    ERROR <line>:<col> source is not valid UTF-8 (byte 0x<NN>)
 
-The Python driver has no diagnostic for that case, so this line is defined here.
+with the location and message of decode_source from fix/frontend-crashes.
 """
 import os
 import struct
@@ -35,6 +38,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mort import lexer as mort_lexer  # noqa: E402
 from mort.errors import MortError  # noqa: E402
 from mort.lexer import Lexer  # noqa: E402
 from mort.tokens import T  # noqa: E402
@@ -44,7 +48,33 @@ from mort.tokens import T  # noqa: E402
 if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(0)
 
-INVALID_UTF8 = "ERROR 0:0 source is not valid UTF-8\n"
+MAX_INTEGER_DIGITS = 4300
+_PREFIX_KINDS = {"0x": "hex", "0b": "binary", "0o": "octal"}
+
+
+class ReferenceLexer(Lexer):
+    """The Python lexer plus the integer literal limit from PLAN.md.
+
+    mort/lexer.py on main has no limit (it crashes past 4300 decimal digits).
+    fix/frontend-crashes adds the decimal half with this exact message. Applied
+    here, after the normal checks, so the order matches that branch.
+    """
+
+    def _number(self, line, col):
+        start = self.i
+        count = len(self.tokens)
+        super()._number(line, col)
+        if len(self.tokens) == count or self.tokens[-1].type != T.INT:
+            return
+        spelling = self.src[start:self.i].replace("_", "")
+        kind = _PREFIX_KINDS.get(spelling[:2].lower())
+        digits = spelling[2:] if kind else spelling
+        if len(digits) > MAX_INTEGER_DIGITS:
+            self.tokens.pop()
+            raise MortError(
+                f"{kind or 'decimal'} integer literal has {len(digits)} digits; "
+                f"the limit is {MAX_INTEGER_DIGITS}",
+                line, col)
 
 
 def escape(raw):
@@ -70,9 +100,32 @@ def format_token(token):
     return f"{head} {escape(token.value.encode('utf-8'))}"
 
 
+def _decode_source(data, filename=None):
+    """decode_source as on fix/frontend-crashes; main has no such function.
+
+    test_reference_decoder_matches_the_python_compilers holds this to that
+    branch's code, and once it merges the compiler's own function is used.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        prefix = data[:error.start].replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        line_start = prefix.rfind(b"\n") + 1
+        raise MortError(
+            f"source is not valid UTF-8 (byte 0x{data[error.start]:02x})",
+            prefix.count(b"\n") + 1,
+            len(prefix[line_start:].decode("utf-8")) + 1,
+            filename,
+        ) from None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+decode_source = getattr(mort_lexer, "decode_source", _decode_source)
+
+
 def dump_source(source):
     """Dump already-decoded source text."""
-    lexer = Lexer(source)
+    lexer = ReferenceLexer(source)
     error = None
     try:
         lexer.tokenize()
@@ -86,12 +139,14 @@ def dump_source(source):
 
 
 def dump_file(path):
-    """Read a file the way mortc.py does and dump it."""
+    """Read a file the way the Python compiler does and dump it."""
+    with open(path, "rb") as handle:
+        data = handle.read()
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            source = handle.read()
-    except UnicodeDecodeError:
-        return INVALID_UTF8
+        source = decode_source(data)
+    except MortError as error:
+        message = escape(error.msg.encode("utf-8"))
+        return f"ERROR {error.line}:{error.col} {message}\n"
     return dump_source(source)
 
 

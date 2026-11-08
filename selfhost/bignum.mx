@@ -1,0 +1,765 @@
+// Signed arbitrary-precision integers for the Mort compiler written in Mort
+// (PLAN.md, task T2b). They give the checker's constant folding exactly the
+// values Python's `int` gives `Checker._const_value`.
+//
+// A value is sign and magnitude: little-endian base 2^32 limbs, the same limb
+// layout as lexer_float.mx's `Big`, with no high zero limbs. Zero has no limbs
+// and is never negative.
+//
+// Every function returns a fresh value and leaves its operands alone, so the
+// same value may be passed twice. `bn_free` releases a value; a batch compiler
+// may simply never call it.
+//
+// Width policy: the front end bounds every value. A literal has at most 4300
+// digits in any base (at most 5178 digits once the lexer has canonicalized a
+// hex literal to decimal), and `MAX_CONSTANT_BITS` (2^18) is checked after each
+// fold, which leaves a product of at most 2^19 bits. Nothing here exceeds
+// BN_MAX_BITS unless a caller skipped those checks, so schoolbook algorithms
+// have a known worst case; going past the bound is an internal error.
+//
+// Determinism: arithmetic on integers only; no addresses, no hashing, no float.
+
+import support;
+
+const BN_MAX_BITS: u64 = 1048576;
+const BN_BASE: u64 = 0x100000000;
+const BN_MASK: u64 = 0xFFFFFFFF;
+const BN_U64_MAX: u64 = 0xFFFFFFFFFFFFFFFF;
+const BN_CHUNK_DECIMAL: u64 = 1000000000;
+
+struct BigInt {
+    limbs: *u32,
+    len: u64,
+    neg: bool,
+}
+
+// A quotient and a remainder.
+struct BnPair {
+    quot: BigInt,
+    rem: BigInt,
+}
+
+enum BnOp {
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    MOD,
+    AND,
+    OR,
+    XOR,
+    SHL,
+    SHR,
+}
+
+// ----- storage -----
+
+fn bn_limbs(count: u64) -> *u32 {
+    return sup_alloc_array(count, sizeof<u32>()) as *u32;
+}
+
+// Takes ownership of `limbs`, dropping high zero limbs.
+fn bn_make(limbs: *u32, count: u64, neg: bool) -> BigInt {
+    let n = count;
+    while n > 0 && limbs[n - 1] == 0 {
+        n -= 1;
+    }
+    return BigInt { limbs: limbs, len: n, neg: neg && n > 0 };
+}
+
+fn bn_zero() -> BigInt {
+    return bn_make(bn_limbs(0), 0, false);
+}
+
+fn bn_free(a: BigInt) {
+    free(a.limbs as *void);
+}
+
+fn bn_copy(a: BigInt) -> BigInt {
+    let r = bn_limbs(a.len);
+    for i: u64 in 0..a.len {
+        r[i] = a.limbs[i];
+    }
+    return bn_make(r, a.len, a.neg);
+}
+
+fn bn_from_u64(value: u64) -> BigInt {
+    let r = bn_limbs(2);
+    r[0] = (value & BN_MASK) as u32;
+    r[1] = (value >> 32) as u32;
+    return bn_make(r, 2, false);
+}
+
+fn bn_from_i64(value: i64) -> BigInt {
+    if value >= 0 {
+        return bn_from_u64(value as u64);
+    }
+    // Negating in u64 is what makes i64's minimum safe: -(2^63) has no i64 form.
+    let result = bn_from_u64(0 - (value as u64));
+    result.neg = true;
+    return result;
+}
+
+fn bn_width_check(bits: u64) {
+    if bits > BN_MAX_BITS {
+        sup_die("mort: internal error: constant value is wider than the bignum limit");
+    }
+}
+
+// ----- queries -----
+
+fn bn_is_zero(a: BigInt) -> bool {
+    return a.len == 0;
+}
+
+fn bn_is_negative(a: BigInt) -> bool {
+    return a.neg;
+}
+
+// Python's int.bit_length: the magnitude's width, whatever the sign.
+fn bn_bit_length(a: BigInt) -> u64 {
+    if a.len == 0 {
+        return 0;
+    }
+    let bits = (a.len - 1) * 32;
+    let top = a.limbs[a.len - 1];
+    while top > 0 {
+        bits += 1;
+        top = top >> 1;
+    }
+    return bits;
+}
+
+fn bn_mag_cmp(a: BigInt, b: BigInt) -> i64 {
+    if a.len != b.len {
+        if a.len < b.len {
+            return -1;
+        }
+        return 1;
+    }
+    let i = a.len;
+    while i > 0 {
+        i -= 1;
+        if a.limbs[i] != b.limbs[i] {
+            if a.limbs[i] < b.limbs[i] {
+                return -1;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Returns -1, 0 or 1.
+fn bn_cmp(a: BigInt, b: BigInt) -> i64 {
+    if a.neg != b.neg {
+        if a.neg {
+            return -1;
+        }
+        return 1;
+    }
+    if a.neg {
+        return bn_mag_cmp(b, a);
+    }
+    return bn_mag_cmp(a, b);
+}
+
+// ----- addition and subtraction -----
+
+fn bn_mag_add(a: BigInt, b: BigInt, neg: bool) -> BigInt {
+    let n = a.len;
+    if b.len > n {
+        n = b.len;
+    }
+    let r = bn_limbs(n + 1);
+    let carry: u64 = 0;
+    for i: u64 in 0..n {
+        let sum = carry;
+        if i < a.len {
+            sum += a.limbs[i] as u64;
+        }
+        if i < b.len {
+            sum += b.limbs[i] as u64;
+        }
+        r[i] = (sum & BN_MASK) as u32;
+        carry = sum >> 32;
+    }
+    r[n] = carry as u32;
+    return bn_make(r, n + 1, neg);
+}
+
+// |a| - |b|, where |a| >= |b|.
+fn bn_mag_sub(a: BigInt, b: BigInt, neg: bool) -> BigInt {
+    let r = bn_limbs(a.len);
+    let borrow: u64 = 0;
+    for i: u64 in 0..a.len {
+        let subtrahend = borrow;
+        if i < b.len {
+            subtrahend += b.limbs[i] as u64;
+        }
+        let value = (a.limbs[i] as u64) + BN_BASE - subtrahend;
+        r[i] = (value & BN_MASK) as u32;
+        if value < BN_BASE {
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+    }
+    return bn_make(r, a.len, neg);
+}
+
+fn bn_add(a: BigInt, b: BigInt) -> BigInt {
+    if a.neg == b.neg {
+        return bn_mag_add(a, b, a.neg);
+    }
+    if bn_mag_cmp(a, b) >= 0 {
+        return bn_mag_sub(a, b, a.neg);
+    }
+    return bn_mag_sub(b, a, b.neg);
+}
+
+fn bn_neg(a: BigInt) -> BigInt {
+    let r = bn_copy(a);
+    r.neg = !a.neg && a.len > 0;
+    return r;
+}
+
+fn bn_sub(a: BigInt, b: BigInt) -> BigInt {
+    // Shares b's limbs for the duration of the call; nothing writes to them.
+    let flipped = b;
+    flipped.neg = !b.neg && b.len > 0;
+    return bn_add(a, flipped);
+}
+
+// ----- multiplication -----
+
+fn bn_mul(a: BigInt, b: BigInt) -> BigInt {
+    if a.len == 0 || b.len == 0 {
+        return bn_zero();
+    }
+    bn_width_check(bn_bit_length(a) + bn_bit_length(b));
+    let n = a.len + b.len;
+    let r = bn_limbs(n);
+    for i: u64 in 0..n {
+        r[i] = 0;
+    }
+    for i: u64 in 0..a.len {
+        let x = a.limbs[i] as u64;
+        let carry: u64 = 0;
+        for j: u64 in 0..b.len {
+            // At most (2^32-1)^2 + 2*(2^32-1) = 2^64-1, so this cannot wrap.
+            let value = x * (b.limbs[j] as u64) + (r[i + j] as u64) + carry;
+            r[i + j] = (value & BN_MASK) as u32;
+            carry = value >> 32;
+        }
+        r[i + b.len] = carry as u32;
+    }
+    return bn_make(r, n, a.neg != b.neg);
+}
+
+// ----- division -----
+
+// Writes src * 2^bits (0 <= bits < 32) to dst, which has count + 1 limbs.
+fn bn_shift_up(src: *u32, count: u64, bits: u64, dst: *u32) {
+    let carry: u64 = 0;
+    for i: u64 in 0..count {
+        let value = ((src[i] as u64) << bits) | carry;
+        dst[i] = (value & BN_MASK) as u32;
+        carry = value >> 32;
+    }
+    dst[count] = carry as u32;
+}
+
+// Magnitudes only: 0 <= rem < |b|. The caller has ruled out b == 0.
+fn bn_mag_divmod_small(a: BigInt, divisor: u64) -> BnPair {
+    let q = bn_limbs(a.len);
+    let remainder: u64 = 0;
+    let i = a.len;
+    while i > 0 {
+        i -= 1;
+        let value = (remainder << 32) | (a.limbs[i] as u64);
+        q[i] = (value / divisor) as u32;
+        remainder = value % divisor;
+    }
+    return BnPair { quot: bn_make(q, a.len, false), rem: bn_from_u64(remainder) };
+}
+
+// Knuth, TAOCP volume 2, 4.3.1, Algorithm D. Requires b.len >= 2 and |a| >= |b|.
+fn bn_mag_divmod_long(a: BigInt, b: BigInt) -> BnPair {
+    let n = b.len;
+    let m = a.len - n;
+    let shift: u64 = 0;
+    while ((b.limbs[n - 1] as u64) << shift) < 0x80000000 {
+        shift += 1;
+    }
+    let v = bn_limbs(n + 1);
+    bn_shift_up(b.limbs, n, shift, v);
+    let u = bn_limbs(a.len + 1);
+    bn_shift_up(a.limbs, a.len, shift, u);
+    let q = bn_limbs(m + 1);
+    let top = v[n - 1] as u64;
+    let next = v[n - 2] as u64;
+    let j = m + 1;
+    while j > 0 {
+        j -= 1;
+        let numerator = ((u[j + n] as u64) << 32) | (u[j + n - 1] as u64);
+        let qhat = numerator / top;
+        let rhat = numerator % top;
+        while qhat >= BN_BASE || qhat * next > ((rhat << 32) | (u[j + n - 2] as u64)) {
+            qhat -= 1;
+            rhat += top;
+            if rhat >= BN_BASE {
+                break;
+            }
+        }
+        // Multiply and subtract. With qhat < 2^32 and carry <= 2^32 the product
+        // below stays under 2^64.
+        let carry: u64 = 0;
+        let borrow: u64 = 0;
+        for i: u64 in 0..n {
+            let product = qhat * (v[i] as u64) + carry;
+            carry = product >> 32;
+            let subtrahend = (product & BN_MASK) + borrow;
+            let limb = u[i + j] as u64;
+            if limb >= subtrahend {
+                u[i + j] = (limb - subtrahend) as u32;
+                borrow = 0;
+            } else {
+                u[i + j] = (limb + BN_BASE - subtrahend) as u32;
+                borrow = 1;
+            }
+        }
+        let subtrahend = carry + borrow;
+        let limb = u[j + n] as u64;
+        if limb >= subtrahend {
+            u[j + n] = (limb - subtrahend) as u32;
+            borrow = 0;
+        } else {
+            u[j + n] = (limb + BN_BASE - subtrahend) as u32;
+            borrow = 1;
+        }
+        // qhat was one too large: add the divisor back once.
+        if borrow == 1 {
+            qhat -= 1;
+            let added: u64 = 0;
+            for i: u64 in 0..n {
+                let sum = (u[i + j] as u64) + (v[i] as u64) + added;
+                u[i + j] = (sum & BN_MASK) as u32;
+                added = sum >> 32;
+            }
+            u[j + n] = (((u[j + n] as u64) + added) & BN_MASK) as u32;
+        }
+        q[j] = qhat as u32;
+    }
+    // Undo the normalization on the remainder, which is in u[0..n].
+    let rem = bn_limbs(n);
+    for i: u64 in 0..n {
+        let high = (u[i + 1] as u64) << 32;
+        rem[i] = (((high | (u[i] as u64)) >> shift) & BN_MASK) as u32;
+    }
+    free(u as *void);
+    free(v as *void);
+    return BnPair { quot: bn_make(q, m + 1, false), rem: bn_make(rem, n, false) };
+}
+
+// Magnitude quotient and remainder, both non-negative.
+fn bn_mag_divmod(a: BigInt, b: BigInt) -> BnPair {
+    if b.len == 0 {
+        sup_die("mort: internal error: bignum division by zero");
+    }
+    if bn_mag_cmp(a, b) < 0 {
+        let dividend = bn_copy(a);
+        dividend.neg = false;
+        return BnPair { quot: bn_zero(), rem: dividend };
+    }
+    if b.len == 1 {
+        return bn_mag_divmod_small(a, b.limbs[0] as u64);
+    }
+    return bn_mag_divmod_long(a, b);
+}
+
+// Truncating division: the remainder takes the dividend's sign (C, `_c_div`).
+fn bn_c_divmod(a: BigInt, b: BigInt) -> BnPair {
+    let pair = bn_mag_divmod(a, b);
+    pair.quot.neg = (a.neg != b.neg) && pair.quot.len > 0;
+    pair.rem.neg = a.neg && pair.rem.len > 0;
+    return pair;
+}
+
+fn bn_c_div(a: BigInt, b: BigInt) -> BigInt {
+    let pair = bn_c_divmod(a, b);
+    bn_free(pair.rem);
+    return pair.quot;
+}
+
+fn bn_c_mod(a: BigInt, b: BigInt) -> BigInt {
+    let pair = bn_c_divmod(a, b);
+    bn_free(pair.quot);
+    return pair.rem;
+}
+
+// Flooring division: the remainder takes the divisor's sign (Python `//`, `%`).
+fn bn_floor_divmod(a: BigInt, b: BigInt) -> BnPair {
+    let pair = bn_c_divmod(a, b);
+    if pair.rem.len > 0 && a.neg != b.neg {
+        let one = bn_from_u64(1);
+        let quot = bn_sub(pair.quot, one);
+        let rem = bn_add(pair.rem, b);
+        bn_free(one);
+        bn_free(pair.quot);
+        bn_free(pair.rem);
+        return BnPair { quot: quot, rem: rem };
+    }
+    return pair;
+}
+
+fn bn_floor_div(a: BigInt, b: BigInt) -> BigInt {
+    let pair = bn_floor_divmod(a, b);
+    bn_free(pair.rem);
+    return pair.quot;
+}
+
+fn bn_floor_mod(a: BigInt, b: BigInt) -> BigInt {
+    let pair = bn_floor_divmod(a, b);
+    bn_free(pair.quot);
+    return pair.rem;
+}
+
+// ----- shifts -----
+
+fn bn_shl(a: BigInt, count: u64) -> BigInt {
+    if a.len == 0 {
+        return bn_zero();
+    }
+    // Checked alone first: a huge count must not wrap the sum.
+    bn_width_check(count);
+    bn_width_check(bn_bit_length(a) + count);
+    let words = count / 32;
+    let r = bn_limbs(a.len + words + 1);
+    for i: u64 in 0..words {
+        r[i] = 0;
+    }
+    bn_shift_up(a.limbs, a.len, count % 32, &r[words]);
+    return bn_make(r, a.len + words + 1, a.neg);
+}
+
+// Arithmetic: rounds toward negative infinity, as Python's >> does.
+fn bn_shr(a: BigInt, count: u64) -> BigInt {
+    let words = count / 32;
+    if words >= a.len {
+        if a.neg {
+            let minus_one = bn_from_u64(1);
+            minus_one.neg = true;
+            return minus_one;
+        }
+        return bn_zero();
+    }
+    let bits = count % 32;
+    let n = a.len - words;
+    let lost = false;
+    for i: u64 in 0..words {
+        if a.limbs[i] != 0 {
+            lost = true;
+        }
+    }
+    if (((a.limbs[words] as u64) << (32 - bits)) & BN_MASK) != 0 {
+        lost = true;
+    }
+    let r = bn_limbs(n + 1);
+    for i: u64 in 0..n {
+        let high: u64 = 0;
+        if words + i + 1 < a.len {
+            high = (a.limbs[words + i + 1] as u64) << 32;
+        }
+        r[i] = (((high | (a.limbs[words + i] as u64)) >> bits) & BN_MASK) as u32;
+    }
+    r[n] = 0;
+    if a.neg && lost {
+        // Moving away from zero: a magnitude all ones here carries into r[n].
+        let i: u64 = 0;
+        loop {
+            let value = (r[i] as u64) + 1;
+            r[i] = (value & BN_MASK) as u32;
+            if value < BN_BASE {
+                break;
+            }
+            i += 1;
+        }
+    }
+    return bn_make(r, n + 1, a.neg);
+}
+
+// ----- bitwise operations -----
+//
+// On negatives these mean what Python's do: an infinite two's complement. One
+// limb past the wider operand is enough to hold that sign extension, and the
+// top limb of the result then says the result's sign.
+
+fn bn_to_twos(a: BigInt, n: u64) -> *u32 {
+    let t = bn_limbs(n);
+    for i: u64 in 0..n {
+        if i < a.len {
+            t[i] = a.limbs[i];
+        } else {
+            t[i] = 0;
+        }
+    }
+    if a.neg {
+        bn_twos_negate(t, n);
+    }
+    return t;
+}
+
+fn bn_twos_negate(t: *u32, n: u64) {
+    let carry: u64 = 1;
+    for i: u64 in 0..n {
+        let value = ((t[i] as u64) ^ BN_MASK) + carry;
+        t[i] = (value & BN_MASK) as u32;
+        carry = value >> 32;
+    }
+}
+
+fn bn_bitwise(op: BnOp, a: BigInt, b: BigInt) -> BigInt {
+    let n = a.len;
+    if b.len > n {
+        n = b.len;
+    }
+    n += 1;
+    let x = bn_to_twos(a, n);
+    let y = bn_to_twos(b, n);
+    for i: u64 in 0..n {
+        match op {
+            BnOp.AND => { x[i] = x[i] & y[i]; },
+            BnOp.OR => { x[i] = x[i] | y[i]; },
+            _ => { x[i] = x[i] ^ y[i]; },
+        }
+    }
+    free(y as *void);
+    let negative = (x[n - 1] & 0x80000000) != 0;
+    if negative {
+        bn_twos_negate(x, n);
+    }
+    return bn_make(x, n, negative);
+}
+
+fn bn_and(a: BigInt, b: BigInt) -> BigInt {
+    return bn_bitwise(BnOp.AND, a, b);
+}
+
+fn bn_or(a: BigInt, b: BigInt) -> BigInt {
+    return bn_bitwise(BnOp.OR, a, b);
+}
+
+fn bn_xor(a: BigInt, b: BigInt) -> BigInt {
+    return bn_bitwise(BnOp.XOR, a, b);
+}
+
+// ~a == -a - 1.
+fn bn_not(a: BigInt) -> BigInt {
+    let one = bn_from_u64(1);
+    let negated = bn_neg(a);
+    let result = bn_sub(negated, one);
+    bn_free(one);
+    bn_free(negated);
+    return result;
+}
+
+// ----- text -----
+
+fn bn_digit_value(c: u8) -> u32 {
+    if c >= '0' && c <= '9' {
+        return (c - '0') as u32;
+    }
+    if c >= 'a' && c <= 'z' {
+        return (c - 'a') as u32 + 10;
+    }
+    if c >= 'A' && c <= 'Z' {
+        return (c - 'A') as u32 + 10;
+    }
+    return 255;
+}
+
+// Reads digits in `base` (2 to 36), upper or lower case, `_` ignored. The text
+// comes from the lexer, so no prefix and no sign; a bad digit is a caller bug.
+fn bn_parse(text: *u8, count: u64, base: u32) -> BigInt {
+    if base < 2 || base > 36 {
+        sup_die("mort: internal error: bignum parse base out of range");
+    }
+    let digits: u64 = 0;
+    for i: u64 in 0..count {
+        if text[i] != '_' {
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        sup_die("mort: internal error: bignum parse of empty text");
+    }
+    // A digit below 36 carries under 6 bits. The limb count is a bound, tightened
+    // by the width check below rather than used as the value's width.
+    let cap = digits / 32 * 6 + digits % 32 * 6 / 32 + 2;
+    let r = bn_limbs(cap);
+    let used: u64 = 0;
+    let i: u64 = 0;
+    while i < count {
+        // Take as many digits as a u32 can hold, then fold them in at once.
+        let chunk: u64 = 0;
+        let factor: u64 = 1;
+        while i < count && factor * (base as u64) <= BN_MASK {
+            let c = text[i];
+            i += 1;
+            if c == '_' {
+                continue;
+            }
+            let value = bn_digit_value(c);
+            if value >= base {
+                sup_die("mort: internal error: bad digit in bignum parse");
+            }
+            chunk = chunk * (base as u64) + (value as u64);
+            factor = factor * (base as u64);
+        }
+        if factor > 1 {
+            let carry = chunk;
+            for k: u64 in 0..used {
+                let value = (r[k] as u64) * factor + carry;
+                r[k] = (value & BN_MASK) as u32;
+                carry = value >> 32;
+            }
+            if carry > 0 {
+                r[used] = carry as u32;
+                used += 1;
+                bn_width_check((used - 1) * 32 + 1);
+            }
+        }
+    }
+    let result = bn_make(r, used, false);
+    bn_width_check(bn_bit_length(result));
+    return result;
+}
+
+// NUL-terminated decimal text, Python's `str(n)`. The caller owns it.
+fn bn_format(a: BigInt) -> *u8 {
+    // Under 10 decimal digits per limb, plus a whole chunk of leading zeros that
+    // are trimmed below, the sign and the NUL.
+    let room = a.len * 10 + 20;
+    let reversed = sup_alloc_array(room, 1) as *u8;
+    let work = bn_limbs(a.len);
+    for i: u64 in 0..a.len {
+        work[i] = a.limbs[i];
+    }
+    let live = a.len;
+    let count: u64 = 0;
+    while live > 0 {
+        let remainder: u64 = 0;
+        let i = live;
+        while i > 0 {
+            i -= 1;
+            let value = (remainder << 32) | (work[i] as u64);
+            work[i] = (value / BN_CHUNK_DECIMAL) as u32;
+            remainder = value % BN_CHUNK_DECIMAL;
+        }
+        while live > 0 && work[live - 1] == 0 {
+            live -= 1;
+        }
+        for k: u64 in 0..9 {
+            reversed[count] = 48 + (remainder % 10) as u8;
+            remainder = remainder / 10;
+            count += 1;
+        }
+    }
+    free(work as *void);
+    while count > 1 && reversed[count - 1] == '0' {
+        count -= 1;
+    }
+    if count == 0 {
+        reversed[0] = '0';
+        count = 1;
+    }
+    if a.neg {
+        reversed[count] = '-';
+        count += 1;
+    }
+    let text = sup_alloc_array(count + 1, 1) as *u8;
+    for i: u64 in 0..count {
+        text[i] = reversed[count - 1 - i];
+    }
+    text[count] = 0;
+    free(reversed as *void);
+    return text;
+}
+
+// ----- the checker's fold -----
+
+fn bn_mag_u64(a: BigInt) -> u64 {
+    let value: u64 = 0;
+    if a.len > 0 {
+        value = a.limbs[0] as u64;
+    }
+    if a.len > 1 {
+        value = value | ((a.limbs[1] as u64) << 32);
+    }
+    return value;
+}
+
+fn bn_fold_shl(a: BigInt, b: BigInt) -> BigInt {
+    if a.len == 0 {
+        return bn_zero();
+    }
+    if b.len > 1 || bn_mag_u64(b) > 64 {
+        // Python's "1 << 65": out of range for every Mort integer type.
+        let one = bn_from_u64(1);
+        let capped = bn_shl(one, 65);
+        bn_free(one);
+        return capped;
+    }
+    return bn_shl(a, bn_mag_u64(b));
+}
+
+fn bn_fold_shr(a: BigInt, b: BigInt) -> BigInt {
+    if b.len > 2 {
+        return bn_shr(a, BN_U64_MAX);
+    }
+    return bn_shr(a, bn_mag_u64(b));
+}
+
+// `Checker._fold_binary`. Stores the value through `out` and returns true, or
+// returns false where Python's returns None: division by zero and a negative
+// shift. Width is the caller's check, after this returns, as in Python.
+fn bn_fold_binary(op: BnOp, a: BigInt, b: BigInt, out: *BigInt) -> bool {
+    match op {
+        BnOp.ADD => { *out = bn_add(a, b); return true; },
+        BnOp.SUB => { *out = bn_sub(a, b); return true; },
+        BnOp.MUL => { *out = bn_mul(a, b); return true; },
+        BnOp.DIV => {
+            if b.len == 0 {
+                return false;
+            }
+            *out = bn_c_div(a, b);
+            return true;
+        },
+        BnOp.MOD => {
+            if b.len == 0 {
+                return false;
+            }
+            *out = bn_c_mod(a, b);
+            return true;
+        },
+        BnOp.AND => { *out = bn_and(a, b); return true; },
+        BnOp.OR => { *out = bn_or(a, b); return true; },
+        BnOp.XOR => { *out = bn_xor(a, b); return true; },
+        BnOp.SHL => {
+            if b.neg {
+                return false;
+            }
+            *out = bn_fold_shl(a, b);
+            return true;
+        },
+        BnOp.SHR => {
+            if b.neg {
+                return false;
+            }
+            *out = bn_fold_shr(a, b);
+            return true;
+        },
+    }
+    return false;
+}

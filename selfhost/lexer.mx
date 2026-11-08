@@ -8,8 +8,7 @@
 
 import support;
 import lexer_unicode;
-
-extern fn strtod(text: *const c_char, end: **c_char) -> f64;
+import lexer_float;
 
 enum Tok {
     INT, FLOAT, CHAR, STRING, IDENT,
@@ -42,6 +41,7 @@ let TOK_NAMES: [*u8; 84] = [
 ];
 
 const KEYWORD_COUNT: u64 = 33;
+const LX_MAX_INTEGER_DIGITS: u64 = 4300;
 
 let KEYWORD_TEXT: [*u8; 33] = [
     "let", "fn", "return", "if", "else", "while", "loop", "for", "in", "true",
@@ -130,9 +130,14 @@ fn tokens_push(v: *TokenVec, t: Token) {
 
 // ----- source loading -----
 
+// When `valid` is false, `err_line` and `err_col` locate the first invalid byte
+// (counted as mort/lexer.py's decode_source counts) and `err_byte` holds it.
 struct Source {
     bytes: Span,
     valid: bool,
+    err_line: u64,
+    err_col: u64,
+    err_byte: u8,
 }
 
 // Strict UTF-8 validation of the sequence starting at `at`. Returns its length
@@ -178,10 +183,18 @@ fn lx_decode_source(raw: Span) -> Source {
     let out = sup_alloc(raw.len + 1) as *u8;
     let i: u64 = 0;
     let o: u64 = 0;
+    let line: u64 = 1;
+    let col: u64 = 1;
     while i < raw.len {
         let size = lx_utf8_length(raw.data, raw.len, i);
         if size == 0 {
-            return Source { bytes: Span { data: out, len: 0 }, valid: false };
+            return Source {
+                bytes: Span { data: out, len: 0 },
+                valid: false,
+                err_line: line,
+                err_col: col,
+                err_byte: raw.data[i],
+            };
         }
         let b = raw.data[i];
         if b == 13 {
@@ -191,6 +204,8 @@ fn lx_decode_source(raw: Span) -> Source {
             if i < raw.len && raw.data[i] == 10 {
                 i += 1;
             }
+            line += 1;
+            col = 1;
             continue;
         }
         for k: u64 in 0..size {
@@ -198,9 +213,30 @@ fn lx_decode_source(raw: Span) -> Source {
             o += 1;
         }
         i += size;
+        if b == 10 {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
     }
     out[o] = 0;
-    return Source { bytes: Span { data: out, len: o }, valid: true };
+    return Source {
+        bytes: Span { data: out, len: o },
+        valid: true,
+        err_line: 0,
+        err_col: 0,
+        err_byte: 0,
+    };
+}
+
+// The message mort/lexer.py's decode_source reports for this byte.
+fn lx_invalid_utf8_message(byte: u8) -> Span {
+    let text = buf_new(32);
+    buf_push_z(&text, "source is not valid UTF-8 (byte 0x");
+    buf_push_hex2(&text, byte);
+    buf_push(&text, ')');
+    return Span { data: text.data, len: text.len };
 }
 
 // ----- character classes -----
@@ -419,8 +455,26 @@ fn lx_has_bad_separator(s: Span) -> bool {
     return false;
 }
 
-fn lx_add_int(l: *Lexer, digits: Span, base: u32, line: u64, col: u64) {
+// Adds an integer token, enforcing the literal length limit (PLAN.md section 7).
+// `digits` excludes any prefix; `_` separators do not count, leading zeros do.
+fn lx_add_int(l: *Lexer, digits: Span, base: u32, kind: *u8, line: u64, col: u64) -> bool {
+    let count: u64 = 0;
+    for i: u64 in 0..digits.len {
+        if digits.data[i] != 95 {
+            count += 1;
+        }
+    }
+    if count > LX_MAX_INTEGER_DIGITS {
+        let m = buf_new(64);
+        buf_push_z(&m, kind);
+        buf_push_z(&m, " integer literal has ");
+        buf_push_u64(&m, count);
+        buf_push_z(&m, " digits; the limit is ");
+        buf_push_u64(&m, LX_MAX_INTEGER_DIGITS);
+        return lx_fail_span(l, buf_span(&m), line, col);
+    }
     lx_add(l, Tok.INT, lx_to_decimal(digits, base), 0, line, col);
+    return true;
 }
 
 fn lx_skip_exponent(l: *Lexer, line: u64, col: u64) -> bool {
@@ -444,18 +498,8 @@ fn lx_finish_float(l: *Lexer, start: u64, line: u64, col: u64) -> bool {
         return lx_fail(l, "invalid floating-point literal", line, col);
     }
     let text = lx_span_from(l, start);
-    let clean = sup_alloc(text.len + 1) as *u8;
-    let n: u64 = 0;
-    for i: u64 in 0..text.len {
-        if text.data[i] != 95 {
-            clean[n] = text.data[i];
-            n += 1;
-        }
-    }
-    clean[n] = 0;
-    let value = strtod(clean as *const c_char, 0 as **c_char);
-    let bits = *(&value as *u64);
-    if ((bits >> 52) & 0x7FF) == 0x7FF {
+    let bits: u64 = 0;
+    if !float_bits(text, &bits) {
         return lx_fail(l, "floating-point literal is out of range", line, col);
     }
     lx_add(l, Tok.FLOAT, text, bits, line, col);
@@ -471,8 +515,7 @@ fn lx_tuple_index(l: *Lexer, line: u64, col: u64) -> bool {
     if lx_is_alpha(after) || after == '_' {
         return lx_fail(l, "tuple index must be a decimal integer", line, col);
     }
-    lx_add_int(l, lx_span_from(l, start), 10, line, col);
-    return true;
+    return lx_add_int(l, lx_span_from(l, start), 10, "decimal", line, col);
 }
 
 fn lx_hex_literal(l: *Lexer, line: u64, col: u64) -> bool {
@@ -490,8 +533,7 @@ fn lx_hex_literal(l: *Lexer, line: u64, col: u64) -> bool {
     if lx_is_alnum(after) || after == '_' {
         return lx_fail(l, "invalid hex literal", line, col);
     }
-    lx_add_int(l, digits, 16, line, col);
-    return true;
+    return lx_add_int(l, digits, 16, "hex", line, col);
 }
 
 fn lx_binary_or_octal(l: *Lexer, line: u64, col: u64) -> bool {
@@ -520,11 +562,9 @@ fn lx_binary_or_octal(l: *Lexer, line: u64, col: u64) -> bool {
         return lx_fail(l, "invalid octal literal", line, col);
     }
     if binary {
-        lx_add_int(l, digits, 2, line, col);
-    } else {
-        lx_add_int(l, digits, 8, line, col);
+        return lx_add_int(l, digits, 2, "binary", line, col);
     }
-    return true;
+    return lx_add_int(l, digits, 8, "octal", line, col);
 }
 
 fn lx_invalid_number(l: *Lexer, digits: Span, after: u32, line: u64, col: u64) -> bool {
@@ -581,8 +621,7 @@ fn lx_number(l: *Lexer, line: u64, col: u64) -> bool {
     if lx_is_alpha(marker) || marker == '_' {
         return lx_invalid_number(l, digits, marker, line, col);
     }
-    lx_add_int(l, digits, 10, line, col);
-    return true;
+    return lx_add_int(l, digits, 10, "decimal", line, col);
 }
 
 // ----- comments -----

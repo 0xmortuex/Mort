@@ -12,6 +12,7 @@ are the pseudo-kind ``Tuple`` with fields ``0`` and ``1``. Values:
     "text"      the string's UTF-8 bytes; bytes outside 0x20..0x7E, and both
                 backslash and double quote, are written \\xNN (lowercase hex)
     #123        an integer, in decimal, arbitrary precision
+    12:5        a (line, column) source position
     f<16 hex>   a float's IEEE-754 binary64 bit pattern
     true false  a bool
     none        None
@@ -27,9 +28,9 @@ Only the fields a parse can set are dumped. ``CHECKER_FIELDS`` lists what later
 phases fill in; each is asserted to still hold its initial value, so a parser
 change that sets one fails here instead of going unnoticed.
 
-Python's AST records lines but not columns, so ``line`` is the only position
-dumped. Diagnostics carry a column only where the Python front end gives one
-(the lexer, at this commit).
+Python's AST records lines, and a column only in ``Call.name_pos``, so ``line``
+and that field are the only positions dumped. Diagnostics carry a column only
+where the Python front end gives one (the lexer, at this commit).
 
 Diagnostics: on bad input there is no dump, only the text of the error, which
 must equal what the Mort parser writes to stderr: ``MortError.format()`` with
@@ -137,6 +138,9 @@ def format_field(value, children):
         return "f" + struct.pack(">d", value).hex()
     if isinstance(value, str):
         return quoted(value)
+    if isinstance(value, tuple):
+        line, column = value
+        return f"{line}:{column}"
     if isinstance(value, list):
         if value and all(isinstance(item, str) for item in value):
             return "[" + ",".join(quoted(item) for item in value) + "]"

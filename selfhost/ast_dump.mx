@@ -301,6 +301,10 @@ fn ad_expr(d: *Dumper, n: *Node) {
         ad_items(d, "args", (*n).items);
         ad_line(d, n);
         ad_names(d, "type_args", (*n).names);
+        ad_label(d, "name_pos");
+        buf_push_u64((*d).out, (*n).name_line);
+        buf_push((*d).out, ':');
+        buf_push_u64((*d).out, (*n).name_col);
     } else if kind == NodeKind.CAST {
         ad_head(d, "Cast");
         ad_child(d, "expr", (*n).a);

@@ -38,7 +38,7 @@
 //   VAR              name
 //   UNARY            name=op a=operand
 //   BINARY           name=op a=left b=right
-//   CALL             name items=args names=type_args
+//   CALL             name items=args names=type_args name_line name_col
 //   CAST             a=expr ty=target_type
 //   TRY, MOVE        a=expr
 //   STRUCT_LIT       name items=fields(STRUCT_LIT_FIELD)
@@ -86,6 +86,8 @@ struct Node {
     mod_name: u64,
     symbol: u64,
     import_aliases: *Map,
+    name_line: u64,
+    name_col: u64,
 }
 
 fn ast_new(kind: NodeKind, line: u64) -> *Node {
@@ -93,7 +95,7 @@ fn ast_new(kind: NodeKind, line: u64) -> *Node {
     *node = Node {
         kind: kind, line: line, name: NO_TEXT, ty: NO_TEXT, num: 0, flag: false,
         a: 0 as *Node, b: 0 as *Node, c: 0 as *Node,
-        items: 0 as *PtrVec, names: 0 as *U64Vec,
+        items: 0 as *PtrVec, names: 0 as *U64Vec, name_line: 0, name_col: 0,
         file: NO_TEXT, mod_name: NO_TEXT, symbol: NO_TEXT,
         import_aliases: 0 as *Map,
     };

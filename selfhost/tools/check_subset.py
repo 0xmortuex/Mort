@@ -14,11 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mort import mort_ast as A  # noqa: E402
+from mort.errors import MortError  # noqa: E402
 from mort.lexer import Lexer  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 from mort.typechecker import BUILTIN_NAMES  # noqa: E402
 
-ALLOWED_SCALARS = {"bool", "void", "u8", "u32", "u64", "i64", "int", "f64",
+ALLOWED_SCALARS = {"bool", "void", "u8", "u32", "u64", "i64", "int",
                    "c_char", "c_int"}
 ALLOWED_NODES = {
     "Program", "ImportDecl", "StructDecl", "EnumDecl", "FnDecl", "ExternFnDecl",
@@ -56,7 +57,7 @@ def check_type(type_text, names, where, problems, global_array=False):
     if type_text is None:
         return
     base = base_type(type_text)
-    if global_array and base.startswith("[") and ";" in base:
+    if global_array and type_text.strip().startswith("[") and ";" in base:
         check_type(base[1:base.rindex(";")], names, where, problems)
         return
     if base in ALLOWED_SCALARS or base in names:
@@ -67,8 +68,11 @@ def check_type(type_text, names, where, problems, global_array=False):
 def check_file(path, stats):
     problems = []
     source = path.read_text(encoding="utf-8")
-    program = Parser(Lexer(source).tokenize()).parse()
     name = path.name
+    try:
+        program = Parser(Lexer(source).tokenize()).parse()
+    except MortError as error:
+        return [f"{name}:{error.line}: does not parse: {error.msg}"]
     if program.module_name:
         problems.append(f"{name}: module declaration is outside the subset")
     if program.tests:
@@ -81,13 +85,17 @@ def check_file(path, stats):
         if declaration.alias:
             problems.append(f"{name}: import alias is outside the subset")
 
-    struct_names = {s.name for s in program.structs}
+    # A file sees the whole flattened program, so collect names from all of it.
     enum_names = {e.name for e in program.enums}
-    types = struct_names | enum_names
-    # A file sees the whole flattened program; declare imported names too.
+    types = {s.name for s in program.structs} | enum_names
+    callables = {f.name for f in program.funcs} | {f.name for f in program.externs}
+    global_arrays = {g.name for g in program.globals if is_array_global(g)}
     for sibling in path.parent.glob("*.mx"):
         other = Parser(Lexer(sibling.read_text(encoding="utf-8")).tokenize()).parse()
+        enum_names |= {e.name for e in other.enums}
         types |= {s.name for s in other.structs} | {e.name for e in other.enums}
+        callables |= {f.name for f in other.funcs} | {f.name for f in other.externs}
+        global_arrays |= {g.name for g in other.globals if is_array_global(g)}
 
     for declaration in program.structs:
         if declaration.generic_params:
@@ -125,17 +133,125 @@ def check_file(path, stats):
         if isinstance(node, A.Call):
             if node.type_args and node.name != "sizeof":
                 problems.append(f"{where}: explicit type arguments on {node.name}")
+            if node.name == "sizeof":
+                for type_argument in node.type_args:
+                    check_type(type_argument, types, where, problems)
+            if not node.name or "." in node.name:
+                problems.append(f"{where}: qualified or payload call {node.name}")
+        if isinstance(node, A.Cast):
+            check_type(node.target_type, types, where, problems)
+        if isinstance(node, A.For):
+            check_type(node.decl_type, types, where, problems)
+        if isinstance(node, A.StructLit) and node.name not in types:
+            problems.append(f"{where}: struct literal {node.name!r}")
+        if isinstance(node, A.FieldAccess) and not str(node.field).isidentifier():
+            problems.append(f"{where}: tuple field .{node.field}")
+        if isinstance(node, A.Match):
+            check_match(node, enum_names, where, problems)
         if isinstance(node, A.ArrayLit) and id(node) not in global_nodes:
             problems.append(f"{where}: array literal outside a global")
+        if isinstance(node, A.ArrayLit) and any(
+                isinstance(element, A.ArrayLit) for element in node.elements):
+            problems.append(f"{where}: nested array literal")
         if isinstance(node, A.Let):
             if id(node) not in global_nodes:
                 check_type(node.decl_type, types, where, problems)
-        if isinstance(node, A.MatchArm) and node.pattern is not None:
-            pattern = node.pattern
-            if isinstance(pattern, A.Call):
-                problems.append(f"{where}: payload pattern in match arm")
     check_builtins(program, name, problems)
+    check_name_uses(program, callables | BUILTIN_NAMES, global_arrays, enum_names,
+                    name, problems)
     return problems
+
+
+def check_match(node, enum_names, where, problems):
+    """Arms must name unit variants of a known enum; `_` alone is not enough."""
+    variant_arms = 0
+    for arm in node.arms:
+        pattern = arm.pattern
+        if pattern is None:
+            continue
+        variant_arms += 1
+        if isinstance(pattern, A.Call):
+            problems.append(f"{where}: payload pattern in match arm")
+        elif not (isinstance(pattern, A.FieldAccess)
+                  and isinstance(pattern.obj, A.Var)
+                  and pattern.obj.name in enum_names):
+            problems.append(f"{where}: match arm is not a unit enum variant")
+    if variant_arms == 0:
+        problems.append(f"{where}: match with no enum variant arm")
+
+
+def is_array_global(binding):
+    return ((binding.decl_type or "").strip().startswith("[")
+            or isinstance(binding.expr, A.ArrayLit))
+
+
+def check_name_uses(program, callables, global_arrays, enum_names, name, problems):
+    """Resolve each variable the way Checker._lookup does, then apply two rules.
+
+    A local hides a global or function; the checker refuses a global and a
+    function with one name. A callable's name may only appear as the target of
+    a direct call, and a global array may only be indexed: any other use would
+    make a function or array value. A `let` binds from the next statement to
+    the end of its block.
+    """
+    def check_expr(expr, scopes):
+        if expr is None:
+            return
+        indexed = set()
+        enum_heads = set()
+        for node in walk(expr):  # walk yields a parent before its children
+            if isinstance(node, A.Index) and isinstance(node.obj, A.Var):
+                indexed.add(id(node.obj))
+            # The checker tries `E.Variant` before any variable lookup.
+            if (isinstance(node, A.FieldAccess) and isinstance(node.obj, A.Var)
+                    and node.obj.name in enum_names):
+                enum_heads.add(id(node.obj))
+            if (not isinstance(node, A.Var) or id(node) in enum_heads
+                    or any(node.name in s for s in scopes)):
+                continue
+            if node.name in global_arrays:
+                if id(node) not in indexed:
+                    problems.append(f"{name}:{node.line}: array value {node.name}")
+            elif node.name in callables:
+                problems.append(f"{name}:{node.line}: function value {node.name}")
+
+    def check_scoped(statement, scopes, bound):
+        scopes.append(bound)
+        check_stmt(statement, scopes)
+        scopes.pop()
+
+    def check_stmt(statement, scopes):
+        if isinstance(statement, A.Block):
+            scopes.append(set())
+            for inner in statement.stmts:
+                check_stmt(inner, scopes)
+            scopes.pop()
+        elif isinstance(statement, A.Let):
+            check_expr(statement.expr, scopes)
+            scopes[-1].add(statement.name)
+        elif isinstance(statement, A.If):
+            check_expr(statement.cond, scopes)
+            check_scoped(statement.then, scopes, set())
+            if statement.els is not None:
+                check_scoped(statement.els, scopes, set())
+        elif isinstance(statement, A.While):
+            check_expr(statement.cond, scopes)
+            check_scoped(statement.body, scopes, set())
+        elif isinstance(statement, A.For):
+            check_expr(statement.start, scopes)
+            check_expr(statement.end, scopes)
+            check_scoped(statement.body, scopes, {statement.var})
+        elif isinstance(statement, A.Match):
+            check_expr(statement.expr, scopes)
+            for arm in statement.arms:
+                check_scoped(arm.body, scopes, set())
+        else:
+            check_expr(statement, scopes)
+
+    for function in program.funcs:
+        check_stmt(function.body, [{param.name for param in function.params}])
+    for binding in program.globals:
+        check_expr(binding.expr, [])
 
 
 def walk(root):
