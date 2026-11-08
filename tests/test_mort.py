@@ -10062,3 +10062,32 @@ def test_invalid_utf8_is_reported_by_the_formatter(tmp_path, capsys):
     path.write_bytes(b"fn main() -> int { return 0; } // \xff\n")
     assert mortc.main(["fmt", str(path)]) == 1
     assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_huge_array_repeat_is_a_located_diagnostic():
+    error = assert_located(
+        "fn main() -> int {\n  let x: [i64; 2000000000] = [0; 2000000000];\n  return 0;\n}",
+        "array repeat", "2000000000",
+    )
+    assert (error.line, error.col) == (2, 30)
+
+
+def test_array_repeat_budget_is_shared_across_the_program():
+    # Each repeat alone is modest; together they would exhaust memory, which a
+    # per-literal cap would miss.
+    repeats = " ".join(f"let a{i}: [u8; 5000000] = [0; 5000000];" for i in range(100))
+    assert_located(f"fn main() -> int {{ {repeats} return 0; }}", "array repeat")
+
+
+def test_array_repeat_budget_counts_the_element_text():
+    element = "+".join(["a"] * 150)
+    error = assert_located(
+        f"fn main() -> int {{ let a: i64 = 1; let x: [i64; 200000] = [{element}; 200000]; "
+        "return 0; }",
+        "array repeat",
+    )
+    assert error.line == 1
+
+
+def test_large_array_repeat_within_the_budget_still_compiles():
+    assert "0, 0" in c_of("fn main() -> int { let x: [u8; 100000] = [0; 100000]; return 0; }")

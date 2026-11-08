@@ -391,11 +391,12 @@ class ArrayLit(Node):
 
 
 class ArrayRepeat(Node):
-    def __init__(self, value, count, line):
+    def __init__(self, value, count, line, col=None):
         super().__init__()
         self.value = value  # expression
         self.count = count  # int literal count
         self.line = line
+        self.col = col
 
 
 class Index(Node):

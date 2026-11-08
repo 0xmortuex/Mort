@@ -10,7 +10,12 @@ Design choices:
 import base64
 
 from . import mort_ast as A
+from .errors import MortError
 from .typechecker import BUILTIN_NAMES
+
+# [value; n] is written out element by element in the generated C, so a short
+# source line can demand gigabytes. This bounds the total across the program.
+MAX_ARRAY_REPEAT_BYTES = 32 * 1024 * 1024
 
 # Runtime-backed builtin families. Membership must be exact: a user function
 # such as a kernel's own `net_send` shares the prefix but is not a builtin,
@@ -200,6 +205,7 @@ class CodeGen:
         self.slice_types = self._collect_slice_types(program)
         self.tuple_types = self._collect_tuple_types(program)
         self.drop_destructors = getattr(program, "drop_destructors", {})
+        self.array_repeat_bytes = 0
 
     @staticmethod
     def _collect_slice_types(program):
@@ -2552,7 +2558,13 @@ class CodeGen:
             return "{" + ", ".join(self._gen_expr(el) for el in e.elements) + "}"
         if isinstance(e, A.ArrayRepeat):
             v = self._gen_expr(e.value)
-            return "{" + ", ".join([v] * e.count) + "}"
+            self.array_repeat_bytes += e.count * (len(v) + 2)
+            if self.array_repeat_bytes > MAX_ARRAY_REPEAT_BYTES:
+                raise MortError(
+                    f"array repeat of {e.count} elements pushes the generated "
+                    f"initialisers over the {MAX_ARRAY_REPEAT_BYTES}-byte limit",
+                    e.line, e.col, getattr(e, "filename", None))
+            return "{" + ((", " + v) * e.count)[2:] + "}"
         if isinstance(e, A.Unary):
             # A constant '-'/'~' folds to its value (const_val is set only for
             # those two int unaries; '*'/'&'/'!' leave it None).

@@ -847,7 +847,8 @@ class Parser:
         return False
 
     def _array_lit(self):
-        line = self._advance().line  # '['
+        bracket = self._advance()  # '['
+        line = bracket.line
         if self._at(T.RBRACKET):
             raise MortError("empty array literal is not allowed", line)
         first = self._expression()
@@ -855,7 +856,7 @@ class Parser:
             self._advance()
             count = self._expect(T.INT, "an array repeat count").value
             self._expect(T.RBRACKET, "']'")
-            return A.ArrayRepeat(first, count, line)
+            return A.ArrayRepeat(first, count, line, bracket.col)
         elements = [first]                   # list form: [a, b, c]
         while self._at(T.COMMA):
             self._advance()
