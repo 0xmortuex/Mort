@@ -5,8 +5,9 @@ from .errors import MortError
 from .tokens import KEYWORDS, T, Token
 
 # int() refuses longer decimal strings (CPython's int/str digit limit), and no
-# Mort integer type comes anywhere near this many digits.
-MAX_DECIMAL_DIGITS = 4300
+# Mort integer type comes anywhere near this many digits. The limit applies in
+# every base so that all literals cost the same to convert and print.
+MAX_INTEGER_DIGITS = 4300
 
 _TWO_CHAR = {
     "->": T.ARROW,
@@ -153,7 +154,7 @@ class Lexer:
                 digits += self._advance()
             if self._peek().isalpha() or self._peek() == "_":
                 raise MortError("tuple index must be a decimal integer", line, col)
-            self._add(T.INT, self._decimal(digits, line, col), line, col)
+            self._add(T.INT, self._integer(digits, 10, "decimal", line, col), line, col)
             return
         # hex literal, e.g. 0xB8000
         if self._peek() == "0" and self._peek(1) in "xX":
@@ -166,7 +167,7 @@ class Lexer:
                 raise MortError("invalid hex literal '0x'", line, col)
             if self._peek().isalnum() or self._peek() == "_":
                 raise MortError("invalid hex literal", line, col)
-            self._add(T.INT, int(s.replace("_", ""), 16), line, col)
+            self._add(T.INT, self._integer(s.replace("_", ""), 16, "hex", line, col), line, col)
             return
         if self._peek() == "0" and self._peek(1) in "bBoO":
             prefix = self._peek(1).lower()
@@ -180,7 +181,8 @@ class Lexer:
                     or "__" in digits or self._peek().isalnum() or self._peek() == "_"):
                 kind = "binary" if prefix == "b" else "octal"
                 raise MortError(f"invalid {kind} literal", line, col)
-            self._add(T.INT, int(digits.replace("_", ""), 2 if prefix == "b" else 8), line, col)
+            base, kind = (2, "binary") if prefix == "b" else (8, "octal")
+            self._add(T.INT, self._integer(digits.replace("_", ""), base, kind, line, col), line, col)
             return
         s = ""
         while _is_digit(self._peek()) or self._peek() == "_":
@@ -224,16 +226,16 @@ class Lexer:
         # reject things like 12abc
         if self._peek().isalpha() or self._peek() == "_":
             raise MortError(f"invalid number literal near {s + self._peek()!r}", line, col)
-        self._add(T.INT, self._decimal(s.replace("_", ""), line, col), line, col)
+        self._add(T.INT, self._integer(s.replace("_", ""), 10, "decimal", line, col), line, col)
 
     @staticmethod
-    def _decimal(digits, line, col):
-        if len(digits) > MAX_DECIMAL_DIGITS:
+    def _integer(digits, base, kind, line, col):
+        if len(digits) > MAX_INTEGER_DIGITS:
             raise MortError(
-                f"decimal integer literal has {len(digits)} digits; "
-                f"the limit is {MAX_DECIMAL_DIGITS}",
+                f"{kind} integer literal has {len(digits)} digits; "
+                f"the limit is {MAX_INTEGER_DIGITS}",
                 line, col)
-        return int(digits)
+        return int(digits, base)
 
     def _block_comment(self):
         line, col = self.line, self.col

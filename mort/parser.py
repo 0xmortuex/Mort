@@ -35,6 +35,8 @@ FLOAT_TYPES = {"f32", "f64"}
 # 1000-frame limit, lets the diagnostic say where the problem is.
 MAX_NESTING_COST = 800
 
+MAX_ARRAY_SIZE = 2 ** 64 - 1
+
 ASSIGNMENT_OPS = {
     T.ASSIGN: "=",
     T.PLUS_ASSIGN: "+=",
@@ -76,6 +78,13 @@ class Parser:
             tok = self._peek()
             raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line, tok.col)
         return self._advance()
+
+    def _array_size(self, what):
+        """Read an array length. Types spell it in decimal, so it must fit u64."""
+        tok = self._expect(T.INT, what)
+        if tok.value > MAX_ARRAY_SIZE:
+            raise MortError("array size does not fit in u64", tok.line, tok.col)
+        return tok.value
 
     def _expect_type_close(self):
         """Consume one generic-type closing angle.
@@ -334,7 +343,7 @@ class Parser:
                 return "[]" + self._type_name()
             elem = self._type_name()
             self._expect(T.SEMI, "';'")
-            n = self._expect(T.INT, "an array size").value
+            n = self._array_size("an array size")
             self._expect(T.RBRACKET, "']'")
             return f"[{elem};{n}]"
         tok = self._peek()
@@ -890,7 +899,7 @@ class Parser:
         first = self._expression()
         if self._at(T.SEMI):                 # repeat form: [value; count]
             self._advance()
-            count = self._expect(T.INT, "an array repeat count").value
+            count = self._array_size("an array repeat count")
             self._expect(T.RBRACKET, "']'")
             return A.ArrayRepeat(first, count, line, bracket.col)
         elements = [first]                   # list form: [a, b, c]

@@ -10527,3 +10527,57 @@ def test_fuzzer_oracle_requires_a_location_on_limit_errors():
     for unlocated in (MortError(limit), MortError(limit, 1)):
         with pytest.raises(AssertionError, match="without line and column"):
             fuzz_module._check_located(unlocated, "case")
+
+
+def _compile_bounded(source, seconds):
+    """Compile on a worker so a hang fails the test instead of wedging the run."""
+    started = time.perf_counter()
+    finished, error = fuzz_module._run_with_timeout(lambda: c_of(source), seconds)
+    assert finished, f"still compiling after {seconds}s"
+    return error, time.perf_counter() - started
+
+
+def assert_located_quickly(source, seconds, *messages):
+    error, _ = _compile_bounded(source, seconds)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None and error.col is not None, error.format()
+    for message in messages:
+        assert message in error.msg, error.msg
+    return error
+
+
+@pytest.mark.parametrize("kind,literal", [
+    ("hex", "0x" + "F" * 4301),
+    ("hex", "0x" + "0" * 5000),
+    ("hex", "0x" + "F_" * 4300 + "F"),
+    ("binary", "0b" + "1" * 4301),
+    ("octal", "0o" + "7" * 4301),
+], ids=["hex", "hex-leading-zeros", "hex-separators", "binary", "octal"])
+def test_oversized_prefixed_literal_is_a_located_diagnostic(kind, literal):
+    error = assert_located(f"fn main() -> int {{\n  let x = {literal};\n  return 0;\n}}",
+                           f"{kind} integer literal has", "the limit is 4300")
+    assert (error.line, error.col) == (2, 11)
+
+
+def test_prefixed_literal_keeps_its_trailing_character_error():
+    assert_located("fn main() -> int { let x = 0x" + "F" * 5000 + "g; return 0; }",
+                   "invalid hex literal")
+
+
+def test_prefixed_literal_at_the_digit_limit_still_folds():
+    literal = "0x" + "F" * 4300
+    c_of(f"fn main() -> int {{ let x: i64 = {literal} / {literal}; return x as int; }}")
+
+
+@pytest.mark.parametrize("body", [
+    "let x = [0; 0x" + "F" * 4000 + "];",
+    "let x: [i64; 0x" + "F" * 4000 + "] = [0; 1];",
+    "let x = [0; 18446744073709551616];",
+    "let x: [i64; 18446744073709551616] = [0; 1];",
+], ids=["repeat-hex", "type-hex", "repeat-2^64", "type-2^64"])
+def test_array_size_past_u64_is_a_located_diagnostic(body):
+    assert_located(f"fn main() -> int {{ {body} return 0; }}", "array size")
+
+
+def test_caret_is_xor_so_two_caret_sixty_three_is_sixty_one():
+    assert "61" in c_of("fn main() -> int { let x: i64 = 2^63; return x as int; }")
