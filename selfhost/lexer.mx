@@ -1,0 +1,1011 @@
+// The Mort lexer, written in the bootstrap subset (see PLAN.md).
+//
+// Mirrors mort/lexer.py rule for rule, including its exact diagnostics.
+// lexer_test checks the two against each other.
+//
+// Memory discipline: a compiler is a short batch process, so everything is
+// allocated once and released at exit. Nothing here calls free.
+
+import lexer_unicode;
+
+extern fn strtod(text: *const c_char, end: **c_char) -> f64;
+
+enum Tok {
+    INT, FLOAT, CHAR, STRING, IDENT,
+    LET, FN, RETURN, IF, ELSE, WHILE, LOOP, FOR, IN, TRUE, FALSE, KW_INT,
+    KW_BOOL, AS, STRUCT, ASM, EXTERN, BREAK, CONTINUE, KW_VOID, IMPORT, ENUM,
+    MATCH, CONST, TEST, MODULE, PUB, DEFER, TRY, TYPE, NULL, RESOURCE, MOVE,
+    LPAREN, RPAREN, LBRACE, RBRACE, COMMA, SEMI, COLON, ARROW, FAT_ARROW, DOT,
+    DOTDOT, DOTDOTEQ, AMP, LBRACKET, RBRACKET,
+    ASSIGN, PLUS_ASSIGN, MINUS_ASSIGN, STAR_ASSIGN, SLASH_ASSIGN,
+    PERCENT_ASSIGN, AMP_ASSIGN, PIPE_ASSIGN, CARET_ASSIGN, SHL_ASSIGN,
+    SHR_ASSIGN,
+    PLUS, MINUS, STAR, SLASH, PERCENT, EQ, NE, LT, GT, LE, GE, AND, OR, BANG,
+    PIPE, CARET, TILDE, SHL, SHR, EOF,
+    NOT_A_TOKEN,
+}
+
+let TOK_NAMES: [*u8; 84] = [
+    "INT", "FLOAT", "CHAR", "STRING", "IDENT",
+    "LET", "FN", "RETURN", "IF", "ELSE", "WHILE", "LOOP", "FOR", "IN", "TRUE",
+    "FALSE", "KW_INT", "KW_BOOL", "AS", "STRUCT", "ASM", "EXTERN", "BREAK",
+    "CONTINUE", "KW_VOID", "IMPORT", "ENUM", "MATCH", "CONST", "TEST", "MODULE",
+    "PUB", "DEFER", "TRY", "TYPE", "NULL", "RESOURCE", "MOVE",
+    "LPAREN", "RPAREN", "LBRACE", "RBRACE", "COMMA", "SEMI", "COLON", "ARROW",
+    "FAT_ARROW", "DOT", "DOTDOT", "DOTDOTEQ", "AMP", "LBRACKET", "RBRACKET",
+    "ASSIGN", "PLUS_ASSIGN", "MINUS_ASSIGN", "STAR_ASSIGN", "SLASH_ASSIGN",
+    "PERCENT_ASSIGN", "AMP_ASSIGN", "PIPE_ASSIGN", "CARET_ASSIGN", "SHL_ASSIGN",
+    "SHR_ASSIGN",
+    "PLUS", "MINUS", "STAR", "SLASH", "PERCENT", "EQ", "NE", "LT", "GT", "LE",
+    "GE", "AND", "OR", "BANG", "PIPE", "CARET", "TILDE", "SHL", "SHR", "EOF"
+];
+
+const KEYWORD_COUNT: u64 = 33;
+
+let KEYWORD_TEXT: [*u8; 33] = [
+    "let", "fn", "return", "if", "else", "while", "loop", "for", "in", "true",
+    "false", "int", "bool", "as", "struct", "asm", "extern", "break",
+    "continue", "void", "import", "enum", "match", "const", "test", "module",
+    "pub", "defer", "try", "type", "null", "resource", "move"
+];
+
+let KEYWORD_KIND: [Tok; 33] = [
+    Tok.LET, Tok.FN, Tok.RETURN, Tok.IF, Tok.ELSE, Tok.WHILE, Tok.LOOP, Tok.FOR,
+    Tok.IN, Tok.TRUE, Tok.FALSE, Tok.KW_INT, Tok.KW_BOOL, Tok.AS, Tok.STRUCT,
+    Tok.ASM, Tok.EXTERN, Tok.BREAK, Tok.CONTINUE, Tok.KW_VOID, Tok.IMPORT,
+    Tok.ENUM, Tok.MATCH, Tok.CONST, Tok.TEST, Tok.MODULE, Tok.PUB, Tok.DEFER,
+    Tok.TRY, Tok.TYPE, Tok.NULL, Tok.RESOURCE, Tok.MOVE
+];
+
+// ----- byte spans and growable byte buffers -----
+
+struct Span {
+    data: *u8,
+    len: u64,
+}
+
+struct Buf {
+    data: *u8,
+    len: u64,
+    cap: u64,
+}
+
+fn buf_new(cap: u64) -> Buf {
+    return Buf { data: alloc(cap) as *u8, len: 0, cap: cap };
+}
+
+fn buf_push(b: *Buf, byte: u8) {
+    if (*b).len == (*b).cap {
+        let cap = (*b).cap * 2;
+        let data = alloc(cap) as *u8;
+        for i: u64 in 0..(*b).len {
+            data[i] = (*b).data[i];
+        }
+        free((*b).data as *void);
+        (*b).data = data;
+        (*b).cap = cap;
+    }
+    (*b).data[(*b).len] = byte;
+    (*b).len += 1;
+}
+
+fn buf_push_z(b: *Buf, text: *u8) {
+    let i: u64 = 0;
+    while text[i] != 0 {
+        buf_push(b, text[i]);
+        i += 1;
+    }
+}
+
+fn buf_push_span(b: *Buf, s: Span) {
+    for i: u64 in 0..s.len {
+        buf_push(b, s.data[i]);
+    }
+}
+
+fn buf_push_u64(b: *Buf, value: u64) {
+    if value >= 10 {
+        buf_push_u64(b, value / 10);
+    }
+    buf_push(b, 48 + (value % 10) as u8);
+}
+
+fn buf_push_hex2(b: *Buf, byte: u8) {
+    buf_push(b, lx_hex_char(byte >> 4));
+    buf_push(b, lx_hex_char(byte & 15));
+}
+
+fn buf_push_cp(b: *Buf, cp: u32) {
+    if cp < 0x80 {
+        buf_push(b, cp as u8);
+    } else if cp < 0x800 {
+        buf_push(b, (0xC0 | (cp >> 6)) as u8);
+        buf_push(b, (0x80 | (cp & 0x3F)) as u8);
+    } else if cp < 0x10000 {
+        buf_push(b, (0xE0 | (cp >> 12)) as u8);
+        buf_push(b, (0x80 | ((cp >> 6) & 0x3F)) as u8);
+        buf_push(b, (0x80 | (cp & 0x3F)) as u8);
+    } else {
+        buf_push(b, (0xF0 | (cp >> 18)) as u8);
+        buf_push(b, (0x80 | ((cp >> 12) & 0x3F)) as u8);
+        buf_push(b, (0x80 | ((cp >> 6) & 0x3F)) as u8);
+        buf_push(b, (0x80 | (cp & 0x3F)) as u8);
+    }
+}
+
+fn buf_span(b: *Buf) -> Span {
+    return Span { data: (*b).data, len: (*b).len };
+}
+
+fn lx_hex_char(nibble: u8) -> u8 {
+    if nibble < 10 {
+        return 48 + nibble;
+    }
+    return 87 + nibble;
+}
+
+// ----- tokens -----
+
+// `text` is the source spelling, or for INT the canonical decimal digits.
+// `num` is the byte value of a CHAR and the IEEE-754 bits of a FLOAT.
+struct Token {
+    kind: Tok,
+    line: u64,
+    col: u64,
+    text: Span,
+    num: u64,
+}
+
+struct TokenVec {
+    data: *Token,
+    len: u64,
+    cap: u64,
+}
+
+fn tokens_new() -> TokenVec {
+    let cap: u64 = 256;
+    return TokenVec { data: alloc(cap * sizeof<Token>()) as *Token, len: 0, cap: cap };
+}
+
+fn tokens_push(v: *TokenVec, t: Token) {
+    if (*v).len == (*v).cap {
+        let cap = (*v).cap * 2;
+        let data = alloc(cap * sizeof<Token>()) as *Token;
+        for i: u64 in 0..(*v).len {
+            data[i] = (*v).data[i];
+        }
+        free((*v).data as *void);
+        (*v).data = data;
+        (*v).cap = cap;
+    }
+    (*v).data[(*v).len] = t;
+    (*v).len += 1;
+}
+
+// ----- source loading -----
+
+struct Source {
+    bytes: Span,
+    valid: bool,
+}
+
+// Strict UTF-8 validation of the sequence starting at `at`. Returns its length
+// or 0 if invalid. Accepts exactly what Python's strict decoder accepts.
+fn lx_utf8_length(data: *u8, n: u64, at: u64) -> u64 {
+    let b0 = data[at];
+    if b0 < 0x80 {
+        return 1;
+    }
+    if b0 < 0xC2 || b0 > 0xF4 {
+        return 0;
+    }
+    let needed: u64 = 1;
+    if b0 >= 0xF0 {
+        needed = 3;
+    } else if b0 >= 0xE0 {
+        needed = 2;
+    }
+    if at + needed >= n {
+        return 0;
+    }
+    let low: u8 = 0x80;
+    let high: u8 = 0xBF;
+    if b0 == 0xE0 { low = 0xA0; }
+    if b0 == 0xED { high = 0x9F; }
+    if b0 == 0xF0 { low = 0x90; }
+    if b0 == 0xF4 { high = 0x8F; }
+    let b1 = data[at + 1];
+    if b1 < low || b1 > high {
+        return 0;
+    }
+    for k: u64 in 2..(needed + 1) {
+        let b = data[at + k];
+        if b < 0x80 || b > 0xBF {
+            return 0;
+        }
+    }
+    return needed + 1;
+}
+
+// Decode UTF-8 and translate \r\n and lone \r to \n, as Python's text mode does.
+fn lx_decode_source(raw: Span) -> Source {
+    let out = alloc(raw.len + 1) as *u8;
+    let i: u64 = 0;
+    let o: u64 = 0;
+    while i < raw.len {
+        let size = lx_utf8_length(raw.data, raw.len, i);
+        if size == 0 {
+            return Source { bytes: Span { data: out, len: 0 }, valid: false };
+        }
+        let b = raw.data[i];
+        if b == 13 {
+            out[o] = 10;
+            o += 1;
+            i += 1;
+            if i < raw.len && raw.data[i] == 10 {
+                i += 1;
+            }
+            continue;
+        }
+        for k: u64 in 0..size {
+            out[o] = raw.data[i + k];
+            o += 1;
+        }
+        i += size;
+    }
+    out[o] = 0;
+    return Source { bytes: Span { data: out, len: o }, valid: true };
+}
+
+// ----- character classes -----
+
+fn lx_in_table(table: *u32, count: u64, cp: u32) -> bool {
+    let low: u64 = 0;
+    let high: u64 = count;
+    while low < high {
+        let mid = (low + high) / 2;
+        if cp < table[mid * 2] {
+            high = mid;
+        } else if cp > table[mid * 2 + 1] {
+            low = mid + 1;
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn lx_is_digit(c: u32) -> bool {
+    return c >= '0' && c <= '9';
+}
+
+fn lx_is_ascii_alpha(c: u32) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+fn lx_is_hex(c: u32) -> bool {
+    return lx_is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+fn lx_is_alpha(c: u32) -> bool {
+    if c < 0x80 {
+        return lx_is_ascii_alpha(c);
+    }
+    return lx_in_table(&UNI_ALPHA[0], UNI_ALPHA_COUNT, c);
+}
+
+fn lx_is_alnum(c: u32) -> bool {
+    if c < 0x80 {
+        return lx_is_ascii_alpha(c) || lx_is_digit(c);
+    }
+    return lx_in_table(&UNI_ALNUM[0], UNI_ALNUM_COUNT, c);
+}
+
+fn lx_is_printable(c: u32) -> bool {
+    if c < 0x80 {
+        return c >= 0x20 && c < 0x7F;
+    }
+    return !lx_in_table(&UNI_NONPRINT[0], UNI_NONPRINT_COUNT, c);
+}
+
+// ----- the lexer proper -----
+
+struct Lexer {
+    src: *u8,
+    n: u64,
+    i: u64,
+    line: u64,
+    col: u64,
+    tokens: TokenVec,
+    failed: bool,
+    err_message: Span,
+    err_line: u64,
+    err_col: u64,
+}
+
+fn lx_new(source: Span) -> Lexer {
+    return Lexer {
+        src: source.data, n: source.len, i: 0, line: 1, col: 1,
+        tokens: tokens_new(), failed: false,
+        err_message: Span { data: "" , len: 0 }, err_line: 0, err_col: 0,
+    };
+}
+
+fn lx_size_of(b: u8) -> u64 {
+    if b < 0x80 { return 1; }
+    if b < 0xE0 { return 2; }
+    if b < 0xF0 { return 3; }
+    return 4;
+}
+
+fn lx_decode(l: *Lexer, at: u64) -> u32 {
+    let p = (*l).src;
+    let b0 = p[at] as u32;
+    if b0 < 0x80 {
+        return b0;
+    }
+    if b0 < 0xE0 {
+        return ((b0 & 0x1F) << 6) | ((p[at + 1] as u32) & 0x3F);
+    }
+    if b0 < 0xF0 {
+        return ((b0 & 0x0F) << 12)
+            | (((p[at + 1] as u32) & 0x3F) << 6)
+            | ((p[at + 2] as u32) & 0x3F);
+    }
+    return ((b0 & 0x07) << 18)
+        | (((p[at + 1] as u32) & 0x3F) << 12)
+        | (((p[at + 2] as u32) & 0x3F) << 6)
+        | ((p[at + 3] as u32) & 0x3F);
+}
+
+// The code point `offset` positions ahead, or 0 at end of input. A literal NUL
+// in the source also reads as 0, exactly as in the Python lexer.
+fn lx_peek(l: *Lexer, offset: u64) -> u32 {
+    let at = (*l).i;
+    let remaining = offset;
+    while remaining > 0 && at < (*l).n {
+        at += lx_size_of((*l).src[at]);
+        remaining -= 1;
+    }
+    if at >= (*l).n {
+        return 0;
+    }
+    return lx_decode(l, at);
+}
+
+fn lx_advance(l: *Lexer) -> u32 {
+    let c = lx_decode(l, (*l).i);
+    (*l).i += lx_size_of((*l).src[(*l).i]);
+    if c == 10 {
+        (*l).line += 1;
+        (*l).col = 1;
+    } else {
+        (*l).col += 1;
+    }
+    return c;
+}
+
+fn lx_span_from(l: *Lexer, start: u64) -> Span {
+    return Span { data: &(*l).src[start], len: (*l).i - start };
+}
+
+fn lx_add(l: *Lexer, kind: Tok, text: Span, num: u64, line: u64, col: u64) {
+    tokens_push(&(*l).tokens, Token {
+        kind: kind, line: line, col: col, text: text, num: num,
+    });
+}
+
+fn lx_empty_span() -> Span {
+    return Span { data: "", len: 0 };
+}
+
+// Records a lexical error. Always returns false so scanners can
+// `return lx_fail(...)`.
+fn lx_fail_span(l: *Lexer, message: Span, line: u64, col: u64) -> bool {
+    (*l).failed = true;
+    (*l).err_message = message;
+    (*l).err_line = line;
+    (*l).err_col = col;
+    return false;
+}
+
+fn lx_fail(l: *Lexer, message: *u8, line: u64, col: u64) -> bool {
+    let n: u64 = 0;
+    while message[n] != 0 {
+        n += 1;
+    }
+    return lx_fail_span(l, Span { data: message, len: n }, line, col);
+}
+
+// ----- numbers -----
+
+fn lx_digit_value(c: u8) -> u32 {
+    if c >= 48 && c <= 57 {
+        return (c - 48) as u32;
+    }
+    if c >= 97 && c <= 102 {
+        return (c - 87) as u32;
+    }
+    return (c - 55) as u32;
+}
+
+// Converts digits (with `_` separators) in base 2, 8, 10 or 16 to canonical
+// decimal ASCII. Integer literals are arbitrary precision until checking.
+fn lx_to_decimal(text: Span, base: u32) -> Span {
+    let digits = buf_new(text.len * 2 + 8);
+    for i: u64 in 0..text.len {
+        if text.data[i] == 95 {
+            continue;
+        }
+        let carry = lx_digit_value(text.data[i]);
+        for d: u64 in 0..digits.len {
+            let value = (digits.data[d] as u32) * base + carry;
+            digits.data[d] = (value % 10) as u8;
+            carry = value / 10;
+        }
+        while carry > 0 {
+            buf_push(&digits, (carry % 10) as u8);
+            carry = carry / 10;
+        }
+    }
+    if digits.len == 0 {
+        buf_push(&digits, 0);
+    }
+    let out = alloc(digits.len) as *u8;
+    for i: u64 in 0..digits.len {
+        out[i] = 48 + digits.data[digits.len - 1 - i];
+    }
+    return Span { data: out, len: digits.len };
+}
+
+fn lx_has_bad_separator(s: Span) -> bool {
+    if s.len == 0 {
+        return false;
+    }
+    if s.data[0] == 95 || s.data[s.len - 1] == 95 {
+        return true;
+    }
+    for i: u64 in 1..s.len {
+        if s.data[i] == 95 && s.data[i - 1] == 95 {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn lx_add_int(l: *Lexer, digits: Span, base: u32, line: u64, col: u64) {
+    lx_add(l, Tok.INT, lx_to_decimal(digits, base), 0, line, col);
+}
+
+fn lx_skip_exponent(l: *Lexer, line: u64, col: u64) -> bool {
+    lx_advance(l);
+    let sign = lx_peek(l, 0);
+    if sign == '+' || sign == '-' {
+        lx_advance(l);
+    }
+    if !lx_is_digit(lx_peek(l, 0)) {
+        return lx_fail(l, "invalid floating-point exponent", line, col);
+    }
+    while lx_is_digit(lx_peek(l, 0)) {
+        lx_advance(l);
+    }
+    return true;
+}
+
+fn lx_finish_float(l: *Lexer, start: u64, line: u64, col: u64) -> bool {
+    let after = lx_peek(l, 0);
+    if lx_is_alnum(after) || after == '_' {
+        return lx_fail(l, "invalid floating-point literal", line, col);
+    }
+    let text = lx_span_from(l, start);
+    let clean = alloc(text.len + 1) as *u8;
+    let n: u64 = 0;
+    for i: u64 in 0..text.len {
+        if text.data[i] != 95 {
+            clean[n] = text.data[i];
+            n += 1;
+        }
+    }
+    clean[n] = 0;
+    let value = strtod(clean as *const c_char, 0 as **c_char);
+    let bits = *(&value as *u64);
+    if ((bits >> 52) & 0x7FF) == 0x7FF {
+        return lx_fail(l, "floating-point literal is out of range", line, col);
+    }
+    lx_add(l, Tok.FLOAT, text, bits, line, col);
+    return true;
+}
+
+fn lx_tuple_index(l: *Lexer, line: u64, col: u64) -> bool {
+    let start = (*l).i;
+    while lx_is_digit(lx_peek(l, 0)) {
+        lx_advance(l);
+    }
+    let after = lx_peek(l, 0);
+    if lx_is_alpha(after) || after == '_' {
+        return lx_fail(l, "tuple index must be a decimal integer", line, col);
+    }
+    lx_add_int(l, lx_span_from(l, start), 10, line, col);
+    return true;
+}
+
+fn lx_hex_literal(l: *Lexer, line: u64, col: u64) -> bool {
+    lx_advance(l);
+    lx_advance(l);
+    let start = (*l).i;
+    while lx_is_hex(lx_peek(l, 0)) || lx_peek(l, 0) == '_' {
+        lx_advance(l);
+    }
+    let digits = lx_span_from(l, start);
+    if digits.len == 0 || lx_has_bad_separator(digits) {
+        return lx_fail(l, "invalid hex literal '0x'", line, col);
+    }
+    let after = lx_peek(l, 0);
+    if lx_is_alnum(after) || after == '_' {
+        return lx_fail(l, "invalid hex literal", line, col);
+    }
+    lx_add_int(l, digits, 16, line, col);
+    return true;
+}
+
+fn lx_binary_or_octal(l: *Lexer, line: u64, col: u64) -> bool {
+    let prefix = lx_peek(l, 1);
+    let binary = prefix == 'b' || prefix == 'B';
+    let top: u32 = '7';
+    if binary {
+        top = '1';
+    }
+    lx_advance(l);
+    lx_advance(l);
+    let start = (*l).i;
+    loop {
+        let c = lx_peek(l, 0);
+        if !((c >= '0' && c <= top) || c == '_') {
+            break;
+        }
+        lx_advance(l);
+    }
+    let digits = lx_span_from(l, start);
+    let after = lx_peek(l, 0);
+    if digits.len == 0 || lx_has_bad_separator(digits) || lx_is_alnum(after) || after == '_' {
+        if binary {
+            return lx_fail(l, "invalid binary literal", line, col);
+        }
+        return lx_fail(l, "invalid octal literal", line, col);
+    }
+    if binary {
+        lx_add_int(l, digits, 2, line, col);
+    } else {
+        lx_add_int(l, digits, 8, line, col);
+    }
+    return true;
+}
+
+fn lx_invalid_number(l: *Lexer, digits: Span, after: u32, line: u64, col: u64) -> bool {
+    let m = buf_new(64);
+    buf_push_z(&m, "invalid number literal near '");
+    buf_push_span(&m, digits);
+    buf_push_cp(&m, after);
+    buf_push(&m, 39);
+    return lx_fail_span(l, buf_span(&m), line, col);
+}
+
+fn lx_number(l: *Lexer, line: u64, col: u64) -> bool {
+    let count = (*l).tokens.len;
+    if count > 0 && (*l).tokens.data[count - 1].kind == Tok.DOT {
+        return lx_tuple_index(l, line, col);
+    }
+    if lx_peek(l, 0) == '0' {
+        let prefix = lx_peek(l, 1);
+        if prefix == 'x' || prefix == 'X' {
+            return lx_hex_literal(l, line, col);
+        }
+        if prefix == 'b' || prefix == 'B' || prefix == 'o' || prefix == 'O' {
+            return lx_binary_or_octal(l, line, col);
+        }
+    }
+    let start = (*l).i;
+    while lx_is_digit(lx_peek(l, 0)) || lx_peek(l, 0) == '_' {
+        lx_advance(l);
+    }
+    let digits = lx_span_from(l, start);
+    if lx_has_bad_separator(digits) {
+        return lx_fail(l, "invalid numeric separator", line, col);
+    }
+    if lx_peek(l, 0) == '.' && lx_is_digit(lx_peek(l, 1)) {
+        lx_advance(l);
+        while lx_is_digit(lx_peek(l, 0)) {
+            lx_advance(l);
+        }
+        let marker = lx_peek(l, 0);
+        if marker == 'e' || marker == 'E' {
+            if !lx_skip_exponent(l, line, col) {
+                return false;
+            }
+        }
+        return lx_finish_float(l, start, line, col);
+    }
+    let marker = lx_peek(l, 0);
+    if marker == 'e' || marker == 'E' {
+        if !lx_skip_exponent(l, line, col) {
+            return false;
+        }
+        return lx_finish_float(l, start, line, col);
+    }
+    if lx_is_alpha(marker) || marker == '_' {
+        return lx_invalid_number(l, digits, marker, line, col);
+    }
+    lx_add_int(l, digits, 10, line, col);
+    return true;
+}
+
+// ----- comments -----
+
+fn lx_block_comment(l: *Lexer) -> bool {
+    let line = (*l).line;
+    let col = (*l).col;
+    lx_advance(l);
+    lx_advance(l);
+    let depth: u64 = 1;
+    while depth > 0 {
+        if (*l).i >= (*l).n {
+            return lx_fail(l, "unterminated block comment", line, col);
+        }
+        let c = lx_peek(l, 0);
+        let next = lx_peek(l, 1);
+        if c == '/' && next == '*' {
+            lx_advance(l);
+            lx_advance(l);
+            depth += 1;
+        } else if c == '*' && next == '/' {
+            lx_advance(l);
+            lx_advance(l);
+            depth -= 1;
+        } else {
+            lx_advance(l);
+        }
+    }
+    return true;
+}
+
+// ----- character and string literals -----
+
+fn lx_simple_escape(c: u32) -> i64 {
+    if c == 'n' { return 10; }
+    if c == 'r' { return 13; }
+    if c == 't' { return 9; }
+    if c == '0' { return 0; }
+    if c == '\\' { return 92; }
+    if c == '\'' { return 39; }
+    if c == '"' { return 34; }
+    return -1;
+}
+
+fn lx_unknown_escape(l: *Lexer, escape: u32, line: u64, col: u64) -> bool {
+    let m = buf_new(32);
+    buf_push_z(&m, "unknown character escape \\");
+    buf_push_cp(&m, escape);
+    return lx_fail_span(l, buf_span(&m), line, col);
+}
+
+fn lx_char(l: *Lexer, line: u64, col: u64) -> bool {
+    lx_advance(l);
+    let first = lx_peek(l, 0);
+    if first == 0 || first == 10 || first == '\'' {
+        return lx_fail(l, "empty or unterminated character literal", line, col);
+    }
+    let value: u64 = 0;
+    if first == '\\' {
+        lx_advance(l);
+        let e = lx_peek(l, 0);
+        if e == 0 || e == 10 {
+            return lx_fail(l, "empty or unterminated character literal", line, col);
+        }
+        let escape = lx_advance(l);
+        if escape == 'x' {
+            if !lx_is_hex(lx_peek(l, 0)) || !lx_is_hex(lx_peek(l, 1)) {
+                return lx_fail(l, "invalid hexadecimal character escape", line, col);
+            }
+            let high = lx_digit_value(lx_advance(l) as u8);
+            let low = lx_digit_value(lx_advance(l) as u8);
+            value = (high * 16 + low) as u64;
+        } else {
+            let simple = lx_simple_escape(escape);
+            if simple < 0 {
+                return lx_unknown_escape(l, escape, line, col);
+            }
+            value = simple as u64;
+        }
+    } else {
+        value = lx_advance(l) as u64;
+    }
+    if lx_peek(l, 0) != '\'' {
+        return lx_fail(l, "character literal must contain exactly one byte", line, col);
+    }
+    lx_advance(l);
+    if value > 255 {
+        return lx_fail(l, "character literal is outside the u8 range", line, col);
+    }
+    lx_add(l, Tok.CHAR, lx_empty_span(), value, line, col);
+    return true;
+}
+
+fn lx_string(l: *Lexer, line: u64, col: u64) -> bool {
+    lx_advance(l);
+    let start = (*l).i;
+    loop {
+        let c = lx_peek(l, 0);
+        if c == 0 || c == 10 {
+            return lx_fail(l, "unterminated string literal", line, col);
+        }
+        if c == '\\' {
+            lx_advance(l);
+            if lx_peek(l, 0) == 0 {
+                return lx_fail(l, "unterminated string literal", line, col);
+            }
+            lx_advance(l);
+            continue;
+        }
+        if c == '"' {
+            break;
+        }
+        lx_advance(l);
+    }
+    let text = lx_span_from(l, start);
+    lx_advance(l);
+    lx_add(l, Tok.STRING, text, 0, line, col);
+    return true;
+}
+
+// ----- identifiers -----
+
+fn lx_span_equals(s: Span, text: *u8) -> bool {
+    for i: u64 in 0..s.len {
+        if text[i] == 0 || text[i] != s.data[i] {
+            return false;
+        }
+    }
+    return text[s.len] == 0;
+}
+
+fn lx_keyword_kind(s: Span) -> Tok {
+    for i: u64 in 0..KEYWORD_COUNT {
+        if lx_span_equals(s, KEYWORD_TEXT[i]) {
+            return KEYWORD_KIND[i];
+        }
+    }
+    return Tok.IDENT;
+}
+
+fn lx_ident(l: *Lexer, line: u64, col: u64) -> bool {
+    let start = (*l).i;
+    while lx_is_alnum(lx_peek(l, 0)) || lx_peek(l, 0) == '_' {
+        lx_advance(l);
+    }
+    let text = lx_span_from(l, start);
+    lx_add(l, lx_keyword_kind(text), text, 0, line, col);
+    return true;
+}
+
+// ----- symbols -----
+
+fn lx_three_char(a: u32, b: u32, c: u32) -> Tok {
+    if a == '<' && b == '<' && c == '=' { return Tok.SHL_ASSIGN; }
+    if a == '>' && b == '>' && c == '=' { return Tok.SHR_ASSIGN; }
+    if a == '.' && b == '.' && c == '=' { return Tok.DOTDOTEQ; }
+    return Tok.NOT_A_TOKEN;
+}
+
+fn lx_two_char(a: u32, b: u32) -> Tok {
+    if a == '-' && b == '>' { return Tok.ARROW; }
+    if a == '=' && b == '>' { return Tok.FAT_ARROW; }
+    if a == '.' && b == '.' { return Tok.DOTDOT; }
+    if a == '=' && b == '=' { return Tok.EQ; }
+    if a == '!' && b == '=' { return Tok.NE; }
+    if a == '<' && b == '=' { return Tok.LE; }
+    if a == '>' && b == '=' { return Tok.GE; }
+    if a == '&' && b == '&' { return Tok.AND; }
+    if a == '|' && b == '|' { return Tok.OR; }
+    if a == '<' && b == '<' { return Tok.SHL; }
+    if a == '>' && b == '>' { return Tok.SHR; }
+    if a == '+' && b == '=' { return Tok.PLUS_ASSIGN; }
+    if a == '-' && b == '=' { return Tok.MINUS_ASSIGN; }
+    if a == '*' && b == '=' { return Tok.STAR_ASSIGN; }
+    if a == '/' && b == '=' { return Tok.SLASH_ASSIGN; }
+    if a == '%' && b == '=' { return Tok.PERCENT_ASSIGN; }
+    if a == '&' && b == '=' { return Tok.AMP_ASSIGN; }
+    if a == '|' && b == '=' { return Tok.PIPE_ASSIGN; }
+    if a == '^' && b == '=' { return Tok.CARET_ASSIGN; }
+    return Tok.NOT_A_TOKEN;
+}
+
+fn lx_one_char(a: u32) -> Tok {
+    if a == '(' { return Tok.LPAREN; }
+    if a == ')' { return Tok.RPAREN; }
+    if a == '{' { return Tok.LBRACE; }
+    if a == '}' { return Tok.RBRACE; }
+    if a == ',' { return Tok.COMMA; }
+    if a == ';' { return Tok.SEMI; }
+    if a == ':' { return Tok.COLON; }
+    if a == '.' { return Tok.DOT; }
+    if a == '&' { return Tok.AMP; }
+    if a == '[' { return Tok.LBRACKET; }
+    if a == ']' { return Tok.RBRACKET; }
+    if a == '=' { return Tok.ASSIGN; }
+    if a == '+' { return Tok.PLUS; }
+    if a == '-' { return Tok.MINUS; }
+    if a == '*' { return Tok.STAR; }
+    if a == '/' { return Tok.SLASH; }
+    if a == '%' { return Tok.PERCENT; }
+    if a == '<' { return Tok.LT; }
+    if a == '>' { return Tok.GT; }
+    if a == '!' { return Tok.BANG; }
+    if a == '|' { return Tok.PIPE; }
+    if a == '^' { return Tok.CARET; }
+    if a == '~' { return Tok.TILDE; }
+    return Tok.NOT_A_TOKEN;
+}
+
+// Appends the text of Python's repr() of a one-character string. The quote
+// characters cannot reach here: the main loop routes them to the literal
+// scanners.
+fn lx_push_char_repr(b: *Buf, c: u32) {
+    buf_push(b, 39);
+    if c == '\\' {
+        buf_push_z(b, "\\\\");
+    } else if lx_is_printable(c) {
+        buf_push_cp(b, c);
+    } else if c < 0x100 {
+        buf_push_z(b, "\\x");
+        buf_push_hex2(b, c as u8);
+    } else if c < 0x10000 {
+        buf_push_z(b, "\\u");
+        buf_push_hex2(b, (c >> 8) as u8);
+        buf_push_hex2(b, (c & 0xFF) as u8);
+    } else {
+        buf_push_z(b, "\\U");
+        buf_push_hex2(b, 0);
+        buf_push_hex2(b, (c >> 16) as u8);
+        buf_push_hex2(b, ((c >> 8) & 0xFF) as u8);
+        buf_push_hex2(b, (c & 0xFF) as u8);
+    }
+    buf_push(b, 39);
+}
+
+fn lx_symbol(l: *Lexer, line: u64, col: u64) -> bool {
+    let start = (*l).i;
+    let c = lx_advance(l);
+    let next = lx_peek(l, 0);
+    let after = lx_peek(l, 1);
+    let three = lx_three_char(c, next, after);
+    if three != Tok.NOT_A_TOKEN {
+        lx_advance(l);
+        lx_advance(l);
+        lx_add(l, three, lx_span_from(l, start), 0, line, col);
+        return true;
+    }
+    let two = lx_two_char(c, next);
+    if two != Tok.NOT_A_TOKEN {
+        lx_advance(l);
+        lx_add(l, two, lx_span_from(l, start), 0, line, col);
+        return true;
+    }
+    let one = lx_one_char(c);
+    if one != Tok.NOT_A_TOKEN {
+        lx_add(l, one, lx_span_from(l, start), 0, line, col);
+        return true;
+    }
+    let m = buf_new(32);
+    buf_push_z(&m, "unexpected character ");
+    lx_push_char_repr(&m, c);
+    return lx_fail_span(l, buf_span(&m), line, col);
+}
+
+// ----- main loop -----
+
+fn lx_token(l: *Lexer, c: u32, line: u64, col: u64) -> bool {
+    if c == '"' {
+        return lx_string(l, line, col);
+    }
+    if c == '\'' {
+        return lx_char(l, line, col);
+    }
+    if lx_is_digit(c) {
+        return lx_number(l, line, col);
+    }
+    if lx_is_alpha(c) || c == '_' {
+        return lx_ident(l, line, col);
+    }
+    return lx_symbol(l, line, col);
+}
+
+// Fills (*l).tokens. On a lexical error returns false with the err_ fields set
+// and the tokens read so far left in place; on success appends EOF.
+fn lx_tokenize(l: *Lexer) -> bool {
+    while (*l).i < (*l).n {
+        let c = lx_peek(l, 0);
+        if c == 32 || c == 9 || c == 13 || c == 10 {
+            lx_advance(l);
+            continue;
+        }
+        if c == '/' && lx_peek(l, 1) == '/' {
+            while (*l).i < (*l).n && lx_peek(l, 0) != 10 {
+                lx_advance(l);
+            }
+            continue;
+        }
+        if c == '/' && lx_peek(l, 1) == '*' {
+            if !lx_block_comment(l) {
+                return false;
+            }
+            continue;
+        }
+        if !lx_token(l, c, (*l).line, (*l).col) {
+            return false;
+        }
+    }
+    lx_add(l, Tok.EOF, lx_empty_span(), 0, (*l).line, (*l).col);
+    return true;
+}
+
+// ----- dump (format defined in py_lex_dump.py) -----
+
+fn dump_escaped(out: *Buf, s: Span) {
+    for i: u64 in 0..s.len {
+        let b = s.data[i];
+        if b == 92 {
+            buf_push_z(out, "\\\\");
+        } else if b >= 0x20 && b <= 0x7E {
+            buf_push(out, b);
+        } else {
+            buf_push_z(out, "\\x");
+            buf_push_hex2(out, b);
+        }
+    }
+}
+
+fn dump_hex64(out: *Buf, bits: u64) {
+    let shift: u64 = 64;
+    while shift > 0 {
+        shift -= 8;
+        buf_push_hex2(out, ((bits >> shift) & 0xFF) as u8);
+    }
+}
+
+fn dump_token(out: *Buf, t: Token) {
+    buf_push_u64(out, t.line);
+    buf_push(out, ':');
+    buf_push_u64(out, t.col);
+    buf_push(out, ' ');
+    buf_push_z(out, TOK_NAMES[t.kind as u64]);
+    if t.kind == Tok.EOF {
+        buf_push(out, 10);
+        return;
+    }
+    buf_push(out, ' ');
+    if t.kind == Tok.CHAR {
+        buf_push_u64(out, t.num);
+    } else if t.kind == Tok.FLOAT {
+        dump_hex64(out, t.num);
+    } else if t.kind == Tok.INT {
+        buf_push_span(out, t.text);
+    } else {
+        dump_escaped(out, t.text);
+    }
+    buf_push(out, 10);
+}
+
+fn dump_tokens(out: *Buf, l: *Lexer) {
+    for i: u64 in 0..(*l).tokens.len {
+        dump_token(out, (*l).tokens.data[i]);
+    }
+    if (*l).failed {
+        buf_push_z(out, "ERROR ");
+        buf_push_u64(out, (*l).err_line);
+        buf_push(out, ':');
+        buf_push_u64(out, (*l).err_col);
+        buf_push(out, ' ');
+        dump_escaped(out, (*l).err_message);
+        buf_push(out, 10);
+    }
+}
