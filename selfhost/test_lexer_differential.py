@@ -7,6 +7,7 @@ Run from the repository root:
 Every expected value here comes from running the Python lexer; nothing is
 hardcoded. See py_lex_dump.py for the dump format.
 """
+import ast
 import collections
 import math
 import os
@@ -354,6 +355,13 @@ EDGE_CASES = {
     "utf8_bad_second": b"\xe2\x28\xa1",
     "utf8_in_comment": b"// \xff\nfn",
     "utf8_in_string": b'"\xff"',
+    "utf8_located_after_lf": b"let x;\n  \xff",
+    "utf8_located_after_crlf": b"let x;\r\n  \xff",
+    "utf8_located_after_lone_cr": b"let x;\r  \xff",
+    "utf8_located_after_cr_before_bad_byte": b"\r\xff",
+    "utf8_located_after_multibyte": "é€\U0001f600".encode() + b"\xff",
+    "utf8_located_truncated_on_line_3": b"a\nb\nc\xe2\x82",
+    "utf8_located_bad_second_on_line_2": b"\n\xe2\x28\xa1",
     "utf8_valid_edges": (b"\xc2\x80 \xdf\xbf \xe0\xa0\x80 \xed\x9f\xbf "
                          b"\xee\x80\x80 \xf0\x90\x80\x80 \xf4\x8f\xbf\xbf"),
     # --- realistic fragments
@@ -690,6 +698,187 @@ def test_subset_checker_rejects(tmp_path, name):
     path = tmp_path / "bad.mx"
     path.write_text(SUBSET_VIOLATIONS[name], encoding="utf-8")
     assert check_subset.check_file(path, collections.Counter()), name
+
+
+# Each entry is (source, text one reported problem must contain), so a sample
+# cannot pass by tripping some unrelated rule.
+SUBSET_SCOPE_VIOLATIONS = {
+    # A shadow must end with its block and must not start before its `let`.
+    "fn_after_if_block": ("fn g() { } fn main() -> int { if true { let g = 1; } "
+                          "let h = g; return 0; }", "function value g"),
+    "fn_in_else_of_shadowing_then": ("fn g() { } fn f() { if true { let g = 1; } "
+                                     "else { let h = g; } }", "function value g"),
+    "fn_after_nested_block": ("fn g() { } fn f() { { let g = 1; } let h = g; }",
+                              "function value g"),
+    "fn_after_while_body": ("fn g() { } fn f() { while true { let g = 1; } "
+                            "let h = g; }", "function value g"),
+    "fn_after_loop_body": ("fn g() { } fn f() { loop { let g = 1; } let h = g; }",
+                           "function value g"),
+    "fn_after_for_loop_variable": ("fn g() { } fn f() { for g: u64 in 0..3 { } "
+                                   "let h = g; }", "function value g"),
+    "fn_in_for_bound_of_same_name": ("fn g() { } fn f() { for g: u64 in 0..(g as u64) "
+                                     "{ } }", "function value g"),
+    "fn_after_match_arm": ("enum E { A } fn g() { } fn f(e: E) { match e { "
+                           "E.A => { let g = 1; } _ => { } } let h = g; }",
+                           "function value g"),
+    "fn_in_other_match_arm": ("enum E { A, B } fn g() { } fn f(e: E) { match e { "
+                              "E.A => { let g = 1; } E.B => { let h = g; } "
+                              "_ => { } } }", "function value g"),
+    "fn_used_before_let": ("fn g() { } fn f() { let h = g; let g = 1; }",
+                           "function value g"),
+    "fn_in_own_initializer": ("fn g() { } fn f() { let g = g; }", "function value g"),
+    # A global array may only be indexed; any other use makes an array value.
+    "array_let": ("let G: [u8; 2] = [1, 2]; fn main() -> int { let a = G; return 0; }",
+                  "array value G"),
+    "array_address": ("let G: [u8; 2] = [1, 2]; fn f() { let p = &G; }", "array value G"),
+    "array_argument": ("let G: [u8; 2] = [1, 2]; fn k(x: u64) { } fn f() { k(G); }",
+                       "array value G"),
+    "array_return": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { return G; }",
+                     "array value G"),
+    "array_cast": ("let G: [u8; 2] = [1, 2]; fn f() { let p = G as *u8; }",
+                   "array value G"),
+    "array_field": ("let G: [u8; 2] = [1, 2]; fn f() { let n = G.len; }", "array value G"),
+    "array_assignment_source": ("let G: [u8; 2] = [1, 2]; fn f() { let a = 0; a = G; }",
+                                "array value G"),
+    "array_as_index": ("let G: [u8; 2] = [1, 2]; fn f(p: *u8) { let a = p[G]; }",
+                       "array value G"),
+    "array_global_alias": ("let G: [u8; 2] = [1, 2]; let H = G;", "array value G"),
+    "array_inferred_global": ("let G = [1, 2]; fn f() { let a = G; }", "array value G"),
+    "array_after_shadow_block": ("let G: [u8; 2] = [1, 2]; fn f() { if true { let G = 1; } "
+                                 "let a = G; }", "array value G"),
+    "array_before_shadow": ("let G: [u8; 2] = [1, 2]; fn f() { let a = G; let G = 1; }",
+                            "array value G"),
+    "array_pointer_global_type": ("let P: *[u8; 2] = 0 as *u8;", "outside the subset"),
+    "array_nested_inferred_global": ("let G = [[1, 2], [3, 4]];", "nested array"),
+}
+
+SUBSET_SCOPE_ACCEPTED = {
+    "local_shadow_in_scope": "fn g() { } fn f() { let g = 1; let h = g; g = h; }",
+    "shadow_inside_inner_block": ("fn g() { } fn f() { if true { let g = 1; let h = g; } "
+                                  "g(); }"),
+    "shadow_visible_in_nested_block": ("fn g() { } fn f() { let g = 1; "
+                                       "if true { let h = g; } while g > 2 { g -= 1; } }"),
+    "parameter_shadow": "fn g() { } fn f(g: u64) -> u64 { return g; }",
+    "for_variable_shadow": "fn g() { } fn f() { for g: u64 in 0..3 { let h = g; } g(); }",
+    "match_arm_shadow": ("enum E { A } fn g() { } fn f(e: E) { match e { "
+                         "E.A => { let g = 1; let h = g; } _ => { } } g(); }"),
+    "else_shadow": "fn g() { } fn f() { if true { } else { let g = 1; let h = g; } }",
+    "global_shadows_function": "fn g() { } let g: u64 = 1; fn f() -> u64 { return g; }",
+    "direct_call_after_shadow_ended": ("fn g() -> u64 { return 1; } "
+                                       "fn f() -> u64 { { let g = 1; } return g(); }"),
+    "array_index": "let G: [u8; 2] = [1, 2]; fn f(i: u64) -> u8 { G[i] = 3; return G[i]; }",
+    "array_element_address": "let G: [u8; 2] = [1, 2]; fn f() -> *u8 { return &G[0]; }",
+    "array_name_shadowed_by_local": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { let G: u64 = 1; "
+                                     "let a = G; return a; }"),
+    "array_name_shadowed_by_parameter": ("let G: [u8; 2] = [1, 2]; fn f(G: u64) -> u64 { "
+                                         "return G; }"),
+    "array_index_after_shadow_ended": ("let G: [u8; 2] = [1, 2]; fn f() -> u8 { "
+                                       "if true { let G: u64 = 1; } return G[0]; }"),
+}
+
+
+def _gate():
+    sys.path.insert(0, str(HERE / "tools"))
+    import check_subset
+    return check_subset
+
+
+@pytest.mark.parametrize("name", sorted(SUBSET_SCOPE_VIOLATIONS))
+def test_subset_checker_rejects_scope_holes(tmp_path, name):
+    source, reason = SUBSET_SCOPE_VIOLATIONS[name]
+    path = tmp_path / "bad.mx"
+    path.write_text(source, encoding="utf-8")
+    problems = _gate().check_file(path, collections.Counter())
+    assert any(reason in problem for problem in problems), (name, problems)
+
+
+@pytest.mark.parametrize("name", sorted(SUBSET_SCOPE_ACCEPTED))
+def test_subset_checker_has_no_scope_false_rejects(tmp_path, name):
+    path = tmp_path / "good.mx"
+    path.write_text(SUBSET_SCOPE_ACCEPTED[name] + " fn main() -> int { return 0; }",
+                    encoding="utf-8")
+    assert _gate().check_file(path, collections.Counter()) == []
+    # The sample must be a real program, or accepting it would prove nothing.
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import mortc; "
+         "mortc.compile_files_to_c([sys.argv[2]])", str(ROOT), str(path)],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_subset_checker_sees_array_declared_in_sibling_file(tmp_path):
+    (tmp_path / "tables.mx").write_text("let G: [u8; 2] = [1, 2];", encoding="utf-8")
+    path = tmp_path / "user.mx"
+    path.write_text("import tables; fn f() { let a = G; }", encoding="utf-8")
+    problems = _gate().check_file(path, collections.Counter())
+    assert any("array value G" in problem for problem in problems), problems
+
+
+FRONTEND_BRANCH = "fix/frontend-crashes"
+
+
+def real_decode_source():
+    """The Python compiler's own decoder, from this tree or its branch.
+
+    mort/lexer.py gains decode_source when fix/frontend-crashes merges. Until
+    then its text comes from that branch, never from a copy in this directory,
+    and a missing branch is an error: passing without it would prove nothing.
+    """
+    from mort import lexer as python_lexer
+    from mort.errors import MortError
+    if hasattr(python_lexer, "decode_source"):
+        return python_lexer.decode_source
+    text = subprocess.run(
+        ["git", "show", f"{FRONTEND_BRANCH}:mort/lexer.py"],
+        capture_output=True, encoding="utf-8", cwd=ROOT, check=True).stdout
+    function = next(
+        node for node in ast.parse(text).body
+        if isinstance(node, ast.FunctionDef) and node.name == "decode_source")
+    namespace = {"MortError": MortError}
+    exec(compile(ast.Module([function], []), "decode_source", "exec"), namespace)
+    return namespace["decode_source"]
+
+
+INVALID_UTF8_CASES = sorted(
+    name for name in EDGE_CASES
+    if name.startswith("utf8_") and name != "utf8_valid_edges")
+
+
+@pytest.mark.parametrize("name", INVALID_UTF8_CASES)
+def test_invalid_utf8_diagnostic_is_the_python_compilers(lex_exe, tmp_path, name):
+    from mort.errors import MortError
+    data = EDGE_CASES[name]
+    with pytest.raises(MortError) as caught:
+        real_decode_source()(data)
+    error = caught.value
+    assert error.line >= 1 and error.col >= 1
+    source = tmp_path / "input.mx"
+    source.write_bytes(data)
+    expected = f"ERROR {error.line}:{error.col} {error.msg}\n"
+    assert py_lex_dump.dump_file(source) == expected
+    code, stdout, actual = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
+    assert actual == expected
+    assert code == 1
+    diagnostic = f"{source}:{error.line}:{error.col}: error: {error.msg}"
+    assert diagnostic.encode("utf-8") in stdout, stdout
+
+
+def test_reference_decoder_matches_the_python_compilers():
+    from mort.errors import MortError
+    real = real_decode_source()
+
+    def outcome(decoder, data):
+        try:
+            return decoder(data)
+        except MortError as error:
+            return (error.msg, error.line, error.col)
+
+    rng = random.Random(FUZZ_SEED + 2)
+    alphabet = b"\r\n ab\x80\xbf\xc0\xc3\xe0\xe2\xed\xa0\xf0\xf4\xf5\xff"
+    for _ in range(5000):
+        data = bytes(rng.choice(alphabet) for _ in range(rng.randrange(12)))
+        assert outcome(py_lex_dump.decode_source, data) == outcome(real, data), data
 
 
 def test_diagnostic_has_file_line_col(lex_exe, tmp_path):
