@@ -10886,3 +10886,21 @@ def test_spec_states_the_generic_limits():
     assert "16384 generic function instantiations" in spec
     assert "nested more than 256 type constructors deep" in spec
     assert "4096 characters" in spec
+
+
+@pytest.mark.parametrize("source,message", [
+    ("fn main() -> int {\n  let x = 0x" + "0" * 5000 + "1;\n  return 0;\n}",
+     "the limit is 4300"),
+    ("fn main() -> int {\n  let x: i64 = ("
+     + " * ".join(["0x" + "F" * 4000] * 20) + ") >> 320000;\n  return 0;\n}",
+     "more than 262144 bits"),
+], ids=["leading-zeros", "wide-intermediate"])
+def test_documented_constant_limits_are_located(source, message):
+    error = assert_located(source, message)
+    assert error.line == 2
+
+
+def test_spec_states_the_constant_limits():
+    spec = _spec_text()
+    assert "4300 digits" in spec and "including leading zeros" in spec
+    assert "262144 bits" in spec

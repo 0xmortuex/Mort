@@ -85,7 +85,7 @@ Integer literals have arbitrary precision during checking:
 Separators may occur only between digits. A prefixed literal must contain at
 least one digit. Integer literals are initially untyped and adopt an integer
 type from context. A literal value that does not fit that type is a compile-time
-error.
+error. Section 11 limits literal and constant size in the reference implementation.
 
 Floating literals use decimal notation with an optional fraction and exponent,
 for example `1.5`, `2e3`, or `6.02e+23`. They initially have type `f64`, may
@@ -578,6 +578,11 @@ exceeds any of these limits:
 - A generic function's type argument must not be nested more than 256 type
   constructors deep, and must not be longer than 4096 characters when spelled
   in canonical form.
+- An integer literal may have at most 4300 digits, counted after any base
+  prefix, excluding `_` separators and including leading zeros.
+- A binary operator folded during checking must not produce a constant whose
+  magnitude needs more than 262144 bits, even if a later operation would reduce
+  it.
 
 Portable Mort source must not depend on:
 
