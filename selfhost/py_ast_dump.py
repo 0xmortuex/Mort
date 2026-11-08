@@ -71,6 +71,11 @@ def max_nesting():
 
 BASE_NODE_FIELDS = {"type": None, "is_lit": False, "const_val": None}
 
+# Parser-set position fields the Mort AST does not carry yet. Columns are not
+# dumped (see the module docstring); T5 needs Call.name_pos for the volatile
+# builtins' diagnostics and must add it to the Mort parser and to this dump.
+NOT_DUMPED = {"Call": {"name_pos"}}
+
 # Field -> initial value, per class. "=name" means equal to the name field.
 CHECKER_FIELDS = {
     "Program": {"import_aliases": {}},
@@ -166,6 +171,8 @@ def describe(item):
             skipped.update(BASE_NODE_FIELDS)
         fields = []
         for field, value in vars(item).items():
+            if field in NOT_DUMPED.get(name, ()):
+                continue
             if field in skipped:
                 check_pristine(item, field, skipped[field])
             else:

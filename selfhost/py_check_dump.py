@@ -115,6 +115,7 @@ T4_MESSAGES = tuple(re.compile(pattern) for pattern in (
     r"variant .* requires a payload",
     r"variant .* has no payload",
     r"variant .* expects \d+ payloads",
+    r"builtin .* is not generic and cannot take type arguments",
     r"sizeof expects exactly one type argument and no values",
     r"sizeof has invalid type argument .*",
     r"unknown module or import alias .*",

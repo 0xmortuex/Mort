@@ -152,6 +152,7 @@ struct Ck {
     int_types: Map,
     float_types: Map,
     builtin_names: Map,
+    generic_builtins: Map,
     c_keywords: Map,
     resource_struct_names: Map,
     resource_struct_order: U64Vec,
@@ -1708,6 +1709,11 @@ fn ck_call(c: *Ck, n: *Node) {
             }
         }
     }
+    if ck_names_len((*n).names) != 0 && map_has(&(*c).builtin_names, name)
+            && !map_has(&(*c).generic_builtins, name) {
+        ck_fail_named(c, n, "builtin ", name,
+            " is not generic and cannot take type arguments");
+    }
     if name == (*c).t_sizeof {
         ck_sizeof(c, n);
         return;
@@ -2419,7 +2425,7 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         globals: tb_new(), aggregate_decls: tb_new(),
         resource_templates: tb_new(),
         int_types: map_new(), float_types: map_new(),
-        builtin_names: map_new(), c_keywords: map_new(),
+        builtin_names: map_new(), generic_builtins: map_new(), c_keywords: map_new(),
         resource_struct_names: map_new(), resource_struct_order: u64vec_new(),
         destructor_symbols: map_new(), destructor_order: u64vec_new(),
         extern_names: map_new(), extern_order: u64vec_new(),
@@ -2445,7 +2451,8 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         "i8 i16 i32 i64 u8 u16 u32 u64 c_char c_uchar c_short c_ushort c_int c_uint c_long c_ulong c_size");
     ck_make_set(strings, &c.float_types, "f32 f64");
     ck_make_set(strings, &c.builtin_names,
-        "print println eprintln assert alloc free len slice sizeof unix_time cpu_millis file_open file_close file_read file_write file_flush arg_count arg_get thread_spawn thread_join thread_sleep_millis mutex_create mutex_destroy mutex_lock mutex_unlock atomic_i64_create atomic_i64_destroy atomic_i64_load atomic_i64_store atomic_i64_exchange atomic_i64_fetch_add atomic_i64_fetch_sub atomic_i64_compare_exchange net_tcp_connect net_tcp_listen net_tcp_accept net_udp_connect net_udp_bind net_udp_send_to net_udp_recv_from net_socket_close net_socket_send net_socket_recv net_socket_shutdown net_socket_local_port net_socket_set_nonblocking net_socket_wait net_last_error_would_block secure_random_fill tls_client_connect tls_client_connect_with_ca tls_send tls_recv tls_protocol_version tls_close outb inb outw inw outl inl");
+        "print println eprintln assert alloc free len slice sizeof volatile_read volatile_write unix_time cpu_millis file_open file_close file_read file_write file_flush arg_count arg_get thread_spawn thread_join thread_sleep_millis mutex_create mutex_destroy mutex_lock mutex_unlock atomic_i64_create atomic_i64_destroy atomic_i64_load atomic_i64_store atomic_i64_exchange atomic_i64_fetch_add atomic_i64_fetch_sub atomic_i64_compare_exchange net_tcp_connect net_tcp_listen net_tcp_accept net_udp_connect net_udp_bind net_udp_send_to net_udp_recv_from net_socket_close net_socket_send net_socket_recv net_socket_shutdown net_socket_local_port net_socket_set_nonblocking net_socket_wait net_last_error_would_block secure_random_fill tls_client_connect tls_client_connect_with_ca tls_send tls_recv tls_protocol_version tls_close outb inb outw inw outl inl");
+    ck_make_set(strings, &c.generic_builtins, "sizeof slice volatile_read volatile_write");
     ck_make_set(strings, &c.c_keywords,
         "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local");
     return c;

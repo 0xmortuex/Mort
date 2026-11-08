@@ -360,8 +360,11 @@ where the Python checker's behaviour stops being mechanical.
   quadratic on deep chains, so differential cases stop at 4000 operands, and one
   300,000-operand case runs the Mort checker alone.
 - **Bignum.** Not needed at T4: there is no constant folding here, and array
-  sizes are compared as the parser's canonical decimal text. T5's folding still
-  needs an answer: Python's values are unbounded and the plan does not settle it.
+  sizes are compared as the parser's canonical decimal text. T5's folding depends
+  on the bignum task (T2b) being tracked on `feat/selfhost-plan`.
+- **`Call.name_pos`** (from `main`, via `feat/selfhost-t2`) is excluded from the AST
+  dump, because the Mort parser has no columns yet. T5 needs it for the volatile
+  builtins' located errors, which are T5-class messages here.
 - **`AST.Node`** gained `file`, `mod_name`, `symbol` and `import_aliases`, set by
   the merge step and not dumped by the parser.
 - **Known limits.** Unused-binding warnings are not produced (they depend on
