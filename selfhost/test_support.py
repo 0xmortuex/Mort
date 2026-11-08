@@ -196,6 +196,121 @@ def test_map_get_of_a_missing_key_leaves_nothing_behind(driver, tmp_path):
     assert run_ops(driver, tmp_path, ops) == ["none", "0", "0", "9"]
 
 
+# ----- interner -----
+
+def fnv1a(data):
+    value = 0xcbf29ce484222325
+    for byte in data:
+        value = ((value ^ byte) * 0x100000001b3) & U64_MAX
+    return value
+
+
+class InternerModel:
+    """First-seen handles assigned by Python's dict on byte strings."""
+
+    def __init__(self):
+        self.handles = {}
+        self.texts = []
+
+    def intern(self, text):
+        if text not in self.handles:
+            self.handles[text] = len(self.texts)
+            self.texts.append(text)
+        return self.handles[text]
+
+
+def intern_words(rng, count):
+    words = [b"", b"a", b"ab", b"abc", b"a\x00", b"a\x00b", b"\x00", b"\xff\xfe",
+             "\u20ac\U0001f600".encode()]
+    words += [b"x" * length for length in (1, 2, 200, 4096)]
+    words += [f"name_{i}".encode() for i in range(count)]
+    words += [bytes(rng.randrange(256) for _ in range(rng.randrange(1, 40)))
+              for _ in range(count)]
+    return words
+
+
+def intern_script(rng, count, intern_op="intern"):
+    """Random interner operations and the results the model gives."""
+    words = intern_words(rng, count)
+    ops, expected = [], []
+    model = InternerModel()
+    for _ in range(count * 6):
+        word = rng.choice(words)
+        if intern_op == "intern_z" and b"\x00" in word:
+            continue
+        roll = rng.random()
+        if roll < 0.7 or not model.texts:
+            ops.append(f"{intern_op} {word.hex()}")
+            expected.append(str(model.intern(word)))
+        elif roll < 0.9:
+            handle = rng.randrange(len(model.texts))
+            ops.append(f"intern_text {handle}")
+            expected += [hex_text(model.texts[handle]), "0"]
+        else:
+            ops.append("intern_count")
+            expected.append(str(len(model.texts)))
+    for handle, text in enumerate(model.texts):
+        ops.append(f"intern_text {handle}")
+        expected += [hex_text(text), "0"]
+    ops.append("intern_count")
+    expected.append(str(len(model.texts)))
+    return ops, expected
+
+
+@pytest.mark.parametrize("intern_op", ["intern", "intern_z"])
+@pytest.mark.parametrize("count", [1, 40, 5000])
+def test_interner_matches_model(driver, tmp_path, count, intern_op):
+    rng = random.Random(SEED + count)
+    ops, expected = intern_script(rng, count, intern_op)
+    assert run_ops(driver, tmp_path, ["intern_new", *ops]) == expected
+
+
+def test_equal_text_gives_equal_handles_whatever_came_between(driver, tmp_path):
+    rng = random.Random(SEED)
+    words = intern_words(rng, 400)
+    ops, expected = ["intern_new"], []
+    model = InternerModel()
+    for word in words + words[::-1] + words:
+        ops.append(f"intern {word.hex()}")
+        expected.append(str(model.intern(word)))
+    assert run_ops(driver, tmp_path, ops) == expected
+
+
+def test_handles_depend_only_on_first_appearance_order(driver, tmp_path):
+    words = [f"word_{i}".encode() for i in range(300)]
+    first = ["intern_new"] + [f"intern {w.hex()}" for w in words]
+    expected_first = [str(i) for i in range(len(words))]
+    assert run_ops(driver, tmp_path, first) == expected_first
+    reversed_order = words[::-1]
+    second = ["intern_new"] + [f"intern {w.hex()}" for w in reversed_order]
+    assert run_ops(driver, tmp_path, second) == expected_first
+
+
+def test_full_hash_collisions_still_compare_the_text(driver, tmp_path):
+    words = [b"", b"a", b"b", b"a\x00", b"ab"] + [f"n{i}".encode() for i in range(600)]
+    ops, expected = ["intern_new"], []
+    model = InternerModel()
+    for word in words + words:
+        ops.append(f"intern_hashed 12345 {word.hex()}")
+        expected.append(str(model.intern(word)))
+    assert run_ops(driver, tmp_path, ops) == expected
+
+
+def test_a_returned_span_survives_later_growth(driver, tmp_path):
+    words = [f"later_{i}".encode() for i in range(5000)]
+    ops = ["intern_new", f"intern {b'early'.hex()}", "intern_keep 0",
+           *[f"intern {w.hex()}" for w in words], "intern_show_kept"]
+    lines = run_ops(driver, tmp_path, ops)
+    assert lines[-1] == hex_text(b"early")
+    assert lines[:-1] == [str(i) for i in range(1 + len(words))]
+
+
+@pytest.mark.parametrize("data", [b"", b"a", b"abc\x00def", bytes(range(256))],
+                         ids=["empty", "single", "nul", "all_bytes"])
+def test_hash_is_the_fixed_fnv1a_function(driver, tmp_path, data):
+    assert run_ops(driver, tmp_path, [f"intern_hash {data.hex()}"]) == [str(fnv1a(data))]
+
+
 def range_message(index, length, what):
     return f"mort: internal error: index {index} out of range for {what} of length {length}"
 
@@ -208,6 +323,7 @@ FATAL_CASES = {
     "ptr_get_past_end": range_message(1, 1, "ptrvec"),
     "ptr_set_past_end": range_message(1, 1, "ptrvec"),
     "ptr_pop_empty": "mort: internal error: pop from an empty ptrvec",
+    "intern_text_bad": range_message(1, 1, "interner"),
     "alloc_impossible": "mort: out of memory",
     "alloc_array_overflow": "mort: internal error: allocation size overflow",
 }

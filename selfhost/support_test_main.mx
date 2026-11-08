@@ -16,6 +16,8 @@ struct State {
     numbers: U64Vec,
     pointers: PtrVec,
     table: Map,
+    names: Interner,
+    kept: Span,
 }
 
 struct Cursor {
@@ -201,6 +203,34 @@ fn run_map_op(st: *State, name: Span, c: *Cursor) -> bool {
     return true;
 }
 
+fn run_intern_op(st: *State, name: Span, c: *Cursor) -> bool {
+    if span_eq_z(name, "intern_new") {
+        (*st).names = intern_new();
+    } else if span_eq_z(name, "intern") {
+        emit_u64(st, intern(&(*st).names, parse_hex(c)));
+    } else if span_eq_z(name, "intern_z") {
+        emit_u64(st, intern_z(&(*st).names, parse_hex(c).data));
+    } else if span_eq_z(name, "intern_hashed") {
+        let hash = parse_number(c);
+        emit_u64(st, intern_hashed(&(*st).names, parse_hex(c), hash));
+    } else if span_eq_z(name, "intern_hash") {
+        emit_u64(st, intern_hash(parse_hex(c)));
+    } else if span_eq_z(name, "intern_text") {
+        let text = intern_text(&(*st).names, parse_number(c));
+        emit_hex(st, text);
+        emit_u64(st, text.data[text.len] as u64);
+    } else if span_eq_z(name, "intern_keep") {
+        (*st).kept = intern_text(&(*st).names, parse_number(c));
+    } else if span_eq_z(name, "intern_show_kept") {
+        emit_hex(st, (*st).kept);
+    } else if span_eq_z(name, "intern_count") {
+        emit_u64(st, intern_count(&(*st).names));
+    } else {
+        return false;
+    }
+    return true;
+}
+
 fn new_cell(value: u64) -> *void {
     let cell = sup_alloc(sizeof<u64>()) as *u64;
     *cell = value;
@@ -214,6 +244,8 @@ fn new_state() -> State {
         numbers: u64vec_new(),
         pointers: ptrvec_new(),
         table: map_new(),
+        names: intern_new(),
+        kept: Span { data: 0 as *u8, len: 0 },
     };
 }
 
@@ -225,7 +257,8 @@ fn run_ops(ops_path: *u8, out_path: *u8) -> int {
         let name = next_word(&cursor);
         if !run_buffer_op(&state, name, &cursor)
             && !run_vector_op(&state, name, &cursor)
-            && !run_map_op(&state, name, &cursor) {
+            && !run_map_op(&state, name, &cursor)
+            && !run_intern_op(&state, name, &cursor) {
             sup_die("support_test_main: unknown operation");
         }
         end_line(&cursor);
@@ -262,6 +295,10 @@ fn run_fatal(name: Span) -> int {
     } else if span_eq_z(name, "ptr_pop_empty") {
         ptrvec_pop(&pointers);
         ptrvec_pop(&pointers);
+    } else if span_eq_z(name, "intern_text_bad") {
+        let names = intern_new();
+        intern_z(&names, "only");
+        intern_text(&names, 1);
     } else if span_eq_z(name, "alloc_impossible") {
         sup_alloc(0xFFFFFFFFFFFFFFF0);
     } else if span_eq_z(name, "alloc_array_overflow") {

@@ -340,3 +340,140 @@ fn map_has(m: *Map, key: u64) -> bool {
 fn map_len(m: *Map) -> u64 {
     return (*m).map_count;
 }
+
+// ----- string interner -----
+//
+// Handles are dense integers assigned in order of first appearance. Equal text
+// gives an equal handle; the hash only narrows the search. The table is private
+// to this section, and every interned string is its own allocation, so a span
+// handed out stays valid. Text is zero-terminated past its length.
+
+struct Interner {
+    in_texts: *Span,
+    in_hashes: *u64,
+    in_count: u64,
+    in_capacity: u64,
+    in_slots: *u64,
+    in_slot_capacity: u64,
+}
+
+fn intern_new() -> Interner {
+    let capacity: u64 = 64;
+    let slots = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..capacity {
+        slots[i] = 0;
+    }
+    return Interner {
+        in_texts: sup_alloc_array(capacity, sizeof<Span>()) as *Span,
+        in_hashes: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        in_count: 0,
+        in_capacity: capacity,
+        in_slots: slots,
+        in_slot_capacity: capacity,
+    };
+}
+
+// FNV-1a, 64-bit. A fixed function of the bytes, with no seed.
+fn intern_hash(s: Span) -> u64 {
+    let hash: u64 = 0xCBF29CE484222325;
+    for i: u64 in 0..s.len {
+        hash = (hash ^ (s.data[i] as u64)) * 0x100000001B3;
+    }
+    return hash;
+}
+
+fn intern_slot_for_new_entry(it: *Interner, hash: u64) -> u64 {
+    let mask = (*it).in_slot_capacity - 1;
+    let slot = hash & mask;
+    while (*it).in_slots[slot] != 0 {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+fn intern_grow_slots(it: *Interner) {
+    let capacity = sup_grown_capacity((*it).in_slot_capacity);
+    let slots = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..capacity {
+        slots[i] = 0;
+    }
+    free((*it).in_slots as *void);
+    (*it).in_slots = slots;
+    (*it).in_slot_capacity = capacity;
+    for handle: u64 in 0..(*it).in_count {
+        let slot = intern_slot_for_new_entry(it, (*it).in_hashes[handle]);
+        (*it).in_slots[slot] = handle + 1;
+    }
+}
+
+fn intern_grow_entries(it: *Interner) {
+    let capacity = sup_grown_capacity((*it).in_capacity);
+    let texts = sup_alloc_array(capacity, sizeof<Span>()) as *Span;
+    let hashes = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..(*it).in_count {
+        texts[i] = (*it).in_texts[i];
+        hashes[i] = (*it).in_hashes[i];
+    }
+    free((*it).in_texts as *void);
+    free((*it).in_hashes as *void);
+    (*it).in_texts = texts;
+    (*it).in_hashes = hashes;
+    (*it).in_capacity = capacity;
+}
+
+fn intern_copy(s: Span) -> Span {
+    if s.len == U64_LIMIT {
+        sup_die("mort: internal error: allocation size overflow");
+    }
+    let copy = sup_alloc(s.len + 1) as *u8;
+    for i: u64 in 0..s.len {
+        copy[i] = s.data[i];
+    }
+    copy[s.len] = 0;
+    return Span { data: copy, len: s.len };
+}
+
+// Interns under a caller-supplied hash, so tests can force full collisions.
+// Every call on one interner must use the same hash function.
+fn intern_hashed(it: *Interner, s: Span, hash: u64) -> u64 {
+    if ((*it).in_count + 1) * 2 > (*it).in_slot_capacity {
+        intern_grow_slots(it);
+    }
+    let mask = (*it).in_slot_capacity - 1;
+    let slot = hash & mask;
+    while (*it).in_slots[slot] != 0 {
+        let handle = (*it).in_slots[slot] - 1;
+        if (*it).in_hashes[handle] == hash && span_eq((*it).in_texts[handle], s) {
+            return handle;
+        }
+        slot = (slot + 1) & mask;
+    }
+    if (*it).in_count == (*it).in_capacity {
+        intern_grow_entries(it);
+    }
+    let handle = (*it).in_count;
+    (*it).in_texts[handle] = intern_copy(s);
+    (*it).in_hashes[handle] = hash;
+    (*it).in_count += 1;
+    (*it).in_slots[slot] = handle + 1;
+    return handle;
+}
+
+fn intern(it: *Interner, s: Span) -> u64 {
+    return intern_hashed(it, s, intern_hash(s));
+}
+
+fn intern_z(it: *Interner, text: *u8) -> u64 {
+    return intern(it, span_z(text));
+}
+
+fn intern_text(it: *Interner, handle: u64) -> Span {
+    if handle >= (*it).in_count {
+        sup_die_index("interner", handle, (*it).in_count);
+    }
+    return (*it).in_texts[handle];
+}
+
+fn intern_count(it: *Interner) -> u64 {
+    return (*it).in_count;
+}
