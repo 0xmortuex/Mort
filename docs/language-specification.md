@@ -571,6 +571,14 @@ An implementation must document supported targets and backend prerequisites.
 Mort 0.41's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
 
+The reference implementation reports a located diagnostic when a program
+exceeds any of these limits:
+
+- A program may create at most 16384 generic function instantiations.
+- A generic function's type argument must not be nested more than 256 type
+  constructors deep, and must not be longer than 4096 characters when spelled
+  in canonical form.
+
 Portable Mort source must not depend on:
 
 - C spelling, generated symbol names, or generated layout except at a declared

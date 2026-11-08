@@ -28,10 +28,13 @@ REL_OPS = {"<", ">", "<=", ">="}
 # Each multiplication's cost grows with its operands, so an unbounded constant
 # chain can stall compilation. No value this wide can fit an integer type.
 MAX_CONSTANT_BITS = 2 ** 18
-# A generic call can instantiate itself at ever-growing types forever. A finite
-# program stops long before this: types this nested exhaust the recursive type
-# helpers anyway.
-MAX_INSTANTIATION_DEPTH = 256
+# Instantiation can only diverge by producing ever-larger type arguments, so
+# limit their size, not the length of a call chain: nesting grows linearly and
+# exhausts the recursive type helpers, spelling length catches types that double
+# at each step, and the total catches calls branching into many small types.
+MAX_TYPE_ARGUMENT_NESTING = 256
+MAX_TYPE_ARGUMENT_LENGTH = 4096
+MAX_GENERIC_INSTANTIATIONS = 16384
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
     "sizeof",
@@ -198,6 +201,35 @@ def tuple_parts(t):
     return elements if len(elements) >= 2 else None
 
 
+def type_nesting(t):
+    """How many type constructors deep a type string goes.
+
+    Pointers, slices and function results are prefixes with nothing closing
+    them, so they deepen everything after them up to the enclosing separator.
+    """
+    deepest = depth = 0
+    enclosing = []
+    position = 0
+    while position < len(t):
+        char = t[position]
+        if t.startswith("[]", position):
+            depth += 1
+            position += 1
+        elif char == "*" or t.startswith("->", position):
+            depth += 1
+            position += 1 if char == "-" else 0
+        elif char in "([<":
+            enclosing.append(depth)
+            depth += 1
+        elif char in ")]>":
+            depth = enclosing.pop()
+        elif char in ",;":
+            depth = enclosing[-1] + 1
+        deepest = max(deepest, depth)
+        position += 1
+    return deepest
+
+
 def substitute_type(t, mapping):
     if t in mapping:
         return mapping[t]
@@ -250,7 +282,7 @@ class Checker:
         self.warnings = []
         self.current_ret = None
         self.current_node = None  # where a stack overflow is reported
-        self.instantiation_depth = 0  # of the function being checked
+        self.generic_instantiations = 0
         self.alias_cache = {}
         self.extern_names = set()
         self.loop_depth = 0
@@ -669,16 +701,23 @@ class Checker:
         concrete_symbol = resolved + "<" + ",".join(type_args) + ">"
         if concrete_symbol in self.funcs:
             return concrete_symbol
-        depth = self.instantiation_depth + 1
-        if depth > MAX_INSTANTIATION_DEPTH:
+        self.generic_instantiations += 1
+        problem = None
+        if self.generic_instantiations > MAX_GENERIC_INSTANTIATIONS:
+            problem = f"exceeds the limit of {MAX_GENERIC_INSTANTIATIONS} in one program"
+        elif any(len(arg) > MAX_TYPE_ARGUMENT_LENGTH for arg in type_args):
+            problem = (
+                f"has a type argument longer than {MAX_TYPE_ARGUMENT_LENGTH} characters")
+        elif any(type_nesting(arg) > MAX_TYPE_ARGUMENT_NESTING for arg in type_args):
+            problem = (
+                f"has a type argument nested more than {MAX_TYPE_ARGUMENT_NESTING} levels deep")
+        if problem:
             raise MortError(
-                f"generic instantiation of {template.name!r} is nested more than "
-                f"{MAX_INSTANTIATION_DEPTH} levels deep",
+                f"generic instantiation of {template.name!r} {problem}",
                 node.line, getattr(node, "paren_col", None) or getattr(node, "col", None),
                 filename=getattr(node, "filename", None),
             )
         instance = copy.deepcopy(template)
-        instance.instantiation_depth = depth
         self._substitute_function_types(instance, mapping)
         instance.generic_params = []
         instance.symbol_name = concrete_symbol
@@ -1188,7 +1227,6 @@ class Checker:
         return expr.type
 
     def _check_fn(self, f):
-        self.instantiation_depth = getattr(f, "instantiation_depth", 0)
         self.current_ret = f.ret
         self.current_module = f.module
         self.current_import_aliases = f.import_aliases

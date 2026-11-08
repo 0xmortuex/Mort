@@ -10845,3 +10845,44 @@ def test_generic_called_from_a_test_block_runs(tmp_path):
     output = tmp_path / ("main" + (".exe" if os.name == "nt" else ""))
     assert mortc._compile_main([str(path), "-o", str(output)], test_mode=True) == 0
     assert subprocess.run([str(output)], check=False).returncode == 0
+
+
+def _generic_chain(length):
+    links = "".join(
+        f"fn f{index}<T>(x: T) -> i64 {{ return f{index + 1}(x); }}\n"
+        for index in range(length - 1))
+    return (links + f"fn f{length - 1}<T>(x: T) -> i64 {{ return 42; }}\n"
+            "fn main() -> int { return f0(1) as int; }")
+
+
+@pytest.mark.parametrize("length", [258, 2000])
+def test_long_chain_of_distinct_generics_compiles(length):
+    assert "mort_f0" in c_of(_generic_chain(length))
+
+
+@pytest.mark.parametrize("source", [
+    "fn g<T>(x: T) -> i64 { return g((x, x)); } fn main() -> int { return g(1) as int; }",
+    ("fn g<T>(x: T) -> i64 { g(&x); return g((x, 1)); } "
+     "fn main() -> int { return g(1) as int; }"),
+    ("fn g<T>(x: T) -> i64 { let s: []T = slice(&x, 1); return g(s); } "
+     "fn main() -> int { return g(1) as int; }"),
+], ids=["doubling-type", "branching", "slice"])
+def test_runaway_instantiation_of_every_shape_is_located_quickly(source):
+    assert_located_quickly(source, 10, "instantiation")
+
+
+def test_type_nesting_counts_each_constructor_once():
+    nesting = typechecker_module.type_nesting
+    assert nesting("i64") == 0
+    assert nesting("**i64") == 2
+    assert nesting("[][]i64") == 2
+    assert nesting("(*i64,*i64)") == 2
+    assert nesting("W<W<i64>>") == 2
+    assert nesting("fn(i64)->fn(i64)->i64") == 2
+
+
+def test_spec_states_the_generic_limits():
+    spec = _spec_text()
+    assert "16384 generic function instantiations" in spec
+    assert "nested more than 256 type constructors deep" in spec
+    assert "4096 characters" in spec
