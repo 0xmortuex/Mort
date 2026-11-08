@@ -32,10 +32,10 @@ Other figures:
 - 17 of the repo's 105 `.mx` files are already inside the subset, but they total
   only 193 lines and the largest is 30, so they are nowhere near enough on their
   own. Section 5.1 sets the real corpus requirement.
-- `check_subset.py --stats` on the current sources: 4708 integer literals
-  (mostly the Unicode tables), 1097 variable references, 432 binary and 131 unary
-  operators, 338 calls, 72 functions, 6 structs, 1 enum.
-- Generated C for `lex_main.mx`: 1778 lines, 106,103 bytes. It holds byte-stable
+- `check_subset.py --stats` on the current sources: 4850 integer literals
+  (mostly the Unicode tables), 1394 variable references, 548 binary and 208 unary
+  operators, 381 calls, 84 functions, 7 structs, 1 enum.
+- Generated C for `lex_main.mx`: 2192 lines, 127,719 bytes. It holds byte-stable
   across `PYTHONHASHSEED` 0, 1, 2 and 12345, and contains no absolute paths.
 
 Two honest limits on the 41%. The trace covers the lexer's constructs and a
@@ -56,7 +56,8 @@ tests show each exclusion is detected.
   `enum` with unit variants only, global `let`/`const`, one-segment relative
   `import` (no alias).
 - Types: `bool`, `void`, `u8`, `u32`, `u64`, `i64`, `int`, `c_char`, `c_int`,
-  `*T`, `*const T`, named struct and enum types, `[T; N]` at global scope only.
+  `*T`, `*const T`, named struct and enum types, `[T; N]` at global scope only,
+  used only by indexing it (`G[i]`, `&G[i]`): any other use is an array value.
   The same list applies to casts, `sizeof<T>()` and `for` headers.
 - Statements: `let`/`const`, plain and compound assignment, `if`/`else`,
   `while`, `loop`, range `for`, `match` with at least one unit-variant arm of a
@@ -177,11 +178,18 @@ the thresholds so that a shrinking corpus fails:
 | Self | Every `selfhost/*.mx` | Grows to the whole compiler |
 | Existing subset | The 17 repo files, including the 9 conformance programs | All 17 |
 | Stubbed kernel | `kernel/kmain.mx` with `outb`/`outw`/`inb`/`inw` calls redirected to stub functions, `asm` statements removed and `u16` changed to `u32` | At least 1500 lines. Measured: 1905 lines, 0 gate violations, compiles to 1986 lines of C |
-| Generated | A seeded generator (`tools/gen_subset_programs.py`, part of T5) producing valid subset programs that use every node kind and every binary operator on each integer type pair, including literal coercion and overflow edges | At least 20 programs; at least 3 of 1500 lines or more |
-| Rejected | Every other repo `.mx`: the rest of `conformance/` (29 files in all), `std/` (5204 lines) and the original kernel | Clean located diagnostic on all; never a crash and never accepted |
+| Generated | A seeded generator (`selfhost/tools/gen_subset_programs.py`, task T2c) producing valid subset programs that use every node kind and every binary operator on each integer type pair, including literal coercion and overflow edges | At least 20 programs totalling at least 6000 lines; at least 3 of 1500 lines or more |
+| Rejected | Every other repo `.mx`: the rest of `conformance/` (29 files in all), `std/` (5204 lines) and the original kernel; 88 files, 9242 lines today | Clean located diagnostic on all; never a crash and never accepted |
 
-Totals are checked per phase: at least 8000 lines excluding Self, and at least
-one real (not generated) program of 1500 lines or more. T3's parser must in
+Totals are checked per phase: at least 8000 lines of accepted programs, counting
+only Existing subset, Stubbed kernel and Generated, and at least one real (not
+generated) program of 1500 lines or more. Self and Rejected do not count: rejected
+files exercise only the diagnostic path, and counting them would meet the floor
+with no accepted program at all. Existing subset and Stubbed kernel total 2098
+lines, so Generated must supply the rest, which is why its floor is 6000 lines and
+why the generator comes first (T2c, before T3). It needs only the Python compiler
+as its oracle. Most accepted lines are therefore generated, and the real-program
+rule above is the check on that. T3's parser must in
 addition match the Python AST for every repo `.mx` whose constructs it parses;
 files using grammar outside the subset must get the located rejection diagnostic.
 The stubbed kernel transform lives in the test code, so it tracks changes to
@@ -198,14 +206,15 @@ measured data point.
 | T1 | Lexer with differential test | none | done |
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | 3 to 5 |
 | T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
-| T3 | AST in flat structs, parser, AST dump | T2 | 10 to 16 |
+| T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
+| T3 | AST in flat structs, parser, AST dump | T2, T2c | 10 to 16 |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7, G1 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8, G2 | 2 to 4 |
-| | **Remaining total** | | **67 to 115** |
+| | **Remaining total** | | **70 to 120** |
 
 Not included: fixing the gaps in section 8 (2 to 5 hours), and any Python
 compiler bugs the differential tests expose.
@@ -226,6 +235,10 @@ Acceptance criteria:
   only with expression length, and simple quadratic multiplication is enough.
   Differential test: at least 100,000 seeded operations against Python integers,
   covering negatives, zero, and values around 2^32, 2^64 and 4300 digits.
+- **T2c.** With a fixed seed the generator's output is byte-identical across runs
+  and `PYTHONHASHSEED` values. Every generated program passes `check_subset.py`
+  and compiles with the Python compiler, and a test asserts the node-kind and
+  operator coverage and the section 5.1 size floors, so a shrinking corpus fails.
 - **T3.** Mort parser output matches the Python AST dump over the subset corpus
   and all `selfhost/*.mx`, including source lines. Parse errors in the corpus
   produce a located diagnostic and exit 1, never a crash, with a recursion-depth
@@ -253,7 +266,7 @@ one measured ratio.
 
 ## 7. Lexer status
 
-- `selfhost/lexer.mx` (1014 lines), `lexer_float.mx` (314), `lex_main.mx` (101),
+- `selfhost/lexer.mx` (1050 lines), `lexer_float.mx` (314), `lex_main.mx` (105),
   generated `lexer_unicode.mx`, plus `unicode_dump_main.mx` (71, test helper) for
   the exhaustive Unicode check.
 - Dump format: defined at the top of `py_lex_dump.py`. Token per line:
@@ -262,7 +275,11 @@ one measured ratio.
   lexical error, the prefix of tokens is dumped followed by
   `ERROR line:col message`.
 - Reads source as Python does: strict UTF-8 and text-mode newline translation.
-  Columns count code points.
+  Columns count code points. Invalid UTF-8 gives
+  `<line>:<col> source is not valid UTF-8 (byte 0x<NN>)` at the first invalid
+  byte, the behaviour of `decode_source` on `fix/frontend-crashes`. The test
+  compares against that function itself: from `mort/lexer.py` once merged, from
+  that branch until then.
 - **Integer literal limit.** An integer literal may have at most 4300 digits, in
   any base. Digits are counted without the prefix and without `_` separators;
   leading zeros count. A longer literal that is otherwise valid is rejected at its
@@ -288,7 +305,7 @@ one measured ratio.
   one test.
 
 Test: `python -m pytest selfhost -q` runs against every `.mx` in the repo,
-225 edge cases, 6000 generated float rounding literals, huge literals with a
+232 edge cases, 6000 generated float rounding literals, huge literals with a
 time bound, token-level mutation (at least 75% of cases must carry 10 or more
 dump lines), a separate invalid-bytes mutation class, the Unicode check, and the
 subset gate with a negative test per excluded construct.
