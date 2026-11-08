@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -1746,6 +1747,247 @@ def test_freestanding_object_builds():
     assert data[:4] == b"\x7fELF"                         # ELF magic
     assert data[4] == 2                                   # ELFCLASS64
     assert struct.unpack("<H", data[18:20])[0] == 0x3E    # EM_X86_64
+
+
+# ---------- volatile memory access ----------
+
+_VOLATILE_PRELUDE = (
+    "struct Pair { a: u32, b: u32 }\n"
+    "fn kmain(p: *u32, q: *u16, c: *const u32, n: u32, wide: u64, v: *void) {\n"
+)
+_VOLATILE_MEMORY_OPERAND = r"(?:-?\d*\(%\w+[^)]*\)|-?\d{6,})"
+
+
+def _volatile_body(statement):
+    # The statement always starts at line 3, column 5 of this source.
+    return _VOLATILE_PRELUDE + "    " + statement + "\n}\n"
+
+
+@pytest.mark.parametrize(("statement", "message"), [
+    ("volatile_read<u24>(p);", "width must be one of"),
+    ("volatile_read<bool>(p);", "width must be one of"),
+    ("volatile_read<f32>(p);", "width must be one of"),
+    ("volatile_read<c_int>(p);", "width must be one of"),
+    ("volatile_read<*u32>(p);", "width must be one of"),
+    ("volatile_read<Pair>(p);", "width must be one of"),
+    ("volatile_write<u128>(p, 1);", "width must be one of"),
+    ("volatile_read<u32>(q);", r"must point to u32, got \*u16"),
+    ("volatile_write<u16>(p, 1);", r"must point to u16, got \*u32"),
+    ("volatile_read<u32>(v);", r"must point to u32, got \*void"),
+    ("volatile_read<u32>(n);", "expects a pointer, got u32"),
+    ("volatile_read<u32>(0xFEE00000);", "expects a pointer"),
+    ("volatile_read<u32>(null);", "expects a pointer, got null"),
+    ("volatile_write<u32>(n, 1);", "expects a pointer, got u32"),
+    ("volatile_read(p);", "exactly one type argument"),
+    ("volatile_write(p, 1);", "exactly one type argument"),
+    ("volatile_read<u32, u32>(p);", "exactly one type argument"),
+    ("volatile_read<u32>();", "expects 1 argument"),
+    ("volatile_read<u32>(p, 1);", "expects 1 argument"),
+    ("volatile_write<u32>(p);", "expects 2 arguments"),
+    ("volatile_write<u32>(c, 1);", r"cannot write through \*const u32"),
+    ("volatile_write<u32>(p, wide);", "value must be u32, got u64"),
+    ("volatile_write<u32>(p, true);", "value must be u32, got bool"),
+    ("volatile_write<u32>(p, 0x100000000);", "does not fit in u32"),
+])
+def test_volatile_misuse_reports_line_and_column(statement, message):
+    with pytest.raises(MortError, match=message) as exc:
+        c_free(_volatile_body(statement))
+    assert (exc.value.line, exc.value.col) == (3, 5)
+
+
+def test_volatile_diagnostic_column_points_at_a_nested_call():
+    source = (
+        "fn kmain(p: *u32) {\n"
+        "    let x: u32 = 1 + volatile_read<u8>(p);\n"
+        "}\n"
+    )
+    with pytest.raises(MortError, match="must point to u8") as exc:
+        c_free(source)
+    assert (exc.value.line, exc.value.col) == (2, 22)
+
+
+def test_volatile_diagnostic_renders_file_line_and_column(tmp_path):
+    source = tmp_path / "bad_volatile.mx"
+    source.write_text(
+        "fn main() -> int {\n"
+        "    let x: u32 = 5;\n"
+        "    volatile_read<u32>(x);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(MortError) as exc:
+        mortc.compile_files_to_c([str(source)])
+    assert f"{source}:3:5: error: volatile_read expects a pointer" in str(exc.value)
+
+
+def test_volatile_needs_the_same_context_as_a_raw_pointer():
+    # Mort has no `unsafe` boundary: a raw dereference is legal in any function,
+    # and so are these. If `unsafe` is ever added, this must change with `*p`.
+    for compile_source in (c_of, c_free):
+        source = (
+            "fn touch(p: *u32) -> u32 { *p = 1; volatile_write<u32>(p, 2); "
+            "return *p + volatile_read<u32>(p); }\n"
+        )
+        if compile_source is c_of:
+            source += "fn main() -> int { return 0; }\n"
+        assert "volatile uint32_t*" in compile_source(source)
+
+
+def test_volatile_is_reserved_like_other_builtins():
+    with pytest.raises(MortError, match="volatile_read"):
+        c_free("fn volatile_read() { return; }\nfn kmain() { return; }")
+    with pytest.raises(MortError, match="volatile_write"):
+        c_free("fn volatile_write() { return; }\nfn kmain() { return; }")
+
+
+@pytest.mark.parametrize("width", [
+    "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"])
+def test_volatile_accepts_every_fixed_width(width):
+    c = c_free(
+        f"fn io(p: *{width}, c: *const {width}) -> {width} {{\n"
+        f"    volatile_write<{width}>(p, 1);\n"
+        f"    return volatile_read<{width}>(c);\n"
+        "}\n"
+    )
+    ctype = {"u": "uint", "i": "int"}[width[0]] + width[1:] + "_t"
+    assert f"volatile {ctype}*" in c
+    assert f"const volatile {ctype}*" in c
+
+
+def test_volatile_resolves_aliases_and_generic_instantiations():
+    c = c_free(
+        "type Reg = u32;\n"
+        "fn read_reg<T>(r: *T) -> T { return volatile_read<T>(r); }\n"
+        "fn kmain(p: *Reg) -> Reg {\n"
+        "    volatile_write<Reg>(p, 1);\n"
+        "    return read_reg<u32>(p);\n"
+        "}\n"
+    )
+    assert c.count("volatile uint32_t*") == 2
+
+
+def test_volatile_read_is_a_single_access_through_arithmetic_helpers():
+    # A shift or division lowers to a helper; if it pasted its operand twice,
+    # one Mort read would become two device reads.
+    c = c_free(
+        "fn kmain(p: *u32) -> u32 {\n"
+        "    let a: u32 = volatile_read<u32>(p) >> 1;\n"
+        "    let b: u32 = volatile_read<u32>(p) / 2;\n"
+        "    return a + b;\n"
+        "}\n"
+    )
+    assert c.count("volatile uint32_t*") == 2
+
+
+@needs_cc
+def test_volatile_round_trips_every_width_when_run():
+    values = [
+        ("u8", "200"), ("u16", "60000"), ("u32", "4000000000"),
+        ("u64", "9000000000000000000"), ("i8", "-100"), ("i16", "-30000"),
+        ("i32", "-2000000000"), ("i64", "-9000000000000000000"),
+    ]
+    body = "".join(
+        f"    let p{index}: *{width} = alloc(8) as *{width};\n"
+        f"    volatile_write<{width}>(p{index}, {value});\n"
+        f"    print(volatile_read<{width}>(p{index}));\n"
+        for index, (width, value) in enumerate(values)
+    )
+    c_source = c_of("fn main() -> int {\n" + body + "    return 0;\n}\n")
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "volatile.c")
+        exe = os.path.join(d, "volatile.exe" if os.name == "nt" else "volatile")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        output = subprocess.run(
+            [exe], capture_output=True, text=True, check=True).stdout
+    assert output.split() == [value for _, value in values]
+
+
+def _assembly_of(symbol, assembly):
+    """Instructions and labels of one function, without directives or comments."""
+    lines = [line.split("#")[0].strip() for line in assembly.splitlines()]
+    start = lines.index(f"{symbol}:")
+    end = next(
+        index for index in range(start, len(lines))
+        if lines[index] == ".cfi_endproc" or lines[index].startswith(".size"))
+    return [
+        line for line in lines[start + 1:end]
+        if line and (line.endswith(":") or not line.startswith("."))
+    ]
+
+
+def _is_memory_store(line):
+    return re.fullmatch(
+        r"mov\w*\s+.+,\s*" + _VOLATILE_MEMORY_OPERAND, line) is not None
+
+
+def _is_memory_read_32(line):
+    # An immediate such as `movl $4276092928, %eax` is not a memory operand.
+    operands = re.sub(r"\$-?\w+", "", line)
+    return (re.match(r"\w+l\s", line) is not None
+            and re.search(_VOLATILE_MEMORY_OPERAND, operands) is not None
+            and not _is_memory_store(line)
+            and not line.startswith("lea"))
+
+
+@needs_zig
+@pytest.mark.parametrize("target", ["x86_64-freestanding-none", "x86-freestanding-none"])
+def test_volatile_store_and_poll_loop_survive_O2_in_real_assembly(target):
+    # This is the audit's miscompile. Compiled with plain `*p`, -O2 keeps at
+    # most the last store, deletes the poll loop and folds the return value.
+    c_source = c_free(
+        "fn kick() -> u32 {\n"
+        "    let reg: *u32 = 0xFEE00000 as *u32;\n"
+        "    volatile_write<u32>(reg, 17);\n"
+        "    volatile_write<u32>(reg, 34);\n"
+        "    while (volatile_read<u32>(reg) & 1) == 0 { }\n"
+        "    return volatile_read<u32>(reg);\n"
+        "}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfile = os.path.join(d, "volatile.c")
+        asm_path = os.path.join(d, "volatile.s")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([
+            *_ZIG, "-target", target, "-ffreestanding", "-O2", "-std=c11",
+            "-S", cfile, "-o", asm_path,
+        ], check=True)
+        with open(asm_path, encoding="utf-8") as fh:
+            body = _assembly_of("mort_kick", fh.read())
+
+    def store_of(immediate):
+        matches = [
+            index for index, line in enumerate(body)
+            if _is_memory_store(line) and f"${immediate}," in line
+        ]
+        assert len(matches) == 1, "\n".join(body)
+        return matches[0]
+
+    # Both stores are present, once each, in source order.
+    first_store = store_of(17)
+    second_store = store_of(34)
+    assert first_store < second_store, "\n".join(body)
+
+    # A backward conditional branch re-reads memory on every iteration.
+    loops = []
+    for index, line in enumerate(body):
+        if line.endswith(":"):
+            for later in range(index + 1, len(body)):
+                jump = re.fullmatch(r"(j(?!mp)\w+)\s+(\S+)", body[later])
+                if jump and jump.group(2) == line[:-1]:
+                    loops.append((index, later))
+    polls = [
+        (start, end) for start, end in loops
+        if start > second_store
+        and any(_is_memory_read_32(line) for line in body[start + 1:end])
+    ]
+    assert len(polls) == 1, "\n".join(body)
+
+    # The returned value is a separate read after the loop, not a folded constant.
+    assert any(_is_memory_read_32(line) for line in body[polls[0][1] + 1:]), "\n".join(body)
 
 
 def test_freestanding_cli_always_uses_zig_cross_target(

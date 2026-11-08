@@ -461,6 +461,50 @@ are unavailable in freestanding mode.
 The `inb/outb`, `inw/outw`, and `inl/outl` builtins are privileged x86 port-I/O
 operations. They are target-specific and not valid portable hosted behavior.
 
+### 7.4 Volatile memory access
+
+Volatile operations access memory that may change, or be observed, outside the
+program, such as memory-mapped device registers. They are available in both
+profiles.
+
+| Builtin | Meaning |
+| --- | --- |
+| `volatile_read<T>(pointer)` | read one `T` through `*T` or `*const T`, returning `T` |
+| `volatile_write<T>(pointer, value)` | write one `T` through `*T`, returning `void` |
+
+The type argument is required. After alias resolution `T` must be exactly one
+of `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, or `i64`. The pointer's pointee
+must be exactly `T`, so `*void` or a pointer to another width needs an explicit
+cast first. `value` must have type `T`, or be a literal that fits `T`. A
+violation of any of these rules, or writing through `*const T`, is a
+compile-time error that identifies the line and column of the call.
+
+Mort 0.41 has no `unsafe` construct. Like raw dereference, these operations are
+legal in any function, and the rules for pointer validity in section 4.2 apply.
+
+Operands are evaluated once, before the access. Their relative order follows
+section 7. Each executed operation then has these effects:
+
+- **No elision.** It performs its access, even if the result is unused, the
+  value written equals the value already stored, or an adjacent operation
+  accesses the same location. Operations are not merged, duplicated, or
+  introduced by the implementation.
+- **No reordering relative to other volatile operations.** Within one thread of
+  execution, volatile operations occur in program order. Volatile operations
+  within one expression are ordered only as far as section 7 orders their
+  operands.
+- **Natural-width access only.** Each operation that the target can perform as
+  a single naturally aligned access of `T`'s width is performed as that one
+  access, and it does not tear. No guarantee against tearing exists beyond
+  this: a width wider than the target's natural access, such as `u64` on 32-bit
+  x86, may be performed as several smaller accesses in unspecified order.
+
+Volatile operations are not atomic operations and do not synchronize threads.
+They impose no ordering on non-volatile accesses and are not processor memory
+barriers, so hardware that needs a barrier needs target-specific code such as
+inline assembly. A misaligned or invalid pointer is raw pointer misuse under
+section 10.
+
 ## 8. Ownership and cleanup
 
 `resource struct R { ... }` declares a move-only resource type. The same

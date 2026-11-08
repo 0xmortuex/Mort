@@ -20,6 +20,7 @@ INT_TYPES = {
     "c_long", "c_ulong", "c_size",
 }
 FLOAT_TYPES = {"f32", "f64"}
+VOLATILE_WIDTHS = ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64")
 F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
@@ -45,6 +46,7 @@ BUILTIN_NAMES = {
     "tls_client_connect", "tls_client_connect_with_ca", "tls_send", "tls_recv",
     "tls_protocol_version", "tls_close",
     "outb", "inb", "outw", "inw", "outl", "inl",
+    "volatile_read", "volatile_write",
 }
 C_KEYWORDS = {
     "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -1299,6 +1301,48 @@ class Checker:
             if op == ">>" and rv >= 0:
                 return lv >> rv
         return None
+
+    def _check_volatile_call(self, e):
+        """Check volatile_read<T>(pointer) and volatile_write<T>(pointer, value)."""
+        def fail(message):
+            line, column = e.name_pos
+            raise MortError(
+                message, line, column, filename=getattr(e, "filename", None))
+
+        if len(e.type_args) != 1:
+            fail(f"{e.name} expects exactly one type argument, e.g. {e.name}<u32>")
+        target = self._resolve_alias_type(e.type_args[0])
+        if target not in VOLATILE_WIDTHS:
+            fail(
+                f"{e.name} width must be one of {', '.join(VOLATILE_WIDTHS)}, "
+                f"got {target}")
+        e.type_args = [target]
+        is_write = e.name == "volatile_write"
+        if len(e.args) != (2 if is_write else 1):
+            fail(
+                f"{e.name} expects 2 arguments (pointer, value)" if is_write
+                else f"{e.name} expects 1 argument (pointer)")
+        pointer_type = self._resolve_alias_type(self._check_expr(e.args[0]))
+        if not is_ptr(pointer_type):
+            fail(f"{e.name} expects a pointer, got {pointer_type}")
+        if pointee(pointer_type) != target:
+            fail(f"{e.name}<{target}> pointer must point to {target}, got {pointer_type}")
+        if not is_write:
+            return target
+        if is_const_ptr(pointer_type):
+            fail(f"volatile_write cannot write through {pointer_type}")
+        value = e.args[1]
+        self._check_expr(value)
+        if value.is_lit and self._const_value(value) is not None:
+            literal = self._const_value(value)
+            low, high = INT_RANGES[target]
+            if not low <= literal <= high:
+                fail(
+                    f"integer literal {self._value_str(literal)} does not fit in "
+                    f"{target} (range {low}..{high})")
+        if not self._coerce(target, value):
+            fail(f"volatile_write value must be {target}, got {value.type}")
+        return "void"
 
     def _coerce(self, expected, expr):
         """Return True if expr fits `expected`, retagging an untyped int literal.
@@ -2596,6 +2640,8 @@ class Checker:
                 self._error(f"slice length must be u64, got {e.args[1].type}", e)
             prefix = "[]const " if is_const_ptr(pointer_type) else "[]"
             return prefix + pointee(pointer_type)
+        if e.name in ("volatile_read", "volatile_write"):
+            return self._check_volatile_call(e)
         if e.name == "outb":
             # outb(port: u16, value: u8) — write a byte to an I/O port
             if len(e.args) != 2:
