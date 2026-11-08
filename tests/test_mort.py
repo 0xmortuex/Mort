@@ -1924,8 +1924,10 @@ def _is_memory_store(line):
 
 
 def _is_memory_read_32(line):
+    # An immediate such as `movl $4276092928, %eax` is not a memory operand.
+    operands = re.sub(r"\$-?\w+", "", line)
     return (re.match(r"\w+l\s", line) is not None
-            and re.search(_VOLATILE_MEMORY_OPERAND, line) is not None
+            and re.search(_VOLATILE_MEMORY_OPERAND, operands) is not None
             and not _is_memory_store(line)
             and not line.startswith("lea"))
 

@@ -2650,6 +2650,14 @@ class CodeGen:
                 self.used_secure_random = True
             elif e.name in _TLS_BUILTINS:
                 self.used_tls = True
+            if e.name == "volatile_read":
+                c_access = self._ct(e.type_args[0])
+                return f"(*(const volatile {c_access}*)({self._gen_expr(e.args[0])}))"
+            if e.name == "volatile_write":
+                c_access = self._ct(e.type_args[0])
+                pointer = self._gen_expr(e.args[0])
+                value = self._gen_expr(e.args[1])
+                return f"((void)(*(volatile {c_access}*)({pointer}) = ({value})))"
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
                 return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
