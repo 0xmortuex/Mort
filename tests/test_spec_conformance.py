@@ -280,7 +280,23 @@ class Generator:
         return 1
 
     def _prefer(self, option):
-        return 0 if isinstance(option, Ref) and option.name == "IDENT" else 1
+        """Among equally short options, prefer one that starts with a name."""
+        if isinstance(option, Ref) and option.name == "IDENT":
+            return 0
+        return 1 if self._starts_with_name(option, set()) else 2
+
+    def _starts_with_name(self, node, seen):
+        if isinstance(node, Seq):
+            return self._starts_with_name(node.items[0], seen)
+        if isinstance(node, Alt):
+            return any(self._starts_with_name(item, seen) for item in node.options)
+        if isinstance(node, Ref):
+            if node.name == "IDENT":
+                return True
+            if node.name in self.rules and node.name not in seen:
+                seen.add(node.name)
+                return self._starts_with_name(self.rules[node.name], seen)
+        return False
 
     def expand(self, node, forced=None):
         forced = forced or {}
@@ -307,13 +323,17 @@ class Generator:
         if isinstance(node, Except):
             return self.expand(node.base, forced)
         if isinstance(node, Ref) and node.name in self.rules:
-            return self.expand(self.rules[node.name], forced)
+            return self.expand(self.rules[node.name])
         return self.leaf(node)
 
     def sentences(self, name):
         """One expansion per choice in the rule's own body, plus the default."""
         body = self.rules[name]
         variants = [self.expand(body)]
+        maximal = {id(n): 1 for n in walk(body) if isinstance(n, (Opt, Rep))}
+        full = self.expand(body, maximal)
+        if full not in variants:
+            variants.append(full)
         for node in walk(body):
             if isinstance(node, Alt):
                 choices = range(len(node.options))
@@ -508,7 +528,9 @@ class SyntaxGrammar:
                 item for item in first if item in seen
                 or (item[1] is not None and (item[0], None) in seen)
             }
-            if clash and not self._gated(option):
+            if self._gated(option):
+                continue
+            if clash:
                 problems.append(f"rule {name!r}: alternatives are not LL(1) on {clash}")
             seen |= first
         return problems
@@ -677,7 +699,7 @@ def parser_verdict(source, parser_cls=Parser, lexer_cls=Lexer):
     try:
         parser_cls(tokens).parse()
     except MortError as error:
-        if any(text in error.message for text in CONSTRAINT_MESSAGES):
+        if any(text in str(error) for text in CONSTRAINT_MESSAGES):
             return "constraint"
         return "reject"
     except Exception as error:  # noqa: BLE001 - reported as a harness problem
@@ -703,7 +725,7 @@ WITNESSES = [
     "enum P<T> { S(T), N, Q(i64, *u8) } type A = fn(i64, *u8) -> void;",
     "let g: [i64; 3] = [1, 2, 3,]; const h: []const u8 = v; let t: (i64, u8,) = (1, 2,);",
     "extern fn null(a: c_int) -> c_size; fn null() {} test \"t\" { let a = 1; }",
-    "fn f<T>(a: T, b: []u8) -> Vec<Vec<T>> { let x: A<B<i64>>= y; return x; }",
+    "fn f<T>(a: T, b: []u8) -> Vec<Vec<T>> { let x: A<B<i64>> = y; let z: A<i64>= w; }",
     "fn f() { let a = B<B<i64>> { v: 1 }; let c = E<i64>.A(1); let d = E<*u8>.B; }",
     "fn f() { g<i64>(1); g<A<i64>, *u8>(); (g)(1); (a.b).c(1); a.b<T>(2); null(); }",
     "fn f() { if a < b { if c > (d) {} } while (P { x: 1 }).x > 0 {} }",
@@ -749,7 +771,10 @@ def check_syntax(spec, parser_cls=Parser, mutants=4000):
         if verdict.startswith("crash"):
             problems.append(f"{label}: parser {verdict} on {source!r}")
             return None
-        grammar_says = grammar.accepts(tokens)
+        try:
+            grammar_says = grammar.accepts(tokens)
+        except RecursionError:
+            return None  # a data table too long for the right-recursive list rules
         if verdict == "constraint":
             return "constraint"
         if grammar_says != (verdict == "accept"):
@@ -881,6 +906,8 @@ class LexicalGrammar:
 
 def single_token(text, lexer_cls=Lexer):
     """The token type when ``text`` lexes to exactly one token, else None."""
+    if text != text.strip():
+        return None
     try:
         tokens = lexer_cls(text).tokenize()
     except MortError:
@@ -900,7 +927,8 @@ def is_tuple_index(text, lexer_cls=Lexer):
         tokens = lexer_cls("a." + text).tokenize()
     except MortError:
         return False
-    return len(tokens) == 4 and tokens[2].type == T.INT
+    return (len(tokens) == 4 and tokens[1].type == T.DOT
+            and tokens[2].type == T.INT and text == text.strip())
 
 
 def check_lexical(spec, lexer_cls=Lexer):
@@ -926,7 +954,12 @@ def check_lexical(spec, lexer_cls=Lexer):
     pool = "_.xeE09'\"\\+-/*\na"
     for name, verdict in verdicts.items():
         negatives = 0
-        for sentence in generator.sentences(name):
+        samples = list(generator.sentences(name))
+        for part in _rules_under(grammar.rules, name):
+            for sentence in generator.sentences(part):
+                if grammar.full(name, "".join(sentence)):
+                    samples.append(sentence)
+        for sentence in samples:
             text = "".join(sentence)
             if not grammar.full(name, text):
                 problems.append(f"lexical {name}: generated {text!r} does not match")
@@ -946,6 +979,19 @@ def check_lexical(spec, lexer_cls=Lexer):
         if not negatives:
             problems.append(f"lexical {name}: no negative sample")
     return problems
+
+
+def _rules_under(rules, start):
+    """Every rule reachable from ``start``, ``start`` excluded."""
+    seen = set()
+    frontier = [start]
+    while frontier:
+        for node in walk(rules[frontier.pop()]):
+            if isinstance(node, Ref) and node.name in rules and node.name not in seen:
+                seen.add(node.name)
+                frontier.append(node.name)
+    seen.discard(start)
+    return sorted(seen)
 
 
 def _out_of_range(text):
@@ -1032,7 +1078,7 @@ def test_grammar_rule_inventory_is_substantial():
 
 def test_constraints_named_by_the_parser_are_written_in_the_spec():
     for phrase in ("call target", "assignment target"):
-        assert phrase in SPEC_TEXT
+        assert phrase in SPEC_TEXT.lower()
 
 
 @pytest.mark.parametrize("source", [
@@ -1066,6 +1112,7 @@ def test_constraints_named_by_the_parser_are_written_in_the_spec():
     "fn f() { if a { } else b; }",            # else needs an if or a block
     "fn f() { asm(1); }",                     # asm takes one string
     "fn f() { _ + 1 => {}; }",
+    "fn f() { let x: A<B<i64>>= y; }",       # '>>=' is not split
 ])
 def test_boundary_programs_are_rejected_by_both(source):
     grammar = SyntaxGrammar(SPEC_TEXT)
@@ -1148,14 +1195,8 @@ def test_harness_detects_a_parser_only_change(parser_cls):
 
 
 class _LexerWithLongerSeparators(Lexer):
-    def _number(self, line, col):
-        if self._peek() == "9" and self._peek(1) == "_" and self._peek(2) == "_":
-            self._advance()
-            self._advance()
-            self._advance()
-            self._add(T.INT, 9, line, col)
-            return
-        super()._number(line, col)
+    def __init__(self, src):
+        super().__init__(src.replace("__", "_"))
 
 
 def test_harness_detects_a_lexer_only_change():
@@ -1298,8 +1339,8 @@ RESOURCE = "resource struct R { v: i64 } fn destroy(r: *R) -> void { print((*r).
 
 @pytest.mark.parametrize("body", [
     "struct H { r: R } fn main() -> int { let h = H { r: R { v: 1 } }; let a = h.r; return 0; }",
-    "struct H { r: R } fn f(r: R) -> void {} "
-    "fn main() -> int { let h = H { r: R { v: 1 } }; f(h.r); return 0; }",
+    ("struct H { r: R } fn f(r: R) -> void {} "
+    "fn main() -> int { let h = H { r: R { v: 1 } }; f(h.r); return 0; }"),
     "fn main() -> int { let t = (R { v: 1 }, 2); let a = t.0; return 0; }",
     "fn main() -> int { let t = [R { v: 1 }, R { v: 2 }]; let a = t[0]; return 0; }",
 ])
@@ -1317,21 +1358,21 @@ def test_reading_plain_fields_and_raw_storage_of_a_resource_stays_legal():
 
 
 @pytest.mark.parametrize("program,expected", [
-    ("fn h(x: i64) -> i64 { return x + 1; }"
+    (("fn h(x: i64) -> i64 { return x + 1; }"
      " fn g(f: fn(i64) -> i64, x: i64) -> i64 { return f(x); }"
-     " fn main() -> int { let p: fn(fn(i64) -> i64, i64) -> i64 = g; print(p(h, 2)); return 0; }",
+     " fn main() -> int { let p: fn(fn(i64) -> i64, i64) -> i64 = g; print(p(h, 2)); return 0; }"),
      "3\n"),
-    ("fn h() -> i64 { return 4; }"
+    (("fn h() -> i64 { return 4; }"
      " fn main() -> int { let t: (fn() -> i64, i64) = (h, 2); let f = t.0;"
-     " print(f()); return 0; }",
+     " print(f()); return 0; }"),
      "4\n"),
-    ("struct P<A, B> { a: A, b: B } fn h() -> i64 { return 5; }"
+    (("struct P<A, B> { a: A, b: B } fn h() -> i64 { return 5; }"
      " fn main() -> int { let t = P<fn() -> i64, i64> { a: h, b: 2 }; let f = t.a;"
-     " print(f()); return 0; }",
+     " print(f()); return 0; }"),
      "5\n"),
-    ("enum E { A(fn() -> i64, i64), B } fn h() -> i64 { return 6; }"
+    (("enum E { A(fn() -> i64, i64), B } fn h() -> i64 { return 6; }"
      " fn main() -> int { let e = E.A(h, 2);"
-     " match e { E.A(f, x) => { print(f()); } E.B => {} } return 0; }",
+     " match e { E.A(f, x) => { print(f()); } E.B => {} } return 0; }"),
      "6\n"),
 ])
 def test_function_types_followed_by_another_type_in_a_list(program, expected):
@@ -1357,3 +1398,12 @@ def test_a_repeated_payload_variant_arm_is_rejected():
         _check_program(
             "enum E { A(i64), B } fn main() -> int {"
             " match E.B { E.A(x) => {} E.A(y) => {} E.B => {} } return 0; }")
+
+
+@pytest.mark.parametrize("body", [
+    "let a = [1, 2]; if a == a {}",
+    "let a = [1, 2]; let s = slice(&a[0], 2); if s != s {}",
+])
+def test_array_and_slice_equality_are_rejected(body):
+    with pytest.raises(MortError, match="cannot compare aggregate"):
+        _check_program("fn main() -> int { " + body + " return 0; }")

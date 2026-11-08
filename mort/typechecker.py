@@ -2009,7 +2009,7 @@ class Checker:
                 elif lt in self.structs or (
                         lt in self.enums
                         and any(value is not None for value in self.enums[lt].values())
-                ) or tuple_parts(lt):
+                ) or tuple_parts(lt) or is_array(lt) or is_slice(lt):
                     self._error(f"cannot compare aggregate values with '{op}'", e)
                 return "bool"
             if op in ("&&", "||"):
