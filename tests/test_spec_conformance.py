@@ -1258,3 +1258,30 @@ def test_specification_example(example):
         assert result.returncode == int(example.attrs.get("exit", "0"))
         if "stderr" in example.attrs:
             assert example.attrs["stderr"] in result.stderr
+
+
+# ----- disagreements resolved in the compiler ----------------------------------
+
+def _check_program(source):
+    return mortc.compile_to_c(source)
+
+
+def _run_program(source):
+    if _CC is None:
+        pytest.skip("no C compiler on PATH")
+    with tempfile.TemporaryDirectory() as directory:
+        c_path = os.path.join(directory, "program.c")
+        Path(c_path).write_text(mortc.compile_to_c(source), encoding="utf-8")
+        executable = os.path.join(
+            directory, "program.exe" if os.name == "nt" else "program")
+        subprocess.run(
+            [*_CC, c_path, "-o", executable, "-O1", "-std=c11", "-w"], check=True)
+        return subprocess.run(
+            [executable], capture_output=True, text=True, check=False, timeout=60)
+
+
+def test_nested_generic_struct_literal_closes_with_a_shift_token():
+    assert _run_program(
+        "struct B<T> { v: T } fn main() -> int {"
+        " let a = B<B<i64>> { v: B<i64> { v: 7 } }; return a.v.v; }"
+    ).returncode == 7

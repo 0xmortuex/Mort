@@ -820,6 +820,12 @@ class Parser:
                 depth -= 1
                 if depth == 0:
                     return self._peek(offset + 1).type == T.LBRACE
+            elif token_type == T.SHR:
+                depth -= 2
+                if depth == 0:
+                    return self._peek(offset + 1).type == T.LBRACE
+                if depth < 0:
+                    return False
             elif token_type in (T.SEMI, T.EOF):
                 return False
             offset += 1
