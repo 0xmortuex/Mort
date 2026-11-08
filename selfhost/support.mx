@@ -1,0 +1,29 @@
+// PLACEHOLDER until feat/selfhost-t2 merges. T2's support.mx has these two
+// functions with these exact signatures and supersedes this file; take T2's
+// version whole when the two branches meet. It is only here so bignum.mx can be
+// built and tested on a branch that does not have T2. Deliberately no Span, Buf
+// or anything else T2 owns, and deliberately stdout: this tree has no eprintln.
+
+extern fn exit(status: c_int) -> void;
+
+const SUP_EXIT_INTERNAL: c_int = 2;
+
+fn sup_die(message: *u8) {
+    println(message);
+    exit(SUP_EXIT_INTERNAL);
+}
+
+fn sup_alloc_array(count: u64, size: u64) -> *void {
+    if size != 0 && count > 0xFFFFFFFFFFFFFFFF / size {
+        sup_die("mort: internal error: allocation size overflow");
+    }
+    let request = count * size;
+    if request == 0 {
+        request = 1;
+    }
+    let pointer = alloc(request);
+    if pointer == (0 as *void) {
+        sup_die("mort: out of memory");
+    }
+    return pointer;
+}
