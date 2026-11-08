@@ -39,3 +39,9 @@ Interim: declare the exact C signature (`end: **c_char`).
   Reproduce with `let x: u8 = 999...;` (5000 nines).
 - `mortc.py:197`: source that is not UTF-8 raises an uncaught
   `UnicodeDecodeError` traceback instead of a diagnostic.
+- `mort/codegen.py:205` (`_collect_slice_types`) walks every string in the AST
+  and treats any that starts with `[]` as a slice type, string literals included.
+  `fn main() -> int { println("[]"); return 0; }` raises an uncaught
+  `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
+  emits the two characters with separate pushes instead. T6 and T7 reproduce this
+  scan's output, so fixing it changes what they must match.
