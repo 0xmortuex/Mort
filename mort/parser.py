@@ -74,7 +74,7 @@ class Parser:
     def _expect(self, type, what=None):
         if not self._at(type):
             tok = self._peek()
-            raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line)
+            raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line, tok.col)
         return self._advance()
 
     def _expect_type_close(self):
@@ -152,21 +152,24 @@ class Parser:
                 if (module_name is not None or funcs or structs or globals_ or externs
                         or imports or enums or tests or aliases):
                     tok = self._peek()
-                    raise MortError("module declaration must be the first declaration", tok.line)
+                    raise MortError("module declaration must be the first declaration", tok.line, tok.col)
                 module_name = self._module_decl()
             elif self._at(T.IMPORT):
                 imports.append(self._import_decl())
             elif self._at(T.PUB):
-                line = self._advance().line
+                pub = self._advance()
                 if not self._at(T.FN):
-                    raise MortError("pub currently applies to function declarations", line)
+                    raise MortError(
+                        "pub currently applies to function declarations", pub.line, pub.col)
                 function = self._fn_decl()
                 function.public = True
                 funcs.append(function)
             elif self._at(T.RESOURCE):
-                line = self._advance().line
+                resource = self._advance()
                 if not self._at(T.STRUCT):
-                    raise MortError("'resource' must precede a struct declaration", line)
+                    raise MortError(
+                        "'resource' must precede a struct declaration",
+                        resource.line, resource.col)
                 structs.append(self._struct_decl(resource=True))
             elif self._at(T.STRUCT):
                 structs.append(self._struct_decl())
@@ -298,11 +301,11 @@ class Parser:
             result = self._type_name()
             return f"fn({','.join(parameters)})->{result}"
         if self._at(T.LPAREN):
-            line = self._advance().line
+            paren = self._advance()
             elements = [self._type_name()]
             if not self._at(T.COMMA):
                 raise MortError(
-                    "tuple types require at least two elements", line)
+                    "tuple types require at least two elements", paren.line, paren.col)
             while self._at(T.COMMA):
                 self._advance()
                 if self._at(T.RPAREN):
@@ -311,7 +314,7 @@ class Parser:
             self._expect(T.RPAREN, "')'")
             if len(elements) < 2:
                 raise MortError(
-                    "tuple types require at least two elements", line)
+                    "tuple types require at least two elements", paren.line, paren.col)
             return "(" + ",".join(elements) + ")"
         # pointer type: *T
         if self._at(T.STAR):
@@ -360,7 +363,7 @@ class Parser:
                 self._expect_type_close()
                 name += "<" + ",".join(args) + ">"
             return name
-        raise MortError(f"expected a type, got {tok.value!r}", tok.line)
+        raise MortError(f"expected a type, got {tok.value!r}", tok.line, tok.col)
 
     def _fn_decl(self):
         line = self._peek().line
@@ -412,7 +415,7 @@ class Parser:
         """Accept historical function names that became contextual literals."""
         token = self._peek()
         if token.type not in (T.IDENT, T.NULL):
-            raise MortError(f"expected function name, got {token.value!r}", token.line)
+            raise MortError(f"expected function name, got {token.value!r}", token.line, token.col)
         self._advance()
         return token.value
 
@@ -569,12 +572,13 @@ class Parser:
         return A.For(var, decl_type, start, end, body, line, inclusive)
 
     def _expr_or_assign(self):
-        line = self._peek().line
+        start = self._peek()
+        line = start.line
         expr = self._expression()
         if self._peek().type in ASSIGNMENT_OPS:
             op = ASSIGNMENT_OPS[self._advance().type]
             if not self._is_lvalue(expr):
-                raise MortError("invalid assignment target", line)
+                raise MortError("invalid assignment target", line, start.col)
             value = self._expression()
             self._expect(T.SEMI, "';'")
             return A.Assign(expr, value, line, op)
@@ -691,7 +695,9 @@ class Parser:
             if self._at(T.LT) and self._looks_like_call_type_args():
                 name = self._qualified_name(expr)
                 if name is None:
-                    raise MortError("only named functions can have type arguments", self._peek().line)
+                    tok = self._peek()
+                    raise MortError(
+                        "only named functions can have type arguments", tok.line, tok.col)
                 self._advance()
                 type_args = [self._type_name()]
                 while self._at(T.COMMA):
@@ -710,7 +716,8 @@ class Parser:
             elif self._at(T.LPAREN):
                 name = self._qualified_name(expr)
                 if name is None:
-                    raise MortError("only named functions can be called", self._peek().line)
+                    tok = self._peek()
+                    raise MortError("only named functions can be called", tok.line, tok.col)
                 lp = self._advance()
                 args = []
                 if not self._at(T.RPAREN):
@@ -834,7 +841,7 @@ class Parser:
                         elements.append(self._expression())
                     if len(elements) < 2:
                         raise MortError(
-                            "tuple literals require at least two elements", line)
+                            "tuple literals require at least two elements", line, t.col)
                     e = A.TupleLit(elements, line)
                 else:
                     e = first
@@ -842,7 +849,7 @@ class Parser:
                 self._no_struct_lit = saved
             self._expect(T.RPAREN, "')'")
             return e
-        raise MortError(f"unexpected token {t.value!r}", t.line)
+        raise MortError(f"unexpected token {t.value!r}", t.line, t.col)
 
     def _struct_lit(self):
         name = self._type_name()
@@ -876,7 +883,7 @@ class Parser:
         bracket = self._advance()  # '['
         line = bracket.line
         if self._at(T.RBRACKET):
-            raise MortError("empty array literal is not allowed", line)
+            raise MortError("empty array literal is not allowed", line, bracket.col)
         first = self._expression()
         if self._at(T.SEMI):                 # repeat form: [value; count]
             self._advance()

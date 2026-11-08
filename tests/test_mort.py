@@ -10221,3 +10221,25 @@ def test_comparing_void_values_is_a_checker_diagnostic(operator):
     source = f"fn f() {{}} fn main() -> int {{ if f() {operator} f() {{ return 1; }} return 0; }}"
     error = assert_located(source, "void")
     assert error.col == source.index(operator) + 1
+
+
+@pytest.mark.parametrize("source", [
+    "fn main() -> int { return 0 }",
+    "fn f() {} module m;",
+    "pub let x = 1;",
+    "resource fn f() {}",
+    "fn f(x: (i64)) {}",
+    "fn f(x: (i64,)) {}",
+    "fn f(x: 1) {}",
+    "fn 1() {}",
+    "fn main() -> int { 1 = 2; return 0; }",
+    "fn main() -> int { let x = 1<i64>(2); return 0; }",
+    "fn main() -> int { let x = 1(2); return 0; }",
+    "fn main() -> int { let x = (1,); return 0; }",
+    "fn main() -> int { let x = ; return 0; }",
+    "fn main() -> int { let x = []; return 0; }",
+], ids=["expect", "module-order", "pub", "resource", "tuple-type-one", "tuple-type-comma",
+        "type", "function-name", "assignment-target", "type-args-on-value", "call-on-value",
+        "tuple-literal", "unexpected-token", "empty-array"])
+def test_syntax_errors_carry_line_and_column(source):
+    assert_located(source)
