@@ -441,6 +441,7 @@ Hosted builtins:
 | --- | --- |
 | `print(value)` | print an integer, bool, or float followed by newline |
 | `println(*u8)` | print a zero-terminated byte string followed by newline |
+| `eprintln(*u8)` | like `println`, on standard error |
 | `assert(bool)` | terminate with a source-line diagnostic when false |
 | `alloc(u64)` | allocate bytes, returning `*void` |
 | `free(*void)` | release a prior allocation |
@@ -450,6 +451,8 @@ Hosted builtins:
 | `unix_time()` | Unix seconds as `i64` |
 | `cpu_millis()` | process CPU milliseconds as `u64` |
 | `file_*` | typed hosted file operations |
+| `arg_count()` | number of command-line arguments, program name included, as `u64` |
+| `arg_get(u64)` | zero-terminated argument string; an out-of-range index terminates with a source-line diagnostic |
 
 `len`, `slice`, and `sizeof` are available in both profiles when their operands
 are otherwise valid. File, allocation, time, printing, and assertion builtins

@@ -1,0 +1,71 @@
+// Test helper: writes the code point ranges the lexer's Unicode predicates
+// accept, so the test can compare every code point against Python's.
+//
+// Output lines: "<name> <first> <last>" in decimal, inclusive, one per range.
+
+import lexer;
+
+extern fn getenv(name: *const c_char) -> *c_char;
+
+const CP_LIMIT: u32 = 0x110000;
+
+fn dump_alpha(cp: u32) -> bool { return lx_is_alpha(cp); }
+fn dump_alnum(cp: u32) -> bool { return lx_is_alnum(cp); }
+fn dump_nonprint(cp: u32) -> bool { return !lx_is_printable(cp); }
+
+fn emit_range(out: *Buf, name: *u8, first: u32, last: u32) {
+    buf_push_z(out, name);
+    buf_push(out, ' ');
+    buf_push_u64(out, first as u64);
+    buf_push(out, ' ');
+    buf_push_u64(out, last as u64);
+    buf_push(out, 10);
+}
+
+fn test_cp(which: u32, cp: u32) -> bool {
+    if which == 0 {
+        return dump_alpha(cp);
+    }
+    if which == 1 {
+        return dump_alnum(cp);
+    }
+    return dump_nonprint(cp);
+}
+
+fn dump_table(out: *Buf, name: *u8, which: u32) {
+    let open = false;
+    let start: u32 = 0;
+    for cp: u32 in 0..CP_LIMIT {
+        let member = test_cp(which, cp);
+        if member && !open {
+            open = true;
+            start = cp;
+        } else if !member && open {
+            open = false;
+            emit_range(out, name, start, cp - 1);
+        }
+    }
+    if open {
+        emit_range(out, name, start, CP_LIMIT - 1);
+    }
+}
+
+fn main() -> int {
+    let path = getenv("MORT_LEX_OUT" as *const c_char) as *u8;
+    if path == (0 as *u8) {
+        println("unicode_dump_main: set MORT_LEX_OUT");
+        return 2;
+    }
+    let out = buf_new(65536);
+    dump_table(&out, "alpha", 0);
+    dump_table(&out, "alnum", 1);
+    dump_table(&out, "nonprint", 2);
+    let handle = file_open(path, "wb");
+    if handle == (0 as *void) {
+        println("unicode_dump_main: cannot write output");
+        return 2;
+    }
+    file_write(handle, out.data, out.len);
+    file_close(handle);
+    return 0;
+}
