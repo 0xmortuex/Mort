@@ -140,19 +140,7 @@ def generic_parts(t):
         return None
     cut = t.find("<")
     base = t[:cut]
-    inner = t[cut + 1:-1]
-    args = []
-    start = depth = 0
-    for index, char in enumerate(inner):
-        if char == "<":
-            depth += 1
-        elif char == ">":
-            depth -= 1
-        elif char == "," and depth == 0:
-            args.append(inner[start:index])
-            start = index + 1
-    args.append(inner[start:])
-    return base, args
+    return base, _split_type_list(t[cut + 1:-1])
 
 
 def _split_type_list(inner):
@@ -281,24 +269,32 @@ class Checker:
             filename=getattr(node, "filename", None),
         )
 
-    def _valid_type(self, t):
-        """A type is usable if its (possibly pointed-to / element) base is known."""
+    def _valid_type(self, t, behind_pointer=False):
+        """A type is usable if its (possibly pointed-to / element) base is known.
+
+        C spells arrays around the declared name, and codegen only does that
+        for a variable or field. An array nested in any other type has no C
+        form, except a slice of arrays behind a pointer, which is never laid out.
+        """
         t = self._resolve_alias_type(t)
         if is_ptr(t):
-            # C spells a pointer to an array inside out, so codegen has no form
-            # for it; an array is passed by pointer to its first element.
             return pointee(t) == "void" or (
-                not is_array(pointee(t)) and self._valid_type(pointee(t)))
+                not is_array(pointee(t))
+                and self._valid_type(pointee(t), behind_pointer=True))
         if is_array(t):
             elem, n = array_parts(t)
-            return n > 0 and self._valid_type(elem)
+            return n > 0 and not is_array(elem) and self._valid_type(elem)
         if is_slice(t):
-            return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
+            element = slice_elem(t)
+            return element != "void" and (
+                behind_pointer or not is_array(element)) and self._valid_type(element)
         callable_type = function_parts(t)
         if callable_type:
             parameters, result = callable_type
             return (
-                all(item != "void" and self._valid_type(item) for item in parameters)
+                all(item != "void" and not is_array(item) and self._valid_type(item)
+                    for item in parameters)
+                and not is_array(result)
                 and (result == "void" or self._valid_type(result))
             )
         tuple_type = tuple_parts(t)
@@ -1910,7 +1906,7 @@ class Checker:
                       or (st in self.enums and st not in payload_enums) or is_ptr(st))
             tgt_ok = (tgt in INT_TYPES or tgt in FLOAT_TYPES
                       or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt))
-            if not (src_ok and tgt_ok):
+            if not (src_ok and tgt_ok and self._valid_type(tgt)):
                 self._error(f"cannot cast {st} to {tgt}", e)
             if st == "null" and not is_ptr(tgt):
                 self._error(f"cannot cast null to {tgt}", e)

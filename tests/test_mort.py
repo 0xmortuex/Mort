@@ -10492,6 +10492,7 @@ def test_fuzzer_generates_every_hostile_input_class():
     generators = fuzz_module._HOSTILE
     assert {g.__name__ for g in generators} == {
         "_huge_literal", "_invalid_bytes", "_deep_nesting", "_long_chain", "_big_array_repeat",
+        "_type_shapes", "_type_like_strings", "_runaway_generics",
     }
     for generator in generators:
         rng = random.Random(7)
@@ -10715,3 +10716,45 @@ def test_nonzero_array_repeat_past_the_budget_is_located():
         "array repeat", "2000000000",
     )
     assert (error.line, error.col) == (2, 30)
+
+
+_ARRAY = "[i64; 2]"
+_ARRAY_IN_TYPE_SOURCES = {
+    "array-of-array-field": f"struct S {{ f: [{_ARRAY}; 3] }} fn main() -> int {{ return 0; }}",
+    "slice-of-array-field": f"struct S {{ f: []{_ARRAY} }} fn main() -> int {{ return 0; }}",
+    "fn-array-parameter": f"struct S {{ f: fn({_ARRAY}) -> u8 }} fn main() -> int {{ return 0; }}",
+    "fn-array-result": f"fn main() -> int {{ let f: *fn(u8) -> {_ARRAY} = null; return 0; }}",
+    "cast-pointer-to-array": f"fn main() -> int {{ let x = null as *{_ARRAY}; return 0; }}",
+}
+
+
+@pytest.mark.parametrize(
+    "source", _ARRAY_IN_TYPE_SOURCES.values(), ids=_ARRAY_IN_TYPE_SOURCES.keys())
+def test_array_nested_in_a_type_is_a_diagnostic(source):
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    assert caught.value.line is not None
+
+
+@pytest.mark.parametrize("source", [
+    "struct S { f: [*i64; 2] } fn main() -> int { return 0; }",
+    "struct S { f: [(i64, u8); 2] } fn main() -> int { return 0; }",
+    "fn main() -> int { let x: *[][i64; 2] = null; return 0; }",
+    "fn main() -> int { let x: *(i64, [i64; 2]) = null; return 0; }",
+    "struct W<T> { v: T } fn main() -> int { let x: *W<[i64; 2]> = null; return 0; }",
+], ids=["array-of-pointer", "array-of-tuple", "pointer-to-slice-of-array",
+        "tuple-with-array", "generic-of-array"])
+def test_array_positions_main_compiled_still_compile(source):
+    assert "main" in c_of(source)
+
+
+def test_cast_instantiates_its_generic_target():
+    source = ("struct W<T> { v: T } "
+              "fn main() -> int { let x = null as *W<i64>; return 0; }")
+    assert "mort_W_i64" in c_of(source)
+
+
+def test_generic_argument_with_commas_is_one_argument():
+    source = ("struct W<T> { v: T } "
+              "fn main() -> int { let x: *W<[(u8, u8); 2]> = null; return 0; }")
+    assert "main" in c_of(source)
