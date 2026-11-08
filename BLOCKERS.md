@@ -45,3 +45,9 @@ Interim: declare the exact C signature (`end: **c_char`).
   `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
   emits the two characters with separate pushes instead. T6 and T7 reproduce this
   scan's output, so fixing it changes what they must match.
+- `mort/typechecker.py:443` (`_validate_aggregate_cycles`): `for dependency in
+  graph[name]` iterates a `set`, so which of several by-value cycles is reported
+  depends on `PYTHONHASHSEED`. With `struct A { b: B, c: C } struct B { a: A }
+  struct C { a: A }` the message is either `A -> B -> A` or `A -> C -> A`. Found
+  by T4, whose reference (`selfhost/py_check_dump.py`) makes that iteration
+  insertion-ordered so the comparison is stable.
