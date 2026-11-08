@@ -72,3 +72,10 @@ clear of each one, and says so where it does:
   checker insists the enum is named exactly `Result` with two type arguments.
 - `let z: f32 = -37.5;` is "annotated f32 but the value is f64": only a bare
   literal adopts f32, and `-37.5` is a unary f64 expression.
+- `selfhost/checker.mx` on `feat/selfhost-t4` (seen only when T4 and T2c are merged
+  together): `check_main` in hosted mode does not check `test` block bodies, though
+  the Python checker does. For
+  `fn main() -> int { return 0; } test "t" { let x: u8 = 1; assert(x == 1); }`
+  Python's events include the test's `bind`, `var` and `call`; Mort's stop after
+  `fn "main"`. It fails the three generated full programs with a test block
+  (`full6`, `full7`, `full8`) in the declaration-checker differential.
