@@ -213,7 +213,7 @@ def _run_with_timeout(compile_case, timeout):
     def worker():
         try:
             compile_case()
-        except Exception as error:  # handed back to the caller's oracle below
+        except Exception as error:  # noqa: BLE001 - run_fuzz reports it as a crash
             outcome.append(error)
         else:
             outcome.append(None)
