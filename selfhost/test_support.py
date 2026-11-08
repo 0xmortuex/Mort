@@ -19,7 +19,14 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
+sys.path.insert(0, str(HERE / "tools"))
+
+import check_subset  # noqa: E402
+from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
+from mort.lexer import Lexer  # noqa: E402
+from mort.parser import Parser  # noqa: E402
+from mort.typechecker import Checker  # noqa: E402
 
 U64_MAX = 2**64 - 1
 SEED = int(os.environ.get("MORT_SELFHOST_SUPPORT_SEED", "20261108"))
@@ -360,6 +367,171 @@ def test_diag_report_does_not_end_the_program(driver):
     assert result.returncode == 0, result
     assert result.stdout == "continued\n"
     assert result.stderr == f"{first}\n{second}\n"
+
+
+# ----- structural gates: nothing may expose table order or addresses -----
+
+PUBLIC_TABLE_API = {
+    "map_new", "map_put", "map_get", "map_has", "map_len",
+    "intern_new", "intern", "intern_z", "intern_hash", "intern_hashed",
+    "intern_text", "intern_count",
+}
+INTERNAL_TABLE_FUNCTIONS = {
+    "map_with_capacity", "map_mix", "map_find_slot", "map_grow",
+    "intern_slot_for_new_entry", "intern_grow_slots", "intern_grow_entries",
+    "intern_copy",
+}
+ALLOWED_SUPPORT_EXTERNS = {"exit"}
+ALLOWED_SUPPORT_BUILTINS = {"alloc", "free", "sizeof", "eprintln"}
+
+
+def parse_source(text):
+    return Parser(Lexer(text).tokenize()).parse()
+
+
+def parse_file(path):
+    return parse_source(path.read_text(encoding="utf-8"))
+
+
+def walk(node):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        for value in vars(current).values():
+            stack.extend(check_subset.nodes_of(value))
+
+
+def table_fields(support):
+    return {
+        field.name
+        for struct in support.structs if struct.name in ("Map", "Interner")
+        for field in struct.fields
+    }
+
+
+def table_violations(programs, fields):
+    """programs: mapping of file name to parsed program."""
+    problems = []
+    for name, program in programs.items():
+        for function in program.funcs:
+            is_table_function = function.name.startswith(("map_", "intern"))
+            known = function.name in PUBLIC_TABLE_API | INTERNAL_TABLE_FUNCTIONS
+            if name == "support.mx" and is_table_function and not known:
+                problems.append(f"{function.name} is not in the reviewed table API")
+            if name == "support.mx" and is_table_function:
+                continue
+            for node in walk(function):
+                if isinstance(node, A.FieldAccess) and node.field in fields:
+                    problems.append(f"{function.name} reads table field {node.field}")
+                if isinstance(node, A.Call) and node.name in INTERNAL_TABLE_FUNCTIONS:
+                    problems.append(f"{function.name} calls {node.name}")
+    return problems
+
+
+def support_program():
+    return parse_file(HERE / "support.mx")
+
+
+def repo_programs():
+    return {path.name: parse_file(path) for path in sorted(HERE.glob("*.mx"))}
+
+
+def test_no_source_can_reach_table_internals():
+    programs = repo_programs()
+    assert table_violations(programs, table_fields(programs["support.mx"])) == []
+
+
+TABLE_LEAKS = {
+    "unreviewed_iterator": ("support.mx", "fn map_each(m: *Map) -> u64 { return 0; }"),
+    "unreviewed_interner_entry": (
+        "support.mx", "fn intern_slot_at(it: *Interner, i: u64) -> u64 { return i; }"),
+    "field_read_elsewhere": (
+        "parser.mx", "fn leak(m: *Map) -> u64 { return (*m).map_capacity; }"),
+    "internal_call_elsewhere": (
+        "checker.mx", "fn leak(m: *Map) -> u64 { return map_find_slot(m, 1); }"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(TABLE_LEAKS))
+def test_table_gate_detects_a_leak(name):
+    file_name, source = TABLE_LEAKS[name]
+    fields = table_fields(support_program())
+    assert table_violations({file_name: parse_source(source)}, fields), name
+
+
+def test_support_reaches_no_clock_environment_or_random_source():
+    support = support_program()
+    assert {extern.name for extern in support.externs} == ALLOWED_SUPPORT_EXTERNS
+    declared = {function.name for function in support.funcs}
+    declared |= {extern.name for extern in support.externs}
+    called = {node.name for node in walk(support) if isinstance(node, A.Call)}
+    assert called - declared <= ALLOWED_SUPPORT_BUILTINS
+
+
+def pointer_to_integer_casts(sources):
+    """Type-check the sources together and list casts from pointer to integer."""
+    programs = [parse_source(source) for source in sources]
+    program = A.Program(
+        [f for p in programs for f in p.funcs],
+        [s for p in programs for s in p.structs],
+        [g for p in programs for g in p.globals],
+        [e for p in programs for e in p.externs],
+        enums=[e for p in programs for e in p.enums],
+        tests=[], aliases=[])
+    Checker(program).check()
+    return [
+        node.line for node in walk(program)
+        if isinstance(node, A.Cast) and node.expr.type.startswith("*")
+        and not node.target_type.startswith("*")
+    ]
+
+
+NO_MAIN = "fn main() -> int { return 0; }"
+
+
+def test_support_never_turns_an_address_into_a_number():
+    source = (HERE / "support.mx").read_text(encoding="utf-8")
+    assert pointer_to_integer_casts([source, NO_MAIN]) == []
+
+
+def test_address_gate_detects_a_cast():
+    leak = "fn leak(p: *u8) -> u64 { return p as u64; } " + NO_MAIN
+    assert pointer_to_integer_casts([leak]) == [1]
+
+
+def compile_with_hash_seed(seed):
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import mortc; "
+        "sys.stdout.buffer.write("
+        "mortc.compile_files_to_c([sys.argv[2]]).encode('utf-8'))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(ROOT), str(HERE / "support_test_main.mx")],
+        capture_output=True, env=dict(os.environ, PYTHONHASHSEED=str(seed)), timeout=120)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_generated_c_is_independent_of_python_hash_seed():
+    reference = compile_with_hash_seed(0)
+    for seed in (1, 2, 12345):
+        assert compile_with_hash_seed(seed) == reference, seed
+    assert str(ROOT).encode() not in reference
+    assert ROOT.as_posix().encode() not in reference
+
+
+def test_repeated_runs_write_the_same_bytes(driver, tmp_path):
+    rng = random.Random(SEED)
+    interned, _ = intern_script(rng, 400)
+    mapped, _ = map_script(rng, 400)
+    ops = ["intern_new", *interned, *mapped]
+    outputs = []
+    for attempt in range(3):
+        directory = tmp_path / str(attempt)
+        directory.mkdir()
+        outputs.append(run_ops(driver, directory, ops))
+    assert outputs[0] == outputs[1] == outputs[2]
 
 
 def range_message(index, length, what):
