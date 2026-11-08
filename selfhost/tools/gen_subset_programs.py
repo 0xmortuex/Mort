@@ -626,6 +626,9 @@ class Gen:
         if op == "!":
             return E(text, "bool", lambda m, f: not operand.ev(m, f), P_UNARY)
         if operand.val is not None:
+            if operand.src.strip("()").startswith("'"):
+                # With no context the checker narrows these to u8 (BLOCKERS.md).
+                raise Unfit("unary operator directly on a character literal")
             value = -operand.val if op == "-" else ~operand.val
             if operand.ty != "lit" and not fits(operand.ty, value):
                 raise Unfit(f"{value} does not fit {operand.ty}")

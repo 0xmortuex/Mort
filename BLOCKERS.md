@@ -59,6 +59,10 @@ clear of each one, and says so where it does:
   the checker's `_unify_ints` returns `i64` for two literals with no check.
   `fn main() -> int { if 11981946837996067700 > 5 { print(1); } else { print(2); } return 0; }`
   prints 2, and `18446744073709551615 == 0 - 1` is true.
+- A unary operator on a bare character literal is narrowed to `u8` when nothing
+  gives it a type, though spec 2.3 calls the literal untyped: `print(~'\xab');`
+  prints 84 and `print(-'\xab');` prints 85, while `print(~171);` and
+  `let x: i64 = ~'\xab'; print(x);` print -172.
 - `print` takes `int64_t` (`mort_print`, `mort/codegen.py`), so a `u64` above 2^63
   prints as negative: `let x: u64 = 18446744073709551615; print(x);` prints -1.
   The spec says `print` prints an integer.

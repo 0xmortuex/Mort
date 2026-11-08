@@ -402,7 +402,7 @@ stdout, stderr and exit status never come from the compiler under test.
 `selfhost/test_generated_corpus.py` enforces them. Run with
 `MORT_SELFHOST_CORPUS_SCALE=n` for a larger corpus.
 
-- `subset` profile: 25 programs, 10,200 lines at seed 1, three of them over 1500
+- `subset` profile: 25 programs, about 10,400 lines, three of them over 1500
   lines. A `matrix` program runs every integer operator on every ordered pair of
   subset integer types, and on literals, at their edges; `trap` programs end in
   each defined runtime failure. All pass the gate and match the model.
@@ -420,4 +420,5 @@ stdout, stderr and exit status never come from the compiler under test.
   caught by the corpus, in the default test run; the real parser is not.
 - The test wires the corpus into T4's declaration-checker differential through
   `test_checker_decl_differential.compare` once that file is on the branch; until
-  T4 merges those tests skip with that reason.
+  T4 merges those tests skip with that reason. On a trial merge with T4, 32 of 35
+  passed; the other 3 hit the unchecked-test-body divergence in `BLOCKERS.md`.
