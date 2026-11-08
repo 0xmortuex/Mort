@@ -1,0 +1,287 @@
+// Python's repr() of the values that reach parser diagnostics: strings and
+// floats. Diagnostics quote a token's value with `!r`, and the differential test
+// compares them byte for byte.
+//
+// Float algorithm: the exact decimal expansion of the binary64 value, rounded
+// to 1, 2, ... 17 significant digits (half to even) until strtod reads the same
+// bits back. The rounding to N digits is the N-digit decimal closest to the
+// value, so the first that round-trips is what David Gay's shortest mode gives.
+
+import support;
+import lexer;
+
+fn pr_is_printable(c: u32) -> bool {
+    return lx_is_printable(c);
+}
+
+fn pr_decode(p: *u8, at: u64) -> u32 {
+    let b0 = p[at] as u32;
+    if b0 < 0x80 {
+        return b0;
+    }
+    if b0 < 0xE0 {
+        return ((b0 & 0x1F) << 6) | ((p[at + 1] as u32) & 0x3F);
+    }
+    if b0 < 0xF0 {
+        return ((b0 & 0x0F) << 12)
+            | (((p[at + 1] as u32) & 0x3F) << 6)
+            | ((p[at + 2] as u32) & 0x3F);
+    }
+    return ((b0 & 0x07) << 18)
+        | (((p[at + 1] as u32) & 0x3F) << 12)
+        | (((p[at + 2] as u32) & 0x3F) << 6)
+        | ((p[at + 3] as u32) & 0x3F);
+}
+
+// Text is valid UTF-8; the lexer has already checked the source.
+fn pr_push_str_repr(out: *Buf, text: Span) {
+    let has_single = false;
+    let has_double = false;
+    for i: u64 in 0..text.len {
+        if text.data[i] == 39 {
+            has_single = true;
+        }
+        if text.data[i] == 34 {
+            has_double = true;
+        }
+    }
+    let quote: u32 = 39;
+    if has_single && !has_double {
+        quote = 34;
+    }
+    buf_push(out, quote as u8);
+    let at: u64 = 0;
+    while at < text.len {
+        let c = pr_decode(text.data, at);
+        at += lx_size_of(text.data[at]);
+        if c == quote || c == 92 {
+            buf_push(out, 92);
+            buf_push(out, c as u8);
+        } else if c == 9 {
+            buf_push_z(out, "\\t");
+        } else if c == 10 {
+            buf_push_z(out, "\\n");
+        } else if c == 13 {
+            buf_push_z(out, "\\r");
+        } else if pr_is_printable(c) {
+            buf_push_cp(out, c);
+        } else if c < 0x100 {
+            buf_push_z(out, "\\x");
+            buf_push_hex2(out, c as u8);
+        } else if c < 0x10000 {
+            buf_push_z(out, "\\u");
+            buf_push_hex2(out, (c >> 8) as u8);
+            buf_push_hex2(out, (c & 0xFF) as u8);
+        } else {
+            buf_push_z(out, "\\U");
+            buf_push_hex2(out, 0);
+            buf_push_hex2(out, (c >> 16) as u8);
+            buf_push_hex2(out, ((c >> 8) & 0xFF) as u8);
+            buf_push_hex2(out, (c & 0xFF) as u8);
+        }
+    }
+    buf_push(out, quote as u8);
+}
+
+// ----- floats -----
+
+// value = 0.DIGITS * 10^point, with no leading zero in DIGITS.
+struct Decimal {
+    digits: Buf,
+    point: i64,
+}
+
+// `little` holds decimal digit values, least significant first.
+fn pr_multiply(little: *Buf, factor: u32) {
+    let carry: u32 = 0;
+    for i: u64 in 0..(*little).len {
+        let value = ((*little).data[i] as u32) * factor + carry;
+        (*little).data[i] = (value % 10) as u8;
+        carry = value / 10;
+    }
+    while carry > 0 {
+        buf_push(little, (carry % 10) as u8);
+        carry = carry / 10;
+    }
+}
+
+fn pr_exact_decimal(bits: u64) -> Decimal {
+    let fraction = bits & 0xFFFFFFFFFFFFF;
+    let biased = (bits >> 52) & 0x7FF;
+    let mantissa = fraction;
+    let exponent: i64 = -1074;
+    if biased != 0 {
+        mantissa = fraction | (1 << 52);
+        exponent = (biased as i64) - 1075;
+    }
+    let little = buf_new(32);
+    while mantissa > 0 {
+        buf_push(&little, (mantissa % 10) as u8);
+        mantissa = mantissa / 10;
+    }
+    let scale: i64 = 0;
+    if exponent >= 0 {
+        for _i: i64 in 0..exponent {
+            pr_multiply(&little, 2);
+        }
+    } else {
+        for _i: i64 in 0..(0 - exponent) {
+            pr_multiply(&little, 5);
+        }
+        scale = exponent;
+    }
+    let big = buf_new(little.len + 1);
+    let k = little.len;
+    while k > 0 {
+        k -= 1;
+        buf_push(&big, little.data[k]);
+    }
+    return Decimal { digits: big, point: (big.len as i64) + scale };
+}
+
+// The `count` most significant digits of `d`, rounded half to even. May move
+// the point (9.99 to 1 digit is 0.1 * 10^2).
+fn pr_rounded(d: *Decimal, count: u64) -> Decimal {
+    let result = buf_new(count + 1);
+    let n = (*d).digits.len;
+    let copied = count;
+    if copied > n {
+        copied = n;
+    }
+    for i: u64 in 0..copied {
+        buf_push(&result, (*d).digits.data[i]);
+    }
+    while result.len < count {
+        buf_push(&result, 0);
+    }
+    let point = (*d).point;
+    if count >= n {
+        return Decimal { digits: result, point: point };
+    }
+    let next = (*d).digits.data[count];
+    let round_up = next > 5;
+    if next == 5 {
+        let rest_zero = true;
+        for i: u64 in (count + 1)..n {
+            if (*d).digits.data[i] != 0 {
+                rest_zero = false;
+            }
+        }
+        if rest_zero {
+            round_up = (result.data[count - 1] % 2) == 1;
+        } else {
+            round_up = true;
+        }
+    }
+    if round_up {
+        let at = count;
+        loop {
+            if at == 0 {
+                // All nines: 0.99 rounds up to 1.00, that is 0.10 * 10^1.
+                result.data[0] = 1;
+                point += 1;
+                break;
+            }
+            at -= 1;
+            if result.data[at] != 9 {
+                result.data[at] += 1;
+                break;
+            }
+            result.data[at] = 0;
+        }
+    }
+    return Decimal { digits: result, point: point };
+}
+
+fn pr_push_i64(out: *Buf, value: i64) {
+    if value < 0 {
+        buf_push(out, '-');
+        buf_push_u64(out, (0 - value) as u64);
+    } else {
+        buf_push_u64(out, value as u64);
+    }
+}
+
+fn pr_round_trips(d: *Decimal, bits: u64) -> bool {
+    let text = buf_new((*d).digits.len + 32);
+    buf_push_z(&text, "0.");
+    for i: u64 in 0..(*d).digits.len {
+        buf_push(&text, 48 + (*d).digits.data[i]);
+    }
+    buf_push(&text, 'e');
+    pr_push_i64(&text, (*d).point);
+    buf_push(&text, 0);
+    let value = strtod(text.data as *const c_char, 0 as **c_char);
+    return *(&value as *u64) == bits;
+}
+
+fn pr_push_digits(out: *Buf, d: *Decimal, from: u64, to: u64) {
+    for i: u64 in from..to {
+        buf_push(out, 48 + (*d).digits.data[i]);
+    }
+}
+
+fn pr_push_zeros(out: *Buf, count: u64) {
+    for _i: u64 in 0..count {
+        buf_push(out, 48);
+    }
+}
+
+// The layout of float.__repr__ once the shortest digits are known.
+fn pr_push_float_layout(out: *Buf, d: *Decimal) {
+    let n = (*d).digits.len;
+    let point = (*d).point;
+    if point <= -4 || point > 16 {
+        pr_push_digits(out, d, 0, 1);
+        if n > 1 {
+            buf_push(out, '.');
+            pr_push_digits(out, d, 1, n);
+        }
+        buf_push(out, 'e');
+        let exponent = point - 1;
+        if exponent < 0 {
+            buf_push(out, '-');
+            exponent = 0 - exponent;
+        } else {
+            buf_push(out, '+');
+        }
+        if exponent < 10 {
+            buf_push(out, 48);
+        }
+        buf_push_u64(out, exponent as u64);
+        return;
+    }
+    if point <= 0 {
+        buf_push_z(out, "0.");
+        pr_push_zeros(out, (0 - point) as u64);
+        pr_push_digits(out, d, 0, n);
+        return;
+    }
+    let whole = point as u64;
+    if whole >= n {
+        pr_push_digits(out, d, 0, n);
+        pr_push_zeros(out, whole - n);
+        buf_push_z(out, ".0");
+        return;
+    }
+    pr_push_digits(out, d, 0, whole);
+    buf_push(out, '.');
+    pr_push_digits(out, d, whole, n);
+}
+
+// `bits` is a finite, non-negative binary64: the lexer rejects the rest.
+fn pr_push_float_repr(out: *Buf, bits: u64) {
+    if bits == 0 {
+        buf_push_z(out, "0.0");
+        return;
+    }
+    let exact = pr_exact_decimal(bits);
+    for count: u64 in 1..18 {
+        let candidate = pr_rounded(&exact, count);
+        if pr_round_trips(&candidate, bits) {
+            pr_push_float_layout(out, &candidate);
+            return;
+        }
+    }
+    sup_die("mort: internal error: no 17-digit decimal round-trips");
+}
