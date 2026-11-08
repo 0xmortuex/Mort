@@ -3,41 +3,20 @@
 ## Self-hosting
 
 Language and stdlib gaps found while writing the Mort lexer (`selfhost/`). None
-stopped the lexer. Plan and ranking: `selfhost/PLAN.md` section 8. Each is a
-separate task and is not fixed on this branch.
+stopped the lexer. Status: `selfhost/PLAN.md` section 8.
 
-### G1: no command-line access
+### G1: no command-line access (resolved)
 
-A Mort program cannot read its arguments.
+Fixed by the hosted builtins `arg_count()` and `arg_get(u64)`. An out-of-range
+index is a located runtime error. C `main` only takes arguments in programs that
+use them, so generated C for all other programs is unchanged.
+`selfhost/lex_main.mx` takes its paths as arguments.
+`selfhost/unicode_dump_main.mx`, a test helper, still reads `MORT_LEX_OUT`.
 
-```
-fn main(argc: i32, argv: **u8) -> int { ... }
-mortc: error: 'main' must take no parameters
+### G2: no way to write to stderr (resolved)
 
-let a = args();
-error: call to undefined function 'args'
-```
-
-Interim: `selfhost/lex_main.mx` reads `MORT_LEX_IN` and `MORT_LEX_OUT` from the
-environment.
-
-### G2: no way to write to stderr
-
-No builtin exists, and C's `stderr` cannot be reached from Mort.
-
-```
-eprintln("x");
-error: call to undefined function 'eprintln'
-
-extern let stderr: *void;
-error: expected 'fn', got 'let'
-
-extern fn fdopen(fd: c_int, mode: *const c_char) -> *void;
-error: conflicting types for 'fdopen'
-  (C backend; stdio.h declares it as returning FILE*)
-```
-
-Interim: diagnostics go to stdout via `println`.
+Fixed by the hosted builtin `eprintln(*u8)`, with `selfhost/support.mx`'s
+diagnostics and `selfhost/lex_main.mx` using it.
 
 ### G3: `extern fn` prototypes clash with libc headers
 

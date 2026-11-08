@@ -13,6 +13,9 @@ from .tokens import KEYWORDS
 
 _BUILTINS = {
     "alloc": "fn alloc(size: u64) -> *void",
+    "arg_count": "fn arg_count() -> u64",
+    "arg_get": "fn arg_get(index: u64) -> *u8",
+    "eprintln": "fn eprintln(text: *u8) -> void",
     "assert": "fn assert(condition: bool) -> void",
     "free": "fn free(pointer: *void) -> void",
     "len": "fn len(value) -> u64",

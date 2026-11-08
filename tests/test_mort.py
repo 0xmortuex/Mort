@@ -10227,6 +10227,149 @@ def test_examples_run(name, expected):
     assert result.stdout == expected
 
 
+# ---------- process builtins: eprintln, arg_count, arg_get ----------
+
+def _build_and_run(source, arguments=()):
+    with tempfile.TemporaryDirectory() as directory:
+        cfile = os.path.join(directory, "program.c")
+        exe = os.path.join(directory, "program.exe" if os.name == "nt" else "program")
+        with open(cfile, "w", encoding="utf-8") as handle:
+            handle.write(mortc.compile_to_c(source))
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        return subprocess.run(
+            [exe, *arguments], capture_output=True, text=True, check=False)
+
+
+@needs_cc
+def test_eprintln_writes_only_to_stderr():
+    result = _build_and_run(
+        'fn main() -> int { println("out"); eprintln("err"); return 3; }')
+    assert result.returncode == 3
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+
+
+def test_eprintln_is_rejected_for_non_strings_and_bad_arity():
+    with pytest.raises(MortError, match=r"eprintln expects a string \(\*u8\), got i64"):
+        c_of("fn main() -> int { eprintln(1); return 0; }")
+    with pytest.raises(MortError, match="eprintln expects exactly 1 argument"):
+        c_of('fn main() -> int { eprintln("a", "b"); return 0; }')
+
+
+def test_eprintln_is_rejected_in_freestanding_mode():
+    with pytest.raises(MortError, match="eprintln is not available in freestanding mode"):
+        mortc.compile_to_c('fn f() { eprintln("x"); }', freestanding=True)
+
+
+def test_eprintln_helper_is_emitted_only_when_used():
+    assert "mort_eprintln" not in c_of('fn main() -> int { println("x"); return 0; }')
+    assert "mort_eprintln" in c_of('fn main() -> int { eprintln("x"); return 0; }')
+
+
+@pytest.mark.parametrize("call", [
+    'arg_get<u8>(0)', 'eprintln<u8>("x")', 'println<u8>("x")',
+    'alloc<u8>(1)', 'free<u8>(0 as *void)', 'len<u8>("x")', 'print<u8>(1)',
+    'assert<u8>(true)', 'file_open<u8>("a", "r")', 'file_flush<u8>(0 as *void)',
+])
+def test_type_arguments_on_a_non_generic_builtin_are_a_located_error(call):
+    name = call.split("<")[0]
+    source = f"fn main() -> int {{\n{call};\nreturn 0; }}"
+    with pytest.raises(MortError) as raised:
+        c_of(source)
+    assert raised.value.msg == f"builtin {name!r} is not generic and cannot take type arguments"
+    assert raised.value.line == 2
+
+
+def test_type_arguments_stay_valid_on_generic_builtins():
+    assert "sizeof" in c_of("fn main() -> int { print(sizeof<u8>() as i64); return 0; }")
+
+
+def test_builtin_type_arguments_follow_the_declared_generic_property():
+    accepted = (
+        "fn main() -> int { let x: u32 = 7; let p = &x; "
+        "print(volatile_read<u32>(p) as i64); return 0; }"
+    )
+    assert "volatile" in c_of(accepted)
+    with pytest.raises(MortError) as raised:
+        c_of("fn main() -> int {\n  let n = 1;\n  print<u32>(n);\n  return 0; }")
+    assert raised.value.msg == "builtin 'print' is not generic and cannot take type arguments"
+    assert raised.value.line == 3
+
+
+ARGUMENT_ECHO = (
+    "fn main() -> int { "
+    "let count = arg_count(); "
+    "print(count as i64); "
+    "for i: u64 in 0..count { if i > 0 { println(arg_get(i)); } } "
+    "return 0; }"
+)
+
+
+@needs_cc
+def test_arguments_are_visible_in_order():
+    result = _build_and_run(ARGUMENT_ECHO, ["first", "two words", ""])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "4\nfirst\ntwo words\n\n"
+
+
+@needs_cc
+def test_arg_get_index_zero_is_the_program():
+    result = _build_and_run('fn main() -> int { println(arg_get(0)); return 0; }')
+    assert result.returncode == 0, result.stderr
+    assert "program" in result.stdout
+
+
+@needs_cc
+def test_arg_get_out_of_range_is_a_located_runtime_error():
+    result = _build_and_run(
+        "fn main() -> int {\nprintln(arg_get(1));\nreturn 0; }")
+    assert result.returncode == 1
+    assert result.stderr == "argument index out of bounds at Mort line 2\n"
+
+
+def test_argument_builtins_are_rejected_on_bad_use():
+    with pytest.raises(MortError, match="arg_count expects no arguments"):
+        c_of("fn main() -> int { print(arg_count(1) as i64); return 0; }")
+    with pytest.raises(MortError, match="arg_get expects exactly 1 argument"):
+        c_of("fn main() -> int { println(arg_get()); return 0; }")
+    with pytest.raises(MortError, match="arg_get index must be u64, got bool"):
+        c_of("fn main() -> int { println(arg_get(true)); return 0; }")
+
+
+@pytest.mark.parametrize("call", ["arg_count()", "arg_get(0)"])
+def test_argument_builtins_are_rejected_in_freestanding_mode(call):
+    name = call.split("(")[0]
+    with pytest.raises(MortError, match=f"{name} is not available in freestanding mode"):
+        mortc.compile_to_c(f"fn f() {{ {call}; }}", freestanding=True)
+
+
+def test_c_main_only_takes_arguments_when_a_program_uses_them():
+    assert "int main(void) { return (int)mort_main(); }" in c_of(
+        "fn main() -> int { return 0; }")
+    assert "int main(int argc, char** argv)" in c_of(
+        "fn main() -> int { print(arg_count() as i64); return 0; }")
+
+
+@needs_cc
+def test_arguments_are_available_under_the_test_runner():
+    source = (
+        'test "arguments" { assert(arg_count() == 1); println("seen"); } '
+        "fn main() -> int { return 0; }"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = os.path.join(directory, "program.mx")
+        with open(source_path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        cfile = os.path.join(directory, "program.c")
+        exe = os.path.join(directory, "program.exe" if os.name == "nt" else "program")
+        with open(cfile, "w", encoding="utf-8") as handle:
+            handle.write(mortc.compile_files_to_c([source_path], test_mode=True))
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "seen" in result.stdout
+
+
 # ---------- allow running without pytest ----------
 
 if __name__ == "__main__":

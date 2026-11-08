@@ -28,8 +28,9 @@ ALLOWED_NODES = {
     "IntLit", "CharLit", "StrLit", "BoolLit", "Var", "Unary", "Binary", "Call",
     "Cast", "StructLit", "FieldAccess", "Index", "ArrayLit",
 }
-ALLOWED_BUILTINS = {"alloc", "free", "sizeof", "println", "print",
-                    "file_open", "file_close", "file_read", "file_write"}
+ALLOWED_BUILTINS = {"alloc", "free", "sizeof", "println", "eprintln", "print",
+                    "file_open", "file_close", "file_read", "file_write",
+                    "arg_count", "arg_get"}
 
 
 def nodes_of(value):

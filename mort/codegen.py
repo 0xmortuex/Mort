@@ -1528,6 +1528,7 @@ class CodeGen:
         self.used_inl = False
         self.used_outl = False
         self.used_println = False
+        self.used_eprintln = False
         self.used_print = False
         self.used_print_float = False
         self.used_assert = False
@@ -1537,6 +1538,7 @@ class CodeGen:
         self.used_bounds = False
         self.used_time = False
         self.used_file = False
+        self.used_args = False
         self.used_threads = False
         self.used_mutexes = False
         self.used_atomics = False
@@ -1588,6 +1590,7 @@ class CodeGen:
             self._emit("#include <stdio.h>")
             if (self.used_assert or self.used_alloc or self.used_free
                     or self.used_bounds
+                    or self.used_args
                     or self.used_threads or self.used_mutexes or self.used_atomics
                     or self.used_network
                     or self.coverage
@@ -1796,6 +1799,10 @@ class CodeGen:
                     'static void mort_print_float(double v) { printf("%.17g\\n", v); }')
             if self.used_println:
                 self._emit("static void mort_println(uint8_t* text) { puts((char*)text); }")
+            if self.used_eprintln:
+                self._emit(
+                    'static void mort_eprintln(uint8_t* text) { '
+                    'fprintf(stderr, "%s\\n", (char*)text); }')
             if self.used_assert:
                 self._emit("static void mort_assert(bool condition, int64_t line) {")
                 self._emit('    if (!condition) { fprintf(stderr, "assertion failed at Mort line %lld\\n", (long long)line); exit(1); }')
@@ -1822,6 +1829,14 @@ class CodeGen:
                 self._emit(
                     "    return ((uint64_t)clock() * 1000ULL) / "
                     "(uint64_t)CLOCKS_PER_SEC;")
+                self._emit("}")
+            if self.used_args:
+                self._emit("static int mort_argc = 0;")
+                self._emit("static char** mort_argv = NULL;")
+                self._emit("static uint64_t mort_arg_count(void) { return (uint64_t)mort_argc; }")
+                self._emit("static uint8_t* mort_arg_get(uint64_t index, int64_t line) {")
+                self._emit('    if (index >= (uint64_t)mort_argc) { fprintf(stderr, "argument index out of bounds at Mort line %lld\\n", (long long)line); exit(1); }')
+                self._emit("    return (uint8_t*)mort_argv[index];")
                 self._emit("}")
             if self.used_file:
                 self._emit(
@@ -1859,8 +1874,15 @@ class CodeGen:
         # Hosted builds get a real C main that calls the user's main; a
         # freestanding object has no entry point (the bootloader supplies one).
         if not self.freestanding:
+            main_signature = (
+                "int main(int argc, char** argv)" if self.used_args
+                else "int main(void)")
+            capture_args = (
+                "mort_argc = argc; mort_argv = argv; " if self.used_args else "")
             if self.test_mode:
-                self._emit("int main(void) {")
+                self._emit(f"{main_signature} {{")
+                if capture_args:
+                    self._emit(f"    {capture_args.rstrip()}")
                 if self.coverage:
                     self._emit("    atexit(mort_coverage_write);")
                 for index, _ in enumerate(self.program.tests):
@@ -1870,10 +1892,13 @@ class CodeGen:
             else:
                 if self.coverage:
                     self._emit(
-                        "int main(void) { atexit(mort_coverage_write); "
+                        f"{main_signature} {{ {capture_args}"
+                        "atexit(mort_coverage_write); "
                         "return (int)mort_main(); }")
                 else:
-                    self._emit("int main(void) { return (int)mort_main(); }")
+                    self._emit(
+                        f"{main_signature} {{ {capture_args}"
+                        "return (int)mort_main(); }")
         return "\n".join(self.lines) + "\n"
 
     def _gen_struct(self, s):
@@ -2619,6 +2644,8 @@ class CodeGen:
                 self.used_outl = True
             elif e.name == "println":
                 self.used_println = True
+            elif e.name == "eprintln":
+                self.used_eprintln = True
             elif e.name == "print" and e.args[0].type in ("f32", "f64"):
                 self.used_print_float = True
             elif e.name == "print":
@@ -2636,6 +2663,8 @@ class CodeGen:
             elif e.name in (
                     "file_open", "file_close", "file_read", "file_write", "file_flush"):
                 self.used_file = True
+            elif e.name in ("arg_count", "arg_get"):
+                self.used_args = True
             elif e.name in (
                     "thread_spawn", "thread_join", "thread_sleep_millis"):
                 self.used_threads = True
@@ -2667,8 +2696,14 @@ class CodeGen:
                     if e.args[0].type in ("f32", "f64") else "mort_print")
             elif e.name == "println":
                 name = "mort_println"
+            elif e.name == "eprintln":
+                name = "mort_eprintln"
             elif e.name == "assert":
                 return f"mort_assert({args}, {e.line})"
+            elif e.name == "arg_get":
+                return f"mort_arg_get({args}, {e.line})"
+            elif e.name == "arg_count":
+                name = "mort_arg_count"
             elif e.name == "alloc":
                 name = "mort_alloc"
             elif e.name == "free":

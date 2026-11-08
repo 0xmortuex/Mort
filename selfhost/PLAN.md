@@ -68,8 +68,8 @@ tests show each exclusion is detected.
   (`! - ~ & *`), all binary operators, calls, `as` casts (including enum to
   integer), struct literals, field access, indexing, `sizeof<T>()`,
   `Enum.Variant`.
-- Builtins: `alloc`, `free`, `sizeof`, `println`, `print`, `file_open`,
-  `file_read`, `file_write`, `file_close`.
+- Builtins: `alloc`, `free`, `sizeof`, `println`, `eprintln`, `print`, `file_open`,
+  `file_read`, `file_write`, `file_close`, `arg_count`, `arg_get`.
 
 **Deliberately out, and why.**
 
@@ -204,7 +204,7 @@ measured data point.
 | # | Task | Depends on | Hours |
 | --- | --- | --- | ---: |
 | T1 | Lexer with differential test | none | done |
-| T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | 3 to 5 |
+| T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
 | T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | 10 to 16 |
@@ -212,12 +212,12 @@ measured data point.
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
-| T8 | Driver, import resolution, stage script, fixpoint test | T7, G1 | 4 to 8 |
-| T9 | Rejecting out-of-subset programs, CI gate | T8, G2 | 2 to 4 |
+| T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
+| T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
 | | **Remaining total** | | **70 to 120** |
 
-Not included: fixing the gaps in section 8 (2 to 5 hours), and any Python
-compiler bugs the differential tests expose.
+Not included: fixing gap G3 in section 8 if something comes to need it, and any
+Python compiler bugs the differential tests expose.
 
 Acceptance criteria:
 
@@ -266,9 +266,11 @@ one measured ratio.
 
 ## 7. Lexer status
 
-- `selfhost/lexer.mx` (1050 lines), `lexer_float.mx` (314), `lex_main.mx` (105),
-  generated `lexer_unicode.mx`, plus `unicode_dump_main.mx` (71, test helper) for
-  the exhaustive Unicode check.
+(The lexer's 1011 lines in section 1 are its size before `support.mx` existed.)
+
+- `selfhost/lexer.mx` (996 lines, after `Span` and `Buf` moved to `support.mx`),
+  `lexer_float.mx` (314), `lex_main.mx` (97), generated `lexer_unicode.mx`, plus
+  `unicode_dump_main.mx` (71, test helper) for the exhaustive Unicode check.
 - Dump format: defined at the top of `py_lex_dump.py`. Token per line:
   `line:col KIND value`, with integer values in canonical decimal, floats as
   binary64 bit patterns, and bytes other than printable ASCII escaped. On a
@@ -312,15 +314,31 @@ subset gate with a negative test per excluded construct.
 
 ## 8. Language and stdlib gaps
 
-Ranked by cost to the project. None blocked the lexer; each becomes its own
-task and exact errors are in `BLOCKERS.md`. Neither of the top two distorts the
-lexer's design: each is confined to one small driver function.
+Exact errors are in `BLOCKERS.md`.
 
-| Rank | Gap | Effect | Size |
-| ---: | --- | --- | --- |
-| G1 | No command-line access | Compiler paths come from env vars until fixed. T8 can proceed with env vars, but a usable compiler needs argv | 1 to 2h |
-| G2 | No way to write to stderr | Diagnostics go to stdout | 1 to 2h |
-| G3 | `extern fn` prototypes clash with libc headers unless the C types match exactly | Must spell signatures carefully; `FILE*` functions cannot be declared at all | 1h, or part of ROADMAP gap 8 |
+| Gap | Status |
+| --- | --- |
+| G1, command-line access | Fixed: builtins `arg_count()` and `arg_get(u64)`. An out-of-range index is a located runtime error. C `main` takes arguments only in programs that use them |
+| G2, writing to stderr | Fixed: builtin `eprintln(*u8)` |
+| G3, `extern fn` prototypes clash with libc headers | Open and not needed: the support layer's only extern is `exit` |
+
+`lex_main.mx` uses both builtins, and later drivers should too.
+
+## 9. Support layer
+
+`selfhost/support.mx` holds everything later phases share: `Span`, `Buf`,
+`U64Vec`, `PtrVec`, `Map` (u64 to u64), `Interner` and located diagnostics.
+
+- Misuse (bad index, impossible allocation) is one line on stderr and exit 2. A
+  compile error is `diag_fatal`, in `MortError.format()` shape, and exit 1.
+- Tables have no iteration API. `selfhost/test_support.py` fails if any source
+  outside the reviewed functions reads table fields or calls table internals,
+  if `support.mx` gains another table function, or if it casts a pointer to an
+  integer.
+- Interner handles count up from first appearance and are all that a table can
+  hand back. Later phases should put interner handles and vector indices in maps,
+  and must never put addresses in one.
+- `Map` has no removal. T4's scopes need a map per scope or an undo log.
 
 Two Python-side defects found by this work; separate tasks, not fixed here:
 
