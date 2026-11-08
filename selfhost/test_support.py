@@ -19,8 +19,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
+from mort.errors import MortError  # noqa: E402
+
 U64_MAX = 2**64 - 1
 SEED = int(os.environ.get("MORT_SELFHOST_SUPPORT_SEED", "20261108"))
+EXIT_DIAGNOSTIC = 1
 EXIT_INTERNAL = 2
 
 
@@ -309,6 +312,54 @@ def test_a_returned_span_survives_later_growth(driver, tmp_path):
                          ids=["empty", "single", "nul", "all_bytes"])
 def test_hash_is_the_fixed_fnv1a_function(driver, tmp_path, data):
     assert run_ops(driver, tmp_path, [f"intern_hash {data.hex()}"]) == [str(fnv1a(data))]
+
+
+# ----- diagnostics -----
+
+DIAGNOSTIC_LOCATIONS = [
+    (1, 1), (2, 7), (10, None), (None, None), (None, 4), (1048576, 4096),
+]
+DIAGNOSTIC_MESSAGES = [
+    "unexpected character '@'", "", "caf\u00e9 \u20ac \U0001f600", "100% {done}",
+    "a, b: c",
+]
+DIAGNOSTIC_PATHS = ["input.mx", "dir/sub/file name.mx", "C:\\repo\\caf\u00e9.mx"]
+
+
+@pytest.mark.parametrize("path", DIAGNOSTIC_PATHS)
+def test_diagnostic_matches_the_python_format(driver, tmp_path, path):
+    ops, expected = [], []
+    for line, col in DIAGNOSTIC_LOCATIONS:
+        for message in DIAGNOSTIC_MESSAGES:
+            ops.append(f"diag {line or 0} {col or 0} {path.encode().hex()} "
+                       f"{message.encode().hex()}")
+            text = MortError(message, line=line, col=col, filename=path).format()
+            expected.append(hex_text(text.encode()))
+    assert run_ops(driver, tmp_path, ops) == expected
+
+
+def test_diagnostic_keeps_text_after_an_embedded_nul(driver, tmp_path):
+    message = b"bad \x00 byte"
+    lines = run_ops(driver, tmp_path, [f"diag 1 2 {b'a.mx'.hex()} {message.hex()}"])
+    assert bytes.fromhex(lines[0]) == b"a.mx:1:2: error: bad \\x00 byte"
+
+
+def test_diag_fatal_exits_with_a_located_error(driver):
+    result = run_fatal(driver, "diag_fatal")
+    expected = MortError(
+        "something is wrong", line=2, col=7, filename="dir/input.mx").format()
+    assert result.returncode == EXIT_DIAGNOSTIC, result
+    assert result.stdout == ""
+    assert result.stderr == expected + "\n"
+
+
+def test_diag_report_does_not_end_the_program(driver):
+    result = run_fatal(driver, "diag_report")
+    first = MortError("first problem", line=3, col=1, filename="dir/input.mx").format()
+    second = MortError("second problem", line=4, col=1, filename="dir/input.mx").format()
+    assert result.returncode == 0, result
+    assert result.stdout == "continued\n"
+    assert result.stderr == f"{first}\n{second}\n"
 
 
 def range_message(index, length, what):

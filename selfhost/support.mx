@@ -11,6 +11,7 @@
 
 extern fn exit(status: c_int) -> void;
 
+const EXIT_DIAGNOSTIC: c_int = 1;
 const EXIT_INTERNAL: c_int = 2;
 const U64_LIMIT: u64 = 0xFFFFFFFFFFFFFFFF;
 
@@ -247,6 +248,46 @@ fn ptrvec_pop(v: *PtrVec) -> *void {
     }
     (*v).len -= 1;
     return (*v).data[(*v).len];
+}
+
+// ----- diagnostics -----
+//
+// The text is what MortError.format() in mort/errors.py produces:
+// `path:line:col: error: message`. Line 0 means no line, and column 0 no column.
+// A column is only shown with a line. A NUL in the message cannot be printed by
+// eprintln, so it appears as the four characters \x00 instead of cutting off
+// the rest of the message.
+
+fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
+    buf_push_z(out, path);
+    if line != 0 {
+        buf_push(out, ':');
+        buf_push_u64(out, line);
+        if col != 0 {
+            buf_push(out, ':');
+            buf_push_u64(out, col);
+        }
+    }
+    buf_push_z(out, ": error: ");
+    for i: u64 in 0..message.len {
+        if message.data[i] == 0 {
+            buf_push_z(out, "\\x00");
+        } else {
+            buf_push(out, message.data[i]);
+        }
+    }
+}
+
+fn diag_report(path: *u8, line: u64, col: u64, message: Span) {
+    let text = buf_new(128);
+    diag_format(&text, path, line, col, message);
+    buf_push(&text, 0);
+    eprintln(text.data);
+}
+
+fn diag_fatal(path: *u8, line: u64, col: u64, message: Span) {
+    diag_report(path, line, col, message);
+    exit(EXIT_DIAGNOSTIC);
 }
 
 // ----- hash map from u64 to u64 -----

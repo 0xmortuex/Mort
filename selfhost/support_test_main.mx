@@ -231,6 +231,20 @@ fn run_intern_op(st: *State, name: Span, c: *Cursor) -> bool {
     return true;
 }
 
+fn run_diagnostic_op(st: *State, name: Span, c: *Cursor) -> bool {
+    if !span_eq_z(name, "diag") {
+        return false;
+    }
+    let line = parse_number(c);
+    let col = parse_number(c);
+    let path = parse_hex(c);
+    let message = parse_hex(c);
+    let text = buf_new(64);
+    diag_format(&text, path.data, line, col, message);
+    emit_hex(st, buf_span(&text));
+    return true;
+}
+
 fn new_cell(value: u64) -> *void {
     let cell = sup_alloc(sizeof<u64>()) as *u64;
     *cell = value;
@@ -258,7 +272,8 @@ fn run_ops(ops_path: *u8, out_path: *u8) -> int {
         if !run_buffer_op(&state, name, &cursor)
             && !run_vector_op(&state, name, &cursor)
             && !run_map_op(&state, name, &cursor)
-            && !run_intern_op(&state, name, &cursor) {
+            && !run_intern_op(&state, name, &cursor)
+            && !run_diagnostic_op(&state, name, &cursor) {
             sup_die("support_test_main: unknown operation");
         }
         end_line(&cursor);
@@ -299,6 +314,13 @@ fn run_fatal(name: Span) -> int {
         let names = intern_new();
         intern_z(&names, "only");
         intern_text(&names, 1);
+    } else if span_eq_z(name, "diag_fatal") {
+        diag_fatal("dir/input.mx", 2, 7, span_z("something is wrong"));
+    } else if span_eq_z(name, "diag_report") {
+        diag_report("dir/input.mx", 3, 1, span_z("first problem"));
+        diag_report("dir/input.mx", 4, 1, span_z("second problem"));
+        println("continued");
+        return 0;
     } else if span_eq_z(name, "alloc_impossible") {
         sup_alloc(0xFFFFFFFFFFFFFFF0);
     } else if span_eq_z(name, "alloc_array_overflow") {
