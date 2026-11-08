@@ -29,8 +29,8 @@ _ADVERSARIAL = [
 
 # Messages from the compiler's resource limits. These must always say where.
 _LIMIT_MESSAGES = (
-    "safety limit", "decimal integer literal", "not valid UTF-8", "array repeat",
-    "does not fit",
+    "safety limit", "integer literal has", "not valid UTF-8", "array repeat",
+    "array size", "does not fit", "constant expression", "generic instantiation",
 )
 _SIZES = (16, 64, 256, 1024, 8192)
 _BINARY_OPERATORS = (
@@ -51,7 +51,10 @@ def _huge_literal(rng):
     digit = rng.choice("123456789")
     decimal = digit * length
     hexadecimal = "0x" + rng.choice("123456789ABCDEF") * length
-    literal = rng.choice((decimal, hexadecimal, "-" + hexadecimal, digit + "_0" * length))
+    literal = rng.choice((
+        decimal, hexadecimal, "-" + hexadecimal, digit + "_0" * length,
+        "0b" + "1" * length, "0o" + "7" * length,
+    ))
     return _in_main(rng.choice((
         f"let x: i64 = {literal};",
         f"let x = {literal};",
@@ -61,7 +64,8 @@ def _huge_literal(rng):
         f"let x = s[{literal}];",
         f"let x = {literal} as u8;",
         f"let x = t.{decimal};",
-        f"let x = [0; {decimal}];",
+        f"let x = [0; {literal}];",
+        f"let x: [i64; {literal}] = [0; 1];",
     )))
 
 
@@ -94,7 +98,10 @@ def _deep_nesting(rng):
 def _long_chain(rng):
     size = rng.choice(_SIZES)
     term = rng.choice(("a", "b", "1", "'x'", "null"))
-    shape = rng.randrange(5)
+    shape = rng.randrange(6)
+    if shape == 5:
+        big = "0x" + "F" * rng.choice((16, 500, 4300))
+        return _in_main("let x = " + f" {rng.choice(('*', '+', '|'))} ".join([big] * size) + ";")
     if shape == 0:
         operator = rng.choice(_BINARY_OPERATORS)
         chain = f" {operator} ".join([term] * size)
@@ -113,16 +120,62 @@ def _long_chain(rng):
 def _big_array_repeat(rng):
     if rng.random() < 0.2:
         return _in_main(" ".join(
-            f"let v{i}: [u8; 200000] = [0; 200000];" for i in range(200)))
-    count = rng.choice((1, 1000, 2 ** 31, 2000000000, 10 ** 18, 2 ** 70))
-    element = rng.choice(("0", "a", "a + a + a"))
+            f"let v{i}: [u8; 20000] = [1; 20000];" for i in range(20)))
+    count = rng.choice((1, 1000, 12000000, 2 ** 31, 2000000000, 10 ** 18, 2 ** 70))
+    element = rng.choice(("0", "1", "a", "a + a + a"))
     return _in_main(rng.choice((
         f"let x = [{element}; {count}];",
         f"let x: [i64; {count}] = [{element}; {count}];",
     )))
 
 
-_HOSTILE = (_huge_literal, _invalid_bytes, _deep_nesting, _long_chain, _big_array_repeat)
+def _type_text(rng, depth=0):
+    if depth >= 4 or rng.random() < 0.3:
+        return rng.choice(("i64", "u8", "bool", "void", "P", "E"))
+    inner = _type_text(rng, depth + 1)
+    return rng.choice((
+        f"*{inner}", f"*const {inner}", f"[{inner}; 2]", f"[]{inner}", f"[]const {inner}",
+        f"({inner}, {inner})", f"fn({inner}) -> {inner}", f"W<{inner}>",
+    ))
+
+
+def _type_shapes(rng):
+    typ = _type_text(rng)
+    declarations = "struct P { v: i64 } enum E { A } struct W<T> { v: T } "
+    return declarations + rng.choice((
+        _in_main(f"let x: {typ} = null;"),
+        _in_main(f"let x = null as {typ};"),
+        _in_main(f"let x = sizeof<{typ}>();"),
+        f"struct S {{ f: {typ} }} " + _in_main(""),
+        f"fn f(x: {typ}) {{}} " + _in_main(""),
+        f"fn f() -> {typ} {{ return null; }} " + _in_main(""),
+        f"let g: {typ} = null; " + _in_main(""),
+        "fn f<T>(x: T) {} " + _in_main(f"f<{typ}>(null);"),
+    ))
+
+
+def _type_like_strings(rng):
+    text = "".join(rng.choice(("[]", "[", "]", ";", "(", ")", ",", "*", "fn(", ")->", "<", ">", "x", "2"))
+                   for _ in range(rng.randint(1, 5)))
+    return _in_main(rng.choice((f'println("{text}");', f'asm("{text}");'))) + f' // {text}'
+
+
+def _runaway_generics(rng):
+    size = rng.choice((8, 64, 200, 390))
+    return rng.choice((
+        "fn g<T>(x: T, n: i64) -> i64 { return g(&x, n); } " + _in_main("g(1, 2);"),
+        "fn a<T>(x: T) -> i64 { return b(&x); } fn b<T>(x: T) -> i64 { return a(&x); } "
+        + _in_main("a(1);"),
+        "struct S<T> { next: *S<*T> } " + _in_main("let x: *S<i64> = null;"),
+        "struct W<T> { v: T } " + _in_main(f"let x: *{'W<' * size}i64{'>' * size} = null;"),
+        _in_main(f"let x: {'fn(' * size}i64{')->i64' * size} = null;"),
+    ))
+
+
+_HOSTILE = (
+    _huge_literal, _invalid_bytes, _deep_nesting, _long_chain, _big_array_repeat,
+    _type_shapes, _type_like_strings, _runaway_generics,
+)
 
 
 def _integer_expression(rng, depth=0):
