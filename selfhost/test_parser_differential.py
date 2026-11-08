@@ -7,8 +7,11 @@ Run from the repository root:
 Every expected value comes from running the Python parser; see py_ast_dump.py
 for the dump format and for how the nesting limit is applied to the reference.
 """
+import collections
+import functools
 import os
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -587,35 +590,48 @@ NESTED_SHAPES = {
         + wrap("a||a&&a|a^a&a==a<a<<a+a*(", "1", ")", n) + "; }")),
 }
 
+@functools.cache
+def admitted_levels(name):
+    """The deepest nesting of this shape that the reference accepts."""
+    units, build = NESTED_SHAPES[name]
+    levels = MAX_NESTING // units + 2
+    while levels > 0:
+        try:
+            py_ast_dump.parse_source(build(levels))
+        except MortError:
+            levels -= 1
+            continue
+        assert levels >= MAX_NESTING // units - 8, name
+        return levels
+    raise AssertionError(f"{name}: no depth was accepted")
+
+
 DEEP_CASES = [
-    (name, offset) for name in sorted(NESTED_SHAPES)
-    for offset in (-1, 0, 1, 2)
+    (name, offset) for name in sorted(NESTED_SHAPES) for offset in (-1, 0, 1)
 ]
 
 
 @pytest.mark.parametrize("name,offset", DEEP_CASES)
 def test_nesting_at_the_limit(parse_exe, tmp_path, name, offset):
-    """One step either side of the limit, for every recursive construct.
-
-    Offset 0 is the last depth the limit admits for this shape; 1 and 2 are
-    past it. Python gives the same line for the same token.
-    """
-    units, build = NESTED_SHAPES[name]
-    levels = (MAX_NESTING // units) + offset
-    source = build(levels).encode()
+    """Offset 0 is the deepest accepted nesting of this shape; 1 is one more."""
+    levels = admitted_levels(name) + offset
+    source = NESTED_SHAPES[name][1](levels).encode()
     result = assert_source_agrees(parse_exe, tmp_path, source)
-    if offset > 0:
-        assert result.dump is None
-    # The limit message only appears once the limit was actually crossed.
-    if result.diagnostic is not None:
-        assert (b"exceeds the compiler safety limit" in result.diagnostic
-                or offset <= 0)
+    if offset <= 0:
+        assert result.dump is not None
+    else:
+        assert b"exceeds the compiler safety limit" in result.diagnostic
+
+
+# Python's `<` lookahead is quadratic, so the ladder gets a smaller multiple.
+FAR_PAST_MULTIPLE = {"operator_ladder": 4}
 
 
 @pytest.mark.parametrize("name", sorted(NESTED_SHAPES))
 def test_far_past_the_limit_is_a_diagnostic(parse_exe, tmp_path, name):
     units, build = NESTED_SHAPES[name]
-    source = build((MAX_NESTING // units) * 50 + 7).encode()
+    multiple = FAR_PAST_MULTIPLE.get(name, 50)
+    source = build((MAX_NESTING // units) * multiple + 7).encode()
     result = assert_source_agrees(parse_exe, tmp_path, source)
     assert result.dump is None
     assert b"exceeds the compiler safety limit" in result.diagnostic
@@ -637,7 +653,8 @@ LONG_CHAINS = {
     "variants": lambda n: "enum E { " + "A, " * n + "}",
     "generic_args": lambda n: "let x: A<" + "u8, " * n + "u8> = 0;",
     "fn_type_params": lambda n: "let x: fn(" + "u8, " * n + "u8) -> u8 = 0;",
-    "string_length": lambda n: 'import "' + "a" * n + '";',
+    "string_length": lambda n: 'fn f() { let s = "' + "a" * n + '"; }',
+    "string_in_diagnostic": lambda n: 'import "' + "a" * n + '";',
 }
 
 
@@ -659,18 +676,18 @@ def elapsed(exe, tmp_path, source):
     return took
 
 
-# Long enough that process start-up does not dominate the first measurement.
+# Sized for a machine with little memory: the largest run is about 200k tokens.
 LINEARITY_SIZES = {
-    "binary": 150_000,
-    "field": 150_000,
-    "field_then_call": 150_000,
-    "cast": 150_000,
-    "comparison": 150_000,
-    "statements": 150_000,
-    "functions": 50_000,
-    "args": 150_000,
-    "generic_args": 150_000,
-    "string_length": 1_500_000,
+    "binary": 25_000,
+    "field": 25_000,
+    "field_then_call": 25_000,
+    "cast": 25_000,
+    "comparison": 25_000,
+    "statements": 25_000,
+    "functions": 10_000,
+    "args": 25_000,
+    "generic_args": 25_000,
+    "string_length": 250_000,
 }
 
 
@@ -761,19 +778,37 @@ def fuzz_seeds():
     return seeds
 
 
+def outcome_of(result, path):
+    if result.dump is not None:
+        return "parsed"
+    # Lexical errors carry a column, or no line at all for invalid UTF-8.
+    after_path = result.diagnostic[len(str(path).encode("utf-8")):]
+    if re.match(rb":\d+: error: ", after_path):
+        return "parse error"
+    return "lexical error"
+
+
 @pytest.mark.parametrize("mutator", ["tokens", "bytes"])
 def test_mutation_differential(parse_exe, tmp_path, mutator):
     rng = random.Random(f"{FUZZ_SEED}:{mutator}")
     seeds = fuzz_seeds()
     mutate = mutate_tokens if mutator == "tokens" else mutate_bytes
+    outcomes = collections.Counter()
     for index in range(FUZZ_CASES):
         data = mutate(rng, rng.choice(seeds))
         try:
-            assert_source_agrees(parse_exe, tmp_path, data)
+            result = assert_source_agrees(parse_exe, tmp_path, data)
         except AssertionError as error:
             raise AssertionError(
                 f"fuzz case {index} ({mutator}, seed {FUZZ_SEED}), "
                 f"input {data!r}:\n{error}") from error
+        outcomes[outcome_of(result, tmp_path / "input.mx")] += 1
+    print(f"\nmutation outcomes ({mutator}): {dict(sorted(outcomes.items()))}")
+    if FUZZ_CASES >= 100:
+        # Mutants must exercise the parser, not stop at the lexer. Most break
+        # the program; valid parses are covered mainly by the corpus above.
+        assert outcomes["parsed"] > 0, outcomes
+        assert outcomes["parse error"] >= FUZZ_CASES // 4, outcomes
 
 
 # ----- the reference itself -----

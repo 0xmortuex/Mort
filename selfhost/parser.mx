@@ -1140,7 +1140,7 @@ fn ps_primary(p: *Parser) -> *Node {
         return ps_paren(p);
     }
     ps_fail_unexpected(p, t);
-    return t as *Node;
+    return 0 as *Node;  // not reached: ps_fail_unexpected exits
 }
 
 // ----- program -----
