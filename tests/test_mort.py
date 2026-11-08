@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -10091,3 +10092,25 @@ def test_array_repeat_budget_counts_the_element_text():
 
 def test_large_array_repeat_within_the_budget_still_compiles():
     assert "0, 0" in c_of("fn main() -> int { let x: [u8; 100000] = [0; 100000]; return 0; }")
+
+
+def test_generic_lookahead_is_linear_on_long_less_than_chains():
+    # Every '<' used to rescan to the end of the statement: 8000 terms took
+    # over 40 seconds.
+    chain = " < ".join(["a"] * 8000)
+    started = time.perf_counter()
+    with pytest.raises(MortError):
+        c_of(f"fn main() -> int {{ let a: i64 = 1; let x = {chain}; return 0; }}")
+    assert time.perf_counter() - started < 10
+
+
+@pytest.mark.parametrize("expression,kept", [
+    ("pick<i64>(1)", "mort_pick_i64"),
+    ("pick<Box<i64>>(Box<i64> { v: 1 }).v", "mort_pick_Box_i64"),
+], ids=["flat", "nested-closed-by-shift"])
+def test_generic_call_lookahead_still_finds_type_arguments(expression, kept):
+    source = (
+        "struct Box<T> { v: T } fn pick<T>(x: T) -> T { return x; } "
+        f"fn main() -> int {{ let y = {expression}; return y as int; }}"
+    )
+    assert kept in c_of(source)

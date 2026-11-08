@@ -52,6 +52,7 @@ class Parser:
         # True while parsing an if/while condition: suppresses struct literals
         # so `if p {` is a block, not `if (p{...})`. Reset inside parentheses.
         self._no_struct_lit = False
+        self._angle_tables = {}
 
     # ----- token helpers -----
     def _peek(self, offset=0):
@@ -692,27 +693,41 @@ class Parser:
             else:
                 return expr
 
+    def _angle_closes(self, split_shr):
+        """Map each '<' token index to the index of the token that closes it.
+
+        Built once per token stream so lookahead stays linear: rescanning from
+        every '<' made a long comparison chain quadratic. An angle is left out
+        when a ';' or end of input comes first, or when it is the inner angle
+        of a '>>' that overshoots it. Only tokens after a '<' decide its entry,
+        so _expect_type_close splitting tokens behind the parser cannot stale it.
+        """
+        if split_shr in self._angle_tables:
+            return self._angle_tables[split_shr]
+        closes = {}
+        open_angles = []
+        for index, token in enumerate(self.toks):
+            if token.type == T.LT:
+                open_angles.append(index)
+            elif token.type == T.GT:
+                if open_angles:
+                    closes[open_angles.pop()] = index
+            elif token.type == T.SHR and split_shr:
+                if open_angles:
+                    open_angles.pop()
+                if open_angles:
+                    closes[open_angles.pop()] = index
+            elif token.type in (T.SEMI, T.EOF):
+                open_angles.clear()
+        self._angle_tables[split_shr] = closes
+        return closes
+
+    def _angle_closes_before(self, offset, follower, split_shr=True):
+        close = self._angle_closes(split_shr).get(self.i + offset)
+        return close is not None and self.toks[close + 1].type == follower
+
     def _looks_like_call_type_args(self):
-        depth = 0
-        offset = 0
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LPAREN
-            elif token_type == T.SHR:
-                depth -= 2
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LPAREN
-                if depth < 0:
-                    return False
-            elif token_type in (T.SEMI, T.EOF):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(0, T.LPAREN)
 
     @staticmethod
     def _qualified_name(expr):
@@ -808,43 +823,12 @@ class Parser:
         offset = 1
         if self._peek(offset).type != T.LT:
             return self._peek(offset).type == T.LBRACE
-        depth = 0
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LBRACE
-            elif token_type in (T.SEMI, T.EOF):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(offset, T.LBRACE, split_shr=False)
 
     def _looks_like_generic_qualifier(self):
         if self._peek().type != T.IDENT or self._peek(1).type != T.LT:
             return False
-        depth = 0
-        offset = 1
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.DOT
-            elif token_type == T.SHR:
-                depth -= 2
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.DOT
-                if depth < 0:
-                    return False
-            elif token_type in (T.SEMI, T.EOF):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(1, T.DOT)
 
     def _array_lit(self):
         bracket = self._advance()  # '['
