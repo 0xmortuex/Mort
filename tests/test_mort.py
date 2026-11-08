@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -10114,3 +10115,51 @@ def test_generic_call_lookahead_still_finds_type_arguments(expression, kept):
         f"fn main() -> int {{ let y = {expression}; return y as int; }}"
     )
     assert kept in c_of(source)
+
+
+_NESTING_BODIES = {
+    "less-than": "let x = " + " < ".join(["a"] * 8000) + ";",
+    "plus": "let x = " + " + ".join(["a"] * 8000) + ";",
+    "cast": "let x = a" + " as i64" * 8000 + ";",
+    "field": "let x = a" + ".f" * 8000 + ";",
+    "index": "let x = a" + "[0]" * 8000 + ";",
+    "unary": "let x = " + "- " * 8000 + "a;",
+    "parens": "let x = " + "(" * 8000 + "a" + ")" * 8000 + ";",
+    "unclosed-parens": "let x = " + "(" * 8000,
+    "array": "let x = " + "[" * 8000,
+    "blocks": "{ " * 8000 + "}" * 8000,
+    "if": "if b { " * 8000 + "}" * 8000,
+    "pointer-type": "let x: " + "*" * 8000 + "i64 = null;",
+    "tuple-type": "let x: " + "(" * 8000,
+}
+
+
+@pytest.mark.parametrize("body", _NESTING_BODIES.values(), ids=_NESTING_BODIES.keys())
+def test_nesting_past_the_limit_is_a_located_diagnostic(body):
+    assert_located(
+        f"fn main() -> int {{\n  let a: i64 = 1; let b: bool = true;\n  {body}\n  return 0; }}",
+        "compiler safety limit",
+    )
+
+
+def test_nesting_limit_reports_file_line_and_column(tmp_path, capsys):
+    path = tmp_path / "deep.mx"
+    path.write_text(
+        "fn main() -> int {\n  let a: i64 = 1;\n  let x = "
+        + " + ".join(["a"] * 8000) + ";\n  return 0;\n}\n",
+        encoding="utf-8",
+    )
+    assert mortc.main([str(path), "--check"]) == 1
+    assert re.search(r"deep\.mx:3:\d+: error: source nesting", capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("body", [
+    "let x = " + " + ".join(["a"] * 380) + ";",
+    "let x = a" + " as i64" * 380 + ";",
+    "let x = " + "- " * 380 + "a;",
+    "{ " * 380 + "}" * 380,
+    "if b { " * 190 + "}" * 190,
+    "if b { } " + "else if b { } " * 700,
+], ids=["plus", "cast", "unary", "blocks", "if", "else-if"])
+def test_nesting_inside_the_limit_still_compiles(body):
+    c_of(f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}")
