@@ -60,18 +60,16 @@ def lex_exe(tmp_path_factory):
 
 
 def run_mort_lexer(exe, source_path, out_path):
-    """Run the Mort lexer; returns (exit code, stdout, dump text)."""
+    """Run the Mort lexer; returns (exit code, stderr, dump text)."""
     if out_path.exists():
         out_path.unlink()
-    env = dict(os.environ)
-    env["MORT_LEX_IN"] = str(source_path)
-    env["MORT_LEX_OUT"] = str(out_path)
     result = subprocess.run(
-        [str(exe)], env=env, capture_output=True, timeout=120)
+        [str(exe), str(source_path), str(out_path)],
+        capture_output=True, timeout=120)
     assert out_path.exists(), (
         f"no dump written for {source_path}: exit {result.returncode}\n"
         f"{result.stdout!r}\n{result.stderr!r}")
-    return result.returncode, result.stdout, out_path.read_bytes().decode("ascii")
+    return result.returncode, result.stderr, out_path.read_bytes().decode("ascii")
 
 
 def first_difference(expected, actual):
@@ -86,16 +84,16 @@ def first_difference(expected, actual):
 
 def assert_agrees(exe, source_path, out_path):
     expected = py_lex_dump.dump_file(source_path)
-    code, stdout, actual = run_mort_lexer(exe, source_path, out_path)
+    code, stderr, actual = run_mort_lexer(exe, source_path, out_path)
     assert expected == actual, (
         f"{source_path}: {first_difference(expected, actual)}")
     # A lexical error is exit 1 with a located diagnostic; anything else
     # (a crash, a signal, a runtime assertion) is a failure of the lexer.
     if "\nERROR " in "\n" + expected:
         assert code == 1, f"{source_path}: expected exit 1, got {code}"
-        assert b": error: " in stdout, f"{source_path}: no diagnostic: {stdout!r}"
+        assert b": error: " in stderr, f"{source_path}: no diagnostic: {stderr!r}"
     else:
-        assert code == 0, f"{source_path}: expected exit 0, got {code}: {stdout!r}"
+        assert code == 0, f"{source_path}: expected exit 0, got {code}: {stderr!r}"
 
 
 def test_corpus_is_not_empty():
@@ -750,6 +748,11 @@ SUBSET_SCOPE_VIOLATIONS = {
                             "array value G"),
     "array_pointer_global_type": ("let P: *[u8; 2] = 0 as *u8;", "outside the subset"),
     "array_nested_inferred_global": ("let G = [[1, 2], [3, 4]];", "nested array"),
+    # An enum path head is exempt; the same name used bare is still a value.
+    "fn_bare_with_enum_of_same_name": ("enum g { A } fn g() { } fn f() { let h = g; }",
+                                       "function value g"),
+    "builtin_bare_with_enum_of_same_name": ("enum len { A } fn f() { let h = len; }",
+                                            "function value len"),
 }
 
 SUBSET_SCOPE_ACCEPTED = {
@@ -765,6 +768,9 @@ SUBSET_SCOPE_ACCEPTED = {
     "else_shadow": "fn g() { } fn f() { if true { } else { let g = 1; let h = g; } }",
     "direct_call_after_shadow_ended": ("fn g() -> u64 { return 1; } "
                                        "fn f() -> u64 { { let g = 1; } return g(); }"),
+    "enum_path_named_like_builtin": "enum len { A, B } fn f() -> int { let e = len.B; return e as int; }",
+    "enum_path_named_like_function": ("enum g { A, B } fn g() { } "
+                                      "fn f() -> int { let e = g.B; return e as int; }"),
     "array_index": "let G: [u8; 2] = [1, 2]; fn f(i: u64) -> u8 { G[i] = 3; return G[i]; }",
     "array_element_address": "let G: [u8; 2] = [1, 2]; fn f() -> *u8 { return &G[0]; }",
     "array_name_shadowed_by_local": ("let G: [u8; 2] = [1, 2]; fn f() -> u64 { let G: u64 = 1; "
@@ -896,25 +902,34 @@ def test_reference_decoder_matches_the_python_compilers():
 def test_diagnostic_has_file_line_col(lex_exe, tmp_path):
     source = tmp_path / "input.mx"
     source.write_bytes(b"fn main() {\n  let @;\n}\n")
-    code, stdout, _ = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
+    code, stderr, _ = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
     assert code == 1
-    text = stdout.decode("ascii")
+    text = stderr.decode("ascii")
     assert re.search(
         r"input\.mx:2:7: error: unexpected character '@'", text), text
 
 
 def test_missing_input_is_a_clean_failure(lex_exe, tmp_path):
-    env = dict(os.environ)
-    env["MORT_LEX_IN"] = str(tmp_path / "does-not-exist.mx")
-    env["MORT_LEX_OUT"] = str(tmp_path / "out.txt")
-    result = subprocess.run([str(lex_exe)], env=env, capture_output=True, timeout=60)
+    result = subprocess.run(
+        [str(lex_exe), str(tmp_path / "does-not-exist.mx"), str(tmp_path / "out.txt")],
+        capture_output=True, timeout=60)
     assert result.returncode == 2
-    assert b"cannot read" in result.stdout
+    assert b"cannot read" in result.stderr
+    assert result.stdout == b""
 
 
-def test_missing_environment_is_a_clean_failure(lex_exe):
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("MORT_LEX_IN", "MORT_LEX_OUT")}
+@pytest.mark.parametrize("arguments", [[], ["only-one"], ["a", "b", "c"]],
+                         ids=["none", "one", "three"])
+def test_wrong_argument_count_is_a_clean_failure(lex_exe, arguments):
+    result = subprocess.run(
+        [str(lex_exe), *arguments], capture_output=True, timeout=60)
+    assert result.returncode == 2
+    assert b"usage: lex_main" in result.stderr
+    assert result.stdout == b""
+
+
+def test_environment_variables_are_not_consulted(lex_exe, tmp_path):
+    env = dict(os.environ, MORT_LEX_IN=str(tmp_path / "a"), MORT_LEX_OUT=str(tmp_path / "b"))
     result = subprocess.run([str(lex_exe)], env=env, capture_output=True, timeout=60)
     assert result.returncode == 2
-    assert b"MORT_LEX_IN" in result.stdout
+    assert b"usage: lex_main" in result.stderr

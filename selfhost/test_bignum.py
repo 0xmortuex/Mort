@@ -551,3 +551,35 @@ def test_mutant_is_detected(tmp_path, name, old, new):
 
 def test_mutant_corpus_passes_on_the_real_library(bn_exe, tmp_path):
     assert not mutant_is_caught(bn_exe, tmp_path, (31, 32, 33))
+
+
+# Negating zero must leave it non-negative; `-0` reaches bn_neg through the parse.
+NEG_ZERO_CASES = [
+    ("neg 10 0", UNARY_ORACLES["neg"](0)),
+    ("neg 16 -0", UNARY_ORACLES["neg"](0)),
+    ("val 10 -0", UNARY_ORACLES["val"](0)),
+    ("isneg 10 -0", UNARY_ORACLES["isneg"](0)),
+]
+
+
+def run_neg_zero_cases(exe, work):
+    lines = [line for line, _ in NEG_ZERO_CASES]
+    expected = [want for _, want in NEG_ZERO_CASES]
+    status, stream, output = run_driver(exe, lines, work)
+    return lines, expected, status, stream, output
+
+
+def test_negating_zero_stays_canonical(bn_exe, tmp_path):
+    lines, expected, status, stream, output = run_neg_zero_cases(bn_exe, tmp_path)
+    assert_agrees(lines, expected, status, stream, output)
+
+
+def test_negating_zero_cases_catch_the_mutant(tmp_path):
+    """The fixed cases alone expose it, without the 300,000-case differential."""
+    source = tmp_path / "src"
+    source.mkdir()
+    sources_with_mutation(source, "neg_of_zero_negative",
+                          "    r.neg = !a.neg && a.len > 0;", "    r.neg = !a.neg;")
+    exe = build_driver(source, tmp_path)
+    _, expected, status, _, output = run_neg_zero_cases(exe, tmp_path)
+    assert status != 0 or output != expected, "mutant neg_of_zero_negative survived"

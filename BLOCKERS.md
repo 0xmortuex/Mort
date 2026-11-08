@@ -3,41 +3,20 @@
 ## Self-hosting
 
 Language and stdlib gaps found while writing the Mort lexer (`selfhost/`). None
-stopped the lexer. Plan and ranking: `selfhost/PLAN.md` section 8. Each is a
-separate task and is not fixed on this branch.
+stopped the lexer. Status: `selfhost/PLAN.md` section 8.
 
-### G1: no command-line access
+### G1: no command-line access (resolved)
 
-A Mort program cannot read its arguments.
+Fixed by the hosted builtins `arg_count()` and `arg_get(u64)`. An out-of-range
+index is a located runtime error. C `main` only takes arguments in programs that
+use them, so generated C for all other programs is unchanged.
+`selfhost/lex_main.mx` takes its paths as arguments.
+`selfhost/unicode_dump_main.mx`, a test helper, still reads `MORT_LEX_OUT`.
 
-```
-fn main(argc: i32, argv: **u8) -> int { ... }
-mortc: error: 'main' must take no parameters
+### G2: no way to write to stderr (resolved)
 
-let a = args();
-error: call to undefined function 'args'
-```
-
-Interim: `selfhost/lex_main.mx` reads `MORT_LEX_IN` and `MORT_LEX_OUT` from the
-environment.
-
-### G2: no way to write to stderr
-
-No builtin exists, and C's `stderr` cannot be reached from Mort.
-
-```
-eprintln("x");
-error: call to undefined function 'eprintln'
-
-extern let stderr: *void;
-error: expected 'fn', got 'let'
-
-extern fn fdopen(fd: c_int, mode: *const c_char) -> *void;
-error: conflicting types for 'fdopen'
-  (C backend; stdio.h declares it as returning FILE*)
-```
-
-Interim: diagnostics go to stdout via `println`.
+Fixed by the hosted builtin `eprintln(*u8)`, with `selfhost/support.mx`'s
+diagnostics and `selfhost/lex_main.mx` using it.
 
 ### G3: `extern fn` prototypes clash with libc headers
 
@@ -65,3 +44,9 @@ Interim: declare the exact C signature (`end: **c_char`).
   `let G: [u8; 2] = [1, 2]; fn main() -> int { let p = &G; return 0; }`. The
   subset gate rejects this program; the compiler crash itself is not fixed on
   this branch.
+- `mort/codegen.py:205` (`_collect_slice_types`) walks every string in the AST
+  and treats any that starts with `[]` as a slice type, string literals included.
+  `fn main() -> int { println("[]"); return 0; }` raises an uncaught
+  `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
+  emits the two characters with separate pushes instead. T6 and T7 reproduce this
+  scan's output, so fixing it changes what they must match.

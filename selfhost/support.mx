@@ -1,23 +1,56 @@
-// PLACEHOLDER until feat/selfhost-t2 merges. T2's support.mx has these two
-// functions with these exact signatures and supersedes this file; take T2's
-// version whole when the two branches meet. It is only here so bignum.mx can be
-// built and tested on a branch that does not have T2. Deliberately no Span, Buf
-// or anything else T2 owns, and deliberately stdout: this tree has no eprintln.
+// Support layer for the Mort compiler written in Mort (PLAN.md, task T2).
+//
+// Failure policy: misuse (a bad index, an allocation that cannot succeed) prints
+// one line to stderr and exits with status 2. Nothing here returns a null
+// pointer or reads out of bounds.
+//
+// Memory discipline: a compiler is a short batch process, so only growth frees
+// memory; everything else is released at exit.
+//
+// Determinism: nothing depends on addresses, hash seeds, time or environment.
 
 extern fn exit(status: c_int) -> void;
 
-const SUP_EXIT_INTERNAL: c_int = 2;
+const EXIT_DIAGNOSTIC: c_int = 1;
+const EXIT_INTERNAL: c_int = 2;
+const U64_LIMIT: u64 = 0xFFFFFFFFFFFFFFFF;
 
+// ----- failure and allocation -----
+
+// Uses no heap memory, so that it is safe to call when allocation has failed.
 fn sup_die(message: *u8) {
-    println(message);
-    exit(SUP_EXIT_INTERNAL);
+    eprintln(message);
+    exit(EXIT_INTERNAL);
 }
 
-fn sup_alloc_array(count: u64, size: u64) -> *void {
-    if size != 0 && count > 0xFFFFFFFFFFFFFFFF / size {
-        sup_die("mort: internal error: allocation size overflow");
+fn sup_die_index(kind: *u8, index: u64, length: u64) {
+    let text = buf_new(128);
+    buf_push_z(&text, "mort: internal error: index ");
+    buf_push_u64(&text, index);
+    buf_push_z(&text, " out of range for ");
+    buf_push_z(&text, kind);
+    buf_push_z(&text, " of length ");
+    buf_push_u64(&text, length);
+    buf_push(&text, 0);
+    sup_die(text.data);
+}
+
+// The largest byte count the target's size_t can hold. `alloc` narrows its u64
+// argument to size_t, so a larger request would silently become a small one.
+fn sup_size_limit() -> u64 {
+    let width = sizeof<*void>();
+    if width >= 8 {
+        return U64_LIMIT;
     }
-    let request = count * size;
+    return ((1 as u64) << (width * 8)) - 1;
+}
+
+fn sup_alloc(size: u64) -> *void {
+    if size > sup_size_limit() {
+        sup_die("mort: out of memory");
+    }
+    // malloc(0) may legally return null, which must not read as exhaustion.
+    let request = size;
     if request == 0 {
         request = 1;
     }
@@ -26,4 +59,491 @@ fn sup_alloc_array(count: u64, size: u64) -> *void {
         sup_die("mort: out of memory");
     }
     return pointer;
+}
+
+fn sup_alloc_array(count: u64, size: u64) -> *void {
+    if size != 0 && count > sup_size_limit() / size {
+        sup_die("mort: internal error: allocation size overflow");
+    }
+    return sup_alloc(count * size);
+}
+
+fn sup_grown_capacity(capacity: u64) -> u64 {
+    if capacity == 0 {
+        return 8;
+    }
+    if capacity > sup_size_limit() / 2 {
+        sup_die("mort: internal error: capacity overflow");
+    }
+    return capacity * 2;
+}
+
+// ----- byte spans -----
+
+struct Span {
+    data: *u8,
+    len: u64,
+}
+
+fn span_z(text: *u8) -> Span {
+    let n: u64 = 0;
+    while text[n] != 0 {
+        n += 1;
+    }
+    return Span { data: text, len: n };
+}
+
+fn span_eq(a: Span, b: Span) -> bool {
+    if a.len != b.len {
+        return false;
+    }
+    for i: u64 in 0..a.len {
+        if a.data[i] != b.data[i] {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn span_eq_z(a: Span, text: *u8) -> bool {
+    return span_eq(a, span_z(text));
+}
+
+// ----- growable byte buffers -----
+
+struct Buf {
+    data: *u8,
+    len: u64,
+    cap: u64,
+}
+
+fn buf_new(cap: u64) -> Buf {
+    return Buf { data: sup_alloc(cap) as *u8, len: 0, cap: cap };
+}
+
+fn buf_push(b: *Buf, byte: u8) {
+    if (*b).len == (*b).cap {
+        let cap = sup_grown_capacity((*b).cap);
+        let data = sup_alloc(cap) as *u8;
+        for i: u64 in 0..(*b).len {
+            data[i] = (*b).data[i];
+        }
+        free((*b).data as *void);
+        (*b).data = data;
+        (*b).cap = cap;
+    }
+    (*b).data[(*b).len] = byte;
+    (*b).len += 1;
+}
+
+fn buf_push_z(b: *Buf, text: *u8) {
+    let i: u64 = 0;
+    while text[i] != 0 {
+        buf_push(b, text[i]);
+        i += 1;
+    }
+}
+
+fn buf_push_span(b: *Buf, s: Span) {
+    for i: u64 in 0..s.len {
+        buf_push(b, s.data[i]);
+    }
+}
+
+fn buf_push_u64(b: *Buf, value: u64) {
+    if value >= 10 {
+        buf_push_u64(b, value / 10);
+    }
+    buf_push(b, 48 + (value % 10) as u8);
+}
+
+fn buf_span(b: *Buf) -> Span {
+    return Span { data: (*b).data, len: (*b).len };
+}
+
+// ----- vectors -----
+//
+// Hand-written per element type because the subset has no generics. Every
+// access is checked, and an element's position never depends on anything but
+// the order of pushes.
+
+struct U64Vec {
+    data: *u64,
+    len: u64,
+    cap: u64,
+}
+
+fn u64vec_new() -> U64Vec {
+    let cap: u64 = 8;
+    return U64Vec { data: sup_alloc_array(cap, sizeof<u64>()) as *u64, len: 0, cap: cap };
+}
+
+fn u64vec_push(v: *U64Vec, value: u64) {
+    if (*v).len == (*v).cap {
+        let cap = sup_grown_capacity((*v).cap);
+        let data = sup_alloc_array(cap, sizeof<u64>()) as *u64;
+        for i: u64 in 0..(*v).len {
+            data[i] = (*v).data[i];
+        }
+        free((*v).data as *void);
+        (*v).data = data;
+        (*v).cap = cap;
+    }
+    (*v).data[(*v).len] = value;
+    (*v).len += 1;
+}
+
+fn u64vec_get(v: *U64Vec, index: u64) -> u64 {
+    if index >= (*v).len {
+        sup_die_index("u64vec", index, (*v).len);
+    }
+    return (*v).data[index];
+}
+
+fn u64vec_set(v: *U64Vec, index: u64, value: u64) {
+    if index >= (*v).len {
+        sup_die_index("u64vec", index, (*v).len);
+    }
+    (*v).data[index] = value;
+}
+
+fn u64vec_pop(v: *U64Vec) -> u64 {
+    if (*v).len == 0 {
+        sup_die("mort: internal error: pop from an empty u64vec");
+    }
+    (*v).len -= 1;
+    return (*v).data[(*v).len];
+}
+
+struct PtrVec {
+    data: **void,
+    len: u64,
+    cap: u64,
+}
+
+fn ptrvec_new() -> PtrVec {
+    let cap: u64 = 8;
+    return PtrVec { data: sup_alloc_array(cap, sizeof<*void>()) as **void, len: 0, cap: cap };
+}
+
+fn ptrvec_push(v: *PtrVec, value: *void) {
+    if (*v).len == (*v).cap {
+        let cap = sup_grown_capacity((*v).cap);
+        let data = sup_alloc_array(cap, sizeof<*void>()) as **void;
+        for i: u64 in 0..(*v).len {
+            data[i] = (*v).data[i];
+        }
+        free((*v).data as *void);
+        (*v).data = data;
+        (*v).cap = cap;
+    }
+    (*v).data[(*v).len] = value;
+    (*v).len += 1;
+}
+
+fn ptrvec_get(v: *PtrVec, index: u64) -> *void {
+    if index >= (*v).len {
+        sup_die_index("ptrvec", index, (*v).len);
+    }
+    return (*v).data[index];
+}
+
+fn ptrvec_set(v: *PtrVec, index: u64, value: *void) {
+    if index >= (*v).len {
+        sup_die_index("ptrvec", index, (*v).len);
+    }
+    (*v).data[index] = value;
+}
+
+fn ptrvec_pop(v: *PtrVec) -> *void {
+    if (*v).len == 0 {
+        sup_die("mort: internal error: pop from an empty ptrvec");
+    }
+    (*v).len -= 1;
+    return (*v).data[(*v).len];
+}
+
+// ----- diagnostics -----
+//
+// The text is what MortError.format() in mort/errors.py produces:
+// `path:line:col: error: message`. Line 0 means no line, and column 0 no column.
+// A column is only shown with a line. A NUL in the message cannot be printed by
+// eprintln, so it appears as the four characters \x00 instead of cutting off
+// the rest of the message.
+
+fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
+    if path[0] == 0 {
+        // MortError with no filename: `error (line N): message`, no column.
+        buf_push_z(out, "error");
+        if line != 0 {
+            buf_push_z(out, " (line ");
+            buf_push_u64(out, line);
+            buf_push(out, ')');
+        }
+        buf_push_z(out, ": ");
+    } else {
+        buf_push_z(out, path);
+        if line != 0 {
+            buf_push(out, ':');
+            buf_push_u64(out, line);
+            if col != 0 {
+                buf_push(out, ':');
+                buf_push_u64(out, col);
+            }
+        }
+        buf_push_z(out, ": error: ");
+    }
+    for i: u64 in 0..message.len {
+        if message.data[i] == 0 {
+            buf_push_z(out, "\\x00");
+        } else {
+            buf_push(out, message.data[i]);
+        }
+    }
+}
+
+fn diag_report(path: *u8, line: u64, col: u64, message: Span) {
+    let text = buf_new(128);
+    diag_format(&text, path, line, col, message);
+    buf_push(&text, 0);
+    eprintln(text.data);
+}
+
+fn diag_fatal(path: *u8, line: u64, col: u64, message: Span) {
+    diag_report(path, line, col, message);
+    exit(EXIT_DIAGNOSTIC);
+}
+
+// ----- hash map from u64 to u64 -----
+//
+// Lookup only: the API has no way to visit entries, so table order can never
+// reach the output. Linear probing over a power-of-two table. `map_mix` hashes
+// the key's value alone.
+
+struct Map {
+    map_keys: *u64,
+    map_values: *u64,
+    map_live: *bool,
+    map_capacity: u64,
+    map_count: u64,
+}
+
+fn map_with_capacity(capacity: u64) -> Map {
+    let live = sup_alloc_array(capacity, sizeof<bool>()) as *bool;
+    for i: u64 in 0..capacity {
+        live[i] = false;
+    }
+    return Map {
+        map_keys: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        map_values: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        map_live: live,
+        map_capacity: capacity,
+        map_count: 0,
+    };
+}
+
+fn map_new() -> Map {
+    return map_with_capacity(16);
+}
+
+fn map_mix(key: u64) -> u64 {
+    let z = key;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
+    return z ^ (z >> 31);
+}
+
+fn map_find_slot(m: *Map, key: u64) -> u64 {
+    let mask = (*m).map_capacity - 1;
+    let slot = map_mix(key) & mask;
+    while (*m).map_live[slot] && (*m).map_keys[slot] != key {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+fn map_grow(m: *Map) {
+    let bigger = map_with_capacity(sup_grown_capacity((*m).map_capacity));
+    for i: u64 in 0..(*m).map_capacity {
+        if (*m).map_live[i] {
+            map_put(&bigger, (*m).map_keys[i], (*m).map_values[i]);
+        }
+    }
+    free((*m).map_keys as *void);
+    free((*m).map_values as *void);
+    free((*m).map_live as *void);
+    *m = bigger;
+}
+
+fn map_put(m: *Map, key: u64, value: u64) {
+    if ((*m).map_count + 1) * 4 > (*m).map_capacity * 3 {
+        map_grow(m);
+    }
+    let slot = map_find_slot(m, key);
+    if !(*m).map_live[slot] {
+        (*m).map_live[slot] = true;
+        (*m).map_keys[slot] = key;
+        (*m).map_count += 1;
+    }
+    (*m).map_values[slot] = value;
+}
+
+// On a hit, stores the value through `out`; `out` is left alone on a miss.
+fn map_get(m: *Map, key: u64, out: *u64) -> bool {
+    let slot = map_find_slot(m, key);
+    if !(*m).map_live[slot] {
+        return false;
+    }
+    *out = (*m).map_values[slot];
+    return true;
+}
+
+fn map_has(m: *Map, key: u64) -> bool {
+    return (*m).map_live[map_find_slot(m, key)];
+}
+
+fn map_len(m: *Map) -> u64 {
+    return (*m).map_count;
+}
+
+// ----- string interner -----
+//
+// Handles are dense integers assigned in order of first appearance. Equal text
+// gives an equal handle; the hash only narrows the search. The table is private
+// to this section, and every interned string is its own allocation, so a span
+// handed out stays valid. Text is zero-terminated past its length.
+
+struct Interner {
+    in_texts: *Span,
+    in_hashes: *u64,
+    in_count: u64,
+    in_capacity: u64,
+    in_slots: *u64,
+    in_slot_capacity: u64,
+}
+
+fn intern_new() -> Interner {
+    let capacity: u64 = 64;
+    let slots = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..capacity {
+        slots[i] = 0;
+    }
+    return Interner {
+        in_texts: sup_alloc_array(capacity, sizeof<Span>()) as *Span,
+        in_hashes: sup_alloc_array(capacity, sizeof<u64>()) as *u64,
+        in_count: 0,
+        in_capacity: capacity,
+        in_slots: slots,
+        in_slot_capacity: capacity,
+    };
+}
+
+// FNV-1a, 64-bit. A fixed function of the bytes, with no seed.
+fn intern_hash(s: Span) -> u64 {
+    let hash: u64 = 0xCBF29CE484222325;
+    for i: u64 in 0..s.len {
+        hash = (hash ^ (s.data[i] as u64)) * 0x100000001B3;
+    }
+    return hash;
+}
+
+fn intern_slot_for_new_entry(it: *Interner, hash: u64) -> u64 {
+    let mask = (*it).in_slot_capacity - 1;
+    let slot = hash & mask;
+    while (*it).in_slots[slot] != 0 {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+fn intern_grow_slots(it: *Interner) {
+    let capacity = sup_grown_capacity((*it).in_slot_capacity);
+    let slots = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..capacity {
+        slots[i] = 0;
+    }
+    free((*it).in_slots as *void);
+    (*it).in_slots = slots;
+    (*it).in_slot_capacity = capacity;
+    for handle: u64 in 0..(*it).in_count {
+        let slot = intern_slot_for_new_entry(it, (*it).in_hashes[handle]);
+        (*it).in_slots[slot] = handle + 1;
+    }
+}
+
+fn intern_grow_entries(it: *Interner) {
+    let capacity = sup_grown_capacity((*it).in_capacity);
+    let texts = sup_alloc_array(capacity, sizeof<Span>()) as *Span;
+    let hashes = sup_alloc_array(capacity, sizeof<u64>()) as *u64;
+    for i: u64 in 0..(*it).in_count {
+        texts[i] = (*it).in_texts[i];
+        hashes[i] = (*it).in_hashes[i];
+    }
+    free((*it).in_texts as *void);
+    free((*it).in_hashes as *void);
+    (*it).in_texts = texts;
+    (*it).in_hashes = hashes;
+    (*it).in_capacity = capacity;
+}
+
+fn intern_copy(s: Span) -> Span {
+    if s.len == U64_LIMIT {
+        sup_die("mort: internal error: allocation size overflow");
+    }
+    let copy = sup_alloc(s.len + 1) as *u8;
+    for i: u64 in 0..s.len {
+        copy[i] = s.data[i];
+    }
+    copy[s.len] = 0;
+    return Span { data: copy, len: s.len };
+}
+
+// Interns under a caller-supplied hash, so tests can force full collisions.
+// Every call on one interner must use the same hash function.
+fn intern_hashed(it: *Interner, s: Span, hash: u64) -> u64 {
+    if ((*it).in_count + 1) * 2 > (*it).in_slot_capacity {
+        intern_grow_slots(it);
+    }
+    let mask = (*it).in_slot_capacity - 1;
+    let slot = hash & mask;
+    while (*it).in_slots[slot] != 0 {
+        let handle = (*it).in_slots[slot] - 1;
+        if (*it).in_hashes[handle] == hash && span_eq((*it).in_texts[handle], s) {
+            return handle;
+        }
+        slot = (slot + 1) & mask;
+    }
+    if (*it).in_count == (*it).in_capacity {
+        intern_grow_entries(it);
+    }
+    let handle = (*it).in_count;
+    (*it).in_texts[handle] = intern_copy(s);
+    (*it).in_hashes[handle] = hash;
+    (*it).in_count += 1;
+    (*it).in_slots[slot] = handle + 1;
+    return handle;
+}
+
+fn intern(it: *Interner, s: Span) -> u64 {
+    return intern_hashed(it, s, intern_hash(s));
+}
+
+fn intern_z(it: *Interner, text: *u8) -> u64 {
+    return intern(it, span_z(text));
+}
+
+fn intern_text(it: *Interner, handle: u64) -> Span {
+    if handle >= (*it).in_count {
+        sup_die_index("interner", handle, (*it).in_count);
+    }
+    return (*it).in_texts[handle];
+}
+
+fn intern_count(it: *Interner) -> u64 {
+    return (*it).in_count;
+}
+
+// True while the entry arrays hold every handle.
+fn intern_within_capacity(it: *Interner) -> bool {
+    return (*it).in_count <= (*it).in_capacity;
 }

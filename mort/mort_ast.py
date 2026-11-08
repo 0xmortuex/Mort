@@ -330,6 +330,7 @@ class Call(Node):
         self.enum_payload_type = None
         self.type_args = type_args or []
         self.indirect = False
+        self.name_pos = None  # (line, column) of the callee name, set by the parser
 
 
 class Cast(Node):

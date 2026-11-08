@@ -68,8 +68,8 @@ tests show each exclusion is detected.
   (`! - ~ & *`), all binary operators, calls, `as` casts (including enum to
   integer), struct literals, field access, indexing, `sizeof<T>()`,
   `Enum.Variant`.
-- Builtins: `alloc`, `free`, `sizeof`, `println`, `print`, `file_open`,
-  `file_read`, `file_write`, `file_close`.
+- Builtins: `alloc`, `free`, `sizeof`, `println`, `eprintln`, `print`, `file_open`,
+  `file_read`, `file_write`, `file_close`, `arg_count`, `arg_get`.
 
 **Deliberately out, and why.**
 
@@ -149,8 +149,9 @@ differential tests:
 Each phase has a Python reference and a defined text dump, like the lexer:
 
 - Tokens: `py_lex_dump.py` format (done, see section 7).
-- AST: a structural dump of every node's kind, fields and line, generated
-  reflectively from the Python AST and produced directly by the Mort parser.
+- AST: `py_ast_dump.py` format (done, see section 10): every node's kind, fields
+  and line, generated reflectively from the Python AST and produced directly by
+  the Mort parser.
 - Checked AST: per-expression resolved type (the Python type string) and folded
   constant, keyed by source order.
 - C text: compared to `CodeGen(...).generate()` byte for byte, over the subset
@@ -204,20 +205,22 @@ measured data point.
 | # | Task | Depends on | Hours |
 | --- | --- | --- | ---: |
 | T1 | Lexer with differential test | none | done |
-| T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | 3 to 5 |
+| T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
 | T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | done (about 1 hour; estimated 4 to 8) |
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
-| T3 | AST in flat structs, parser, AST dump | T2, T2c | 10 to 16 |
+| T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
-| T8 | Driver, import resolution, stage script, fixpoint test | T7, G1 | 4 to 8 |
-| T9 | Rejecting out-of-subset programs, CI gate | T8, G2 | 2 to 4 |
-| | **Remaining total** | | **70 to 120** |
+| T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
+| T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
+| | **Remaining total** | | **53 to 91** |
 
-Not included: fixing the gaps in section 8 (2 to 5 hours), and any Python
-compiler bugs the differential tests expose.
+T3 lists T2c as a dependency but was completed first. T2c does not reopen T3: it only extends the corpus T3's differential test runs over.
+
+Not included: fixing gap G3 in section 8 if something comes to need it, and any
+Python compiler bugs the differential tests expose.
 
 Acceptance criteria:
 
@@ -239,8 +242,9 @@ Acceptance criteria:
   and `PYTHONHASHSEED` values. Every generated program passes `check_subset.py`
   and compiles with the Python compiler, and a test asserts the node-kind and
   operator coverage and the section 5.1 size floors, so a shrinking corpus fails.
-- **T3.** Mort parser output matches the Python AST dump over the subset corpus
-  and all `selfhost/*.mx`, including source lines. Parse errors in the corpus
+- **T3.** Mort parser output matches the Python AST dump over every `.mx` in the
+  repo (widened from the subset corpus and `selfhost/*.mx`, so the parser reads
+  the whole language), including source lines. Parse errors in the corpus
   produce a located diagnostic and exit 1, never a crash, with a recursion-depth
   limit in place of Python's `RecursionError` handling. Seeded mutation test.
 - **T4.** Declaration tables and scope resolution match a Python-side dump over
@@ -266,9 +270,11 @@ one measured ratio.
 
 ## 7. Lexer status
 
-- `selfhost/lexer.mx` (1050 lines), `lexer_float.mx` (314), `lex_main.mx` (105),
-  generated `lexer_unicode.mx`, plus `unicode_dump_main.mx` (71, test helper) for
-  the exhaustive Unicode check.
+(The lexer's 1011 lines in section 1 are its size before `support.mx` existed.)
+
+- `selfhost/lexer.mx` (996 lines, after `Span` and `Buf` moved to `support.mx`),
+  `lexer_float.mx` (314), `lex_main.mx` (97), generated `lexer_unicode.mx`, plus
+  `unicode_dump_main.mx` (71, test helper) for the exhaustive Unicode check.
 - Dump format: defined at the top of `py_lex_dump.py`. Token per line:
   `line:col KIND value`, with integer values in canonical decimal, floats as
   binary64 bit patterns, and bytes other than printable ASCII escaped. On a
@@ -325,25 +331,40 @@ subset gate with a negative test per excluded construct.
 - The checker owns `MAX_CONSTANT_BITS` (2^18), checked after the fold as Python
   does, so a product can reach 2^19 bits. Library hard limit: `BN_MAX_BITS`, 2^20
   bits, an internal-error exit that a checked program cannot reach.
-- `support.mx` on this branch is a two-function placeholder for T2's; take T2's
-  whole at merge (T2 has `eprintln` and the same `sup_die`/`sup_alloc_array`).
+- Uses `sup_die` and `sup_alloc_array` from `support.mx`.
 - Test: 300,000 seeded operations per run against Python `int` and the real
   checker fold (fresh driver build), a boundary cross product, all bases, diagnostics
-  and 18 seeded mutants. Allocation failure is a real `malloc` null: the size comes
+  and 18 seeded mutants, plus fixed zero-negation cases that catch a 19th directly. Allocation failure is a real `malloc` null: the size comes
   from input and the pointer escapes, because clang otherwise deletes the unused
   `malloc` and its check.
 
 ## 8. Language and stdlib gaps
 
-Ranked by cost to the project. None blocked the lexer; each becomes its own
-task and exact errors are in `BLOCKERS.md`. Neither of the top two distorts the
-lexer's design: each is confined to one small driver function.
+Exact errors are in `BLOCKERS.md`.
 
-| Rank | Gap | Effect | Size |
-| ---: | --- | --- | --- |
-| G1 | No command-line access | Compiler paths come from env vars until fixed. T8 can proceed with env vars, but a usable compiler needs argv | 1 to 2h |
-| G2 | No way to write to stderr | Diagnostics go to stdout | 1 to 2h |
-| G3 | `extern fn` prototypes clash with libc headers unless the C types match exactly | Must spell signatures carefully; `FILE*` functions cannot be declared at all | 1h, or part of ROADMAP gap 8 |
+| Gap | Status |
+| --- | --- |
+| G1, command-line access | Fixed: builtins `arg_count()` and `arg_get(u64)`. An out-of-range index is a located runtime error. C `main` takes arguments only in programs that use them |
+| G2, writing to stderr | Fixed: builtin `eprintln(*u8)` |
+| G3, `extern fn` prototypes clash with libc headers | Open and not needed: the support layer's only extern is `exit` |
+
+`lex_main.mx` uses both builtins, and later drivers should too.
+
+## 9. Support layer
+
+`selfhost/support.mx` holds everything later phases share: `Span`, `Buf`,
+`U64Vec`, `PtrVec`, `Map` (u64 to u64), `Interner` and located diagnostics.
+
+- Misuse (bad index, impossible allocation) is one line on stderr and exit 2. A
+  compile error is `diag_fatal`, in `MortError.format()` shape, and exit 1.
+- Tables have no iteration API. `selfhost/test_support.py` fails if any source
+  outside the reviewed functions reads table fields or calls table internals,
+  if `support.mx` gains another table function, or if it casts a pointer to an
+  integer.
+- Interner handles count up from first appearance and are all that a table can
+  hand back. Later phases should put interner handles and vector indices in maps,
+  and must never put addresses in one.
+- `Map` has no removal. T4's scopes need a map per scope or an undo log.
 
 Two Python-side defects found by this work; separate tasks, not fixed here:
 
@@ -352,3 +373,46 @@ Two Python-side defects found by this work; separate tasks, not fixed here:
   uses the spec's arbitrary-precision behavior.
 - `mortc.py` crashes with a `UnicodeDecodeError` traceback on source that is not
   UTF-8; the Mort lexer gives a clean diagnostic.
+- `mort/codegen.py` treats every AST string starting with `[]` as a slice type,
+  so `println("[]")` raises `KeyError`. Found by T3; see `BLOCKERS.md`.
+
+## 10. Parser status (T3)
+
+`selfhost/ast.mx` (130 lines), `parser.mx` (1212), `pyrepr.mx` (419), `ast_dump.mx`
+(395) and `parse_main.mx` (82, the driver: `parse_main INPUT OUTPUT`). The Python
+parser is 866 lines, so the ratio is 1.4 for the parser alone and 2.6 with the
+AST, the diagnostic `repr`, the dump and the driver. Time: about 40 minutes of agent time
+against the 10 to 16 hours estimated, because the Python parser is regular and
+the test harness already existed from T1. T4 and T5 should not assume this ratio
+carries over: the checker's logic is far less mechanical.
+
+- Dump format: defined at the top of `py_ast_dump.py`. One line per node with no
+  indentation, so a deep tree stays linear in size. Fields the checker fills in
+  are excluded, and the dumper asserts they still hold their initial values.
+- Positions: `line`, plus `Call.name_pos` (line and column of the callee), because
+  that is all the Python AST records.
+- Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
+  of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
+  (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
+  The first error exits 1 with no dump.
+- Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
+  expressions, unary, blocks, `if`). Python's own limit is a side effect of its
+  frame count, so the reference is the unmodified Python parser plus the same
+  counter (`GuardedParser`). Message and line match. Measured limits of the
+  unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
+  975 unary operators, all within 1000 units, so this rejects nothing it accepts.
+  Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
+  `-O0`.
+- `<` lookahead is one precomputed pass over the tokens, not a scan per `<`. The
+  tokens a scan can see are never yet split by a type close, so the answers match.
+- Tree depth is not bounded by `MAX_NESTING`: operator, postfix and cast chains
+  are built by loops. The parser and dump never recurse over the tree.
+
+For T4: **chains make left-deep trees of any depth, so a recursive checker over
+the AST will overflow the C stack.** It needs an AST-depth check or iteration.
+
+Reconciling with `fix/frontend-crashes` (not merged here): it adds a `col` to
+parser diagnostics and to some nodes, an AST-depth rejection (`_check_nesting`,
+cost 800) and a located nesting error. On merge, the Mort parser must add
+columns and that check, and `GuardedParser` should be dropped or reduced. The
+dump's reflection will flag the new fields by itself, as a mismatch.
