@@ -1,0 +1,13 @@
+// Placeholder so the differential test can run before the lexer exists.
+// It writes a dump containing only an EOF token.
+
+extern fn getenv(name: *const c_char) -> *c_char;
+
+fn main() -> int {
+    let path = getenv("MORT_LEX_OUT" as *const c_char) as *u8;
+    let out = file_open(path, "wb");
+    let text = "1:1 EOF\n";
+    file_write(out, text, 8);
+    file_close(out);
+    return 0;
+}

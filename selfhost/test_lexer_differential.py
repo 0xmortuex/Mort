@@ -1,0 +1,400 @@
+"""Differential test: selfhost/lexer.mx must agree with mort/lexer.py.
+
+Run from the repository root:
+
+    python -m pytest selfhost -q
+
+Every expected value here comes from running the Python lexer; nothing is
+hardcoded. See py_lex_dump.py for the dump format.
+"""
+import os
+import random
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
+
+import py_lex_dump  # noqa: E402
+
+SKIP_DIRS = {".git", "__pycache__", ".mort", "build", "dist", ".venv", "node_modules"}
+
+
+def repo_mx_files():
+    found = []
+    for directory, subdirs, files in os.walk(ROOT):
+        subdirs[:] = sorted(d for d in subdirs if d not in SKIP_DIRS)
+        for name in sorted(files):
+            if name.endswith(".mx"):
+                found.append(Path(directory) / name)
+    return found
+
+
+REPO_FILES = repo_mx_files()
+
+
+@pytest.fixture(scope="session")
+def lex_exe(tmp_path_factory):
+    build = tmp_path_factory.mktemp("selfhost-build")
+    exe = build / ("lex_main.exe" if os.name == "nt" else "lex_main")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"),
+         str(HERE / "lex_main.mx"), "-o", str(exe)],
+        capture_output=True, text=True, cwd=build)
+    assert result.returncode == 0, (
+        f"compiling lex_main.mx failed:\n{result.stdout}\n{result.stderr}")
+    assert exe.exists()
+    return exe
+
+
+def run_mort_lexer(exe, source_path, out_path):
+    """Run the Mort lexer; returns (exit code, stdout, dump text)."""
+    if out_path.exists():
+        out_path.unlink()
+    env = dict(os.environ)
+    env["MORT_LEX_IN"] = str(source_path)
+    env["MORT_LEX_OUT"] = str(out_path)
+    result = subprocess.run(
+        [str(exe)], env=env, capture_output=True, timeout=120)
+    assert out_path.exists(), (
+        f"no dump written for {source_path}: exit {result.returncode}\n"
+        f"{result.stdout!r}\n{result.stderr!r}")
+    return result.returncode, result.stdout, out_path.read_bytes().decode("ascii")
+
+
+def first_difference(expected, actual):
+    expected_lines = expected.splitlines()
+    actual_lines = actual.splitlines()
+    for index, (want, got) in enumerate(zip(expected_lines, actual_lines)):
+        if want != got:
+            return f"line {index + 1}\n  python: {want}\n  mort:   {got}"
+    return (f"line counts differ: python {len(expected_lines)}, "
+            f"mort {len(actual_lines)}")
+
+
+def assert_agrees(exe, source_path, out_path):
+    expected = py_lex_dump.dump_file(source_path)
+    code, stdout, actual = run_mort_lexer(exe, source_path, out_path)
+    assert expected == actual, (
+        f"{source_path}: {first_difference(expected, actual)}")
+    # A lexical error is exit 1 with a located diagnostic; anything else
+    # (a crash, a signal, a runtime assertion) is a failure of the lexer.
+    if "\nERROR " in "\n" + expected:
+        assert code == 1, f"{source_path}: expected exit 1, got {code}"
+        assert b": error: " in stdout, f"{source_path}: no diagnostic: {stdout!r}"
+    else:
+        assert code == 0, f"{source_path}: expected exit 0, got {code}: {stdout!r}"
+
+
+def test_corpus_is_not_empty():
+    assert len(REPO_FILES) >= 100
+
+
+@pytest.mark.parametrize(
+    "path", REPO_FILES, ids=[p.relative_to(ROOT).as_posix() for p in REPO_FILES])
+def test_repo_file(lex_exe, tmp_path, path):
+    assert_agrees(lex_exe, path, tmp_path / "out.txt")
+
+
+LONG_DECIMAL = b"1234567890" * 500
+LONG_HEX = b"0x" + b"fedcba9876543210" * 300
+
+EDGE_CASES = {
+    # --- whitespace and newlines (text-mode translation applies)
+    "empty": b"",
+    "spaces": b"   \t  ",
+    "lf": b"a\nb\n",
+    "crlf": b"a\r\nb\r\n",
+    "lone_cr": b"a\rb\rc",
+    "cr_crlf_mix": b"a\r\r\nb\n\rc",
+    "crlf_in_string": b'"a\r\nb"',
+    "cr_after_backslash": b'"a\\\rb"',
+    "crlf_in_comment": b"// x\r\ny /* a\r\nb */ z",
+    "tabs_col": b"\t\tabc\t+",
+    "form_feed": b"a\x0cb",
+    "vtab": b"a\x0bb",
+    # --- comments
+    "line_comment_eof": b"// no newline",
+    "line_comment": b"a // b\nc",
+    "block": b"a /* b */ c",
+    "block_nested": b"/* a /* b */ c */ d",
+    "block_deep": b"/*" * 50 + b"x" + b"*/" * 50 + b"y",
+    "block_unterminated": b"a /* b",
+    "block_nested_unterminated": b"/* /* */",
+    "block_slash_star_slash": b"/*/ x */ y",
+    "block_empty": b"/**/a",
+    "block_star_run": b"/***/b/****/c",
+    "block_multiline_position": b"/* a\nb */ c\n/* d */ e",
+    "block_nul": b"/* \x00 */ a",
+    "line_comment_nul": b"// \x00 x\na",
+    "slash_alone": b"a / b",
+    "slash_eof": b"/",
+    # --- integers
+    "int_zero": b"0",
+    "int_leading_zero": b"007 000",
+    "int_sep": b"1_000_000",
+    "int_sep_trailing": b"1_",
+    "int_sep_double": b"1__0",
+    "int_sep_alpha": b"1_0a",
+    "int_alpha": b"12abc",
+    "int_upper_alpha": b"12Z",
+    "int_underscore_alpha": b"12_z",
+    "int_unicode_alpha": "12é".encode(),
+    "int_unicode_digit": "12٣".encode(),
+    "int_u64max": b"18446744073709551615 18446744073709551616",
+    "int_long": LONG_DECIMAL,
+    "hex": b"0xff 0XFF 0xAbCd 0x0",
+    "hex_sep": b"0xff_ff",
+    "hex_empty": b"0x",
+    "hex_empty_then": b"0x;",
+    "hex_lead_sep": b"0x_ff",
+    "hex_trail_sep": b"0xff_",
+    "hex_double_sep": b"0xf__f",
+    "hex_bad_digit": b"0xfg",
+    "hex_unicode_after": "0xfé".encode(),
+    "hex_long": LONG_HEX,
+    "bin": b"0b1010 0B11 0b0",
+    "bin_sep": b"0b1_0",
+    "bin_empty": b"0b",
+    "bin_bad": b"0b2",
+    "bin_lead_sep": b"0b_1",
+    "bin_trail_sep": b"0b1_",
+    "bin_alpha": b"0b1a",
+    "oct": b"0o755 0O7 0o0",
+    "oct_sep": b"0o7_7",
+    "oct_empty": b"0o",
+    "oct_bad": b"0o8",
+    "oct_trail_sep": b"0o7_",
+    "oct_double_sep": b"0o7__7",
+    "oct_alpha": b"0o7z",
+    # --- floats
+    "float_simple": b"1.5 0.0 00.50",
+    "float_exp": b"2e3 2E3 2e+3 2e-3 1.5e3 1.5E-3",
+    "float_sep": b"1_000.5 1_0e2",
+    "float_frac_sep": b"1.5_0",
+    "float_exp_sep": b"1e1_0",
+    "float_bad_exp": b"1e",
+    "float_bad_exp_sign": b"1e+",
+    "float_bad_exp_alpha": b"1ex",
+    "float_frac_bad_exp": b"1.5e",
+    "float_alpha_after": b"1.5a",
+    "float_exp_alpha_after": b"1e5a",
+    "float_unicode_after": "1.5é".encode(),
+    "float_overflow": b"1e999",
+    "float_frac_overflow": b"1.0e999",
+    "float_underflow": b"1e-999 1.0e-999",
+    "float_max": b"1.7976931348623157e308",
+    "float_just_over_max": b"1.797693134862315807e308",
+    "float_min_normal": b"2.2250738585072014e-308",
+    "float_min_subnormal": b"4.9e-324 5e-324 2.4703282292062328e-324",
+    "float_below_subnormal": b"2.4703282292062327e-324",
+    "float_hard_rounding": (b"1e23 8.41e21 2.0e22 9007199254740993.0 "
+                            b"9007199254740992.5 0.1 0.30000000000000004"),
+    "float_halfway": b"1.00000000000000011102230246251565404236316680908203125",
+    "float_halfway_up": b"1.00000000000000011102230246251565404236316680908203126",
+    "float_many_digits": b"3." + b"14159265358979323846" * 40,
+    "float_big_mantissa": b"1" + b"0" * 400 + b".0e-400",
+    "dot_method": b"1.foo",
+    "number_dotdot": b"1..2 1..=2 1...3",
+    "number_dot_eof": b"1.",
+    "number_dot_e": b"1.e5",
+    # --- tuple index context
+    "tuple_index": b"a.0 a.1.2 m.0.1",
+    "tuple_index_zeros": b"a.007",
+    "tuple_index_exp": b"a.1e5",
+    "tuple_index_hex": b"a.0x10",
+    "tuple_index_alpha": b"a.1b",
+    "tuple_index_underscore": b"a.1_0",
+    "tuple_index_float_shape": b"a.1.5",
+    "tuple_index_unicode": "a.1é".encode(),
+    "tuple_index_space": b"a. 5 . 6",
+    "dot_then_float_after_space": b"a.\n1.5",
+    "tuple_after_dotdot": b"a..0.5",
+    # --- characters
+    "char_plain": b"'a' ' ' '~' '\"'",
+    "char_escapes": b"'\\n' '\\r' '\\t' '\\0' '\\\\' '\\'' '\\\"'",
+    "char_hex": b"'\\x41' '\\xff' '\\x00' '\\xAb'",
+    "char_hex_bad": b"'\\x4G'",
+    "char_hex_short": b"'\\x4'",
+    "char_hex_eof": b"'\\x",
+    "char_unknown_escape": b"'\\q'",
+    "char_unknown_escape_unicode": "'\\é'".encode(),
+    "char_unknown_escape_astral": "'\\\U0001f600'".encode(),
+    "char_empty": b"''",
+    "char_unterminated_eof": b"'",
+    "char_unterminated_newline": b"'\n",
+    "char_unterminated_after": b"'a",
+    "char_two": b"'ab'",
+    "char_backslash_eof": b"'\\",
+    "char_backslash_newline": b"'\\\n'",
+    "char_nul_raw": b"'\x00'",
+    "char_latin1": "'é' 'ÿ' '\u0080'".encode(),
+    "char_over_u8": "'Ā'".encode(),
+    "char_euro": "'€'".encode(),
+    "char_astral": "'\U0001f600'".encode(),
+    "char_tab_raw": b"'\t'",
+    # --- strings
+    "str_empty": b'""',
+    "str_plain": b'"hello world"',
+    "str_escapes_raw": b'"a\\n\\t\\"b\\\\"',
+    "str_unknown_escape_kept": b'"\\q \\x \\u1234"',
+    "str_unterminated_eof": b'"abc',
+    "str_unterminated_newline": b'"abc\ndef"',
+    "str_backslash_eof": b'"abc\\',
+    "str_backslash_newline": b'"abc\\\ndef" x',
+    "str_nul": b'"a\x00b"',
+    "str_backslash_nul": b'"a\\\x00b"',
+    "str_unicode": '"héllo € \U0001f600"'.encode(),
+    "str_position_after_unicode": '"€\U0001f600" x'.encode(),
+    "str_tab_and_del": b'"a\tb\x7fc\x01"',
+    # --- identifiers and keywords
+    "keywords": (b"let fn return if else while loop for in true false int "
+                 b"bool as struct asm extern break continue void import enum "
+                 b"match const test module pub defer try type null resource "
+                 b"move"),
+    "near_keywords": b"lets fnn iff In LET _let let_ let1 asms",
+    "underscore_ident": b"_ __ _a a_b a1",
+    "ident_unicode": "café été 中文 αβ".encode(),
+    "ident_astral": "\U00010400x \U00020000".encode(),
+    "ident_cont_digit": "a٣ a² a①".encode(),
+    "ident_cont_combining": "á".encode(),
+    "ident_after_unicode_col": "é a\n€".encode(),
+    # --- symbols
+    "all_ops": (b"( ) { } , ; : -> => . .. ..= & [ ] = += -= *= /= %= &= |= "
+                b"^= <<= >>= + - * / % == != < > <= >= && || ! | ^ ~ << >>"),
+    "ops_glued": b"<<=>>=..=->=>==!=<=>=&&||<<>>+=-=*=/=%=&=|=^=",
+    "dots_run": b".... ..... ..=.",
+    "shift_eof": b"<<",
+    "shl_assign_split": b"<< =",
+    "fat_arrow_split": b"= >",
+    "dot_eof": b".",
+    # --- unexpected characters and repr formatting
+    "bad_at": b"a @ b",
+    "bad_hash": b"#",
+    "bad_dollar": b"$",
+    "bad_backtick": b"`",
+    "bad_question": b"?",
+    "bad_backslash": b"\\",
+    "bad_nul": b"a \x00 b",
+    "nul_only": b"\x00\x00\x00",
+    "bad_soh": b"\x01",
+    "bad_esc": b"\x1b",
+    "bad_del": b"\x7f",
+    "bad_c1": "\u0085".encode(),
+    "bad_nbsp": " ".encode(),
+    "bad_soft_hyphen": "­".encode(),
+    "bad_euro": "€".encode(),
+    "bad_zwsp": "​".encode(),
+    "bad_line_sep": " ".encode(),
+    "bad_bom": b"\xef\xbb\xbffn",
+    "bad_private_use": "".encode(),
+    "bad_unassigned_bmp": "͸".encode(),
+    "bad_noncharacter": "￿".encode(),
+    "bad_emoji": "\U0001f600".encode(),
+    "bad_astral_private": "\U0010ffff".encode(),
+    "bad_arabic_digit": "٣".encode(),
+    "bad_after_tokens_position": "let x = €;".encode(),
+    # --- invalid UTF-8
+    "utf8_ff": b"\xff",
+    "utf8_fe_in_ident": b"ab\xfe",
+    "utf8_lone_continuation": b"\x80",
+    "utf8_overlong_2": b"\xc0\x80",
+    "utf8_overlong_c1": b"\xc1\xbf",
+    "utf8_overlong_3": b"\xe0\x80\x80",
+    "utf8_overlong_4": b"\xf0\x80\x80\x80",
+    "utf8_surrogate": b"\xed\xa0\x80",
+    "utf8_above_max": b"\xf4\x90\x80\x80",
+    "utf8_f5": b"\xf5\x80\x80\x80",
+    "utf8_truncated_2": b"\xc3",
+    "utf8_truncated_3": b"\xe2\x82",
+    "utf8_truncated_4": b"\xf0\x9f\x98",
+    "utf8_bad_second": b"\xe2\x28\xa1",
+    "utf8_in_comment": b"// \xff\nfn",
+    "utf8_in_string": b'"\xff"',
+    "utf8_valid_edges": (b"\xc2\x80 \xdf\xbf \xe0\xa0\x80 \xed\x9f\xbf "
+                         b"\xee\x80\x80 \xf0\x90\x80\x80 \xf4\x8f\xbf\xbf"),
+    # --- realistic fragments
+    "small_program": (b"fn main() -> int {\n    let x: [u8; 4] = [0; 4];\n"
+                      b"    x[0] = 'a';\n    return x.0 as int;\n}\n"),
+    "generic_shift_ambiguity": b"Vec<Vec<i64>> a >>= 1;",
+}
+
+
+@pytest.mark.parametrize("name", sorted(EDGE_CASES))
+def test_edge_case(lex_exe, tmp_path, name):
+    source = tmp_path / "input.mx"
+    source.write_bytes(EDGE_CASES[name])
+    assert_agrees(lex_exe, source, tmp_path / "out.txt")
+
+
+def _mutate(rng, data):
+    """Byte-level mutations, biased toward lexically interesting bytes."""
+    alphabet = (b"\"'\\/*\n\r\t._-+=<>!&|^%~0123456789eExXbBoOaz{}()[];:,@#$`?"
+                b"\x00\x7f\x80\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80\xed\xa0\xff")
+    text = bytearray(data)
+    for _ in range(rng.randint(1, 12)):
+        operation = rng.choice(("insert", "delete", "replace", "dup"))
+        position = rng.randrange(len(text) + 1)
+        if operation == "insert":
+            text[position:position] = bytes([rng.choice(alphabet)])
+        elif operation == "delete" and text:
+            del text[min(position, len(text) - 1)]
+        elif operation == "replace" and text:
+            text[min(position, len(text) - 1)] = rng.choice(alphabet)
+        elif operation == "dup" and text:
+            end = min(len(text), position + rng.randint(1, 16))
+            text[position:position] = text[position:end]
+    return bytes(text)
+
+
+FUZZ_CASES = 400
+FUZZ_SEED = 20261108
+
+
+def test_mutation_differential(lex_exe, tmp_path):
+    rng = random.Random(FUZZ_SEED)
+    seeds = [path.read_bytes()[:4000] for path in REPO_FILES[:40]]
+    seeds += [value for value in EDGE_CASES.values() if len(value) < 4000]
+    source = tmp_path / "input.mx"
+    out = tmp_path / "out.txt"
+    for index in range(FUZZ_CASES):
+        data = _mutate(rng, rng.choice(seeds))
+        source.write_bytes(data)
+        try:
+            assert_agrees(lex_exe, source, out)
+        except AssertionError as error:
+            raise AssertionError(
+                f"fuzz case {index} (seed {FUZZ_SEED}), input {data!r}:\n{error}"
+            ) from error
+
+
+def test_diagnostic_has_file_line_col(lex_exe, tmp_path):
+    source = tmp_path / "input.mx"
+    source.write_bytes(b"fn main() {\n  let @;\n}\n")
+    code, stdout, _ = run_mort_lexer(lex_exe, source, tmp_path / "out.txt")
+    assert code == 1
+    text = stdout.decode("ascii")
+    assert re.search(
+        r"input\.mx:2:7: error: unexpected character '@'", text), text
+
+
+def test_missing_input_is_a_clean_failure(lex_exe, tmp_path):
+    env = dict(os.environ)
+    env["MORT_LEX_IN"] = str(tmp_path / "does-not-exist.mx")
+    env["MORT_LEX_OUT"] = str(tmp_path / "out.txt")
+    result = subprocess.run([str(lex_exe)], env=env, capture_output=True, timeout=60)
+    assert result.returncode == 2
+    assert b"cannot read" in result.stdout
+
+
+def test_missing_environment_is_a_clean_failure(lex_exe):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("MORT_LEX_IN", "MORT_LEX_OUT")}
+    result = subprocess.run([str(lex_exe)], env=env, capture_output=True, timeout=60)
+    assert result.returncode == 2
+    assert b"MORT_LEX_IN" in result.stdout
