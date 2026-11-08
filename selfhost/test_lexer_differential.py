@@ -7,11 +7,13 @@ Run from the repository root:
 Every expected value here comes from running the Python lexer; nothing is
 hardcoded. See py_lex_dump.py for the dump format.
 """
+import collections
 import os
 import random
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -352,8 +354,8 @@ def _mutate(rng, data):
     return bytes(text)
 
 
-FUZZ_CASES = 400
-FUZZ_SEED = 20261108
+FUZZ_CASES = int(os.environ.get("MORT_SELFHOST_FUZZ_CASES", "400"))
+FUZZ_SEED = int(os.environ.get("MORT_SELFHOST_FUZZ_SEED", "20261108"))
 
 
 def test_mutation_differential(lex_exe, tmp_path):
@@ -371,6 +373,89 @@ def test_mutation_differential(lex_exe, tmp_path):
             raise AssertionError(
                 f"fuzz case {index} (seed {FUZZ_SEED}), input {data!r}:\n{error}"
             ) from error
+
+
+def unicode_table_version():
+    header = (HERE / "lexer_unicode.mx").read_text(encoding="ascii")
+    return re.search(r"Unicode ([0-9.]+)\.", header).group(1)
+
+
+def python_ranges(name, predicate):
+    lines = []
+    start = None
+    for code in range(0x110000 + 1):
+        member = code < 0x110000 and predicate(chr(code))
+        if member and start is None:
+            start = code
+        elif not member and start is not None:
+            lines.append(f"{name} {start} {code - 1}")
+            start = None
+    return lines
+
+
+def test_unicode_predicates_match_python_for_every_code_point(tmp_path):
+    if unicodedata.unidata_version != unicode_table_version():
+        pytest.skip(f"tables are Unicode {unicode_table_version()}, "
+                    f"this Python has {unicodedata.unidata_version}")
+    exe = tmp_path / ("unicode_dump.exe" if os.name == "nt" else "unicode_dump")
+    compiled = subprocess.run(
+        [sys.executable, str(ROOT / "mortc.py"),
+         str(HERE / "unicode_dump_main.mx"), "-o", str(exe)],
+        capture_output=True, text=True, cwd=tmp_path)
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    out = tmp_path / "ranges.txt"
+    env = dict(os.environ, MORT_LEX_OUT=str(out))
+    subprocess.run([str(exe)], env=env, check=True, timeout=120)
+    actual = out.read_text(encoding="ascii").splitlines()
+    expected = (python_ranges("alpha", str.isalpha)
+                + python_ranges("alnum", str.isalnum)
+                + python_ranges("nonprint", lambda c: not c.isprintable()))
+    assert expected == actual
+
+
+def test_sources_stay_in_the_bootstrap_subset():
+    result = subprocess.run(
+        [sys.executable, str(HERE / "tools" / "check_subset.py")],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+SUBSET_VIOLATIONS = {
+    "generic_fn": "fn f<T>(x: T) -> T { return x; }",
+    "generic_struct": "struct S<T> { x: T }",
+    "resource": "resource struct R { x: u8 } fn destroy(r: *R) -> void { }",
+    "enum_payload": "enum E { A(u8) }",
+    "payload_pattern": ("enum E { A, B } fn f(e: E) { match e { "
+                        "E.A(x) => { } _ => { } } }"),
+    "tuple_type": "fn f(p: (u8, u8)) { }",
+    "tuple_literal": "fn f() { let p = (1, 2); }",
+    "slice_type": "fn f(s: []u8) { }",
+    "local_array_type": "fn f() { let a: [u8; 4] = [1, 2, 3, 4]; }",
+    "array_repeat": "fn f() { let a = [0; 4]; }",
+    "fn_pointer": "fn f(g: fn(u8)->u8) { }",
+    "try_expr": "fn f() { let x = try g(); } fn g() -> u8 { return 1; }",
+    "move_expr": "fn f() { let a = 1; let b = move a; }",
+    "defer_stmt": "fn f() { defer free(0 as *void); }",
+    "asm_stmt": 'fn f() { asm("nop"); }',
+    "float_literal": "fn f() { let x = 1.5; }",
+    "null_literal": "fn f() { let p: *u8 = null; }",
+    "module_decl": "module a.b;",
+    "pub_fn": "pub fn f() { }",
+    "test_decl": 'test "t" { }',
+    "type_alias": "type A = u8;",
+    "import_std": "import std.vec;",
+    "import_alias": "import other as x;",
+    "unlisted_builtin": "fn f() { thread_sleep_millis(1); }",
+}
+
+
+@pytest.mark.parametrize("name", sorted(SUBSET_VIOLATIONS))
+def test_subset_checker_rejects(tmp_path, name):
+    sys.path.insert(0, str(HERE / "tools"))
+    import check_subset
+    path = tmp_path / "bad.mx"
+    path.write_text(SUBSET_VIOLATIONS[name], encoding="utf-8")
+    assert check_subset.check_file(path, collections.Counter()), name
 
 
 def test_diagnostic_has_file_line_col(lex_exe, tmp_path):
