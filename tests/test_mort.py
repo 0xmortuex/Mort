@@ -10037,3 +10037,28 @@ def test_huge_constant_in_a_diagnostic_message_does_not_crash(expression):
     with pytest.raises(MortError):
         c_of("fn main() -> int { let a: [i64; 1] = [1]; "
              f"let y = {expression}; return 0; }}")
+
+@pytest.mark.parametrize("data,position", [
+    (b"\xff", (1, 1)),
+    (b"fn main() -> int { return 0; }\n// bad: \xc3\xa9 \xff\n", (2, 11)),
+    (b"\r\n\r\nx\r\xfe", (4, 1)),
+], ids=["first-byte", "after-multibyte-char", "crlf-and-cr-lines"])
+def test_invalid_utf8_source_is_a_located_diagnostic(tmp_path, capsys, data, position):
+    path = tmp_path / "bad.mx"
+    path.write_bytes(data)
+    with pytest.raises(MortError, match="not valid UTF-8") as caught:
+        mortc.compile_files_to_c([str(path)])
+    assert (caught.value.line, caught.value.col) == position
+    assert caught.value.filename == str(path)
+    # The CLI re-reads the file to print an excerpt, so that path must survive too.
+    assert mortc.main([str(path), "--check"]) == 1
+    assert f"{path}:{position[0]}:{position[1]}: error" in capsys.readouterr().err
+    assert mortc.main([str(path), "--check", "--diagnostic-format", "json"]) == 1
+    assert json.loads(capsys.readouterr().err)["line"] == position[0]
+
+
+def test_invalid_utf8_is_reported_by_the_formatter(tmp_path, capsys):
+    path = tmp_path / "bad.mx"
+    path.write_bytes(b"fn main() -> int { return 0; } // \xff\n")
+    assert mortc.main(["fmt", str(path)]) == 1
+    assert "not valid UTF-8" in capsys.readouterr().err

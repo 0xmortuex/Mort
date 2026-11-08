@@ -33,7 +33,7 @@ from mort import __language_version__, __version__
 from mort.codegen import CodeGen
 from mort.errors import MortError
 from mort.formatter import format_file
-from mort.lexer import Lexer
+from mort.lexer import Lexer, decode_source
 from mort.mort_ast import Node, Program
 from mort.parser import Parser
 from mort.project import (
@@ -193,10 +193,11 @@ def compile_files_to_c(
             source = source_overrides[key]
         else:
             try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    source = handle.read()
+                with open(path, "rb") as handle:
+                    data = handle.read()
             except OSError as error:
                 raise MortError(f"cannot read imported source: {error}", filename=path)
+            source = decode_source(data, path)
         program = _parse_source(source, path)
         programs.append(program)
         program_by_path[key] = program
@@ -881,8 +882,8 @@ def _package_api(start):
     modules = []
     for path in project["sources"]:
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                program = _parse_source(handle.read(), path)
+            with open(path, "rb") as handle:
+                program = _parse_source(decode_source(handle.read(), path), path)
         except (OSError, MortError) as error:
             print(f"mortc: documentation failed: {error}", file=sys.stderr)
             return None
@@ -1019,7 +1020,7 @@ def _format_command(paths, check=False):
         for path in files:
             if format_file(path, check=check):
                 changed.append(path)
-    except OSError as error:
+    except (OSError, MortError) as error:
         print(f"mortc: formatter failed: {error}", file=sys.stderr)
         return 1
     if check and changed:

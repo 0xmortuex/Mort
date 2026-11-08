@@ -26,7 +26,7 @@ class MortError(Exception):
         if not self.filename or self.line is None:
             return header
         try:
-            with open(self.filename, "r", encoding="utf-8") as handle:
+            with open(self.filename, "r", encoding="utf-8", errors="replace") as handle:
                 lines = handle.readlines()
         except OSError:
             return header
@@ -59,7 +59,7 @@ class MortError(Exception):
             }
         if self.filename and self.line is not None:
             try:
-                with open(self.filename, "r", encoding="utf-8") as handle:
+                with open(self.filename, "r", encoding="utf-8", errors="replace") as handle:
                     lines = handle.readlines()
                 if 1 <= self.line <= len(lines):
                     diagnostic["source"] = lines[self.line - 1].rstrip("\r\n")

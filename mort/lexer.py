@@ -73,6 +73,22 @@ def _is_digit(c):
     return "0" <= c <= "9"
 
 
+def decode_source(data, filename=None):
+    """Decode source bytes as text-mode UTF-8, or raise a located MortError."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        prefix = data[:error.start].replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        line_start = prefix.rfind(b"\n") + 1
+        raise MortError(
+            f"source is not valid UTF-8 (byte 0x{data[error.start]:02x})",
+            prefix.count(b"\n") + 1,
+            len(prefix[line_start:].decode("utf-8")) + 1,
+            filename,
+        ) from None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class Lexer:
     def __init__(self, src):
         self.src = src
