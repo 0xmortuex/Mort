@@ -10812,14 +10812,19 @@ _MAIN = "fn main() -> int { return 0; }\n"
 @pytest.mark.parametrize("test_mode", [False, True], ids=["normal", "test-mode"])
 @pytest.mark.parametrize("source", [_GENERIC_IN_TEST, _GENERIC_CHAIN_IN_TEST],
                          ids=["direct", "through-another-generic"])
-def test_generic_called_only_from_a_test_block_compiles(source, test_mode):
-    assert "mort_g" in mortc.compile_sources_to_c([source + _MAIN], test_mode=test_mode)
+def test_generic_called_only_from_a_test_block_compiles(tmp_path, source, test_mode):
+    path = tmp_path / "main.mx"
+    path.write_text(source + _MAIN, encoding="utf-8")
+    assert "mort_g" in mortc.compile_files_to_c([str(path)], test_mode=test_mode)
 
 
-def test_generic_body_reached_only_from_a_test_block_is_checked():
-    source = 'fn g<T>(x: T) -> i64 { return nope; }\ntest "t" { g(1); }\n' + _MAIN
+def test_generic_body_reached_only_from_a_test_block_is_checked(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(
+        'fn g<T>(x: T) -> i64 { return nope; }\ntest "t" { g(1); }\n' + _MAIN,
+        encoding="utf-8")
     with pytest.raises(MortError) as caught:
-        mortc.compile_sources_to_c([source], test_mode=True)
+        mortc.compile_files_to_c([str(path)], test_mode=True)
     assert "nope" in caught.value.msg and caught.value.line == 1
 
 
