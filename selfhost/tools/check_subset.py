@@ -14,11 +14,12 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from mort import mort_ast as A  # noqa: E402
+from mort.errors import MortError  # noqa: E402
 from mort.lexer import Lexer  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 from mort.typechecker import BUILTIN_NAMES  # noqa: E402
 
-ALLOWED_SCALARS = {"bool", "void", "u8", "u32", "u64", "i64", "int", "f64",
+ALLOWED_SCALARS = {"bool", "void", "u8", "u32", "u64", "i64", "int",
                    "c_char", "c_int"}
 ALLOWED_NODES = {
     "Program", "ImportDecl", "StructDecl", "EnumDecl", "FnDecl", "ExternFnDecl",
@@ -66,8 +67,11 @@ def check_type(type_text, names, where, problems, global_array=False):
 def check_file(path, stats):
     problems = []
     source = path.read_text(encoding="utf-8")
-    program = Parser(Lexer(source).tokenize()).parse()
     name = path.name
+    try:
+        program = Parser(Lexer(source).tokenize()).parse()
+    except MortError as error:
+        return [f"{name}:{error.line}: does not parse: {error.msg}"]
     if program.module_name:
         problems.append(f"{name}: module declaration is outside the subset")
     if program.tests:
@@ -80,13 +84,15 @@ def check_file(path, stats):
         if declaration.alias:
             problems.append(f"{name}: import alias is outside the subset")
 
-    struct_names = {s.name for s in program.structs}
+    # A file sees the whole flattened program, so collect names from all of it.
     enum_names = {e.name for e in program.enums}
-    types = struct_names | enum_names
-    # A file sees the whole flattened program; declare imported names too.
+    types = {s.name for s in program.structs} | enum_names
+    callables = {f.name for f in program.funcs} | {f.name for f in program.externs}
     for sibling in path.parent.glob("*.mx"):
         other = Parser(Lexer(sibling.read_text(encoding="utf-8")).tokenize()).parse()
+        enum_names |= {e.name for e in other.enums}
         types |= {s.name for s in other.structs} | {e.name for e in other.enums}
+        callables |= {f.name for f in other.funcs} | {f.name for f in other.externs}
 
     for declaration in program.structs:
         if declaration.generic_params:
@@ -124,17 +130,67 @@ def check_file(path, stats):
         if isinstance(node, A.Call):
             if node.type_args and node.name != "sizeof":
                 problems.append(f"{where}: explicit type arguments on {node.name}")
+            if node.name == "sizeof":
+                for type_argument in node.type_args:
+                    check_type(type_argument, types, where, problems)
+            if not node.name or "." in node.name:
+                problems.append(f"{where}: qualified or payload call {node.name}")
+        if isinstance(node, A.Cast):
+            check_type(node.target_type, types, where, problems)
+        if isinstance(node, A.For):
+            check_type(node.decl_type, types, where, problems)
+        if isinstance(node, A.StructLit) and node.name not in types:
+            problems.append(f"{where}: struct literal {node.name!r}")
+        if isinstance(node, A.FieldAccess) and not str(node.field).isidentifier():
+            problems.append(f"{where}: tuple field .{node.field}")
+        if isinstance(node, A.Match):
+            check_match(node, enum_names, where, problems)
         if isinstance(node, A.ArrayLit) and id(node) not in global_nodes:
             problems.append(f"{where}: array literal outside a global")
         if isinstance(node, A.Let):
             if id(node) not in global_nodes:
                 check_type(node.decl_type, types, where, problems)
-        if isinstance(node, A.MatchArm) and node.pattern is not None:
-            pattern = node.pattern
-            if isinstance(pattern, A.Call):
-                problems.append(f"{where}: payload pattern in match arm")
     check_builtins(program, name, problems)
+    check_function_values(program, callables | BUILTIN_NAMES, name, problems)
     return problems
+
+
+def check_match(node, enum_names, where, problems):
+    """Arms must name unit variants of a known enum; `_` alone is not enough."""
+    variant_arms = 0
+    for arm in node.arms:
+        pattern = arm.pattern
+        if pattern is None:
+            continue
+        variant_arms += 1
+        if isinstance(pattern, A.Call):
+            problems.append(f"{where}: payload pattern in match arm")
+        elif not (isinstance(pattern, A.FieldAccess)
+                  and isinstance(pattern.obj, A.Var)
+                  and pattern.obj.name in enum_names):
+            problems.append(f"{where}: match arm is not a unit enum variant")
+    if variant_arms == 0:
+        problems.append(f"{where}: match with no enum variant arm")
+
+
+def check_function_values(program, callables, name, problems):
+    """A callable's name may only appear as the target of a direct call."""
+    def scan(root, local_names):
+        for node in walk(root):
+            if (isinstance(node, A.Var) and node.name in callables
+                    and node.name not in local_names):
+                problems.append(f"{name}:{node.line}: function value {node.name}")
+
+    for function in program.funcs:
+        local_names = {param.name for param in function.params}
+        for node in walk(function.body):
+            if isinstance(node, A.Let):
+                local_names.add(node.name)
+            elif isinstance(node, A.For):
+                local_names.add(node.var)
+        scan(function.body, local_names)
+    for binding in program.globals:
+        scan(binding, set())
 
 
 def walk(root):
