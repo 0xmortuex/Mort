@@ -8,6 +8,7 @@ Expected results come from Python models of each structure run over the same
 operations. Run the driver once with a sequence of operations and compare.
 """
 import os
+import platform
 import random
 import subprocess
 import sys
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE / "tools"))
 
 import check_subset  # noqa: E402
+import mortc  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
 from mort.lexer import Lexer  # noqa: E402
@@ -558,6 +560,64 @@ def test_misuse_is_a_clean_failure(driver, name):
     assert result.returncode == EXIT_INTERNAL, result
     assert result.stdout == ""
     assert result.stderr == FATAL_CASES[name] + "\n"
+
+
+# ----- 32-bit targets: size_t is narrower than u64 -----
+
+def x86_target():
+    if os.name == "nt":
+        return "x86-windows-gnu"
+    if sys.platform.startswith("linux") and platform.machine() == "x86_64":
+        return "x86-linux-musl"
+    return None
+
+
+@pytest.fixture(scope="session")
+def x86_driver(tmp_path_factory):
+    zig = mortc.find_zig()
+    target = x86_target()
+    if zig is None or target is None:
+        pytest.skip("needs Zig and a host that runs 32-bit x86 programs")
+    build = tmp_path_factory.mktemp("support-build-x86")
+    source = build / "support_test_main.c"
+    source.write_bytes(
+        mortc.compile_files_to_c([str(HERE / "support_test_main.mx")]).encode("utf-8"))
+    exe = build / ("support_test_main.exe" if os.name == "nt" else "support_test_main")
+    result = subprocess.run(
+        [*zig, "-target", target, str(source), "-o", str(exe), "-O2", "-std=c11"],
+        capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    return exe
+
+
+X86_FATAL_CASES = {
+    "alloc_past_size_t": "mort: out of memory",
+    "alloc_array_past_size_t": "mort: internal error: allocation size overflow",
+    "vec_grow_past_size_t": "mort: internal error: allocation size overflow",
+    "ptr_grow_past_size_t": "mort: internal error: allocation size overflow",
+    "grow_past_size_t": "mort: internal error: capacity overflow",
+}
+
+
+@pytest.mark.parametrize("name", sorted(X86_FATAL_CASES))
+def test_size_beyond_a_32_bit_size_t_is_a_clean_failure(x86_driver, name):
+    result = run_fatal(x86_driver, name)
+    assert result.returncode == EXIT_INTERNAL, result
+    assert result.stdout == ""
+    assert result.stderr == X86_FATAL_CASES[name] + "\n"
+
+
+def test_x86_and_x64_builds_give_the_same_results(driver, x86_driver, tmp_path):
+    rng = random.Random(SEED)
+    interned, _ = intern_script(rng, 400)
+    mapped, _ = map_script(rng, 400)
+    vector, _ = vector_script(rng, "vec", 3000)
+    ops = ["intern_new", *interned, *mapped, *vector]
+    native = tmp_path / "native"
+    x86 = tmp_path / "x86"
+    native.mkdir()
+    x86.mkdir()
+    assert run_ops(driver, native, ops) == run_ops(x86_driver, x86, ops)
 
 
 def test_usage_error_is_a_clean_failure(driver):

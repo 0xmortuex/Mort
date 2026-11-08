@@ -321,6 +321,21 @@ fn run_fatal(name: Span) -> int {
         diag_report("dir/input.mx", 4, 1, span_z("second problem"));
         println("continued");
         return 0;
+    } else if span_eq_z(name, "alloc_past_size_t") {
+        let bytes = sup_alloc(0x100000008) as *u8;
+        for i: u64 in 0..64 {
+            bytes[i] = 1;
+        }
+    } else if span_eq_z(name, "alloc_array_past_size_t") {
+        sup_alloc_array(0x20000000, 8);
+    } else if span_eq_z(name, "vec_grow_past_size_t") {
+        let huge = U64Vec { data: 0 as *u64, len: 0x20000000, cap: 0x20000000 };
+        u64vec_push(&huge, 1);
+    } else if span_eq_z(name, "ptr_grow_past_size_t") {
+        let huge = PtrVec { data: 0 as **void, len: 0x40000000, cap: 0x40000000 };
+        ptrvec_push(&huge, 0 as *void);
+    } else if span_eq_z(name, "grow_past_size_t") {
+        print(sup_grown_capacity(0x80000000) as i64);
     } else if span_eq_z(name, "alloc_impossible") {
         sup_alloc(0xFFFFFFFFFFFFFFF0);
     } else if span_eq_z(name, "alloc_array_overflow") {
