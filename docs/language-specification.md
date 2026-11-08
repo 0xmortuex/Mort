@@ -248,8 +248,8 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
 the programmer's responsibility in Mort 0.41. A pointer type `*T` where `T` is
-an array type is rejected, as is `&a` where `a` has an array type; use `&a[0]`
-to point at the first element.
+an array type is rejected, as is `&a` where `a` has an array type, unless it is
+immediately cast, as in `&a as *u8`; use `&a[0]` to point at the first element.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -575,6 +575,9 @@ The reference implementation reports a located diagnostic when a program
 exceeds any of these limits:
 
 - A program may create at most 16384 generic function instantiations.
+- Generic function instantiations may cost at most 1000000 work units in total.
+  One instantiation costs the size of the function, in syntax tree nodes, times
+  1 plus the total characters of its type arguments divided by 64 (rounded down).
 - A generic function's type argument must not be nested more than 256 type
   constructors deep, and must not be longer than 4096 characters when spelled
   in canonical form.

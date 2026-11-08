@@ -35,6 +35,10 @@ MAX_CONSTANT_BITS = 2 ** 18
 MAX_TYPE_ARGUMENT_NESTING = 256
 MAX_TYPE_ARGUMENT_LENGTH = 4096
 MAX_GENERIC_INSTANTIATIONS = 16384
+# Copying and checking an instance costs its body size, more when long type
+# names fill that body, so a few huge instances can stall as many small ones do.
+MAX_GENERIC_WORK = 1_000_000
+GENERIC_WORK_TYPE_CHARS = 64
 BUILTIN_NAMES = {
     "print", "println", "assert", "alloc", "free", "len", "slice",
     "sizeof",
@@ -230,6 +234,20 @@ def type_nesting(t):
     return deepest
 
 
+def ast_size(root):
+    """Count the AST nodes under root, without recursing."""
+    size = 0
+    pending = [root]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, A.Node):
+            size += 1
+            pending.extend(vars(value).values())
+    return size
+
+
 def substitute_type(t, mapping):
     if t in mapping:
         return mapping[t]
@@ -283,6 +301,8 @@ class Checker:
         self.current_ret = None
         self.current_node = None  # where a stack overflow is reported
         self.generic_instantiations = 0
+        self.generic_work = 0
+        self.template_sizes = {}
         self.alias_cache = {}
         self.extern_names = set()
         self.loop_depth = 0
@@ -463,29 +483,28 @@ class Checker:
         return set()
 
     def _validate_aggregate_cycles(self, roots=None, node=None):
-        graph = {}
-        for name, fields in self.structs.items():
-            if fields is not None:
-                graph[name] = set().union(*(
-                    self._aggregate_value_dependencies(field_type)
-                    for field_type in fields.values()
-                )) if fields else set()
-        for name, variants in self.enums.items():
-            if variants is not None:
-                payloads = [
-                    payload for payload in variants.values()
-                    if payload is not None
-                ]
-                graph[name] = set().union(*(
-                    self._aggregate_value_dependencies(payload)
-                    for payload in payloads
-                )) if payloads else set()
+        def dependencies(name):
+            """Value dependencies of a finished aggregate, else None.
+
+            Worked out on demand: each new generic type passes its own roots,
+            and rebuilding the whole graph for each is quadratic.
+            """
+            members = self.structs.get(name)
+            if members is None:
+                members = self.enums.get(name)
+                if members is None:
+                    return None
+            types = [member for member in members.values() if member is not None]
+            return set().union(*map(self._aggregate_value_dependencies, types))
 
         visiting = []
         complete = set()
 
         def visit(name):
-            if name in complete or name not in graph:
+            if name in complete:
+                return
+            names = dependencies(name)
+            if names is None:
                 return
             if name in visiting:
                 start = visiting.index(name)
@@ -495,12 +514,12 @@ class Checker:
                     node or self._aggregate_declarations.get(name, self.program),
                 )
             visiting.append(name)
-            for dependency in graph[name]:
+            for dependency in names:
                 visit(dependency)
             visiting.pop()
             complete.add(name)
 
-        for name in roots or graph:
+        for name in roots or [*self.structs, *self.enums]:
             visit(name)
 
     def _instantiate_struct(self, concrete_type):
@@ -702,9 +721,15 @@ class Checker:
         if concrete_symbol in self.funcs:
             return concrete_symbol
         self.generic_instantiations += 1
+        if resolved not in self.template_sizes:
+            self.template_sizes[resolved] = ast_size(template)
+        self.generic_work += self.template_sizes[resolved] * (
+            1 + sum(map(len, type_args)) // GENERIC_WORK_TYPE_CHARS)
         problem = None
         if self.generic_instantiations > MAX_GENERIC_INSTANTIATIONS:
             problem = f"exceeds the limit of {MAX_GENERIC_INSTANTIATIONS} in one program"
+        elif self.generic_work > MAX_GENERIC_WORK:
+            problem = f"exceeds the limit of {MAX_GENERIC_WORK} work units in one program"
         elif any(len(arg) > MAX_TYPE_ARGUMENT_LENGTH for arg in type_args):
             problem = (
                 f"has a type argument longer than {MAX_TYPE_ARGUMENT_LENGTH} characters")
@@ -1939,16 +1964,19 @@ class Checker:
             return typ
 
         if isinstance(e, A.Cast):
+            if isinstance(e.expr, A.Unary) and e.expr.op == "&":
+                e.expr.is_cast_operand = True
             st = self._check_expr(e.expr)
             tgt = e.target_type
-            payload_enums = {
-                name for name, variants in self.enums.items()
-                if any(payload is not None for payload in variants.values())
-            }
+
+            def plain_enum(name):
+                return name in self.enums and all(
+                    payload is None for payload in self.enums[name].values())
+
             src_ok = (st in INT_TYPES or st in FLOAT_TYPES or st == "null"
-                      or (st in self.enums and st not in payload_enums) or is_ptr(st))
+                      or plain_enum(st) or is_ptr(st))
             tgt_ok = (tgt in INT_TYPES or tgt in FLOAT_TYPES
-                      or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt))
+                      or plain_enum(tgt) or is_ptr(tgt))
             if not (src_ok and tgt_ok and self._valid_type(tgt)):
                 self._error(f"cannot cast {st} to {tgt}", e)
             if st == "null" and not is_ptr(tgt):
@@ -1988,7 +2016,9 @@ class Checker:
                 ot = self._check_expr(e.operand)
                 if not self._is_lvalue(e.operand):
                     self._error("cannot take the address of this expression", e)
-                if is_array(self._resolve_alias_type(ot)):
+                # A pointer to an array has no C type of its own, but a cast
+                # gives the address one, which is how kernels reach their buffers.
+                if is_array(self._resolve_alias_type(ot)) and not e.is_cast_operand:
                     self._error(
                         f"cannot take the address of an array ({ot}); take the "
                         "address of an element instead, such as &a[0]", e)

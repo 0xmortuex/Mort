@@ -10904,3 +10904,70 @@ def test_spec_states_the_constant_limits():
     spec = _spec_text()
     assert "4300 digits" in spec and "including leading zeros" in spec
     assert "262144 bits" in spec
+
+
+_KERNEL_BUFFER = "let tx: [u16; 2048] = [0; 2048];\n"
+
+
+@pytest.mark.parametrize("expression,c_text", [
+    ("*(&g as *u8)", "(&m_g)"),
+    ("*((&g) as *u8)", "(&m_g)"),
+], ids=["cast", "parenthesised"])
+def test_cast_of_an_array_address_keeps_compiling(expression, c_text):
+    source = ("let g: [u8; 2] = [9, 0];\n"
+              f"fn main() -> int {{ return {expression} as int; }}")
+    assert "((uint8_t*)" + c_text + ")" in c_of(source)
+
+
+def test_kernel_shape_array_address_cast_compiles_freestanding():
+    source = (_KERNEL_BUFFER + "struct S { a: [u8; 4] }\n"
+              "fn kmain() -> void {\n"
+              "  let p = &tx as *u16;\n"
+              "  let s = S { a: [1, 2, 3, 4] };\n"
+              "  let q = &s.a as *const u8;\n"
+              "}\n")
+    code = mortc.compile_to_c(source, freestanding=True)
+    assert "((uint16_t*)(&m_tx))" in code
+
+
+def test_array_address_cast_to_a_pointer_to_array_is_still_rejected():
+    source = "let g: [u8; 2] = [9, 0];\nfn main() -> int { let p = &g as *[u8; 2]; return 0; }"
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    assert caught.value.line == 2
+
+
+def test_spec_states_array_addresses_may_be_cast():
+    assert "unless it is immediately cast" in _spec_text()
+
+
+def _big_generic_body(statements):
+    return "".join(f"  let a{index}: i64 = 1;\n" for index in range(statements))
+
+
+@pytest.mark.parametrize("source", [
+    ("struct W<T> { v: T }\nfn g<T>(x: *W<T>) -> i64 {\n"
+     "  let y: *W<W<T>> = null;\n  let z: *W<*T> = null;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+     "fn main() -> int { let a: *W<i64> = null; return g(a) as int; }"),
+    ("fn g<T>(x: T) -> i64 {\n  " + _big_generic_body(8000)
+     + "  g(&x);\n  g((x, x));\n  return a0;\n}\nfn main() -> int { return g(1) as int; }"),
+    ("enum E<T> { A(T), B }\nfn g<T>(x: *E<T>) -> i64 {\n"
+     "  let y = null as *E<E<T>>;\n  let z = null as *E<*T>;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+     "fn main() -> int { let a: *E<i64> = null; return g(a) as int; }"),
+    ("fn g<T>(x: T) -> i64 {\n  " + _big_generic_body(3000)
+     + "  g(&x);\n  return a0;\n}\nfn main() -> int { return g(1) as int; }"),
+], ids=["growing-structs", "large-body", "growing-enums", "large-body-chain"])
+def test_expensive_runaway_instantiation_is_located_quickly(source):
+    assert_located_quickly(source, 20, "instantiation")
+
+
+def test_chain_of_large_finite_generics_compiles():
+    links = "".join(
+        f"fn f{index}<T>(x: T) -> i64 {{\n{_big_generic_body(20)}"
+        f"  return f{index + 1}(x) + a0;\n}}\n" for index in range(1199))
+    source = links + "fn f1199<T>(x: T) -> i64 { return 42; }\n"
+    assert "mort_f0" in c_of(source + "fn main() -> int { return f0(1) as int; }")
+
+
+def test_spec_states_the_generic_work_limit():
+    assert "1000000 work units" in _spec_text()

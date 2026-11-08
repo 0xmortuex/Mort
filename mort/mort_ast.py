@@ -311,6 +311,7 @@ class Unary(Node):
         self.operand = operand
         self.line = line
         self.col = col
+        self.is_cast_operand = False  # set by the checker for `&a as T`
 
 
 class Binary(Node):
