@@ -20,7 +20,19 @@ import ast;
 import pyrepr;
 import typestr;
 
-const CK_MAX_DEPTH: u64 = 2000;
+// Python's default recursion limit, less the frames the real compiler has on
+// the stack by the time it resolves the first alias. Measured with
+// `mortc.py --check` and pinned by test_alias_chain_limit_matches_mortc.
+const CK_MAX_DEPTH: u64 = 993;
+
+// Limits on generic instantiation (docs/language-specification.md on
+// fix/frontend-crashes, section 11). Instantiation can only diverge by growing
+// its type arguments, so their size is what is limited.
+const MAX_GENERIC_INSTANTIATIONS: u64 = 16384;
+const MAX_GENERIC_WORK: u64 = 1000000;
+const GENERIC_WORK_TYPE_CHARS: u64 = 64;
+const MAX_TYPE_ARGUMENT_LENGTH: u64 = 4096;
+const MAX_TYPE_ARGUMENT_NESTING: u64 = 256;
 
 const W_EXPR: u64 = 0;
 const W_CALL_DONE: u64 = 1;
@@ -136,6 +148,9 @@ struct Ck {
     freestanding: bool,
     test_mode: bool,
     depth: u64,
+    generic_instantiations: u64,
+    generic_work: u64,
+    alias_cache: Map,
 
     aliases: Table,
     alias_decls: Table,
@@ -384,13 +399,13 @@ fn ck_join_dot(c: *Ck, left: u64, right: u64) -> u64 {
     m_t(c, &b, left);
     buf_push(&b, '.');
     m_t(c, &b, right);
-    return intern((*c).s, buf_span(&b));
+    return ts_take((*c).s, &b);
 }
 
 fn ck_decimal(c: *Ck, value: u64) -> u64 {
     let b = buf_new(32);
     buf_push_u64(&b, value);
-    return intern((*c).s, buf_span(&b));
+    return ts_take((*c).s, &b);
 }
 
 fn ck_u64vec_has(list: *U64Vec, value: u64) -> bool {
@@ -411,8 +426,16 @@ fn ck_payload_type(c: *Ck, list: *U64Vec) -> u64 {
 
 // ----- aliases -----
 
+// Results are cached by type, as on fix/frontend-crashes: without it each level
+// of a deep type re-resolves its whole inner type. A resolved name depends only
+// on the fixed alias table. `stack` is non-empty only while tracing an alias
+// body for cycles, and those results are not cached.
 fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
     let s = (*c).s;
+    let cached: u64 = 0;
+    if (*stack).len == 0 && map_get(&(*c).alias_cache, t, &cached) {
+        return cached;
+    }
     ck_enter(c);
     let result = t;
     if tb_has(&(*c).aliases, t) {
@@ -479,6 +502,9 @@ fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
         }
     }
     ck_leave(c);
+    if (*stack).len == 0 {
+        map_put(&(*c).alias_cache, t, result);
+    }
     return result;
 }
 
@@ -637,8 +663,11 @@ fn ck_valid(c: *Ck, type_in: u64) -> bool {
                     result = ck_is_int(c, t) || ck_is_float(c, t) || t == (*c).t_bool
                         || tb_has(&(*c).structs, t) || tb_has(&(*c).enums, t);
                 }
+                free(args.data as *void);
             }
+            free(tuple.data as *void);
         }
+        free(params.data as *void);
     }
     ck_leave(c);
     return result;
@@ -696,6 +725,67 @@ fn ck_all_valid(c: *Ck, list: *U64Vec) -> bool {
     return true;
 }
 
+fn ck_node_count(root: *Node) -> u64 {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    let count: u64 = 0;
+    while stack.len > 0 {
+        ck_push_children(&stack, ptrvec_pop(&stack) as *Node);
+        count += 1;
+    }
+    free(stack.data as *void);
+    return count;
+}
+
+// `_instantiate_function`'s limits on fix/frontend-crashes, applied here before
+// the arguments are validated, because validating them is what recurses. A
+// template's `num` caches its node count, plus one so that zero means unset.
+fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
+    if (*template).num == 0 {
+        (*template).num = ck_node_count(template) + 1;
+    }
+    let characters: u64 = 0;
+    for i: u64 in 0..(*args).len {
+        characters += intern_text((*c).s, u64vec_get(args, i)).len;
+    }
+    (*c).generic_instantiations += 1;
+    (*c).generic_work += ((*template).num - 1)
+        * (1 + characters / GENERIC_WORK_TYPE_CHARS);
+    let msg = m_new();
+    m_s(&msg, "generic instantiation of ");
+    m_r(c, &msg, (*template).name);
+    m_s(&msg, " ");
+    if (*c).generic_instantiations > MAX_GENERIC_INSTANTIATIONS {
+        m_s(&msg, "exceeds the limit of ");
+        m_u(&msg, MAX_GENERIC_INSTANTIATIONS);
+        m_s(&msg, " in one program");
+        ck_fail_node(c, template, &msg);
+    }
+    if (*c).generic_work > MAX_GENERIC_WORK {
+        m_s(&msg, "exceeds the limit of ");
+        m_u(&msg, MAX_GENERIC_WORK);
+        m_s(&msg, " work units in one program");
+        ck_fail_node(c, template, &msg);
+    }
+    for i: u64 in 0..(*args).len {
+        if intern_text((*c).s, u64vec_get(args, i)).len > MAX_TYPE_ARGUMENT_LENGTH {
+            m_s(&msg, "has a type argument longer than ");
+            m_u(&msg, MAX_TYPE_ARGUMENT_LENGTH);
+            m_s(&msg, " characters");
+            ck_fail_node(c, template, &msg);
+        }
+    }
+    for i: u64 in 0..(*args).len {
+        if ts_type_nesting(intern_text((*c).s, u64vec_get(args, i))) > MAX_TYPE_ARGUMENT_NESTING {
+            m_s(&msg, "has a type argument nested more than ");
+            m_u(&msg, MAX_TYPE_ARGUMENT_NESTING);
+            m_s(&msg, " levels deep");
+            ck_fail_node(c, template, &msg);
+        }
+    }
+    free(msg.data as *void);
+}
+
 fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
     let s = (*c).s;
     if tb_has(&(*c).structs, concrete) {
@@ -711,6 +801,7 @@ fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
     if args.len != ck_names_len((*template).names) {
         return false;
     }
+    ck_charge_generic(c, template, &args);
     if !ck_all_valid(c, &args) {
         return false;
     }
@@ -777,6 +868,7 @@ fn ck_instantiate_enum(c: *Ck, concrete: u64) -> bool {
     if args.len != ck_names_len((*template).names) {
         return false;
     }
+    ck_charge_generic(c, template, &args);
     if !ck_all_valid(c, &args) {
         return false;
     }
@@ -2371,6 +2463,27 @@ fn ck_dump_tables(c: *Ck) {
         }
         ck_tb_end(c);
     }
+    let struct_decls = (*(*c).program).structs;
+    for i: u64 in 0..(*struct_decls).len {
+        let d = ast_item(struct_decls, i);
+        ck_tb_line_start(c, "struct-decl", (*d).name);
+        if (*d).flag {
+            buf_push_z(&(*c).tables, " 1 ");
+        } else {
+            buf_push_z(&(*c).tables, " 0 ");
+        }
+        if (*d).symbol != NO_TEXT {
+            ck_q(c, &(*c).tables, (*d).symbol);
+        } else {
+            buf_push(&(*c).tables, '-');
+        }
+        ck_tb_end(c);
+    }
+    let enum_decls = (*(*c).program).enums;
+    for i: u64 in 0..(*enum_decls).len {
+        ck_tb_line_start(c, "enum-decl", (*ast_item(enum_decls, i)).name);
+        ck_tb_end(c);
+    }
     (*c).tables_done = true;
 }
 
@@ -2418,6 +2531,7 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
     let c = Ck {
         s: strings, program: program, out_path: out_path,
         freestanding: freestanding, test_mode: test_mode, depth: 0,
+        generic_instantiations: 0, generic_work: 0, alias_cache: map_new(),
         aliases: tb_new(), alias_decls: tb_new(),
         enums: tb_new(), enum_templates: tb_new(),
         structs: tb_new(), struct_templates: tb_new(),
@@ -2479,8 +2593,8 @@ fn ck_run(c: *Ck) {
         }
         ck_function_body(c, f);
     }
-    if (*c).test_mode {
-        ck_check_test_names(c);
-    }
+    // Test blocks are checked in every mode, as `check()` does; only the `main`
+    // requirement depends on test mode.
+    ck_check_test_names(c);
     ck_write_output(c);
 }
