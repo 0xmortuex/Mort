@@ -1,0 +1,314 @@
+// Exact conversion of a decimal literal to IEEE-754 binary64 bits.
+//
+// Rounds half to even, as Python's float() does, on integers only: no
+// floating-point arithmetic and no host strtod, so the result cannot vary with
+// the C library. The value is D * 10^E; the quotient of two big integers gives
+// the leading bits and the remainder decides the rounding.
+
+// Every tie between adjacent doubles has at most 767 significant decimal
+// digits. Keeping 800 and appending a nonzero digit when anything nonzero was
+// dropped leaves the value on the same side of every tie, so the rest of the
+// literal cannot change the result and its length cannot affect the cost.
+const FLOAT_MAX_SIG_DIGITS: u64 = 800;
+
+// Far past any exponent that can matter, and far below i64 overflow.
+const FLOAT_EXP_CLAMP: i64 = 1000000000000000;
+
+// Little-endian base 2^32, with no high zero limbs. Callers size the storage.
+struct Big {
+    data: *u32,
+    len: u64,
+}
+
+fn big_new(limbs: u64) -> Big {
+    return Big { data: alloc(limbs * sizeof<u32>()) as *u32, len: 0 };
+}
+
+fn big_mul_add(b: *Big, factor: u32, addend: u32) {
+    let carry = addend as u64;
+    for i: u64 in 0..(*b).len {
+        let value = ((*b).data[i] as u64) * (factor as u64) + carry;
+        (*b).data[i] = (value & 0xFFFFFFFF) as u32;
+        carry = value >> 32;
+    }
+    if carry > 0 {
+        (*b).data[(*b).len] = carry as u32;
+        (*b).len += 1;
+    }
+}
+
+fn big_mul_pow10(b: *Big, power: u64) {
+    let left = power;
+    while left >= 9 {
+        big_mul_add(b, 1000000000, 0);
+        left -= 9;
+    }
+    let factor: u32 = 1;
+    while left > 0 {
+        factor = factor * 10;
+        left -= 1;
+    }
+    big_mul_add(b, factor, 0);
+}
+
+fn big_bits(b: *Big) -> u64 {
+    if (*b).len == 0 {
+        return 0;
+    }
+    let bits = ((*b).len - 1) * 32;
+    let top = (*b).data[(*b).len - 1];
+    while top > 0 {
+        bits += 1;
+        top = top >> 1;
+    }
+    return bits;
+}
+
+fn big_shl(b: *Big, count: u64) {
+    let old = (*b).len;
+    if old == 0 || count == 0 {
+        return;
+    }
+    let limbs = count / 32;
+    let bits = count % 32;
+    let spill = (*b).data[old - 1] >> (32 - bits);
+    let i = old;
+    while i > 0 {
+        i -= 1;
+        let value = (*b).data[i] << bits;
+        if i > 0 {
+            value = value | ((*b).data[i - 1] >> (32 - bits));
+        }
+        (*b).data[i + limbs] = value;
+    }
+    for k: u64 in 0..limbs {
+        (*b).data[k] = 0;
+    }
+    (*b).len = old + limbs;
+    if spill > 0 {
+        (*b).data[(*b).len] = spill;
+        (*b).len += 1;
+    }
+}
+
+// Returns -1, 0 or 1.
+fn big_cmp(a: *Big, b: *Big) -> i64 {
+    if (*a).len != (*b).len {
+        if (*a).len < (*b).len {
+            return -1;
+        }
+        return 1;
+    }
+    let i = (*a).len;
+    while i > 0 {
+        i -= 1;
+        let x = (*a).data[i];
+        let y = (*b).data[i];
+        if x != y {
+            if x < y {
+                return -1;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// a -= b, where a >= b.
+fn big_sub(a: *Big, b: *Big) {
+    let borrow: u64 = 0;
+    for i: u64 in 0..(*a).len {
+        let subtrahend = borrow;
+        if i < (*b).len {
+            subtrahend += (*b).data[i] as u64;
+        }
+        let value = ((*a).data[i] as u64) + 0x100000000 - subtrahend;
+        (*a).data[i] = (value & 0xFFFFFFFF) as u32;
+        if value < 0x100000000 {
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+    }
+    while (*a).len > 0 && (*a).data[(*a).len - 1] == 0 {
+        (*a).len -= 1;
+    }
+}
+
+fn float_abs(value: i64) -> u64 {
+    if value < 0 {
+        return (-value) as u64;
+    }
+    return value as u64;
+}
+
+fn float_set_from_digits(n: *Big, digits: *u8, count: u64) {
+    let i: u64 = 0;
+    while i < count {
+        let value: u32 = 0;
+        let factor: u32 = 1;
+        let taken: u64 = 0;
+        while taken < 9 && i < count {
+            value = value * 10 + (digits[i] as u32);
+            factor = factor * 10;
+            taken += 1;
+            i += 1;
+        }
+        big_mul_add(n, factor, value);
+    }
+}
+
+// Writes the bits of D * 10^E through `out`, rounding half to even. Returns
+// false if the value rounds to infinity.
+fn float_round(digits: *u8, count: u64, exponent: i64, out: *u64) -> bool {
+    let capacity = (count * 4 + float_abs(exponent) * 4 + 1264) / 32 + 8;
+    let n = big_new(capacity);
+    let m = big_new(capacity);
+    float_set_from_digits(&n, digits, count);
+    if exponent > 0 {
+        big_mul_pow10(&n, exponent as u64);
+    }
+    big_mul_add(&m, 1, 1);
+    if exponent < 0 {
+        big_mul_pow10(&m, (-exponent) as u64);
+    }
+    // Scale so 1 <= n/m < 2; the value is then n/m * 2^e.
+    let e = (big_bits(&n) as i64) - (big_bits(&m) as i64);
+    if e >= 0 {
+        big_shl(&m, e as u64);
+    } else {
+        big_shl(&n, (-e) as u64);
+    }
+    if big_cmp(&n, &m) < 0 {
+        big_shl(&n, 1);
+        e -= 1;
+    }
+    let finite = true;
+    let bits: u64 = 0;
+    if e > 1023 {
+        finite = false;
+    } else if e >= -1075 {
+        // Normal numbers carry 53 bits; subnormals lose one per step below.
+        let precision: i64 = 53;
+        if e < -1022 {
+            precision = e + 1075;
+        }
+        let q: u64 = 0;
+        for k: i64 in 0..precision {
+            q = q << 1;
+            if big_cmp(&n, &m) >= 0 {
+                big_sub(&n, &m);
+                q = q | 1;
+            }
+            big_shl(&n, 1);
+        }
+        // n/m is now twice the remainder in units of the last bit.
+        let side = big_cmp(&n, &m);
+        if side > 0 || (side == 0 && (q & 1) == 1) {
+            q += 1;
+        }
+        if precision == 53 {
+            if q == 0x20000000000000 {
+                q = 0x10000000000000;
+                e += 1;
+            }
+            if e > 1023 {
+                finite = false;
+            } else {
+                bits = (((e + 1023) as u64) << 52) | (q - 0x10000000000000);
+            }
+        } else {
+            bits = q;
+        }
+    }
+    free(n.data as *void);
+    free(m.data as *void);
+    *out = bits;
+    return finite;
+}
+
+// `text` is a well-formed literal: digits, optional `.digits`, optional
+// exponent, with `_` allowed among them. Returns false if it overflows.
+fn float_bits(text: Span, out: *u64) -> bool {
+    let digits = alloc(FLOAT_MAX_SIG_DIGITS + 1) as *u8;
+    let count: u64 = 0;
+    let exponent: i64 = 0;
+    let sticky = false;
+    let after_point = false;
+    let i: u64 = 0;
+    while i < text.len {
+        let c = text.data[i];
+        if c == 'e' || c == 'E' {
+            break;
+        }
+        i += 1;
+        if c == '_' {
+            continue;
+        }
+        if c == '.' {
+            after_point = true;
+            continue;
+        }
+        let digit = c - 48;
+        if after_point {
+            exponent -= 1;
+        }
+        if count == 0 && digit == 0 {
+            continue;
+        }
+        if count < FLOAT_MAX_SIG_DIGITS {
+            digits[count] = digit;
+            count += 1;
+        } else {
+            exponent += 1;
+            if digit != 0 {
+                sticky = true;
+            }
+        }
+    }
+    if sticky {
+        digits[count] = 1;
+        count += 1;
+        exponent -= 1;
+    }
+    if i < text.len {
+        i += 1;
+        let negative = false;
+        if text.data[i] == '+' || text.data[i] == '-' {
+            negative = text.data[i] == '-';
+            i += 1;
+        }
+        let written: i64 = 0;
+        while i < text.len {
+            if written < FLOAT_EXP_CLAMP {
+                written = written * 10 + ((text.data[i] - 48) as i64);
+            }
+            i += 1;
+        }
+        if written > FLOAT_EXP_CLAMP {
+            written = FLOAT_EXP_CLAMP;
+        }
+        if negative {
+            exponent -= written;
+        } else {
+            exponent += written;
+        }
+    }
+    while count > 0 && digits[count - 1] == 0 {
+        count -= 1;
+        exponent += 1;
+    }
+    let finite = true;
+    *out = 0;
+    if count > 0 {
+        // The value is below 10^magnitude and at least 10^(magnitude-1).
+        let magnitude = (count as i64) + exponent;
+        if magnitude > 310 {
+            finite = false;
+        } else if magnitude >= -330 {
+            finite = float_round(digits, count, exponent, out);
+        }
+    }
+    free(digits as *void);
+    return finite;
+}

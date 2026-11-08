@@ -7,8 +7,7 @@
 // allocated once and released at exit. Nothing here calls free.
 
 import lexer_unicode;
-
-extern fn strtod(text: *const c_char, end: **c_char) -> f64;
+import lexer_float;
 
 enum Tok {
     INT, FLOAT, CHAR, STRING, IDENT,
@@ -498,18 +497,8 @@ fn lx_finish_float(l: *Lexer, start: u64, line: u64, col: u64) -> bool {
         return lx_fail(l, "invalid floating-point literal", line, col);
     }
     let text = lx_span_from(l, start);
-    let clean = alloc(text.len + 1) as *u8;
-    let n: u64 = 0;
-    for i: u64 in 0..text.len {
-        if text.data[i] != 95 {
-            clean[n] = text.data[i];
-            n += 1;
-        }
-    }
-    clean[n] = 0;
-    let value = strtod(clean as *const c_char, 0 as **c_char);
-    let bits = *(&value as *u64);
-    if ((bits >> 52) & 0x7FF) == 0x7FF {
+    let bits: u64 = 0;
+    if !float_bits(text, &bits) {
         return lx_fail(l, "floating-point literal is out of range", line, col);
     }
     lx_add(l, Tok.FLOAT, text, bits, line, col);
