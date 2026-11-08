@@ -1,0 +1,311 @@
+// Test driver for bignum.mx: runs each line of the file named by MORT_BN_IN and
+// writes one result line per input line to MORT_BN_OUT. test_bignum.py generates
+// the input and compares the output with Python's integers.
+//
+// Input lines are `op base a [b]`. `a` and `b` are `-`-prefixed digit strings in
+// `base`; `=` as b means "the same value as a". See test_bignum.py for the ops.
+//
+// Exit status: 0 ran every line, 2 usage or I/O failure or an internal error.
+
+import bignum;
+
+extern fn getenv(name: *const c_char) -> *c_char;
+
+struct Out {
+    data: *u8,
+    len: u64,
+    cap: u64,
+}
+
+fn out_new() -> Out {
+    return Out { data: sup_alloc_array(4096, 1) as *u8, len: 0, cap: 4096 };
+}
+
+fn out_byte(o: *Out, byte: u8) {
+    if (*o).len == (*o).cap {
+        let bigger = sup_alloc_array((*o).cap * 2, 1) as *u8;
+        for i: u64 in 0..(*o).len {
+            bigger[i] = (*o).data[i];
+        }
+        free((*o).data as *void);
+        (*o).data = bigger;
+        (*o).cap = (*o).cap * 2;
+    }
+    (*o).data[(*o).len] = byte;
+    (*o).len += 1;
+}
+
+fn out_text(o: *Out, text: *u8) {
+    let i: u64 = 0;
+    while text[i] != 0 {
+        out_byte(o, text[i]);
+        i += 1;
+    }
+}
+
+fn out_u64(o: *Out, value: u64) {
+    if value >= 10 {
+        out_u64(o, value / 10);
+    }
+    out_byte(o, 48 + (value % 10) as u8);
+}
+
+fn is_canonical(v: BigInt) -> bool {
+    if v.len == 0 {
+        return !v.neg;
+    }
+    return v.limbs[v.len - 1] != 0;
+}
+
+fn out_value(o: *Out, v: BigInt) {
+    if !is_canonical(v) {
+        out_text(o, "NONCANONICAL\n");
+        bn_free(v);
+        return;
+    }
+    let text = bn_format(v);
+    out_text(o, text);
+    out_byte(o, 10);
+    free(text as *void);
+    bn_free(v);
+}
+
+fn out_bool(o: *Out, value: bool) {
+    if value {
+        out_text(o, "1\n");
+    } else {
+        out_text(o, "0\n");
+    }
+}
+
+fn read_all(path: *u8) -> Out {
+    let handle = file_open(path, "rb");
+    if handle == (0 as *void) {
+        sup_die("bignum_test_main: cannot read the input file");
+    }
+    let all = out_new();
+    let chunk = alloc(65536) as *u8;
+    loop {
+        let got = file_read(handle, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            out_byte(&all, chunk[i]);
+        }
+    }
+    file_close(handle);
+    return all;
+}
+
+fn parse_value(text: *u8, count: u64, base: u32) -> BigInt {
+    if count > 0 && text[0] == '-' {
+        let magnitude = bn_parse(&text[1], count - 1, base);
+        let negated = bn_neg(magnitude);
+        bn_free(magnitude);
+        return negated;
+    }
+    return bn_parse(text, count, base);
+}
+
+fn token_is(text: *u8, count: u64, name: *u8) -> bool {
+    let i: u64 = 0;
+    while i < count {
+        if name[i] == 0 || name[i] != text[i] {
+            return false;
+        }
+        i += 1;
+    }
+    return name[count] == 0;
+}
+
+fn parse_u64(text: *u8, count: u64) -> u64 {
+    let value: u64 = 0;
+    for i: u64 in 0..count {
+        value = value * 10 + ((text[i] - 48) as u64);
+    }
+    return value;
+}
+
+fn parse_base(text: *u8, count: u64) -> u32 {
+    return parse_u64(text, count) as u32;
+}
+
+struct Line {
+    text: *u8,
+    tok: *u64,
+    n: *u64,
+}
+
+fn run_fold(o: *Out, a: BigInt, b: BigInt, op: BnOp) {
+    let result = bn_zero();
+    if bn_fold_binary(op, a, b, &result) {
+        out_value(o, result);
+    } else {
+        out_text(o, "none\n");
+        bn_free(result);
+    }
+}
+
+// Handles an op with two value operands. Returns false if `name` is not one.
+fn run_binary(o: *Out, l: Line, a: BigInt, b: BigInt) -> bool {
+    let op = &l.text[l.tok[0]];
+    let n = l.n[0];
+    if token_is(op, n, "add") { out_value(o, bn_add(a, b)); return true; }
+    if token_is(op, n, "sub") { out_value(o, bn_sub(a, b)); return true; }
+    if token_is(op, n, "mul") { out_value(o, bn_mul(a, b)); return true; }
+    if token_is(op, n, "fdiv") { out_value(o, bn_floor_div(a, b)); return true; }
+    if token_is(op, n, "fmod") { out_value(o, bn_floor_mod(a, b)); return true; }
+    if token_is(op, n, "cdiv") { out_value(o, bn_c_div(a, b)); return true; }
+    if token_is(op, n, "cmod") { out_value(o, bn_c_mod(a, b)); return true; }
+    if token_is(op, n, "and") { out_value(o, bn_and(a, b)); return true; }
+    if token_is(op, n, "or") { out_value(o, bn_or(a, b)); return true; }
+    if token_is(op, n, "xor") { out_value(o, bn_xor(a, b)); return true; }
+    if token_is(op, n, "cmp") {
+        let c = bn_cmp(a, b);
+        if c < 0 {
+            out_text(o, "-1\n");
+        } else if c > 0 {
+            out_text(o, "1\n");
+        } else {
+            out_text(o, "0\n");
+        }
+        return true;
+    }
+    if token_is(op, n, "F+") { run_fold(o, a, b, BnOp.ADD); return true; }
+    if token_is(op, n, "F-") { run_fold(o, a, b, BnOp.SUB); return true; }
+    if token_is(op, n, "F*") { run_fold(o, a, b, BnOp.MUL); return true; }
+    if token_is(op, n, "F/") { run_fold(o, a, b, BnOp.DIV); return true; }
+    if token_is(op, n, "F%") { run_fold(o, a, b, BnOp.MOD); return true; }
+    if token_is(op, n, "F&") { run_fold(o, a, b, BnOp.AND); return true; }
+    if token_is(op, n, "F|") { run_fold(o, a, b, BnOp.OR); return true; }
+    if token_is(op, n, "F^") { run_fold(o, a, b, BnOp.XOR); return true; }
+    if token_is(op, n, "F<<") { run_fold(o, a, b, BnOp.SHL); return true; }
+    if token_is(op, n, "F>>") { run_fold(o, a, b, BnOp.SHR); return true; }
+    return false;
+}
+
+fn run_unary(o: *Out, l: Line, a: BigInt) -> bool {
+    let op = &l.text[l.tok[0]];
+    let n = l.n[0];
+    if token_is(op, n, "val") { out_value(o, bn_copy(a)); return true; }
+    if token_is(op, n, "neg") { out_value(o, bn_neg(a)); return true; }
+    if token_is(op, n, "not") { out_value(o, bn_not(a)); return true; }
+    if token_is(op, n, "bitlen") {
+        out_u64(o, bn_bit_length(a));
+        out_byte(o, 10);
+        return true;
+    }
+    if token_is(op, n, "iszero") { out_bool(o, bn_is_zero(a)); return true; }
+    if token_is(op, n, "isneg") { out_bool(o, bn_is_negative(a)); return true; }
+    return false;
+}
+
+fn run_line(o: *Out, l: Line, tokens: u64) {
+    let op = &l.text[l.tok[0]];
+    let n = l.n[0];
+    let text = l.text;
+    // The size comes from the input and the pointer escapes to an external call.
+    // Otherwise the C compiler may delete the unused malloc and its null check,
+    // and the test would pass without exercising the failure path.
+    if token_is(op, n, "alloc") {
+        let limbs = bn_limbs(parse_u64(&text[l.tok[1]], l.n[1]));
+        limbs[0] = 1;
+        getenv(limbs as *const c_char);
+        out_text(o, "allocated\n");
+        return;
+    }
+    if token_is(op, n, "fu") {
+        out_value(o, bn_from_u64(parse_u64(&text[l.tok[1]], l.n[1])));
+        return;
+    }
+    if token_is(op, n, "fi") {
+        let digits = &text[l.tok[1]];
+        let count = l.n[1];
+        if count > 0 && digits[0] == '-' {
+            let magnitude = parse_u64(&digits[1], count - 1);
+            out_value(o, bn_from_i64((0 - magnitude) as i64));
+        } else {
+            out_value(o, bn_from_i64(parse_u64(digits, count) as i64));
+        }
+        return;
+    }
+    let base = parse_base(&text[l.tok[1]], l.n[1]);
+    let a = parse_value(&text[l.tok[2]], l.n[2], base);
+    let a_before = bn_copy(a);
+    if token_is(op, n, "shl") {
+        out_value(o, bn_shl(a, parse_u64(&text[l.tok[3]], l.n[3])));
+    } else if token_is(op, n, "shr") {
+        out_value(o, bn_shr(a, parse_u64(&text[l.tok[3]], l.n[3])));
+    } else if tokens >= 4 {
+        let same = token_is(&text[l.tok[3]], l.n[3], "=");
+        let b = a;
+        if !same {
+            b = parse_value(&text[l.tok[3]], l.n[3], base);
+        }
+        let b_before = bn_copy(b);
+        if !run_binary(o, l, a, b) {
+            sup_die("bignum_test_main: unknown binary op");
+        }
+        if bn_cmp(b, b_before) != 0 {
+            out_text(o, "OPERAND-CHANGED\n");
+        }
+        bn_free(b_before);
+        if !same {
+            bn_free(b);
+        }
+    } else if !run_unary(o, l, a) {
+        sup_die("bignum_test_main: unknown unary op");
+    }
+    if bn_cmp(a, a_before) != 0 {
+        out_text(o, "OPERAND-CHANGED\n");
+    }
+    bn_free(a);
+    bn_free(a_before);
+}
+
+fn main() -> int {
+    let in_path = getenv("MORT_BN_IN" as *const c_char) as *u8;
+    let out_path = getenv("MORT_BN_OUT" as *const c_char) as *u8;
+    if in_path == (0 as *u8) || out_path == (0 as *u8) {
+        println("bignum_test_main: set MORT_BN_IN and MORT_BN_OUT");
+        return 2;
+    }
+    let input = read_all(in_path);
+    let results = out_new();
+    let tok = sup_alloc_array(4, sizeof<u64>()) as *u64;
+    let n = sup_alloc_array(4, sizeof<u64>()) as *u64;
+    let line = Line { text: input.data, tok: tok, n: n };
+    let i: u64 = 0;
+    while i < input.len {
+        let tokens: u64 = 0;
+        while i < input.len && input.data[i] != 10 {
+            if tokens == 4 {
+                sup_die("bignum_test_main: too many tokens on a line");
+            }
+            tok[tokens] = i;
+            while i < input.len && input.data[i] != ' ' && input.data[i] != 10 {
+                i += 1;
+            }
+            n[tokens] = i - tok[tokens];
+            tokens += 1;
+            if i < input.len && input.data[i] == ' ' {
+                i += 1;
+            }
+        }
+        i += 1;
+        if tokens > 0 {
+            run_line(&results, line, tokens);
+        }
+    }
+    let handle = file_open(out_path, "wb");
+    if handle == (0 as *void) {
+        sup_die("bignum_test_main: cannot write the output file");
+    }
+    let written = file_write(handle, results.data, results.len);
+    file_close(handle);
+    if written != results.len {
+        sup_die("bignum_test_main: short write");
+    }
+    return 0;
+}

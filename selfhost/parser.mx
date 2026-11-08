@@ -1,0 +1,1217 @@
+// The Mort parser, written in the bootstrap subset (PLAN.md, task T3).
+//
+// Mirrors mort/parser.py rule for rule, including its exact diagnostics, and
+// parses the whole language: the subset limits how this compiler is written,
+// not what its parser can read. test_parser_differential.py compares the two.
+//
+// Two deliberate differences of method, neither visible in the result:
+//
+// - The ten binary-operator levels are one precedence-climbing function, which
+//   gives the same left-associative trees with far fewer C frames per level.
+// - Python rescans for the matching `>` at every `<`, which is quadratic on a
+//   chain of comparisons. Here one pass over the tokens computes the answer for
+//   every `<` up front. No scan can see a token split by ps_type_close, because
+//   the parser never moves backward.
+//
+// Errors are fatal: the first one is reported through diag_fatal and the process
+// exits 1, so no parse function ever returns a partial result.
+//
+// Depth: MAX_NESTING bounds C stack use. ps_enter counts entries to the five
+// mutually recursive rules, the ones py_ast_dump.GuardedParser counts. Loops
+// produce the operator and postfix chains, so tree depth is unlimited even
+// though parser recursion is not; nothing here walks a tree recursively.
+
+import support;
+import lexer;
+import ast;
+import pyrepr;
+
+const MAX_NESTING: u64 = 1000;
+
+const NO_CLOSE: u64 = 0xFFFFFFFFFFFFFFFF;
+const FIXED_TYPE_COUNT: u64 = 19;
+
+let FIXED_TYPE_NAMES: [*u8; 19] = [
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+    "c_char", "c_uchar", "c_short", "c_ushort", "c_int", "c_uint",
+    "c_long", "c_ulong", "c_size", "f32", "f64"
+];
+
+struct Parser {
+    toks: *Token,
+    count: u64,
+    i: u64,
+    no_struct_lit: bool,
+    depth: u64,
+    strings: *Interner,
+    path: *u8,
+    close_shr: *u64,
+    close_plain: *u64,
+    ty: Buf,
+}
+
+// ----- errors -----
+
+fn ps_fail(p: *Parser, line: u64, message: Span) {
+    diag_fatal((*p).path, line, 0, message);
+}
+
+fn ps_fail_z(p: *Parser, line: u64, message: *u8) {
+    ps_fail(p, line, span_z(message));
+}
+
+// Appends Python's repr of the token's value: `tok.value!r`.
+fn ps_push_token_value(out: *Buf, t: *Token) {
+    let kind = (*t).kind;
+    if kind == Tok.EOF {
+        buf_push_z(out, "None");
+    } else if kind == Tok.INT {
+        buf_push_span(out, (*t).text);
+    } else if kind == Tok.CHAR {
+        buf_push_u64(out, (*t).num);
+    } else if kind == Tok.FLOAT {
+        pr_push_float_repr(out, (*t).num);
+    } else {
+        pr_push_str_repr(out, (*t).text);
+    }
+}
+
+fn ps_fail_with_value(p: *Parser, prefix: *u8, what: *u8, t: *Token) {
+    let m = buf_new(64);
+    buf_push_z(&m, prefix);
+    buf_push_z(&m, what);
+    buf_push_z(&m, ", got ");
+    ps_push_token_value(&m, t);
+    ps_fail(p, (*t).line, buf_span(&m));
+}
+
+fn ps_fail_unexpected(p: *Parser, t: *Token) {
+    let m = buf_new(64);
+    buf_push_z(&m, "unexpected token ");
+    ps_push_token_value(&m, t);
+    ps_fail(p, (*t).line, buf_span(&m));
+}
+
+// ----- token helpers -----
+
+fn ps_peek(p: *Parser) -> *Token {
+    return &(*p).toks[(*p).i];
+}
+
+fn ps_kind(p: *Parser) -> Tok {
+    return (*ps_peek(p)).kind;
+}
+
+fn ps_at(p: *Parser, kind: Tok) -> bool {
+    return ps_kind(p) == kind;
+}
+
+fn ps_advance(p: *Parser) -> *Token {
+    if (*p).i + 1 >= (*p).count {
+        sup_die("mort: internal error: parser advanced past end of input");
+    }
+    let t = ps_peek(p);
+    (*p).i += 1;
+    return t;
+}
+
+fn ps_expect(p: *Parser, kind: Tok, what: *u8) -> *Token {
+    if !ps_at(p, kind) {
+        ps_fail_with_value(p, "expected ", what, ps_peek(p));
+    }
+    return ps_advance(p);
+}
+
+fn ps_text(p: *Parser, s: Span) -> u64 {
+    return intern((*p).strings, s);
+}
+
+fn ps_text_z(p: *Parser, s: *u8) -> u64 {
+    return intern_z((*p).strings, s);
+}
+
+fn ps_expect_name(p: *Parser, what: *u8) -> u64 {
+    return ps_text(p, (*ps_expect(p, Tok.IDENT, what)).text);
+}
+
+// Counts one level of recursion; pairs with ps_leave.
+fn ps_enter(p: *Parser) {
+    (*p).depth += 1;
+    if (*p).depth > MAX_NESTING {
+        ps_fail_z(p, (*ps_peek(p)).line, "source nesting exceeds the compiler safety limit");
+    }
+}
+
+fn ps_leave(p: *Parser) {
+    (*p).depth -= 1;
+}
+
+// ----- angle-bracket matching -----
+//
+// One pass, with a stack of open `<`. For the entry at index j, close[j] is the
+// token at which a depth count started at j first reaches zero, or NO_CLOSE if
+// a `;` or end of input comes first, or (with `>>` counted as two closes) if a
+// `>>` would take that count below zero.
+
+fn ps_compute_closes(toks: *Token, count: u64, split_shr: bool) -> *u64 {
+    let close = sup_alloc_array(count, sizeof<u64>()) as *u64;
+    for i: u64 in 0..count {
+        close[i] = NO_CLOSE;
+    }
+    let open = u64vec_new();
+    for i: u64 in 0..count {
+        let kind = toks[i].kind;
+        if kind == Tok.LT {
+            u64vec_push(&open, i);
+        } else if kind == Tok.GT {
+            if open.len > 0 {
+                close[u64vec_pop(&open)] = i;
+            }
+        } else if kind == Tok.SHR && split_shr {
+            if open.len > 0 {
+                u64vec_pop(&open);
+            }
+            if open.len > 0 {
+                close[u64vec_pop(&open)] = i;
+            }
+        } else if kind == Tok.SEMI || kind == Tok.EOF {
+            open.len = 0;
+        }
+    }
+    return close;
+}
+
+fn ps_close_then(p: *Parser, close: *u64, at: u64, follower: Tok) -> bool {
+    let matched = close[at];
+    if matched == NO_CLOSE {
+        return false;
+    }
+    return (*p).toks[matched + 1].kind == follower;
+}
+
+fn ps_looks_like_call_type_args(p: *Parser) -> bool {
+    return ps_close_then(p, (*p).close_shr, (*p).i, Tok.LPAREN);
+}
+
+fn ps_looks_like_struct_lit(p: *Parser) -> bool {
+    let next = (*p).toks[(*p).i + 1].kind;
+    if next != Tok.LT {
+        return next == Tok.LBRACE;
+    }
+    return ps_close_then(p, (*p).close_plain, (*p).i + 1, Tok.LBRACE);
+}
+
+fn ps_looks_like_generic_qualifier(p: *Parser) -> bool {
+    if (*p).toks[(*p).i + 1].kind != Tok.LT {
+        return false;
+    }
+    return ps_close_then(p, (*p).close_shr, (*p).i + 1, Tok.DOT);
+}
+
+// ----- types -----
+//
+// A type's text comes out strictly left to right, so one buffer serves the
+// whole of it however deep it is. Types never contain expressions, so the
+// buffer is never re-entered.
+
+// Consumes one closing angle. `>>` and `>=` are split in place: the token stays
+// put as the rest of itself, with the column moved along as Python does.
+fn ps_type_close(p: *Parser) {
+    if ps_at(p, Tok.SHR) {
+        let t = ps_peek(p);
+        (*t).kind = Tok.GT;
+        (*t).text = span_z(">");
+        (*t).col += 1;
+        return;
+    }
+    if ps_at(p, Tok.GE) {
+        let t = ps_peek(p);
+        (*t).kind = Tok.ASSIGN;
+        (*t).text = span_z("=");
+        (*t).col += 1;
+        return;
+    }
+    ps_expect(p, Tok.GT, "'>'");
+}
+
+fn ps_is_fixed_type(text: Span) -> bool {
+    for i: u64 in 0..FIXED_TYPE_COUNT {
+        if span_eq_z(text, FIXED_TYPE_NAMES[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ps_type_fn(p: *Parser, out: *Buf) {
+    ps_advance(p);
+    ps_expect(p, Tok.LPAREN, "'('");
+    buf_push_z(out, "fn(");
+    if !ps_at(p, Tok.RPAREN) {
+        ps_type_into(p);
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            buf_push(out, ',');
+            ps_type_into(p);
+        }
+    }
+    ps_expect(p, Tok.RPAREN, "')'");
+    ps_expect(p, Tok.ARROW, "'->'");
+    buf_push_z(out, ")->");
+    ps_type_into(p);
+}
+
+fn ps_type_tuple(p: *Parser, out: *Buf) {
+    let line = (*ps_advance(p)).line;
+    buf_push(out, '(');
+    ps_type_into(p);
+    let count: u64 = 1;
+    if !ps_at(p, Tok.COMMA) {
+        ps_fail_z(p, line, "tuple types require at least two elements");
+    }
+    while ps_at(p, Tok.COMMA) {
+        ps_advance(p);
+        if ps_at(p, Tok.RPAREN) {
+            break;
+        }
+        buf_push(out, ',');
+        ps_type_into(p);
+        count += 1;
+    }
+    ps_expect(p, Tok.RPAREN, "')'");
+    if count < 2 {
+        ps_fail_z(p, line, "tuple types require at least two elements");
+    }
+    buf_push(out, ')');
+}
+
+fn ps_type_array(p: *Parser, out: *Buf) {
+    ps_advance(p);
+    if ps_at(p, Tok.RBRACKET) {
+        ps_advance(p);
+        // Two pushes, not the literal text: BLOCKERS.md, string literals
+        // that begin with brackets.
+        buf_push(out, '[');
+        buf_push(out, ']');
+        if ps_at(p, Tok.CONST) {
+            ps_advance(p);
+            buf_push_z(out, "const ");
+        }
+        ps_type_into(p);
+        return;
+    }
+    buf_push(out, '[');
+    ps_type_into(p);
+    ps_expect(p, Tok.SEMI, "';'");
+    let size = ps_expect(p, Tok.INT, "an array size");
+    ps_expect(p, Tok.RBRACKET, "']'");
+    buf_push(out, ';');
+    buf_push_span(out, (*size).text);
+    buf_push(out, ']');
+}
+
+fn ps_type_named(p: *Parser, out: *Buf) {
+    let t = ps_peek(p);
+    let kind = (*t).kind;
+    if kind == Tok.KW_INT {
+        ps_advance(p);
+        buf_push_z(out, "i64");
+        return;
+    }
+    if kind == Tok.KW_BOOL {
+        ps_advance(p);
+        buf_push_z(out, "bool");
+        return;
+    }
+    if kind == Tok.KW_VOID {
+        ps_advance(p);
+        buf_push_z(out, "void");
+        return;
+    }
+    if kind != Tok.IDENT {
+        ps_fail_with_value(p, "expected ", "a type", t);
+    }
+    ps_advance(p);
+    buf_push_span(out, (*t).text);
+    if ps_is_fixed_type((*t).text) {
+        return;
+    }
+    if ps_at(p, Tok.LT) {
+        ps_advance(p);
+        buf_push(out, '<');
+        ps_type_into(p);
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            buf_push(out, ',');
+            ps_type_into(p);
+        }
+        ps_type_close(p);
+        buf_push(out, '>');
+    }
+}
+
+fn ps_type_into(p: *Parser) {
+    ps_enter(p);
+    let out = &(*p).ty;
+    let kind = ps_kind(p);
+    if kind == Tok.FN {
+        ps_type_fn(p, out);
+    } else if kind == Tok.LPAREN {
+        ps_type_tuple(p, out);
+    } else if kind == Tok.STAR {
+        ps_advance(p);
+        if ps_at(p, Tok.CONST) {
+            ps_advance(p);
+            buf_push_z(out, "*const ");
+        } else {
+            buf_push(out, '*');
+        }
+        ps_type_into(p);
+    } else if kind == Tok.LBRACKET {
+        ps_type_array(p, out);
+    } else {
+        ps_type_named(p, out);
+    }
+    ps_leave(p);
+}
+
+fn ps_type_name(p: *Parser) -> u64 {
+    (*p).ty.len = 0;
+    ps_type_into(p);
+    return ps_text(p, buf_span(&(*p).ty));
+}
+
+// ----- declarations -----
+
+// Parses `<A, B>` when present, into `names`.
+fn ps_generic_params(p: *Parser, names: *U64Vec) {
+    if ps_at(p, Tok.LT) {
+        ps_advance(p);
+        u64vec_push(names, ps_expect_name(p, "generic parameter"));
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            u64vec_push(names, ps_expect_name(p, "generic parameter"));
+        }
+        ps_expect(p, Tok.GT, "'>'");
+    }
+}
+
+// Fills `out` with the dotted name's parts.
+fn ps_dotted_parts(p: *Parser, out: *U64Vec) {
+    u64vec_push(out, ps_expect_name(p, "module name"));
+    while ps_at(p, Tok.DOT) {
+        ps_advance(p);
+        u64vec_push(out, ps_expect_name(p, "module name"));
+    }
+}
+
+fn ps_module_decl(p: *Parser) -> u64 {
+    ps_advance(p);
+    let parts = u64vec_new();
+    ps_dotted_parts(p, &parts);
+    ps_expect(p, Tok.SEMI, "';'");
+    let joined = buf_new(32);
+    for i: u64 in 0..parts.len {
+        if i > 0 {
+            buf_push(&joined, '.');
+        }
+        buf_push_span(&joined, intern_text((*p).strings, u64vec_get(&parts, i)));
+    }
+    return ps_text(p, buf_span(&joined));
+}
+
+fn ps_test_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.TEST_DECL, (*ps_advance(p)).line);
+    (*node).name = ps_text(p, (*ps_expect(p, Tok.STRING, "test name")).text);
+    (*node).a = ps_block(p);
+    return node;
+}
+
+fn ps_import_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.IMPORT_DECL, (*ps_advance(p)).line);
+    (*node).names = ast_new_names();
+    ps_dotted_parts(p, (*node).names);
+    if ps_at(p, Tok.AS) {
+        ps_advance(p);
+        (*node).name = ps_expect_name(p, "import alias");
+    }
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+fn ps_struct_decl(p: *Parser, is_resource: bool) -> *Node {
+    let node = ast_new(NodeKind.STRUCT_DECL, (*ps_peek(p)).line);
+    ps_expect(p, Tok.STRUCT, "'struct'");
+    (*node).flag = is_resource;
+    (*node).name = ps_expect_name(p, "struct name");
+    (*node).names = ast_new_names();
+    ps_generic_params(p, (*node).names);
+    ps_expect(p, Tok.LBRACE, "'{'");
+    (*node).items = ast_new_items();
+    while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        let field = ast_new(NodeKind.STRUCT_FIELD, 0);
+        (*field).name = ps_expect_name(p, "field name");
+        ps_expect(p, Tok.COLON, "':'");
+        (*field).ty = ps_type_name(p);
+        ptrvec_push((*node).items, field as *void);
+        if ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+        } else {
+            break;
+        }
+    }
+    ps_expect(p, Tok.RBRACE, "'}'");
+    return node;
+}
+
+fn ps_type_alias_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.TYPE_ALIAS_DECL, (*ps_advance(p)).line);
+    (*node).name = ps_expect_name(p, "type alias name");
+    ps_expect(p, Tok.ASSIGN, "'='");
+    (*node).ty = ps_type_name(p);
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+// The payload_type field: none, the one type, or a tuple of them all.
+fn ps_payload_type(p: *Parser, payload: *U64Vec) -> u64 {
+    if (*payload).len == 0 {
+        return NO_TEXT;
+    }
+    if (*payload).len == 1 {
+        return u64vec_get(payload, 0);
+    }
+    let joined = buf_new(32);
+    buf_push(&joined, '(');
+    for i: u64 in 0..(*payload).len {
+        if i > 0 {
+            buf_push(&joined, ',');
+        }
+        buf_push_span(&joined, intern_text((*p).strings, u64vec_get(payload, i)));
+    }
+    buf_push(&joined, ')');
+    return ps_text(p, buf_span(&joined));
+}
+
+fn ps_enum_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.ENUM_DECL, (*ps_advance(p)).line);
+    (*node).name = ps_expect_name(p, "enum name");
+    (*node).names = ast_new_names();
+    ps_generic_params(p, (*node).names);
+    ps_expect(p, Tok.LBRACE, "'{'");
+    (*node).items = ast_new_items();
+    while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        let variant = ast_new(NodeKind.ENUM_VARIANT, 0);
+        (*variant).name = ps_expect_name(p, "variant name");
+        (*variant).names = ast_new_names();
+        if ps_at(p, Tok.LPAREN) {
+            ps_advance(p);
+            u64vec_push((*variant).names, ps_type_name(p));
+            while ps_at(p, Tok.COMMA) {
+                ps_advance(p);
+                u64vec_push((*variant).names, ps_type_name(p));
+            }
+            ps_expect(p, Tok.RPAREN, "')'");
+            (*variant).ty = ps_payload_type(p, (*variant).names);
+        }
+        ptrvec_push((*node).items, variant as *void);
+        if ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+        } else {
+            break;
+        }
+    }
+    ps_expect(p, Tok.RBRACE, "'}'");
+    return node;
+}
+
+fn ps_function_name(p: *Parser) -> u64 {
+    let t = ps_peek(p);
+    if (*t).kind != Tok.IDENT && (*t).kind != Tok.NULL {
+        ps_fail_with_value(p, "expected ", "function name", t);
+    }
+    ps_advance(p);
+    return ps_text(p, (*t).text);
+}
+
+fn ps_param(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.PARAM, 0);
+    (*node).name = ps_expect_name(p, "parameter name");
+    ps_expect(p, Tok.COLON, "':'");
+    (*node).ty = ps_type_name(p);
+    return node;
+}
+
+// `( params ) [-> type]`, with the return type defaulting to void.
+fn ps_signature(p: *Parser, node: *Node) {
+    ps_expect(p, Tok.LPAREN, "'('");
+    (*node).items = ast_new_items();
+    if !ps_at(p, Tok.RPAREN) {
+        ptrvec_push((*node).items, ps_param(p) as *void);
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            ptrvec_push((*node).items, ps_param(p) as *void);
+        }
+    }
+    ps_expect(p, Tok.RPAREN, "')'");
+    (*node).ty = ps_text_z(p, "void");
+    if ps_at(p, Tok.ARROW) {
+        ps_advance(p);
+        (*node).ty = ps_type_name(p);
+    }
+}
+
+fn ps_fn_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.FN_DECL, (*ps_peek(p)).line);
+    ps_expect(p, Tok.FN, "'fn'");
+    (*node).name = ps_function_name(p);
+    (*node).names = ast_new_names();
+    ps_generic_params(p, (*node).names);
+    ps_signature(p, node);
+    (*node).a = ps_block(p);
+    return node;
+}
+
+fn ps_extern_fn_decl(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.EXTERN_FN_DECL, (*ps_advance(p)).line);
+    ps_expect(p, Tok.FN, "'fn'");
+    (*node).name = ps_function_name(p);
+    ps_signature(p, node);
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+// ----- statements -----
+
+fn ps_block(p: *Parser) -> *Node {
+    ps_enter(p);
+    let node = ast_new(NodeKind.BLOCK, (*ps_peek(p)).line);
+    ps_expect(p, Tok.LBRACE, "'{'");
+    (*node).items = ast_new_items();
+    while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        ptrvec_push((*node).items, ps_stmt(p) as *void);
+    }
+    ps_expect(p, Tok.RBRACE, "'}'");
+    ps_leave(p);
+    return node;
+}
+
+fn ps_let_stmt(p: *Parser, mutable: bool) -> *Node {
+    let node = ast_new(NodeKind.LET, (*ps_advance(p)).line);
+    (*node).flag = mutable;
+    (*node).name = ps_expect_name(p, "variable name");
+    if ps_at(p, Tok.COLON) {
+        ps_advance(p);
+        (*node).ty = ps_type_name(p);
+    }
+    ps_expect(p, Tok.ASSIGN, "'='");
+    (*node).a = ps_expression(p);
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+fn ps_return_stmt(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.RETURN, (*ps_advance(p)).line);
+    if !ps_at(p, Tok.SEMI) {
+        (*node).a = ps_expression(p);
+    }
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+fn ps_condition(p: *Parser) -> *Node {
+    let saved = (*p).no_struct_lit;
+    (*p).no_struct_lit = true;
+    let expr = ps_expression(p);
+    (*p).no_struct_lit = saved;
+    return expr;
+}
+
+fn ps_if_stmt(p: *Parser) -> *Node {
+    ps_enter(p);
+    let node = ast_new(NodeKind.IF, (*ps_advance(p)).line);
+    (*node).a = ps_condition(p);
+    (*node).b = ps_block(p);
+    if ps_at(p, Tok.ELSE) {
+        ps_advance(p);
+        if ps_at(p, Tok.IF) {
+            (*node).c = ps_if_stmt(p);
+        } else {
+            (*node).c = ps_block(p);
+        }
+    }
+    ps_leave(p);
+    return node;
+}
+
+fn ps_while_stmt(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.WHILE, (*ps_advance(p)).line);
+    (*node).a = ps_condition(p);
+    (*node).b = ps_block(p);
+    return node;
+}
+
+fn ps_loop_stmt(p: *Parser) -> *Node {
+    let line = (*ps_advance(p)).line;
+    let always = ast_new(NodeKind.BOOL_LIT, line);
+    (*always).flag = true;
+    let node = ast_new(NodeKind.WHILE, line);
+    (*node).a = always;
+    (*node).b = ps_block(p);
+    return node;
+}
+
+fn ps_for_stmt(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.FOR, (*ps_advance(p)).line);
+    (*node).name = ps_expect_name(p, "a loop variable");
+    if ps_at(p, Tok.COLON) {
+        ps_advance(p);
+        (*node).ty = ps_type_name(p);
+    }
+    ps_expect(p, Tok.IN, "'in'");
+    let saved = (*p).no_struct_lit;
+    (*p).no_struct_lit = true;
+    (*node).a = ps_expression(p);
+    if ps_at(p, Tok.DOTDOTEQ) {
+        ps_advance(p);
+        (*node).flag = true;
+    } else {
+        ps_expect(p, Tok.DOTDOT, "'..'");
+    }
+    (*node).b = ps_expression(p);
+    (*p).no_struct_lit = saved;
+    (*node).c = ps_block(p);
+    return node;
+}
+
+fn ps_match_stmt(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.MATCH, (*ps_advance(p)).line);
+    (*node).a = ps_condition(p);
+    ps_expect(p, Tok.LBRACE, "'{'");
+    (*node).items = ast_new_items();
+    while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        let arm = ast_new(NodeKind.MATCH_ARM, (*ps_peek(p)).line);
+        if ps_at(p, Tok.IDENT) && span_eq_z((*ps_peek(p)).text, "_") {
+            ps_advance(p);
+        } else {
+            (*arm).a = ps_expression(p);
+        }
+        ps_expect(p, Tok.FAT_ARROW, "'=>'");
+        (*arm).b = ps_block(p);
+        ptrvec_push((*node).items, arm as *void);
+        if ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+        }
+    }
+    ps_expect(p, Tok.RBRACE, "'}'");
+    return node;
+}
+
+fn ps_asm_stmt(p: *Parser) -> *Node {
+    let node = ast_new(NodeKind.ASM, (*ps_advance(p)).line);
+    ps_expect(p, Tok.LPAREN, "'('");
+    (*node).name = ps_text(p, (*ps_expect(p, Tok.STRING, "an assembly string")).text);
+    ps_expect(p, Tok.RPAREN, "')'");
+    ps_expect(p, Tok.SEMI, "';'");
+    return node;
+}
+
+fn ps_is_assignment(kind: Tok) -> bool {
+    return kind == Tok.ASSIGN || kind == Tok.PLUS_ASSIGN || kind == Tok.MINUS_ASSIGN
+        || kind == Tok.STAR_ASSIGN || kind == Tok.SLASH_ASSIGN
+        || kind == Tok.PERCENT_ASSIGN || kind == Tok.AMP_ASSIGN
+        || kind == Tok.PIPE_ASSIGN || kind == Tok.CARET_ASSIGN
+        || kind == Tok.SHL_ASSIGN || kind == Tok.SHR_ASSIGN;
+}
+
+fn ps_is_lvalue(p: *Parser, e: *Node) -> bool {
+    let kind = (*e).kind;
+    if kind == NodeKind.UNARY {
+        return span_eq_z(intern_text((*p).strings, (*e).name), "*");
+    }
+    return kind == NodeKind.VAR || kind == NodeKind.FIELD_ACCESS || kind == NodeKind.INDEX;
+}
+
+fn ps_expr_or_assign(p: *Parser) -> *Node {
+    let line = (*ps_peek(p)).line;
+    let expr = ps_expression(p);
+    if ps_is_assignment(ps_kind(p)) {
+        let op = ps_advance(p);
+        if !ps_is_lvalue(p, expr) {
+            ps_fail_z(p, line, "invalid assignment target");
+        }
+        let node = ast_new(NodeKind.ASSIGN, line);
+        (*node).a = expr;
+        (*node).name = ps_text(p, (*op).text);
+        (*node).b = ps_expression(p);
+        ps_expect(p, Tok.SEMI, "';'");
+        return node;
+    }
+    ps_expect(p, Tok.SEMI, "';'");
+    let node = ast_new(NodeKind.EXPR_STMT, line);
+    (*node).a = expr;
+    return node;
+}
+
+fn ps_stmt(p: *Parser) -> *Node {
+    let kind = ps_kind(p);
+    if kind == Tok.LET {
+        return ps_let_stmt(p, true);
+    }
+    if kind == Tok.CONST {
+        return ps_let_stmt(p, false);
+    }
+    if kind == Tok.RETURN {
+        return ps_return_stmt(p);
+    }
+    if kind == Tok.IF {
+        return ps_if_stmt(p);
+    }
+    if kind == Tok.WHILE {
+        return ps_while_stmt(p);
+    }
+    if kind == Tok.LOOP {
+        return ps_loop_stmt(p);
+    }
+    if kind == Tok.FOR {
+        return ps_for_stmt(p);
+    }
+    if kind == Tok.ASM {
+        return ps_asm_stmt(p);
+    }
+    if kind == Tok.BREAK || kind == Tok.CONTINUE {
+        let node_kind = NodeKind.BREAK;
+        if kind == Tok.CONTINUE {
+            node_kind = NodeKind.CONTINUE;
+        }
+        let node = ast_new(node_kind, (*ps_advance(p)).line);
+        ps_expect(p, Tok.SEMI, "';'");
+        return node;
+    }
+    if kind == Tok.MATCH {
+        return ps_match_stmt(p);
+    }
+    if kind == Tok.DEFER {
+        let node = ast_new(NodeKind.DEFER, (*ps_advance(p)).line);
+        (*node).a = ps_expression(p);
+        ps_expect(p, Tok.SEMI, "';'");
+        return node;
+    }
+    if kind == Tok.LBRACE {
+        return ps_block(p);
+    }
+    return ps_expr_or_assign(p);
+}
+
+// ----- expressions -----
+
+fn ps_expression(p: *Parser) -> *Node {
+    ps_enter(p);
+    let expr = ps_binary(p, 1);
+    ps_leave(p);
+    return expr;
+}
+
+// Precedence level of a binary operator, or 0 if the token is not one.
+fn ps_precedence(kind: Tok) -> u64 {
+    if kind == Tok.OR { return 1; }
+    if kind == Tok.AND { return 2; }
+    if kind == Tok.PIPE { return 3; }
+    if kind == Tok.CARET { return 4; }
+    if kind == Tok.AMP { return 5; }
+    if kind == Tok.EQ || kind == Tok.NE { return 6; }
+    if kind == Tok.LT || kind == Tok.GT || kind == Tok.LE || kind == Tok.GE { return 7; }
+    if kind == Tok.SHL || kind == Tok.SHR { return 8; }
+    if kind == Tok.PLUS || kind == Tok.MINUS { return 9; }
+    if kind == Tok.STAR || kind == Tok.SLASH || kind == Tok.PERCENT { return 10; }
+    return 0;
+}
+
+fn ps_binary(p: *Parser, minimum: u64) -> *Node {
+    let left = ps_cast(p);
+    loop {
+        let level = ps_precedence(ps_kind(p));
+        if level == 0 || level < minimum {
+            return left;
+        }
+        let op = ps_advance(p);
+        let node = ast_new(NodeKind.BINARY, (*op).line);
+        (*node).name = ps_text(p, (*op).text);
+        (*node).a = left;
+        (*node).b = ps_binary(p, level + 1);
+        left = node;
+    }
+    return left;
+}
+
+fn ps_cast(p: *Parser) -> *Node {
+    let expr = ps_unary(p);
+    while ps_at(p, Tok.AS) {
+        let node = ast_new(NodeKind.CAST, (*ps_advance(p)).line);
+        (*node).a = expr;
+        (*node).ty = ps_type_name(p);
+        expr = node;
+    }
+    return expr;
+}
+
+fn ps_unary(p: *Parser) -> *Node {
+    ps_enter(p);
+    let result = ps_unary_inner(p);
+    ps_leave(p);
+    return result;
+}
+
+fn ps_unary_inner(p: *Parser) -> *Node {
+    let kind = ps_kind(p);
+    if kind == Tok.BANG || kind == Tok.MINUS || kind == Tok.AMP || kind == Tok.STAR
+            || kind == Tok.TILDE {
+        let op = ps_advance(p);
+        let node = ast_new(NodeKind.UNARY, (*op).line);
+        (*node).name = ps_text(p, (*op).text);
+        (*node).a = ps_unary(p);
+        return node;
+    }
+    if kind == Tok.TRY {
+        let node = ast_new(NodeKind.TRY, (*ps_advance(p)).line);
+        (*node).a = ps_unary(p);
+        return node;
+    }
+    if kind == Tok.MOVE {
+        let node = ast_new(NodeKind.MOVE, (*ps_advance(p)).line);
+        (*node).a = ps_unary(p);
+        return node;
+    }
+    return ps_postfix(p);
+}
+
+// `a.b.c` as its dotted text, or NO_TEXT if `expr` is anything else. A loop,
+// because such a chain can be as long as the source.
+fn ps_qualified_name(p: *Parser, expr: *Node) -> u64 {
+    let chain = u64vec_new();
+    let at = expr;
+    while (*at).kind == NodeKind.FIELD_ACCESS {
+        u64vec_push(&chain, (*at).name);
+        at = (*at).a;
+    }
+    if (*at).kind != NodeKind.VAR {
+        return NO_TEXT;
+    }
+    if chain.len == 0 {
+        return (*at).name;
+    }
+    let joined = buf_new(64);
+    buf_push_span(&joined, intern_text((*p).strings, (*at).name));
+    while chain.len > 0 {
+        buf_push(&joined, '.');
+        buf_push_span(&joined, intern_text((*p).strings, u64vec_pop(&chain)));
+    }
+    return ps_text(p, buf_span(&joined));
+}
+
+fn ps_call_args(p: *Parser, call: *Node) {
+    (*call).items = ast_new_items();
+    if !ps_at(p, Tok.RPAREN) {
+        ptrvec_push((*call).items, ps_expression(p) as *void);
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            ptrvec_push((*call).items, ps_expression(p) as *void);
+        }
+    }
+    ps_expect(p, Tok.RPAREN, "')'");
+}
+
+fn ps_generic_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
+    let name = ps_qualified_name(p, expr);
+    if name == NO_TEXT {
+        ps_fail_z(p, (*ps_peek(p)).line, "only named functions can have type arguments");
+    }
+    ps_advance(p);
+    let type_args = ast_new_names();
+    u64vec_push(type_args, ps_type_name(p));
+    while ps_at(p, Tok.COMMA) {
+        ps_advance(p);
+        u64vec_push(type_args, ps_type_name(p));
+    }
+    ps_type_close(p);
+    let call = ast_new(NodeKind.CALL, (*ps_expect(p, Tok.LPAREN, "'('")).line);
+    (*call).name = name;
+    (*call).names = type_args;
+    (*call).name_line = (*start).line;
+    (*call).name_col = (*start).col;
+    ps_call_args(p, call);
+    return call;
+}
+
+fn ps_plain_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
+    let name = ps_qualified_name(p, expr);
+    if name == NO_TEXT {
+        ps_fail_z(p, (*ps_peek(p)).line, "only named functions can be called");
+    }
+    let call = ast_new(NodeKind.CALL, (*ps_advance(p)).line);
+    (*call).name = name;
+    (*call).names = ast_new_names();
+    (*call).name_line = (*start).line;
+    (*call).name_col = (*start).col;
+    ps_call_args(p, call);
+    return call;
+}
+
+fn ps_field_access(p: *Parser, expr: *Node) -> *Node {
+    let node = ast_new(NodeKind.FIELD_ACCESS, (*ps_advance(p)).line);
+    (*node).a = expr;
+    if ps_at(p, Tok.INT) {
+        (*node).name = ps_text(p, (*ps_advance(p)).text);
+    } else {
+        (*node).name = ps_expect_name(p, "field name");
+    }
+    return node;
+}
+
+fn ps_index(p: *Parser, expr: *Node) -> *Node {
+    let node = ast_new(NodeKind.INDEX, (*ps_advance(p)).line);
+    (*node).a = expr;
+    (*node).b = ps_expression(p);
+    ps_expect(p, Tok.RBRACKET, "']'");
+    return node;
+}
+
+fn ps_postfix(p: *Parser) -> *Node {
+    let start = ps_peek(p);
+    let expr = ps_primary(p);
+    loop {
+        let kind = ps_kind(p);
+        if kind == Tok.LT && ps_looks_like_call_type_args(p) {
+            expr = ps_generic_call(p, expr, start);
+        } else if kind == Tok.LPAREN {
+            expr = ps_plain_call(p, expr, start);
+        } else if kind == Tok.DOT {
+            expr = ps_field_access(p, expr);
+        } else if kind == Tok.LBRACKET {
+            expr = ps_index(p, expr);
+        } else {
+            return expr;
+        }
+    }
+    return expr;
+}
+
+fn ps_int_lit(p: *Parser, t: *Token) -> *Node {
+    let node = ast_new(NodeKind.INT_LIT, (*t).line);
+    (*node).name = ps_text(p, (*t).text);
+    return node;
+}
+
+fn ps_null(p: *Parser, t: *Token) -> *Node {
+    ps_advance(p);
+    if ps_at(p, Tok.LPAREN) || (ps_at(p, Tok.LT) && ps_looks_like_call_type_args(p)) {
+        let node = ast_new(NodeKind.VAR, (*t).line);
+        (*node).name = ps_text(p, (*t).text);
+        return node;
+    }
+    return ast_new(NodeKind.NULL_LIT, (*t).line);
+}
+
+fn ps_paren(p: *Parser) -> *Node {
+    let line = (*ps_advance(p)).line;
+    let saved = (*p).no_struct_lit;
+    (*p).no_struct_lit = false;
+    let first = ps_expression(p);
+    let result = first;
+    if ps_at(p, Tok.COMMA) {
+        let tuple = ast_new(NodeKind.TUPLE_LIT, line);
+        (*tuple).items = ast_new_items();
+        ptrvec_push((*tuple).items, first as *void);
+        while ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+            if ps_at(p, Tok.RPAREN) {
+                break;
+            }
+            ptrvec_push((*tuple).items, ps_expression(p) as *void);
+        }
+        if (*(*tuple).items).len < 2 {
+            ps_fail_z(p, line, "tuple literals require at least two elements");
+        }
+        result = tuple;
+    }
+    (*p).no_struct_lit = saved;
+    ps_expect(p, Tok.RPAREN, "')'");
+    return result;
+}
+
+fn ps_struct_lit(p: *Parser) -> *Node {
+    let name = ps_type_name(p);
+    let node = ast_new(NodeKind.STRUCT_LIT, (*ps_expect(p, Tok.LBRACE, "'{'")).line);
+    (*node).name = name;
+    (*node).items = ast_new_items();
+    while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        let field = ast_new(NodeKind.STRUCT_LIT_FIELD, 0);
+        (*field).name = ps_expect_name(p, "field name");
+        ps_expect(p, Tok.COLON, "':'");
+        (*field).a = ps_expression(p);
+        ptrvec_push((*node).items, field as *void);
+        if ps_at(p, Tok.COMMA) {
+            ps_advance(p);
+        } else {
+            break;
+        }
+    }
+    ps_expect(p, Tok.RBRACE, "'}'");
+    return node;
+}
+
+fn ps_array_lit(p: *Parser) -> *Node {
+    let line = (*ps_advance(p)).line;
+    if ps_at(p, Tok.RBRACKET) {
+        ps_fail_z(p, line, "empty array literal is not allowed");
+    }
+    let first = ps_expression(p);
+    if ps_at(p, Tok.SEMI) {
+        ps_advance(p);
+        let node = ast_new(NodeKind.ARRAY_REPEAT, line);
+        (*node).a = first;
+        (*node).name = ps_text(p, (*ps_expect(p, Tok.INT, "an array repeat count")).text);
+        ps_expect(p, Tok.RBRACKET, "']'");
+        return node;
+    }
+    let node = ast_new(NodeKind.ARRAY_LIT, line);
+    (*node).items = ast_new_items();
+    ptrvec_push((*node).items, first as *void);
+    while ps_at(p, Tok.COMMA) {
+        ps_advance(p);
+        if ps_at(p, Tok.RBRACKET) {
+            break;
+        }
+        ptrvec_push((*node).items, ps_expression(p) as *void);
+    }
+    ps_expect(p, Tok.RBRACKET, "']'");
+    return node;
+}
+
+fn ps_ident_expr(p: *Parser, t: *Token) -> *Node {
+    if ps_looks_like_struct_lit(p) && !(*p).no_struct_lit {
+        return ps_struct_lit(p);
+    }
+    if ps_looks_like_generic_qualifier(p) {
+        let node = ast_new(NodeKind.VAR, (*t).line);
+        (*node).name = ps_type_name(p);
+        return node;
+    }
+    ps_advance(p);
+    let node = ast_new(NodeKind.VAR, (*t).line);
+    (*node).name = ps_text(p, (*t).text);
+    return node;
+}
+
+fn ps_primary(p: *Parser) -> *Node {
+    let t = ps_peek(p);
+    let kind = (*t).kind;
+    if kind == Tok.INT {
+        ps_advance(p);
+        return ps_int_lit(p, t);
+    }
+    if kind == Tok.FLOAT || kind == Tok.CHAR {
+        ps_advance(p);
+        let node_kind = NodeKind.FLOAT_LIT;
+        if kind == Tok.CHAR {
+            node_kind = NodeKind.CHAR_LIT;
+        }
+        let node = ast_new(node_kind, (*t).line);
+        (*node).num = (*t).num;
+        return node;
+    }
+    if kind == Tok.NULL {
+        return ps_null(p, t);
+    }
+    if kind == Tok.TRUE || kind == Tok.FALSE {
+        ps_advance(p);
+        let node = ast_new(NodeKind.BOOL_LIT, (*t).line);
+        (*node).flag = kind == Tok.TRUE;
+        return node;
+    }
+    if kind == Tok.STRING {
+        ps_advance(p);
+        let node = ast_new(NodeKind.STR_LIT, (*t).line);
+        (*node).name = ps_text(p, (*t).text);
+        return node;
+    }
+    if kind == Tok.LBRACKET {
+        return ps_array_lit(p);
+    }
+    if kind == Tok.IDENT {
+        return ps_ident_expr(p, t);
+    }
+    if kind == Tok.LPAREN {
+        return ps_paren(p);
+    }
+    ps_fail_unexpected(p, t);
+    return 0 as *Node;  // not reached: ps_fail_unexpected exits
+}
+
+// ----- program -----
+
+fn ps_program_has_declarations(program: *Program) -> bool {
+    return (*(*program).funcs).len > 0 || (*(*program).structs).len > 0
+        || (*(*program).globals).len > 0 || (*(*program).externs).len > 0
+        || (*(*program).imports).len > 0 || (*(*program).enums).len > 0
+        || (*(*program).tests).len > 0 || (*(*program).aliases).len > 0;
+}
+
+fn ps_top_level(p: *Parser, program: *Program) {
+    let kind = ps_kind(p);
+    if kind == Tok.MODULE {
+        if (*program).module_name != NO_TEXT || ps_program_has_declarations(program) {
+            ps_fail_z(p, (*ps_peek(p)).line, "module declaration must be the first declaration");
+        }
+        (*program).module_name = ps_module_decl(p);
+    } else if kind == Tok.IMPORT {
+        ptrvec_push((*program).imports, ps_import_decl(p) as *void);
+    } else if kind == Tok.PUB {
+        let line = (*ps_advance(p)).line;
+        if !ps_at(p, Tok.FN) {
+            ps_fail_z(p, line, "pub currently applies to function declarations");
+        }
+        let function = ps_fn_decl(p);
+        (*function).flag = true;
+        ptrvec_push((*program).funcs, function as *void);
+    } else if kind == Tok.RESOURCE {
+        let line = (*ps_advance(p)).line;
+        if !ps_at(p, Tok.STRUCT) {
+            ps_fail_z(p, line, "'resource' must precede a struct declaration");
+        }
+        ptrvec_push((*program).structs, ps_struct_decl(p, true) as *void);
+    } else if kind == Tok.STRUCT {
+        ptrvec_push((*program).structs, ps_struct_decl(p, false) as *void);
+    } else if kind == Tok.ENUM {
+        ptrvec_push((*program).enums, ps_enum_decl(p) as *void);
+    } else if kind == Tok.TYPE {
+        ptrvec_push((*program).aliases, ps_type_alias_decl(p) as *void);
+    } else if kind == Tok.TEST {
+        ptrvec_push((*program).tests, ps_test_decl(p) as *void);
+    } else if kind == Tok.LET {
+        ptrvec_push((*program).globals, ps_let_stmt(p, true) as *void);
+    } else if kind == Tok.CONST {
+        ptrvec_push((*program).globals, ps_let_stmt(p, false) as *void);
+    } else if kind == Tok.EXTERN {
+        ptrvec_push((*program).externs, ps_extern_fn_decl(p) as *void);
+    } else {
+        ptrvec_push((*program).funcs, ps_fn_decl(p) as *void);
+    }
+}
+
+// `tokens` comes from a successful lx_tokenize and ends in EOF. Token types are
+// mutated in place when a closing angle is split.
+fn parse_program(tokens: *TokenVec, strings: *Interner, path: *u8) -> Program {
+    let parser = Parser {
+        toks: (*tokens).data, count: (*tokens).len, i: 0, no_struct_lit: false,
+        depth: 0, strings: strings, path: path,
+        close_shr: ps_compute_closes((*tokens).data, (*tokens).len, true),
+        close_plain: ps_compute_closes((*tokens).data, (*tokens).len, false),
+        ty: buf_new(64),
+    };
+    let program = program_new();
+    while !ps_at(&parser, Tok.EOF) {
+        ps_top_level(&parser, &program);
+    }
+    return program;
+}

@@ -39,11 +39,14 @@ MAX_GENERIC_INSTANTIATIONS = 16384
 # names fill that body, so a few huge instances can stall as many small ones do.
 MAX_GENERIC_WORK = 1_000_000
 GENERIC_WORK_TYPE_CHARS = 64
-BUILTIN_NAMES = {
-    "print", "println", "assert", "alloc", "free", "len", "slice",
-    "sizeof",
+# Builtins that accept explicit type arguments. Every other builtin rejects them,
+# so a new generic builtin must be declared here and only here.
+GENERIC_BUILTINS = frozenset({"sizeof", "slice", "volatile_read", "volatile_write"})
+BUILTIN_NAMES = GENERIC_BUILTINS | {
+    "print", "println", "eprintln", "assert", "alloc", "free", "len",
     "unix_time", "cpu_millis",
     "file_open", "file_close", "file_read", "file_write", "file_flush",
+    "arg_count", "arg_get",
     "thread_spawn", "thread_join", "thread_sleep_millis",
     "mutex_create", "mutex_destroy", "mutex_lock", "mutex_unlock",
     "atomic_i64_create", "atomic_i64_destroy", "atomic_i64_load",
@@ -60,7 +63,6 @@ BUILTIN_NAMES = {
     "tls_client_connect", "tls_client_connect_with_ca", "tls_send", "tls_recv",
     "tls_protocol_version", "tls_close",
     "outb", "inb", "outw", "inw", "outl", "inl",
-    "volatile_read", "volatile_write",
 }
 C_KEYWORDS = {
     "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -2315,6 +2317,9 @@ class Checker:
                 e.enum_variant = variant_name
                 e.enum_payload_type = payload_type
                 return enum_name
+        if e.type_args and e.name in BUILTIN_NAMES - GENERIC_BUILTINS:
+            self._error(
+                f"builtin {e.name!r} is not generic and cannot take type arguments", e)
         if e.name == "sizeof":
             if e.args or len(e.type_args) != 1:
                 self._error("sizeof expects exactly one type argument and no values", e)
@@ -2328,6 +2333,19 @@ class Checker:
             if e.args or e.type_args:
                 self._error(f"{e.name} expects no arguments", e)
             return "i64" if e.name == "unix_time" else "u64"
+        if e.name in ("arg_count", "arg_get"):
+            if self.freestanding:
+                self._error(f"{e.name} is not available in freestanding mode", e)
+            if e.name == "arg_count":
+                if e.args or e.type_args:
+                    self._error("arg_count expects no arguments", e)
+                return "u64"
+            if len(e.args) != 1:
+                self._error("arg_get expects exactly 1 argument", e)
+            self._check_expr(e.args[0])
+            if not self._coerce("u64", e.args[0]):
+                self._error(f"arg_get index must be u64, got {e.args[0].type}", e)
+            return "*u8"
         if e.name == "file_open":
             if self.freestanding:
                 self._error("file I/O is not available in freestanding mode", e)
@@ -2717,14 +2735,14 @@ class Checker:
             if at not in INT_TYPES and at not in FLOAT_TYPES:
                 self._error(f"print expects an integer or float, got {at}", e)
             return "void"
-        if e.name == "println":
+        if e.name in ("println", "eprintln"):
             if self.freestanding:
-                self._error("println is not available in freestanding mode", e)
+                self._error(f"{e.name} is not available in freestanding mode", e)
             if len(e.args) != 1:
-                self._error("println expects exactly 1 argument", e)
+                self._error(f"{e.name} expects exactly 1 argument", e)
             at = self._check_expr(e.args[0])
             if at != "*u8":
-                self._error(f"println expects a string (*u8), got {at}", e)
+                self._error(f"{e.name} expects a string (*u8), got {at}", e)
             return "void"
         if e.name == "assert":
             if self.freestanding:

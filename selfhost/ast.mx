@@ -1,0 +1,132 @@
+// The AST: one flat node struct with a kind tag (PLAN.md, section 2).
+//
+// Field use by kind. `name` and `ty` are interner handles or NO_TEXT, `items` is
+// a list of child nodes and `names` a list of interner handles. Unlisted fields
+// are unused (0, NO_TEXT or null).
+//
+//   IMPORT_DECL      names=parts name=alias
+//   STRUCT_DECL      name items=fields(STRUCT_FIELD) names=generic_params flag=resource
+//   STRUCT_FIELD     name ty
+//   TYPE_ALIAS_DECL  name ty=target
+//   FN_DECL          name items=params(PARAM) ty=ret a=body flag=public names=generic_params
+//   PARAM            name ty
+//   ENUM_DECL        name items=variants(ENUM_VARIANT) names=generic_params
+//   ENUM_VARIANT     name names=payload_types ty=payload_type
+//   EXTERN_FN_DECL   name items=params(PARAM) ty=ret
+//   TEST_DECL        name a=body
+//
+//   LET              name ty=decl_type a=expr flag=mutable
+//   ASSIGN           a=target b=expr name=op
+//   RETURN           a=expr (may be null)
+//   IF               a=cond b=then c=els (Block, If or null)
+//   WHILE            a=cond b=body
+//   FOR              name=var ty=decl_type a=start b=end c=body flag=inclusive
+//   BLOCK            items=stmts
+//   EXPR_STMT        a=expr
+//   ASM              name=text
+//   BREAK, CONTINUE
+//   DEFER            a=expr
+//   MATCH_ARM        a=pattern (null for the wildcard) b=body
+//   MATCH            a=expr items=arms(MATCH_ARM)
+//
+//   INT_LIT          name=canonical decimal digits
+//   FLOAT_LIT        num=IEEE-754 bits
+//   CHAR_LIT         num=value
+//   NULL_LIT
+//   BOOL_LIT         flag=value
+//   STR_LIT          name=raw inner text
+//   VAR              name
+//   UNARY            name=op a=operand
+//   BINARY           name=op a=left b=right
+//   CALL             name items=args names=type_args name_line name_col
+//   CAST             a=expr ty=target_type
+//   TRY, MOVE        a=expr
+//   STRUCT_LIT       name items=fields(STRUCT_LIT_FIELD)
+//   STRUCT_LIT_FIELD name a=value
+//   TUPLE_LIT        items=elements
+//   FIELD_ACCESS     a=obj name=field
+//   ARRAY_LIT        items=elements
+//   ARRAY_REPEAT     a=value name=count (canonical decimal digits)
+//   INDEX            a=obj b=index
+//
+// Type text uses the Python parser's canonical spelling (`i64` for `int`,
+// `*const u8`, `[u8;4]`, `fn(a,b)->c`), so later phases can compare strings as
+// the Python ones do.
+
+import support;
+
+const NO_TEXT: u64 = 0xFFFFFFFFFFFFFFFF;
+
+enum NodeKind {
+    IMPORT_DECL, STRUCT_DECL, STRUCT_FIELD, TYPE_ALIAS_DECL, FN_DECL, PARAM,
+    ENUM_DECL, ENUM_VARIANT, EXTERN_FN_DECL, TEST_DECL,
+    LET, ASSIGN, RETURN, IF, WHILE, FOR, BLOCK, EXPR_STMT, ASM, BREAK, CONTINUE,
+    DEFER, MATCH_ARM, MATCH,
+    INT_LIT, FLOAT_LIT, CHAR_LIT, NULL_LIT, BOOL_LIT, STR_LIT, VAR, UNARY,
+    BINARY, CALL, CAST, TRY, MOVE, STRUCT_LIT, STRUCT_LIT_FIELD, TUPLE_LIT,
+    FIELD_ACCESS, ARRAY_LIT, ARRAY_REPEAT, INDEX,
+}
+
+struct Node {
+    kind: NodeKind,
+    line: u64,
+    name: u64,
+    ty: u64,
+    num: u64,
+    flag: bool,
+    a: *Node,
+    b: *Node,
+    c: *Node,
+    items: *PtrVec,
+    names: *U64Vec,
+    name_line: u64,
+    name_col: u64,
+}
+
+fn ast_new(kind: NodeKind, line: u64) -> *Node {
+    let node = sup_alloc(sizeof<Node>()) as *Node;
+    *node = Node {
+        kind: kind, line: line, name: NO_TEXT, ty: NO_TEXT, num: 0, flag: false,
+        a: 0 as *Node, b: 0 as *Node, c: 0 as *Node,
+        items: 0 as *PtrVec, names: 0 as *U64Vec, name_line: 0, name_col: 0,
+    };
+    return node;
+}
+
+// A list that outlives the parse step which builds it.
+fn ast_new_items() -> *PtrVec {
+    let list = sup_alloc(sizeof<PtrVec>()) as *PtrVec;
+    *list = ptrvec_new();
+    return list;
+}
+
+fn ast_new_names() -> *U64Vec {
+    let list = sup_alloc(sizeof<U64Vec>()) as *U64Vec;
+    *list = u64vec_new();
+    return list;
+}
+
+fn ast_item(list: *PtrVec, index: u64) -> *Node {
+    return ptrvec_get(list, index) as *Node;
+}
+
+// Top-level declarations in source order, as mort_ast.Program holds them.
+struct Program {
+    funcs: *PtrVec,
+    structs: *PtrVec,
+    globals: *PtrVec,
+    externs: *PtrVec,
+    imports: *PtrVec,
+    enums: *PtrVec,
+    tests: *PtrVec,
+    module_name: u64,
+    aliases: *PtrVec,
+}
+
+fn program_new() -> Program {
+    return Program {
+        funcs: ast_new_items(), structs: ast_new_items(), globals: ast_new_items(),
+        externs: ast_new_items(), imports: ast_new_items(), enums: ast_new_items(),
+        tests: ast_new_items(), module_name: NO_TEXT, aliases: ast_new_items(),
+    };
+}

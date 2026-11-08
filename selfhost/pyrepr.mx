@@ -1,0 +1,419 @@
+// Python's repr() of the values that reach parser diagnostics: strings and
+// floats. Diagnostics quote a token's value with `!r`, and the differential test
+// compares them byte for byte.
+//
+// Floats follow the digit loop of David Gay's dtoa in mode 0, the code behind
+// float.__repr__, on exact integers. No floating-point arithmetic and no strtod,
+// so the result cannot vary with the C library. The rounding interval around
+// a power of two is asymmetric, so the nearest N-digit decimal is not always
+// the one to print; the loop decides by comparing against each bound.
+
+import support;
+import lexer;
+
+fn pr_is_printable(c: u32) -> bool {
+    return lx_is_printable(c);
+}
+
+fn pr_decode(p: *u8, at: u64) -> u32 {
+    let b0 = p[at] as u32;
+    if b0 < 0x80 {
+        return b0;
+    }
+    if b0 < 0xE0 {
+        return ((b0 & 0x1F) << 6) | ((p[at + 1] as u32) & 0x3F);
+    }
+    if b0 < 0xF0 {
+        return ((b0 & 0x0F) << 12)
+            | (((p[at + 1] as u32) & 0x3F) << 6)
+            | ((p[at + 2] as u32) & 0x3F);
+    }
+    return ((b0 & 0x07) << 18)
+        | (((p[at + 1] as u32) & 0x3F) << 12)
+        | (((p[at + 2] as u32) & 0x3F) << 6)
+        | ((p[at + 3] as u32) & 0x3F);
+}
+
+// Text is valid UTF-8; the lexer has already checked the source.
+fn pr_push_str_repr(out: *Buf, text: Span) {
+    let has_single = false;
+    let has_double = false;
+    for i: u64 in 0..text.len {
+        if text.data[i] == 39 {
+            has_single = true;
+        }
+        if text.data[i] == 34 {
+            has_double = true;
+        }
+    }
+    let quote: u32 = 39;
+    if has_single && !has_double {
+        quote = 34;
+    }
+    buf_push(out, quote as u8);
+    let at: u64 = 0;
+    while at < text.len {
+        let c = pr_decode(text.data, at);
+        at += lx_size_of(text.data[at]);
+        if c == quote || c == 92 {
+            buf_push(out, 92);
+            buf_push(out, c as u8);
+        } else if c == 9 {
+            buf_push_z(out, "\\t");
+        } else if c == 10 {
+            buf_push_z(out, "\\n");
+        } else if c == 13 {
+            buf_push_z(out, "\\r");
+        } else if pr_is_printable(c) {
+            buf_push_cp(out, c);
+        } else if c < 0x100 {
+            buf_push_z(out, "\\x");
+            buf_push_hex2(out, c as u8);
+        } else if c < 0x10000 {
+            buf_push_z(out, "\\u");
+            buf_push_hex2(out, (c >> 8) as u8);
+            buf_push_hex2(out, (c & 0xFF) as u8);
+        } else {
+            buf_push_z(out, "\\U");
+            buf_push_hex2(out, 0);
+            buf_push_hex2(out, (c >> 16) as u8);
+            buf_push_hex2(out, ((c >> 8) & 0xFF) as u8);
+            buf_push_hex2(out, (c & 0xFF) as u8);
+        }
+    }
+    buf_push(out, quote as u8);
+}
+
+// ----- floats -----
+
+// value = 0.DIGITS * 10^point, with no leading zero in DIGITS.
+struct Decimal {
+    digits: Buf,
+    point: i64,
+}
+
+// Little-endian base 2^32, with no high zero limbs. Enough for any double: both
+// the numerator and the denominator stay below about 2300 bits.
+const PR_BIG_LIMBS: u64 = 128;
+
+struct PrBig {
+    data: *u32,
+    len: u64,
+}
+
+fn prb_from(value: u64) -> PrBig {
+    let big = PrBig {
+        data: sup_alloc_array(PR_BIG_LIMBS, sizeof<u32>()) as *u32, len: 0,
+    };
+    let rest = value;
+    while rest > 0 {
+        big.data[big.len] = (rest & 0xFFFFFFFF) as u32;
+        big.len += 1;
+        rest = rest >> 32;
+    }
+    return big;
+}
+
+fn prb_copy_into(to: *PrBig, from: *PrBig) {
+    for i: u64 in 0..(*from).len {
+        (*to).data[i] = (*from).data[i];
+    }
+    (*to).len = (*from).len;
+}
+
+fn prb_mul_small(b: *PrBig, factor: u32) {
+    let carry: u64 = 0;
+    for i: u64 in 0..(*b).len {
+        let value = ((*b).data[i] as u64) * (factor as u64) + carry;
+        (*b).data[i] = (value & 0xFFFFFFFF) as u32;
+        carry = value >> 32;
+    }
+    if carry > 0 {
+        if (*b).len == PR_BIG_LIMBS {
+            sup_die("mort: internal error: float repr big integer overflow");
+        }
+        (*b).data[(*b).len] = carry as u32;
+        (*b).len += 1;
+    }
+}
+
+fn prb_shl(b: *PrBig, count: u64) {
+    let left = count;
+    while left >= 31 {
+        prb_mul_small(b, 0x80000000);
+        left -= 31;
+    }
+    if left > 0 {
+        let factor: u32 = 1;
+        for _i: u64 in 0..left {
+            factor = factor * 2;
+        }
+        prb_mul_small(b, factor);
+    }
+}
+
+fn prb_mul_pow10(b: *PrBig, power: u64) {
+    let left = power;
+    while left >= 9 {
+        prb_mul_small(b, 1000000000);
+        left -= 9;
+    }
+    for _i: u64 in 0..left {
+        prb_mul_small(b, 10);
+    }
+}
+
+// Returns -1, 0 or 1.
+fn prb_cmp(a: *PrBig, b: *PrBig) -> i64 {
+    if (*a).len != (*b).len {
+        if (*a).len < (*b).len {
+            return -1;
+        }
+        return 1;
+    }
+    let i = (*a).len;
+    while i > 0 {
+        i -= 1;
+        if (*a).data[i] != (*b).data[i] {
+            if (*a).data[i] < (*b).data[i] {
+                return -1;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// a -= b, where a >= b.
+fn prb_sub(a: *PrBig, b: *PrBig) {
+    let borrow: u64 = 0;
+    for i: u64 in 0..(*a).len {
+        let taken = borrow;
+        if i < (*b).len {
+            taken += (*b).data[i] as u64;
+        }
+        let value = ((*a).data[i] as u64) + 0x100000000 - taken;
+        (*a).data[i] = (value & 0xFFFFFFFF) as u32;
+        if value < 0x100000000 {
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+    }
+    while (*a).len > 0 && (*a).data[(*a).len - 1] == 0 {
+        (*a).len -= 1;
+    }
+}
+
+// floor(log10 v) from the binary exponent. An estimate, off by at most one;
+// pr_shortest corrects it.
+fn pr_estimate_power(binary_exponent: i64) -> i64 {
+    if binary_exponent >= 0 {
+        return (binary_exponent * 1233) / 4096;
+    }
+    return 0 - (((0 - binary_exponent) * 1233 + 4095) / 4096);
+}
+
+// dtoa's round_9_up and roundoff: appends a 9, then carries it leftward.
+fn pr_round_nine_up(out: *Buf, power: *i64) {
+    buf_push(out, 9);
+    loop {
+        let last = (*out).len - 1;
+        if (*out).data[last] != 9 {
+            (*out).data[last] += 1;
+            return;
+        }
+        if last == 0 {
+            (*out).data[0] = 1;
+            *power += 1;
+            return;
+        }
+        (*out).len -= 1;
+    }
+}
+
+// The shortest digits that read back as `bits`, closest to the value among
+// those of that length. `bits` is finite and non-zero.
+//
+// Throughout, num/den is the part of the value not yet printed, low/den the
+// distance down to the rounding boundary below, and high/den up to the one
+// above. Each comparison in the digit loop is the one in dtoa.c.
+fn pr_shortest(bits: u64) -> Decimal {
+    let fraction = bits & 0xFFFFFFFFFFFFF;
+    let biased = (bits >> 52) & 0x7FF;
+    let mantissa = fraction;
+    let exponent: i64 = -1074;
+    if biased != 0 {
+        mantissa = fraction | (1 << 52);
+        exponent = (biased as i64) - 1075;
+    }
+    let even = (mantissa & 1) == 0;
+    let num = prb_from(mantissa);
+    let den = prb_from(1);
+    let low = prb_from(1);
+    if exponent >= 1 {
+        prb_shl(&num, exponent as u64);
+        prb_shl(&low, (exponent - 1) as u64);
+    } else {
+        prb_shl(&num, 1);
+        prb_shl(&den, (1 - exponent) as u64);
+    }
+    let high = prb_from(0);
+    prb_copy_into(&high, &low);
+    if fraction == 0 && biased >= 2 {
+        // A power of two: the double below is half as far as the one above.
+        prb_shl(&num, 1);
+        prb_shl(&den, 1);
+        prb_shl(&high, 1);
+    }
+
+    let mantissa_bits: i64 = 0;
+    let rest = mantissa;
+    while rest > 0 {
+        mantissa_bits += 1;
+        rest = rest >> 1;
+    }
+    let power = pr_estimate_power(mantissa_bits + exponent - 1);
+    if power >= 0 {
+        prb_mul_pow10(&den, power as u64);
+    } else {
+        prb_mul_pow10(&num, (0 - power) as u64);
+        prb_mul_pow10(&low, (0 - power) as u64);
+        prb_mul_pow10(&high, (0 - power) as u64);
+    }
+    let scratch = prb_from(0);
+    loop {
+        prb_copy_into(&scratch, &den);
+        prb_mul_small(&scratch, 10);
+        if prb_cmp(&num, &scratch) < 0 {
+            break;
+        }
+        prb_copy_into(&den, &scratch);
+        power += 1;
+    }
+    while prb_cmp(&num, &den) < 0 {
+        prb_mul_small(&num, 10);
+        prb_mul_small(&low, 10);
+        prb_mul_small(&high, 10);
+        power -= 1;
+    }
+
+    let out = buf_new(20);
+    loop {
+        let digit: u8 = 0;
+        while prb_cmp(&num, &den) >= 0 {
+            prb_sub(&num, &den);
+            digit += 1;
+        }
+        let below = prb_cmp(&num, &low);
+        let above: i64 = 1;
+        if prb_cmp(&den, &high) >= 0 {
+            prb_copy_into(&scratch, &den);
+            prb_sub(&scratch, &high);
+            above = prb_cmp(&num, &scratch);
+        }
+        if above == 0 && even {
+            if digit == 9 {
+                pr_round_nine_up(&out, &power);
+                break;
+            }
+            if below > 0 {
+                digit += 1;
+            }
+            buf_push(&out, digit);
+            break;
+        }
+        if below < 0 || (below == 0 && even) {
+            if num.len != 0 && above > 0 {
+                prb_shl(&num, 1);
+                let doubled = prb_cmp(&num, &den);
+                if doubled > 0 || (doubled == 0 && (digit % 2) == 1) {
+                    if digit == 9 {
+                        pr_round_nine_up(&out, &power);
+                        break;
+                    }
+                    digit += 1;
+                }
+            }
+            buf_push(&out, digit);
+            break;
+        }
+        if above > 0 {
+            if digit == 9 {
+                pr_round_nine_up(&out, &power);
+                break;
+            }
+            buf_push(&out, digit + 1);
+            break;
+        }
+        buf_push(&out, digit);
+        prb_mul_small(&num, 10);
+        prb_mul_small(&low, 10);
+        prb_mul_small(&high, 10);
+    }
+    return Decimal { digits: out, point: power + 1 };
+}
+
+fn pr_push_digits(out: *Buf, d: *Decimal, from: u64, to: u64) {
+    for i: u64 in from..to {
+        buf_push(out, 48 + (*d).digits.data[i]);
+    }
+}
+
+fn pr_push_zeros(out: *Buf, count: u64) {
+    for _i: u64 in 0..count {
+        buf_push(out, 48);
+    }
+}
+
+// The layout of float.__repr__ once the shortest digits are known.
+fn pr_push_float_layout(out: *Buf, d: *Decimal) {
+    let n = (*d).digits.len;
+    let point = (*d).point;
+    if point <= -4 || point > 16 {
+        pr_push_digits(out, d, 0, 1);
+        if n > 1 {
+            buf_push(out, '.');
+            pr_push_digits(out, d, 1, n);
+        }
+        buf_push(out, 'e');
+        let exponent = point - 1;
+        if exponent < 0 {
+            buf_push(out, '-');
+            exponent = 0 - exponent;
+        } else {
+            buf_push(out, '+');
+        }
+        if exponent < 10 {
+            buf_push(out, 48);
+        }
+        buf_push_u64(out, exponent as u64);
+        return;
+    }
+    if point <= 0 {
+        buf_push_z(out, "0.");
+        pr_push_zeros(out, (0 - point) as u64);
+        pr_push_digits(out, d, 0, n);
+        return;
+    }
+    let whole = point as u64;
+    if whole >= n {
+        pr_push_digits(out, d, 0, n);
+        pr_push_zeros(out, whole - n);
+        buf_push_z(out, ".0");
+        return;
+    }
+    pr_push_digits(out, d, 0, whole);
+    buf_push(out, '.');
+    pr_push_digits(out, d, whole, n);
+}
+
+// `bits` is a finite, non-negative binary64: the lexer rejects the rest.
+fn pr_push_float_repr(out: *Buf, bits: u64) {
+    if bits == 0 {
+        buf_push_z(out, "0.0");
+        return;
+    }
+    let shortest = pr_shortest(bits);
+    pr_push_float_layout(out, &shortest);
+}
