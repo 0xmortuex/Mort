@@ -1,0 +1,68 @@
+// Spectral norm (Benchmarks Game): float arithmetic through function calls.
+// Prints the norm as an integer scaled by 1e9, so results compare exactly.
+import std.strings;
+import std.option;
+
+extern fn sqrt(value: f64) -> f64;
+
+fn size() -> u64 {
+    let text: *u8 = arg_get(1);
+    match strings.parse_u64(slice(text as *const u8, len(text))) {
+        Option<u64>.Some(value) => { return value; },
+        Option<u64>.None => { assert(false); return 0; },
+    }
+}
+
+fn a(i: u64, j: u64) -> f64 {
+    return 1.0 / (((i + j) * (i + j + 1) / 2 + i + 1) as f64);
+}
+
+fn times(out: *f64, v: *f64, n: u64) -> void {
+    for i: u64 in 0..n {
+        let sum: f64 = 0.0;
+        for j: u64 in 0..n {
+            sum = sum + a(i, j) * v[j];
+        }
+        out[i] = sum;
+    }
+}
+
+fn times_transposed(out: *f64, v: *f64, n: u64) -> void {
+    for i: u64 in 0..n {
+        let sum: f64 = 0.0;
+        for j: u64 in 0..n {
+            sum = sum + a(j, i) * v[j];
+        }
+        out[i] = sum;
+    }
+}
+
+fn normal(out: *f64, v: *f64, scratch: *f64, n: u64) -> void {
+    times(scratch, v, n);
+    times_transposed(out, scratch, n);
+}
+
+fn main() -> int {
+    let n: u64 = size();
+    let u: *f64 = alloc(n * sizeof<f64>()) as *f64;
+    let v: *f64 = alloc(n * sizeof<f64>()) as *f64;
+    let scratch: *f64 = alloc(n * sizeof<f64>()) as *f64;
+    for i: u64 in 0..n {
+        u[i] = 1.0;
+    }
+    for k: u64 in 0..10 {
+        normal(v, u, scratch, n);
+        normal(u, v, scratch, n);
+    }
+    let vbv: f64 = 0.0;
+    let vv: f64 = 0.0;
+    for i: u64 in 0..n {
+        vbv = vbv + u[i] * v[i];
+        vv = vv + v[i] * v[i];
+    }
+    print((sqrt(vbv / vv) * 1000000000.0) as i64);
+    free(u);
+    free(v);
+    free(scratch);
+    return 0;
+}

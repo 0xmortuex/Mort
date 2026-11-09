@@ -903,20 +903,24 @@ fn cg_match_arm_bindings(g: *Cg, f: *Facts, temporary: Span) {
     }
     for i: u64 in 0..(*(*f).binding_names).len {
         let name = u64vec_get((*f).binding_names, i);
-        let line = buf_new(96);
-        buf_push_span(&line, cg_ct_span(g, u64vec_get((*f).binding_types, i)));
-        buf_push_z(&line, " m_");
-        buf_push_span(&line, cg_text(g, name));
-        buf_push_z(&line, " = ");
-        buf_push_span(&line, temporary);
-        buf_push_z(&line, ".data.v_");
-        buf_push_span(&line, cg_text(g, (*f).variant_name));
+        let payload = buf_new(64);
+        buf_push_span(&payload, temporary);
+        buf_push_z(&payload, ".data.v_");
+        buf_push_span(&payload, cg_text(g, (*f).variant_name));
         if (*f).payload_arity > 1 {
-            buf_push_z(&line, ".f_");
-            buf_push_u64(&line, u64vec_get((*f).binding_indices, i));
+            buf_push_z(&payload, ".f_");
+            buf_push_u64(&payload, u64vec_get((*f).binding_indices, i));
         }
+        let cname = buf_new(32);
+        buf_push_z(&cname, "m_");
+        buf_push_span(&cname, cg_text(g, name));
+        let init = buf_span(&payload);
+        let line = buf_new(96);
+        cg_var_decl(g, &line, u64vec_get((*f).binding_types, i), buf_span(&cname), &init, false);
         buf_push(&line, ';');
         cg_em_buf(g, &line);
+        free(cname.data as *void);
+        free(payload.data as *void);
         let destructor = u64vec_get((*f).binding_destructors, i);
         if destructor != NO_TEXT {
             cg_declare_resource(g, name, destructor);
@@ -935,12 +939,9 @@ fn cg_match(g: *Cg, s: *Node) {
     let temporary = buf_span(&temp);
     cg_em(g, "{");
     (*g).indent += 1;
+    let init = cg_expr(g, subject);
     let head = buf_new(96);
-    buf_push_span(&head, cg_ct_span(g, (*subject).etype));
-    buf_push(&head, ' ');
-    buf_push_span(&head, temporary);
-    buf_push_z(&head, " = ");
-    buf_push_span(&head, cg_expr(g, subject));
+    cg_var_decl(g, &head, (*subject).etype, temporary, &init, false);
     buf_push(&head, ';');
     cg_em_buf(g, &head);
     let exhaustive = (*((*s).facts as *Facts)).exhaustive;

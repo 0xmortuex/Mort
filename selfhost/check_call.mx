@@ -12,7 +12,6 @@ import bignum;
 import checker;
 import check_expr;
 
-
 // ----- generic functions -----
 
 fn cc_copy_node(n: *Node) -> *Node {
@@ -779,7 +778,7 @@ fn cb_sizeof(c: *Ck, e: *Node) -> u64 {
         ck_fail_z(c, e, "sizeof expects exactly one type argument and no values");
     }
     let target = u64vec_get((*e).names, 0);
-    if target == (*c).t_void || !ck_valid(c, target) {
+    if target == (*c).t_void || !ck_valid_sizeof(c, target) {
         ck_ft1(c, e, "sizeof has invalid type argument ", target, "");
     }
     return (*c).t_u64;

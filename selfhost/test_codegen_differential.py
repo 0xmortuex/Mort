@@ -183,6 +183,7 @@ DECLARATIONS = {
     "struct_tuple_dep": "struct S { t: (T, i64) }\nstruct T { x: i64 }\n",
     "tuple_of_struct": "struct T { x: i64 }\nfn h(a: (T, i64)) -> void { }\n",
     "tag_of_function_type": "struct B<T> { v: T }\nstruct S { a: B<fn(i64) -> i64> }\nfn h(a: []fn(i64) -> i64, b: []const fn() -> i64) -> void { }\n",
+    "tuple_of_fn": "fn h(a: (fn(i64) -> i64, u8), b: (*fn() -> i64, []const u8)) -> void { }\n",
     "array_of_struct": "struct T { x: i64 }\nstruct S { a: [T; 2] }\n",
     "generic_struct": "struct B<T> { v: T }\nstruct S { a: B<i64>, b: B<*u8> }\n",
     "generic_enum": "enum O<T> { Some(T), None }\nstruct S { a: O<i64> }\n",

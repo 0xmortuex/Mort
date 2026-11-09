@@ -362,7 +362,8 @@ EXPR_CASES = {
     "b_assert_bad": "assert(1);",
     "b_len_kinds": 'let a: [u8; 3] = [1, 2, 3]; let n = len(a); let m = len("x"); let p: *u8 = null; let s = slice<u8>(p, 1); let k = len(s);',
     "b_len_bad": "let n = len(1);",
-    "b_sizeof_types": "let a = sizeof<u8>(); let b = sizeof<*u8>(); let c = sizeof<(u8, i64)>(); let d = sizeof<[u8; 3]>(); let e = sizeof<G<i64>>(); let f = sizeof<E>();",
+    "b_sizeof_types": "let a = sizeof<u8>(); let b = sizeof<*u8>(); let c = sizeof<(u8, i64)>(); let d = sizeof<AArr>(); let e = sizeof<G<i64>>(); let f = sizeof<E>();",
+    "b_sizeof_array_syntax_is_a_parse_error": "let d = sizeof<[u8; 3]>();",
     "b_slice": "let p: *u8 = null; let s = slice<u8>(p, 3); let c: *const u8 = null; let d = slice<u8>(c, 1);",
     "b_slice_bad_ptr": "let s = slice<u8>(1, 3);",
     "b_slice_void": "let p: *void = null; let s = slice<u8>(p, 3);",
@@ -510,7 +511,8 @@ EXPR_CASES = {
     "gen_array_param": "let a: [u8; 2] = [1, 2]; let b = id2(a);",
     "gen_void_arg": "let a = id2(g4());",
     "gen_null_arg": "let a = id2(null);",
-    "gen_recursive_generic": "let b = Gbox<G<u8>> { v: G<u8> { x: 1 } }; let c = b.v.x;",
+    "gen_recursive_generic": "let b = Gbox<G<u8> > { v: G<u8> { x: 1 } }; let c = b.v.x; let d = Gbox<GA> { v: GA { x: 1 } };",
+    "gen_shift_token_in_literal_is_a_parse_error": "let b = Gbox<G<u8>> { v: G<u8> { x: 1 } };",
     "gen_body_error": "let a = bad_body(1);",
     "gen_body_error_instance_only": "let a = bad_struct_only<i64>(1); let b = bad_struct_only<G<u8>>(G<u8> { x: 1 });",
     "gen_same_instance_twice": "let a = id2(1); let b = id2(2); let c = id2<i64>(3);",
@@ -527,6 +529,86 @@ EXPR_CASES = {
     "try_wrong_error_type": "let v = wrong_err<i64>();",
     "try_value_type": "let v = try_u();",
     "try_in_generic": "let v = try_in_generic<i64>();",
+    # boundaries
+    "shift_count_64": "let a: u64 = 1 << 64;",
+    "shift_count_65": "let a: u64 = 1 << 65;",
+    "shift_count_66": "let a: u64 = 1 << 66;",
+    "shift_cap_observable": "let a: u64 = (3 << 70) >> 62; let b: u64 = (3 << 64) >> 62; let c: u64 = (3 << 63) >> 62; let d: u64 = (3 << 65) >> 64;",
+    "shift_zero_left_huge": "let a: u8 = 0 << 1000;",
+    "range_c_long": "let a: c_long = 2147483647; let b: c_long = -2147483648;",
+    "range_c_long_over": "let a: c_long = 2147483648;",
+    "range_c_long_under": "let a: c_long = -2147483649;",
+    "range_c_ulong_over": "let a: c_ulong = 4294967296;",
+    "range_c_ulong_max": "let a: c_ulong = 4294967295;",
+    "range_c_size_over": "let a: c_size = 18446744073709551616;",
+    "range_c_char_over": "let a: c_char = 128;",
+    "range_c_short_over": "let a: c_short = 32768;",
+    "range_c_uint_over": "let a: c_uint = 4294967296;",
+    "f32_max_fits": "let a: f32 = 3.4028234663852886e38;",
+    "f32_next_double_over": "let a: f32 = 3.4028234663852890e38;",
+    "f32_negative_max_fits": "let a: f32 = 1.0; let b = a + 3.4028234663852886e38;",
+    "f32_infinity": "let a: f32 = 1e400;",
+    # generic statements
+    "gen_for_typed": "let a = for_gen<u8>(); let b = for_gen<i64>();",
+    "gen_for_typed_bad": "let a = for_gen<bool>();",
+    "gen_for_typed_range": "let a = for_gen_range<u8>();",
+    # rules from the front-end hardening on main
+    "rep_binary_operand_huge": "let a: u64 = 1; let b = a + 99999999999999999999;",
+    "rep_bare_literal_huge": "let a = 99999999999999999999;",
+    "rep_bare_literal_u64": "let a = 18446744073709551615;",
+    "rep_annotated_huge": "let a: u64 = 99999999999999999999;",
+    "rep_intermediate_may_exceed": "let a = (1 << 100) >> 99;",
+    "rep_shift_operand_huge": "let a: i64 = 1; let b = a << 99999999999999999999;",
+    "rep_shift_left_literal_huge": "let n: i64 = 1; let b = 99999999999999999999 << n;",
+    "rep_unary_of_huge": "let a = -99999999999999999999;",
+    "rep_tilde_of_huge": "let a = ~99999999999999999999;",
+    "rep_call_argument": "print(99999999999999999999);",
+    "rep_index": "let p: *u8 = null; let a = p[99999999999999999999];",
+    "rep_tuple_element": "let a = (99999999999999999999, 1);",
+    "rep_return": "return 99999999999999999999;",
+    "rep_compare_operand": "let a = 99999999999999999999 == 1;",
+    "rep_in_cast": "let a = 99999999999999999999 as u8;",
+    "rep_let_i64_default": "let a = 1 << 2000;",
+    "rep_let_i64_annotated": "let a: i64 = 1 << 2000;",
+    "rep_char_default": "let a = 'x'; let b = -'x'; let c = ~'x';",
+    "msg_shift_count_huge_negative": "let a = 1 << (0 - (1 << 200));",
+    "msg_index_huge": "let a: [u8; 3] = [1, 2, 3]; let b = a[1 << 200];",
+    "addr_of_array": "let a: [u8; 2] = [1, 2]; let p = &a;",
+    "addr_of_array_cast": "let a: [u8; 2] = [1, 2]; let p = &a as *u8;",
+    "addr_of_array_alias": "let a: AArr = [1, 2]; let p = &a;",
+    "addr_of_element": "let a: [u8; 2] = [1, 2]; let p = &a[0];",
+    "addr_of_array_in_struct": "let h = H { a: [1, 2] }; let p = &h.a;",
+    "cast_invalid_target": "let a = 1 as *Missing;",
+    "cast_to_pointer_to_array": "let a = 1 as *[u8; 2];",
+    "compare_void": "let a = g4() == g4();",
+    "compare_arrays": "let a: [u8; 2] = [1, 2]; let b: [u8; 2] = [1, 2]; let c = a == b;",
+    "compare_slices": "let p: *u8 = null; let s = slice<u8>(p, 1); let c = s == s;",
+    "compare_functions": "let f = add_one; let c = f == f;",
+    "owned_field_copied": "let h = Holder { r: make_r(), n: 1 }; let r = h.r;",
+    "owned_field_passed": "let h = Holder { r: make_r(), n: 1 }; take_r(h.r);",
+    "owned_array_element": "let a: [R; 1] = [make_r()]; let r = a[0];",
+    "owned_tuple_element": "let t = (make_r(), 1); let r = t.0;",
+    "owned_nested": "let o = Outer { h: Holder { r: make_r(), n: 1 } }; let r = o.h.r;",
+    "owned_through_pointer": "let h = Holder { r: make_r(), n: 1 }; let p = &h; let r = (*p).r;",
+    "owned_raw_pointer_element": "let p = alloc(16) as *R; let r = p[0];",
+    "owned_slice_element": "let p = alloc(16) as *R; let s = slice<R>(p, 1); let r = s[0];",
+    "owned_step_through_pointer_field": "let p = alloc(16) as *R; let h = PtrHolder { r: make_r(), p: p, s: slice<R>(p, 1) }; let r = h.p[0];",
+    "owned_step_through_slice_field": "let p = alloc(16) as *R; let h = PtrHolder { r: make_r(), p: p, s: slice<R>(p, 1) }; let r = h.s[0];",
+    "owned_non_resource_field": "let h = Holder { r: make_r(), n: 1 }; let n = h.n;",
+    "owned_in_return": "let h = Holder { r: make_r(), n: 1 }; take_r(h.r); return 0;",
+    "repeat_resource_var": "let r = make_r(); let a: [R; 2] = [r; 2];",
+    "repeat_resource_move": "let r = make_r(); let a: [R; 2] = [move r; 2];",
+    "repeat_resource_call": "let a: [R; 2] = [make_r(); 2];",
+    "repeat_move_nested": "let r = make_r(); let a: [i64; 2] = [use_after(move r); 2];",
+    "repeat_plain_move": "let x = 1; let a: [i64; 2] = [move x; 2];",
+    "repeat_no_decl_resource": "let r = make_r(); let a = [r; 2];",
+    "match_duplicate_unit": "let e = E.A; match e { E.A => { } E.A => { } E.B => { } }",
+    "match_duplicate_payload": "let p = P.A(1); match p { P.A(a) => { } P.A(b) => { } P.B => { } }",
+    "match_duplicate_mixed_wildcard": "let e = E.A; match e { E.A => { } E.A => { } _ => { } }",
+    "sizeof_array_of_arrays": "let a = sizeof<NestedArr>();",
+    "array_of_arrays_alias_as_var": "let a: NestedArr = [[1, 2], [3, 4]];",
+    "split_function_type_in_generic": "let b = Gbox<AFn> { v: add_one }; let c = b.v;",
+    "split_function_returning_generic": "let f: fn(i64) -> G<u8> = make_gu; let g = f(1);",
     # moves, resources, defer
     "move_basic": "let r = make_r(); take_r(move r);",
     "move_use_after": "let r = make_r(); take_r(move r); use_r(&r);",
@@ -652,6 +734,9 @@ FN_ONLY_CASES = {
     "ret_after_return": "fn f() -> i64 { return 1; let a = 2; }",
     "ret_match_all": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { return 2; } } }",
     "ret_match_wildcard": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } _ => { return 2; } } }",
+    "ret_match_first_arm_only": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { } } }",
+    "ret_match_last_arm_only": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { } E2.B => { return 2; } } }",
+    "ret_match_middle_arm_open": "enum E2 { A, B, C }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { } E2.C => { return 3; } } }",
     "ret_match_open": "fn f(a: i64) -> i64 { match a { 1 => { return 1; } } }",
     "ret_match_payload": "enum E2 { A(i64) }\nfn f(a: E2) -> i64 { match a { E2.A(v) => { return v; } } }",
     "ret_void_value": "fn f() { return 1; }",
@@ -664,6 +749,9 @@ FN_ONLY_CASES = {
     "param_unused_warn": "fn f(a: i64) { }",
     "instance_order_runs_after": "fn a1() { b1(1); }\nfn b1<T>(x: T) { }\nfn c1() { b1(true); }",
     "instance_then_test_order": "fn a1<T>(x: T) { }\nfn a2() { a1(1); }\ntest \"t\" { a1(true); }",
+    "test_body_instance_is_checked": "fn bad<T>(x: T) -> T { let y: u8 = true; return x; }\ntest \"t\" { bad(1); }",
+    "test_body_instance_ok": "fn fine<T>(x: T) -> T { return x; }\ntest \"t\" { fine(1); fine(true); }",
+    "test_body_instance_chain": "fn a1<T>(x: T) -> T { return b1(x); }\nfn b1<T>(x: T) -> T { let y: u8 = true; return x; }\ntest \"t\" { a1(1); }",
     "main_in_test": "test \"t\" { let x: u8 = 300; }",
     "generic_in_global": "fn id3<T>(a: T) -> T { return a; }\nlet g: i64 = id3(1);",
     "global_const_expr": "let g: u8 = 1 + 2;\nlet h: u8 = 300;",
@@ -695,6 +783,8 @@ FN_ONLY_CASES = {
 
 T5_MAIN_HELPERS = """
 fn g4() { }
+fn for_gen<T>() -> u64 { for i: T in 0..3 { let j: T = i; } return 1; }
+fn for_gen_range<T>() -> u64 { for i: T in 0..300 { let j = i; } return 1; }
 fn narrow(a: u8) -> u8 { return a; }
 fn tcb(ctx: *void) -> i64 { return 0; }
 fn bad_body<T>(a: T) -> T { let x: u8 = true; return a; }
@@ -715,6 +805,11 @@ type ATuple = (u8, i64);
 type AArr = [i64; 2];
 type AIntPtr = *i64;
 type AFn = fn(i64) -> i64;
+type NestedArr = [[u8; 2]; 2];
+struct Outer { h: Holder }
+struct PtrHolder { r: R, p: *R, s: []R }
+fn use_after(r: R) -> i64 { return 1; }
+fn make_gu(a: i64) -> G<u8> { return G<u8> { x: 1 }; }
 module_stub_not_a_decl_marker
 """.replace("module_stub_not_a_decl_marker\n", "")
 
@@ -766,7 +861,7 @@ def test_dump_covers_every_field_the_checker_assigns():
             for item in items:
                 if (isinstance(item, ast.Attribute)
                         and isinstance(item.value, ast.Name)
-                        and item.value.id not in ("self", "_current")):
+                        and item.value.id != "self"):
                     written.add(item.attr)
     dumped = set(py_check_dump.DYNAMIC_FIELDS)
     for fields in py_check_dump.CHECKED_SUFFIX.values():
@@ -778,7 +873,7 @@ def test_dump_covers_every_field_the_checker_assigns():
         "generic_params",
     }
     # Only where a diagnostic is reported, which every test here compares.
-    location_only = {"filename"}
+    location_only = {"filename", "meter", "work_meter"}
     missing = written - dumped - parser_rewrites - location_only
     assert not missing, f"checker fields missing from the dump: {sorted(missing)}"
     assert "drop_destructors" not in missing
@@ -982,6 +1077,8 @@ MODULE_CASES = {
     "generic": "import lib as u;\nfn main() -> int { let a = u.same(1); let b = u.same(true); return a; }\n",
     "private": "import lib as u;\nfn main() -> int { return u.hidden(1); }\n",
     "private_generic": "import lib as u;\nfn main() -> int { return u.secret(1); }\n",
+    "private_value": "import lib as u;\nfn main() -> int { let f = u.hidden; return 0; }\n",
+    "private_generic_value": "import lib as u;\nfn main() -> int { let f = u.secret; return 0; }\n",
     "fn_value": "import lib as u;\nfn main() -> int { let f = u.add; return f(1, 2); }\n",
     "arg_mismatch": "import lib as u;\nfn main() -> int { return u.add(true, 2); }\n",
     "unknown_member": "import lib as u;\nfn main() -> int { return u.nothing(); }\n",
@@ -1053,7 +1150,7 @@ def test_constant_width_is_bounded(expr_exe, tmp_path):
     assert_rejected_within_limits(
         expr_exe, tmp_path,
         f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n",
-        f":2:{11 + 6 * 4095}: error: constant expression needs more than {2 ** 18} bits")
+        f":2: error: constant expression needs more than {2 ** 18} bits")
 
 
 def test_retained_constants_are_bounded(expr_exe, tmp_path):

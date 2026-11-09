@@ -131,7 +131,7 @@ fn ts_split_type_list(s: *Interner, inner: Span, out: *U64Vec) {
         let c = inner.data[i];
         if c == '<' {
             angle += 1;
-        } else if c == '>' {
+        } else if c == '>' && !(i != 0 && inner.data[i - 1] == '-') {
             angle -= 1;
         } else if c == '(' {
             paren += 1;

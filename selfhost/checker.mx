@@ -194,8 +194,6 @@ struct Ck {
     alias_cache: Map,
     valid_types: Map,
     drop_memo: Map,
-    drop_seen: U64Vec,
-    drop_epoch: u64,
     lit_values: Table,
     int_ranges: Table,
     valid_behind_pointer: Map,
@@ -1022,6 +1020,19 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
     return result;
 }
 
+// `_valid_sizeof_type`: an array of arrays has a size though no C declaration, so
+// an alias may name one and sizeof may measure it.
+fn ck_valid_sizeof(c: *Ck, t: u64) -> bool {
+    let resolved = ck_resolve_alias(c, t);
+    if ts_is_array((*c).s, resolved) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, resolved, &elem, &count);
+        return count != ck_decimal(c, 0) && ck_valid_sizeof(c, elem);
+    }
+    return ck_valid(c, resolved);
+}
+
 fn ck_new_struct_info() -> *StructInfo {
     let info = sup_alloc(sizeof<StructInfo>()) as *StructInfo;
     *info = StructInfo {
@@ -1614,7 +1625,7 @@ fn ck_check_alias_targets(c: *Ck) {
     let list = (*(*c).program).aliases;
     for i: u64 in 0..(*list).len {
         let d = ast_item(list, i);
-        if (*d).ty == (*c).t_void || !ck_valid(c, (*d).ty) {
+        if (*d).ty == (*c).t_void || !ck_valid_sizeof(c, (*d).ty) {
             let b = m_new();
             m_s(&b, "type alias ");
             m_r(c, &b, (*d).name);
@@ -2092,7 +2103,7 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         current_node: 0 as *Node, current_statement: 0 as *Node,
         first_columns: first_columns,
         alias_cache: map_new(), valid_types: map_new(), valid_behind_pointer: map_new(),
-        drop_memo: map_new(), drop_seen: u64vec_new(), drop_epoch: 0, lit_values: tb_new(), int_ranges: tb_new(),
+        drop_memo: map_new(), lit_values: tb_new(), int_ranges: tb_new(),
         aliases: tb_new(), alias_decls: tb_new(),
         enums: tb_new(), enum_templates: tb_new(),
         structs: tb_new(), struct_templates: tb_new(),
@@ -2156,20 +2167,6 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
     return c;
 }
 
-// Checks the bodies from `first` on; instances appended on the way are checked in turn.
-fn ck_check_bodies_from(c: *Ck, first: u64) {
-    let funcs = (*(*c).program).funcs;
-    let i = first;
-    while i < (*funcs).len {
-        let f = ast_item(funcs, i);
-        i += 1;
-        if ck_names_len((*f).names) != 0 {
-            continue;
-        }
-        ck_function_body(c, f);
-    }
-}
-
 fn ck_run(c: *Ck) {
     cx_init_ranges(c);
     ck_check_aliases(c);
@@ -2184,13 +2181,26 @@ fn ck_run(c: *Ck) {
     ck_dump_tables(c);
     ck_check_main(c);
     let funcs = (*(*c).program).funcs;
-    ck_check_bodies_from(c, 0);
+    // Instances appended by checking a body are checked in turn.
+    let i: u64 = 0;
+    while i < (*funcs).len {
+        let f = ast_item(funcs, i);
+        i += 1;
+        if ck_names_len((*f).names) != 0 {
+            continue;
+        }
+        ck_function_body(c, f);
+    }
     // Test blocks are checked in every mode, as `check()` does; only the `main`
     // requirement depends on test mode.
-    let functions_before_tests = (*funcs).len;
+    let before_tests = (*funcs).len;
     ck_check_test_names(c);
     // Test bodies can instantiate generics; those instances still need checking.
-    ck_check_bodies_from(c, functions_before_tests);
+    let j = before_tests;
+    while j < (*funcs).len {
+        ck_function_body(c, ast_item(funcs, j));
+        j += 1;
+    }
     ck_write_output(c);
     if (*c).checked_path != (0 as *u8) {
         cd_write(c);

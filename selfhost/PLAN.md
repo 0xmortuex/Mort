@@ -538,6 +538,81 @@ Still open:
   node, it is this.
 - `_coerce`'s literal path and `_require_representable` are T5's to port, and
   neither changes a T4 message.
+## 14. C generator status (T6)
+
+`selfhost/codegen.mx` (types, declarations, drop helpers, the program head),
+`cg_stmt.mx` (statements, defers, `try` lowering), `cg_helpers.mx` (helper
+selection and the integer helpers), the generated `cg_helper_text.mx` (constant
+concurrency, network and random text, from `tools/gen_helper_text.py`, a test
+keeps it current), `manifest.mx` (split out of `check_main.mx`) and `cg_main.mx`
+(the driver). Time: about 90 minutes by commit timestamps, against 12 to 20
+estimated, because the port is mechanical and the harness existed. About an hour of
+that went on reconciling T5 with `main` here before `feat/selfhost-t5` did the same;
+this branch adopted T5's own reconciliation for the checker files.
+
+- **Scope of "in isolation".** Statements contain expressions, whose text is T7.
+  `cg_expr` writes a placeholder (`$Kind@line:col:type$`, shaped like the real text
+  where `_gen_cond` can tell), and `py_codegen_dump.py` runs the real `CodeGen` with
+  only `_gen_expr` replaced, so every other byte is compared. The real generator
+  runs once first to find what expressions contribute (`used_*`, integer helpers,
+  the string table); both sides receive that, so helper selection is compared on
+  what each program really uses. Correction to the plan: T7's list is now
+  `cg_expr`, its charges, and removing the forced file and `cg_apply_forced`.
+- **Tests.** `test_codegen_differential.py`: every repo `.mx` in three modes, the
+  generated corpus, stubbed kernel, compiler sources, constructs one at a time,
+  every flag and integer helper alone and together, hash seeds, paths, hostile
+  programs under the 500 MB guard (81 of the 142 repo programs reach C in hosted mode;
+  the rest are compared as rejections). `test_codegen_mutants.py`: 17 planted bugs.
+- **Recursion.** `cg_prepare_try`, `ck_contains_try` and the collectors are
+  iterative on the unbounded left spine; pointer prefixes in `c_type` and
+  `visit_type` loop, because aliases can spell tens of thousands of `*`. Statements
+  and other type constructors recurse within the parser and alias limits.
+- **Known limits.** `--coverage` output is not ported (not needed to bootstrap).
+  Charges count bytes where Python counts code points, as the checker does, so a
+  non-ASCII type name can move a budget failure by a few units. A `KeyError` in
+  Python's `c_type` is an internal-error exit (2) here.
+
+## 13. Generator status (T2c)
+
+`selfhost/tools/gen_subset_programs.py` builds each construct as Mort text plus a
+Python closure for its meaning, written from the language spec, so the expected
+stdout, stderr and exit status never come from the compiler under test.
+`selfhost/corpus.py` holds the 5.1 classes and floors, and
+`selfhost/test_generated_corpus.py` enforces them. Run with
+`MORT_SELFHOST_CORPUS_SCALE=n` for a larger corpus.
+
+- `subset` profile: 25 programs, about 10,400 lines, three of them over 1500
+  lines. A `matrix` program runs every integer operator on every ordered pair of
+  subset integer types, and on literals, at their edges; `trap` programs end in
+  each defined runtime failure. All pass the gate and match the model.
+- `full` profile: generics (`>>` closers, inferred and explicit), payload enums,
+  `match` bindings, tuples, slices, local arrays, function pointers (the language
+  has no closures or traits), `try`, `defer`, `resource`/`move`, floats, modules
+  across files, aliases, `asm`, `volatile`, every integer width. Not counted
+  towards the floor, and only parser/checker-relevant, but every program also runs
+  and is checked.
+- The header of the generator states exactly what is not independently modelled
+  (target-defined `c_*` behaviour, `test` block bodies, float format, `sizeof` of
+  enums).
+- Six planted defects in a copy of `parser.mx` (precedence swap, right-associative
+  binary operators, lost `..=`, chained casts, operator line, `%` level) are all
+  caught by the corpus, in the default test run; the real parser is not.
+- The test wires the corpus into T4's declaration-checker differential through
+  `test_checker_decl_differential.compare`. An early trial merge with T4 passed
+  32 of 35, the other 3 hitting the unchecked-test-body divergence in
+  `BLOCKERS.md`; with T4's test-block checking, all 35 run and pass.
+
+**Follow-up for T4 and T5: the corpus is thin outside the subset.** Generics,
+payload enums and cross-file modules (`module`, `pub`, `import ... as`) appear only
+in the `full` profile, whose default size is 10 programs and 2,088 lines. Measured
+at the default scale: 16 generic declarations, 9 payload enums, 3 module files, and
+each comes from a fixed template with random values, not from random shapes. The
+8000-line floor says nothing about these features, because the `subset` profile
+cannot contain them. A pass over this corpus is weak evidence for generic
+instantiation, payload binding and module visibility. T4 and T5 should keep their
+own targeted cases there, and widen these generator sections (or run with a larger
+`MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
+before relying on them.
 
 ## 12. Type checker status (T5)
 
@@ -591,95 +666,14 @@ went on the tests, not the port.
   250 seeded source mutations). `test_checker_expr_mutants.py`: 18 planted bugs,
   all caught.
 
-### Reconciled with `main` (in T6's merge)
+### Reconciled with `main`
 
-`main` checks differently, and the T5 base's Python is no longer the reference.
-All of it is ported and compared: parser columns on nodes and `paren_col` on
-calls; `_check_expr(e, literal_operand)` and `_require_representable` (an operand
-of a folding Binary, or of `-`/`~`, or a `let`/global with a declared type, is not
-checked until the whole literal is finished), with `Let` re-coercing a literal
-against its own type; `_coerce` checking the literal case first; `_unify_ints`
-checking literal adoption before `lt == rt`; shift and index messages through
-`_value_str`; the address-of-array, cast-to-invalid-type and `void` comparison
-rejections; `is_cast_operand`, dumped, set when a cast's operand is `&`;
-`made_type` on the `$drop$` symbol; `current_statement` for locating a spent
-budget; instances created by `test` bodies are now checked (Python's `check()`
-does that on `main`, so the earlier BLOCKERS note is resolved).
-`_needs_drop_type` is charged exactly: it re-walks a type per query in Python and
-each query here charges the first walk's cost (the walk stops at the first
-resource, visits each type once and is preorder). `test_recursion_at_the_parser_limit`
-caught that the T5 port queried drops only for variables; the charge now agrees
-and the nested-tuple shape runs out of budget as Python does.
+The merge of T4 and `fix/frontend-crashes` is done, and every case above now
+compares against that Python: columns from the parser (`Node.col`, `paren_col`),
+`literal_operand` and `_require_representable`, the literal case first in
+`_coerce`, `_value_str` in the shift and index messages, address-of-array, `void`
+and array or slice comparisons, `_valid_type` on a cast, resources in owned places
+and array repeats, duplicate match variants, `_valid_sizeof_type`, `current_statement`,
+and instances from test bodies. The base's defects recorded during T5 are gone with
+it: `1 << 2000` in an `i64` is rejected.
 
-## 14. C generator status (T6)
-
-`selfhost/codegen.mx` (types, declarations, drop helpers, the program head),
-`cg_stmt.mx` (statements, defers, `try` lowering), `cg_helpers.mx` (helper
-selection and the integer helpers), the generated `cg_helper_text.mx` (constant
-concurrency, network and random text, from `tools/gen_helper_text.py`, a test
-keeps it current), `manifest.mx` (split out of `check_main.mx`) and `cg_main.mx`
-(the driver). Time: about 70 minutes by commit timestamps, against 12 to 20 estimated, most of it the
-merge reconciliation in section 12.
-
-- **Scope of "in isolation".** Statements contain expressions, whose text is T7.
-  `cg_expr` writes a placeholder (`$Kind@line:col:type$`, shaped like the real text
-  where `_gen_cond` can tell), and `py_codegen_dump.py` runs the real `CodeGen` with
-  only `_gen_expr` replaced, so every other byte is compared. The real generator
-  runs once first to find what expressions contribute (`used_*`, integer helpers,
-  the string table); both sides receive that, so helper selection is compared on
-  what each program really uses. Correction to the plan: T7's list is now
-  `cg_expr`, its charges, and removing the forced file and `cg_apply_forced`.
-- **Tests.** `test_codegen_differential.py`: every repo `.mx` in three modes, the
-  generated corpus, stubbed kernel, compiler sources, constructs one at a time,
-  every flag and integer helper alone and together, hash seeds, paths, hostile
-  programs under the 500 MB guard. `test_codegen_mutants.py`: 17 planted bugs.
-- **Recursion.** `cg_prepare_try`, `ck_contains_try` and the collectors are
-  iterative on the unbounded left spine; pointer prefixes in `c_type` and
-  `visit_type` loop, because aliases can spell tens of thousands of `*`. Statements
-  and other type constructors recurse within the parser and alias limits.
-- **Known limits.** `--coverage` output is not ported (not needed to bootstrap).
-  Charges count bytes where Python counts code points, as the checker does, so a
-  non-ASCII type name can move a budget failure by a few units. A `KeyError` in
-  Python's `c_type` is an internal-error exit (2) here.
-
-## 13. Generator status (T2c)
-
-`selfhost/tools/gen_subset_programs.py` builds each construct as Mort text plus a
-Python closure for its meaning, written from the language spec, so the expected
-stdout, stderr and exit status never come from the compiler under test.
-`selfhost/corpus.py` holds the 5.1 classes and floors, and
-`selfhost/test_generated_corpus.py` enforces them. Run with
-`MORT_SELFHOST_CORPUS_SCALE=n` for a larger corpus.
-
-- `subset` profile: 25 programs, about 10,400 lines, three of them over 1500
-  lines. A `matrix` program runs every integer operator on every ordered pair of
-  subset integer types, and on literals, at their edges; `trap` programs end in
-  each defined runtime failure. All pass the gate and match the model.
-- `full` profile: generics (`>>` closers, inferred and explicit), payload enums,
-  `match` bindings, tuples, slices, local arrays, function pointers (the language
-  has no closures or traits), `try`, `defer`, `resource`/`move`, floats, modules
-  across files, aliases, `asm`, `volatile`, every integer width. Not counted
-  towards the floor, and only parser/checker-relevant, but every program also runs
-  and is checked.
-- The header of the generator states exactly what is not independently modelled
-  (target-defined `c_*` behaviour, `test` block bodies, float format, `sizeof` of
-  enums).
-- Six planted defects in a copy of `parser.mx` (precedence swap, right-associative
-  binary operators, lost `..=`, chained casts, operator line, `%` level) are all
-  caught by the corpus, in the default test run; the real parser is not.
-- The test wires the corpus into T4's declaration-checker differential through
-  `test_checker_decl_differential.compare`. An early trial merge with T4 passed
-  32 of 35, the other 3 hitting the unchecked-test-body divergence in
-  `BLOCKERS.md`; with T4's test-block checking, all 35 run and pass.
-
-**Follow-up for T4 and T5: the corpus is thin outside the subset.** Generics,
-payload enums and cross-file modules (`module`, `pub`, `import ... as`) appear only
-in the `full` profile, whose default size is 10 programs and 2,088 lines. Measured
-at the default scale: 16 generic declarations, 9 payload enums, 3 module files, and
-each comes from a fixed template with random values, not from random shapes. The
-8000-line floor says nothing about these features, because the `subset` profile
-cannot contain them. A pass over this corpus is weak evidence for generic
-instantiation, payload binding and module visibility. T4 and T5 should keep their
-own targeted cases there, and widen these generator sections (or run with a larger
-`MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
-before relying on them.

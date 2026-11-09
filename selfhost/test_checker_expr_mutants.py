@@ -20,7 +20,9 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
 from test_checker_decl_differential import OK_MAIN, check_exe  # noqa: E402,F401
-from test_checker_expr_differential import EXPR_CASES, FN_ONLY_CASES, compare, full_body  # noqa: E402
+from test_checker_expr_differential import (  # noqa: E402
+    EXPR_CASES, FN_ONLY_CASES, LIBRARY, MODULE_CASES, compare, full_body,
+)
 
 
 def named(*names):
@@ -31,7 +33,162 @@ def fn_level(*names):
     return [FN_ONLY_CASES[name] + "\n" + OK_MAIN for name in names]
 
 
+def module(*names):
+    """A probe of two files: (library source, root source)."""
+    return [(LIBRARY, MODULE_CASES[name]) for name in names]
+
+
 MUTANTS = {
+    "reconcile_representable_check_removed": (
+        "check_expr.mx",
+        "    if !literal_operand && (*e).is_lit && ck_is_int(c, (*e).etype) {",
+        "    if false {",
+        named("rep_bare_literal_huge", "rep_call_argument"),
+    ),
+    "reconcile_literal_operand_ignored": (
+        "check_expr.mx",
+        "    let rt = ck_check_expr_as(c, (*e).b, cx_folds(c, e));",
+        "    let rt = ck_check_expr_as(c, (*e).b, false);",
+        named("rep_intermediate_may_exceed") + [full_body("let a = 1 + (1 << 70) - (1 << 70);"), full_body("let a = (1 << 70) >> (99999999999999999999 - 99999999999999999998);")],
+    ),
+    "reconcile_shift_operands_unchecked": (
+        "check_expr.mx",
+        "            if (*right).is_lit {\n                cx_require_representable(c, right);\n            }",
+        "",
+        named("rep_shift_operand_huge"),
+    ),
+    "reconcile_coerce_literal_after_identity": (
+        "check_expr.mx",
+        "    let et = (*e).etype;\n    if ck_is_int(c, expected) && (*e).is_lit {",
+        "    let et = (*e).etype;\n    if et != expected && ck_is_int(c, expected) && (*e).is_lit {",
+        named("rep_let_i64_annotated", "rep_let_i64_default"),
+    ),
+    "reconcile_address_of_array_allowed": (
+        "check_expr.mx",
+        "        if cx_is_array(c, ck_resolve_alias(c, ot)) && !(*e).flag {",
+        "        if false {",
+        named("addr_of_array", "addr_of_array_alias"),
+    ),
+    "reconcile_cast_operand_not_marked": (
+        "check_expr.mx",
+        "            (*child).flag = true;",
+        "            (*child).flag = false;",
+        named("addr_of_array_cast"),
+    ),
+    "reconcile_cast_target_not_validated": (
+        "check_expr.mx",
+        "    if !(src_ok && tgt_ok && ck_valid(c, tgt)) {",
+        "    if !(src_ok && tgt_ok) {",
+        named("cast_invalid_target"),
+    ),
+    "reconcile_void_comparison_allowed": (
+        "check_expr.mx",
+        "    } else if lt == (*c).t_void {\n        cx_operator_error(c, e, op, \"' cannot compare void values\");\n",
+        "",
+        named("compare_void"),
+    ),
+    "reconcile_array_comparison_allowed": (
+        "check_expr.mx",
+        "            || cx_is_array(c, lt) || cx_is_slice(c, lt) {",
+        "            {",
+        named("compare_arrays", "compare_slices"),
+    ),
+    "reconcile_owned_place_copy_allowed": (
+        "check_expr.mx",
+        "            && cx_is_owned_place(c, e) {",
+        "            && false {",
+        named("owned_field_copied", "owned_array_element", "owned_tuple_element"),
+    ),
+    "reconcile_owned_place_ignores_pointers": (
+        "check_expr.mx",
+        "        if t != NO_TEXT && (cx_is_ptr(c, t) || cx_is_slice(c, t)) {\n            return false;\n        }\n",
+        "",
+        named("owned_step_through_pointer_field", "owned_step_through_slice_field"),
+    ),
+    "reconcile_repeat_may_move": (
+        "check_expr.mx",
+        "        if cx_moves_a_resource(value) {",
+        "        if false {",
+        named("repeat_resource_move", "repeat_move_nested"),
+    ),
+    "reconcile_duplicate_variant_allowed": (
+        "check_expr.mx",
+        "                if map_has(&seen, (*pattern).name) {\n                    ck_fail_named(c, arm, \"match names variant \", (*pattern).name, \" more than once\");\n                }\n",
+        "",
+        named("match_duplicate_unit"),
+    ),
+    "reconcile_duplicate_payload_variant_allowed": (
+        "check_expr.mx",
+        "    if map_has(variants_seen, variant) {\n        ck_fail_named(c, arm, \"match names variant \", variant, \" more than once\");\n    }\n",
+        "",
+        named("match_duplicate_payload"),
+    ),
+    "reconcile_sizeof_nested_array_rejected": (
+        "check_call.mx",
+        "!ck_valid_sizeof(c, target) {",
+        "!ck_valid(c, target) {",
+        named("sizeof_array_of_arrays"),
+    ),
+    "reconcile_test_body_instances_unchecked": (
+        "checker.mx",
+        "    let j = before_tests;\n    while j < (*funcs).len {",
+        "    let j = before_tests;\n    while false {",
+        fn_level("test_body_instance_is_checked", "test_body_instance_chain"),
+    ),
+    "generics_for_annotation_not_substituted": (
+        "check_call.mx",
+        "    } else if (kind == NodeKind.LET || kind == NodeKind.FOR) && (*n).ty != NO_TEXT {\n        (*n).ty = ck_substitute",
+        "    } else if kind == NodeKind.LET && (*n).ty != NO_TEXT {\n        (*n).ty = ck_substitute",
+        named("gen_for_typed", "gen_for_typed_bad", "gen_for_typed_range"),
+    ),
+    "modules_private_function_usable_as_value": (
+        "check_expr.mx",
+        "            if !(*decl).flag || (*decl).kind == NodeKind.EXTERN_FN_DECL {",
+        "            if false {",
+        module("private_value"),
+    ),
+    "returns_match_counted_from_first_arm": (
+        "check_expr.mx",
+        "            for j: u64 in 0..ck_items_len(arms) {\n                if !ck_block_always_returns",
+        "            for j: u64 in 0..1 {\n                if !ck_block_always_returns",
+        fn_level("ret_match_first_arm_only", "ret_match_middle_arm_open"),
+    ),
+    "folding_shift_cap_starts_at_64": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 || bn_mag_u64(b) >= 64 {",
+        named("shift_count_64", "shift_cap_observable"),
+    ),
+    "folding_shift_cap_starts_at_66": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 || bn_mag_u64(b) > 65 {",
+        named("shift_cap_observable", "shift_count_65"),
+    ),
+    "folding_shift_cap_removed": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 {",
+        named("shift_cap_observable", "shift_count_66"),
+    ),
+    "ranges_c_long_is_64_bit": (
+        "check_expr.mx",
+        '    cx_add_range(c, "c_long", "-2147483648", "2147483647");',
+        '    cx_add_range(c, "c_long", "-9223372036854775808", "9223372036854775807");',
+        named("range_c_long_over", "range_c_long_under"),
+    ),
+    "floats_f32_boundary_excluded": (
+        "check_expr.mx",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000000",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) >= 0x47EFFFFFE0000000",
+        named("f32_max_fits"),
+    ),
+    "floats_f32_limit_one_step_up": (
+        "check_expr.mx",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000000",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000001",
+        named("f32_next_double_over"),
+    ),
     "inference_literal_operand_not_retagged": (
         "check_expr.mx",
         "        cx_retag_literal(c, right, lt);\n        return lt;",
@@ -148,6 +305,9 @@ def probe_disagreements(exe, probes, tmp_path):
     failures = []
     for index, source in enumerate(probes):
         path = tmp_path / f"probe{index}.mx"
+        if isinstance(source, tuple):
+            (tmp_path / "lib.mx").write_bytes(source[0].encode("utf-8"))
+            source = source[1]
         path.write_bytes(source.encode("utf-8"))
         try:
             compare(exe, path, "hosted", tmp_path)

@@ -536,7 +536,7 @@ def _describe(item):
     skipped.update(dict.fromkeys(DYNAMIC_FIELDS, None))
     skipped["filename"] = None
     skipped["drop_destructors"] = None  # dumped after --final--
-    skipped["work_meter"] = None  # the checker's budget object
+    skipped["work_meter"] = None  # carries budget to codegen; no compile result
     if isinstance(item, A.Node):
         skipped.update(py_ast_dump.BASE_NODE_FIELDS)
     children = []

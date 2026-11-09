@@ -294,7 +294,7 @@ def _split_type_list(inner):
     for index, char in enumerate(inner):
         if char == "<":
             angle += 1
-        elif char == ">":
+        elif char == ">" and inner[index - 1:index] != "-":
             angle -= 1
         elif char == "(":
             paren += 1
@@ -489,6 +489,19 @@ class Checker:
         if valid:
             self.valid_types.add(key)
         return valid
+
+    def _valid_sizeof_type(self, t):
+        """Like _valid_type, but an array may hold arrays.
+
+        An array of arrays has a size even though it has no C declaration, so an
+        alias may name one and sizeof may measure it. Every other use still goes
+        through _valid_type and is rejected.
+        """
+        resolved = self._resolve_alias_type(t)
+        if is_array(resolved):
+            element, length = array_parts(resolved)
+            return length > 0 and self._valid_sizeof_type(element)
+        return self._valid_type(resolved)
 
     def _check_valid_type(self, t, behind_pointer):
         t = self._resolve_alias_type(t)
@@ -1040,7 +1053,7 @@ class Checker:
         self._validate_aggregate_cycles()
 
         for declaration in self.program.aliases:
-            if declaration.target == "void" or not self._valid_type(declaration.target):
+            if declaration.target == "void" or not self._valid_sizeof_type(declaration.target):
                 self._error(
                     f"type alias {declaration.name!r} has invalid target "
                     f"{declaration.target}", declaration)
@@ -1362,12 +1375,34 @@ class Checker:
                 self._resource_destructor(child, node)
 
     def _require_explicit_move(self, expected, expr):
-        if (self._needs_drop_type(expected) and isinstance(expr, A.Var)):
+        if not self._needs_drop_type(expected):
+            return
+        if isinstance(expr, A.Var):
             self._error(
                 f"resource {expr.name!r} must be transferred with "
                 f"'move {expr.name}'",
                 expr,
             )
+        if isinstance(expr, (A.FieldAccess, A.Index)) and self._is_owned_place(expr):
+            self._error(
+                "a resource cannot be copied out of its owning binding", expr)
+
+    def _is_owned_place(self, expression):
+        """True when a field or element chain stays inside one local's storage.
+
+        Such a place has no liveness flag of its own, so a by-value read would
+        be destroyed twice. A step through a raw pointer or slice leaves the
+        binding for manually managed storage.
+        """
+        while isinstance(expression, (A.FieldAccess, A.Index)):
+            owner = expression.obj
+            if is_ptr(owner.type) or is_slice(owner.type):
+                return False
+            expression = owner
+        if not isinstance(expression, A.Var):
+            return False
+        root_type, _ = self._local_binding(expression.name)
+        return root_type is not None and self._needs_drop_type(root_type)
 
     def _binding_mutable(self, name):
         for scope, bindings in zip(
@@ -1430,6 +1465,17 @@ class Checker:
 
         if isinstance(expr, A.ArrayRepeat):
             self._check_expr(expr.value)
+            # The value is evaluated once per element, so it can name or move
+            # one resource only by duplicating it.
+            self._require_explicit_move(expr.value.type, expr.value)
+            if self._any_subexpression(
+                    expr.value,
+                    lambda n: isinstance(n, A.Move) and n.is_resource_move):
+                self._error(
+                    "an array repeat evaluates its value once per element, so "
+                    "it cannot move a resource",
+                    node,
+                )
             if elem is None:
                 elem, size = expr.value.type, expr.count
             else:
@@ -1961,6 +2007,10 @@ class Checker:
                         if len(binding_names) == 1:
                             arm.binding_name = binding_names[0]
                             arm.binding_type = binding_types[0]
+                        if variant_name in enum_variants:
+                            self._error(
+                                f"match names variant {variant_name!r} more than once",
+                                arm)
                         enum_variants.add(variant_name)
                     else:
                         pattern_type = self._check_expr(arm.pattern)
@@ -1970,6 +2020,10 @@ class Checker:
                     if (isinstance(arm.pattern, A.FieldAccess)
                             and isinstance(arm.pattern.obj, A.Var)
                             and arm.pattern.obj.name == subject_type):
+                        if arm.pattern.field in enum_variants:
+                            self._error(
+                                f"match names variant {arm.pattern.field!r} more than once",
+                                arm)
                         enum_variants.add(arm.pattern.field)
                         arm.variant_name = arm.pattern.field
                 self.scopes.append(dict(zip(binding_names, binding_types)))
@@ -2041,21 +2095,25 @@ class Checker:
     # ----- expressions -----
     @staticmethod
     def _contains_try(expression):
-        if isinstance(expression, A.Try):
-            return True
+        return Checker._any_subexpression(
+            expression, lambda node: isinstance(node, A.Try))
+
+    @staticmethod
+    def _any_subexpression(expression, predicate):
         if not isinstance(expression, A.Node):
             return False
+        if predicate(expression):
+            return True
+        any_in = Checker._any_subexpression
         for value in vars(expression).values():
-            if isinstance(value, A.Node) and Checker._contains_try(value):
+            if isinstance(value, A.Node) and any_in(value, predicate):
                 return True
             if isinstance(value, (list, tuple)):
                 for item in value:
-                    if isinstance(item, A.Node) and Checker._contains_try(item):
+                    if isinstance(item, A.Node) and any_in(item, predicate):
                         return True
                     if isinstance(item, tuple) and any(
-                            isinstance(part, A.Node)
-                            and Checker._contains_try(part)
-                            for part in item):
+                            any_in(part, predicate) for part in item):
                         return True
         return False
 
@@ -2338,7 +2396,7 @@ class Checker:
                 elif lt in self.structs or (
                         lt in self.enums
                         and any(value is not None for value in self.enums[lt].values())
-                ) or tuple_parts(lt):
+                ) or tuple_parts(lt) or is_array(lt) or is_slice(lt):
                     self._error(f"cannot compare aggregate values with '{op}'", e)
                 return "bool"
             if op in ("&&", "||"):
@@ -2525,7 +2583,7 @@ class Checker:
             if e.args or len(e.type_args) != 1:
                 self._error("sizeof expects exactly one type argument and no values", e)
             target = e.type_args[0]
-            if target == "void" or not self._valid_type(target):
+            if target == "void" or not self._valid_sizeof_type(target):
                 self._error(f"sizeof has invalid type argument {target}", e)
             return "u64"
         if e.name in ("unix_time", "cpu_millis"):

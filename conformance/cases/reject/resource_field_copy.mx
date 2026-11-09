@@ -1,0 +1,4 @@
+resource struct R { v: i64 }
+fn destroy(r: *R) -> void {}
+struct H { r: R }
+fn main() -> int { let h = H { r: R { v: 1 } }; let a = h.r; return 0; }
