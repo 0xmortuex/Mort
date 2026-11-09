@@ -1,0 +1,66 @@
+// Hash map workload on a hand-written open-addressing table.
+// std.map is a linear scan, not a hash table; stdmap.mx measures that separately.
+import std.strings;
+import std.option;
+
+fn size() -> u64 {
+    let text: *u8 = arg_get(1);
+    match strings.parse_u64(slice(text as *const u8, len(text))) {
+        Option<u64>.Some(value) => { return value; },
+        Option<u64>.None => { assert(false); return 0; },
+    }
+}
+
+// Keys are stored as key + 1, so a slot holding 0 is empty.
+fn locate(keys: *u64, mask: u64, key: u64) -> u64 {
+    let slot: u64 = ((key + 1) * 11400714819323198485) >> 40 & mask;
+    while keys[slot] != 0 && keys[slot] != key + 1 {
+        slot = (slot + 1) & mask;
+    }
+    return slot;
+}
+
+fn main() -> int {
+    let n: u64 = size();
+    let modulus: u64 = 2147483648;
+    let space: u64 = n / 2 + 1;
+    let capacity: u64 = 16;
+    while capacity < n * 2 {
+        capacity = capacity * 2;
+    }
+    let mask: u64 = capacity - 1;
+    let keys: *u64 = alloc(capacity * sizeof<u64>()) as *u64;
+    let values: *u64 = alloc(capacity * sizeof<u64>()) as *u64;
+    for i: u64 in 0..capacity {
+        keys[i] = 0;
+        values[i] = 0;
+    }
+    let used: u64 = 0;
+    let x: u64 = 42;
+    for i: u64 in 0..n {
+        x = (x * 1103515245 + 12345) % modulus;
+        let key: u64 = x % space;
+        let slot: u64 = locate(keys, mask, key);
+        if keys[slot] == 0 {
+            keys[slot] = key + 1;
+            used = used + 1;
+        }
+        values[slot] = values[slot] + 1;
+    }
+    let sum: u64 = 0;
+    let missing: u64 = 0;
+    for key: u64 in 0..n {
+        let slot: u64 = locate(keys, mask, key);
+        if keys[slot] != 0 {
+            sum = (sum + values[slot] * key) % modulus;
+        } else {
+            missing = missing + 1;
+        }
+    }
+    print(sum);
+    print(missing);
+    print(used);
+    free(keys);
+    free(values);
+    return 0;
+}

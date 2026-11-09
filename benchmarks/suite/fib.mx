@@ -1,0 +1,23 @@
+// Recursive Fibonacci: calls and integer arithmetic.
+import std.strings;
+import std.option;
+
+fn size() -> u64 {
+    let text: *u8 = arg_get(1);
+    match strings.parse_u64(slice(text as *const u8, len(text))) {
+        Option<u64>.Some(value) => { return value; },
+        Option<u64>.None => { assert(false); return 0; },
+    }
+}
+
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() -> int {
+    print(fib(size() as i64));
+    return 0;
+}

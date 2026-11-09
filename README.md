@@ -295,6 +295,7 @@ merges counters across test executables, and emits per-file executable and
 covered lines plus an aggregate percentage. `mortc bench` suppresses target
 output and records nanosecond samples in optional JSON. `mortc profile` writes
 standard Python `pstats` data for the complete compiler/build pipeline.
+[BENCHMARKS.md](BENCHMARKS.md) compares a checked workload suite against C.
 `mortc doc --format markdown|json` extracts deterministic module, function,
 generic, struct, resource, enum, type-alias, visibility, and source-location
 metadata without executing project code.
