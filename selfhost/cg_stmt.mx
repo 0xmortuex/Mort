@@ -1,4 +1,5 @@
 // C code generator: statements, deferred cleanup and `try` lowering (PLAN.md, T6).
+// Expressions are in cg_expr.mx; both are ported from mort/codegen.py.
 // A port of mort/codegen.py's _gen_fn, _gen_stmt, _emit_defer_scopes,
 // _prepare_try_expr and _gen_cond.
 //
@@ -14,6 +15,7 @@ import check_expr;
 import check_call;
 import codegen;
 import cg_helpers;
+import cg_expr;
 
 // `REPLAY_UNITS_PER_NODE` and `MAX_DEFER_REPLAY` in mort/typechecker.py.
 const CG_REPLAY_UNITS_PER_NODE: u64 = 32;
@@ -26,72 +28,6 @@ struct DeferItem {
     name: u64,
     destructor: u64,
     expr: *Node,
-}
-
-// ----- the placeholder for T7 -----
-
-fn cg_kind_name(kind: NodeKind) -> *u8 {
-    if kind == NodeKind.INT_LIT { return "IntLit"; }
-    if kind == NodeKind.FLOAT_LIT { return "FloatLit"; }
-    if kind == NodeKind.CHAR_LIT { return "CharLit"; }
-    if kind == NodeKind.NULL_LIT { return "NullLit"; }
-    if kind == NodeKind.BOOL_LIT { return "BoolLit"; }
-    if kind == NodeKind.STR_LIT { return "StrLit"; }
-    if kind == NodeKind.VAR { return "Var"; }
-    if kind == NodeKind.UNARY { return "Unary"; }
-    if kind == NodeKind.BINARY { return "Binary"; }
-    if kind == NodeKind.CALL { return "Call"; }
-    if kind == NodeKind.CAST { return "Cast"; }
-    if kind == NodeKind.TRY { return "Try"; }
-    if kind == NodeKind.MOVE { return "Move"; }
-    if kind == NodeKind.STRUCT_LIT { return "StructLit"; }
-    if kind == NodeKind.TUPLE_LIT { return "TupleLit"; }
-    if kind == NodeKind.FIELD_ACCESS { return "FieldAccess"; }
-    if kind == NodeKind.ARRAY_LIT { return "ArrayLit"; }
-    if kind == NodeKind.ARRAY_REPEAT { return "ArrayRepeat"; }
-    if kind == NodeKind.INDEX { return "Index"; }
-    sup_die("mort: internal error: not an expression");
-    return "";
-}
-
-fn cg_placeholder(g: *Cg, out: *Buf, e: *Node) {
-    buf_push(out, '$');
-    buf_push_z(out, cg_kind_name((*e).kind));
-    buf_push(out, '@');
-    buf_push_u64(out, (*e).line);
-    buf_push(out, ':');
-    buf_push_u64(out, (*e).col);
-    buf_push(out, ':');
-    if (*e).etype == NO_TEXT {
-        buf_push_z(out, "none");
-    } else {
-        buf_push_span(out, cg_text(g, (*e).etype));
-    }
-    buf_push(out, '$');
-}
-
-// `_gen_expr`, for T7 to replace. Shaped like the real text where `_gen_cond`
-// can see the difference: a Binary, Unary or Cast is one parenthesised group and
-// a call's text starts with a group that closes before the end.
-fn cg_expr(g: *Cg, e: *Node) -> Span {
-    (*(*g).c).current_node = e;
-    let b = sup_alloc(sizeof<Buf>()) as *Buf;
-    *b = buf_new(64);
-    let kind = (*e).kind;
-    if kind == NodeKind.BINARY || kind == NodeKind.UNARY || kind == NodeKind.CAST {
-        buf_push(b, '(');
-        cg_placeholder(g, b, e);
-        buf_push(b, ')');
-    } else if kind == NodeKind.CALL {
-        buf_push(b, '(');
-        cg_placeholder(g, b, e);
-        buf_push_z(b, ")(");
-        cg_placeholder(g, b, e);
-        buf_push(b, ')');
-    } else {
-        cg_placeholder(g, b, e);
-    }
-    return buf_span(b);
 }
 
 // `_gen_cond`: strip one outer pair of parentheses when the first closes last.
@@ -116,131 +52,11 @@ fn cg_gen_cond(g: *Cg, e: *Node) -> Span {
     return s;
 }
 
-// ----- fixed-width integer text -----
-
-fn cg_fixed_wrap(g: *Cg, at: u64, code: Span) -> Buf {
-    let inner = buf_new(code.len + 32);
-    buf_push_z(&inner, "((");
-    cg_fixed_unsigned(&inner, at);
-    buf_push_z(&inner, ")(");
-    buf_push_span(&inner, code);
-    buf_push_z(&inner, "))");
-    let out = buf_new(inner.len + 32);
-    if at < 4 {
-        cg_use_int(g, CG_OP_WRAP, at);
-        buf_push_z(&out, "mort_wrap_");
-        cg_fixed_name(&out, at);
-        buf_push(&out, '(');
-        buf_push_span(&out, buf_span(&inner));
-        buf_push(&out, ')');
-    } else {
-        buf_push_z(&out, "((");
-        cg_fixed_ctype(&out, at);
-        buf_push(&out, ')');
-        buf_push_span(&out, buf_span(&inner));
-        buf_push(&out, ')');
-    }
-    free(inner.data as *void);
-    return out;
-}
-
-fn cg_fixed_binary(g: *Cg, typ: u64, op: Span, left: Span, right: Span, line: u64) -> Buf {
-    let at = cg_fixed_index(g, typ);
-    if span_eq_z(op, "/") || span_eq_z(op, "%") {
-        let div = span_eq_z(op, "/");
-        if div {
-            cg_use_int(g, CG_OP_DIV, at);
-        } else {
-            cg_use_int(g, CG_OP_REM, at);
-        }
-        let out = buf_new(left.len + right.len + 64);
-        buf_push_z(&out, "mort_");
-        if div {
-            buf_push_z(&out, "div_");
-        } else {
-            buf_push_z(&out, "rem_");
-        }
-        cg_fixed_name(&out, at);
-        buf_push_z(&out, "((");
-        let ctype = cg_ct_span(g, typ);
-        buf_push_span(&out, ctype);
-        buf_push_z(&out, ")(");
-        buf_push_span(&out, left);
-        buf_push_z(&out, "), (");
-        buf_push_span(&out, ctype);
-        buf_push_z(&out, ")(");
-        buf_push_span(&out, right);
-        buf_push_z(&out, "), ");
-        buf_push_u64(&out, line);
-        buf_push(&out, ')');
-        return out;
-    }
-    let code = buf_new(left.len + right.len + 64);
-    buf_push_z(&code, "((");
-    cg_fixed_promoted(&code, at);
-    buf_push_z(&code, ")((");
-    cg_fixed_unsigned(&code, at);
-    buf_push_z(&code, ")(");
-    buf_push_span(&code, left);
-    buf_push_z(&code, ")) ");
-    buf_push_span(&code, op);
-    buf_push_z(&code, " (");
-    cg_fixed_promoted(&code, at);
-    buf_push_z(&code, ")((");
-    cg_fixed_unsigned(&code, at);
-    buf_push_z(&code, ")(");
-    buf_push_span(&code, right);
-    buf_push_z(&code, ")))");
-    let out = cg_fixed_wrap(g, at, buf_span(&code));
-    free(code.data as *void);
-    return out;
-}
-
 fn cg_is_signed_count(g: *Cg, t: u64) -> bool {
     let z = cg_text(g, t);
     return span_eq_z(z, "i8") || span_eq_z(z, "i16") || span_eq_z(z, "i32")
         || span_eq_z(z, "i64") || span_eq_z(z, "c_char") || span_eq_z(z, "c_short")
         || span_eq_z(z, "c_int") || span_eq_z(z, "c_long");
-}
-
-fn cg_fixed_shift(g: *Cg, typ: u64, op: Span, left: Span, right: Span, right_type: u64,
-        line: u64) -> Buf {
-    let at = cg_fixed_index(g, typ);
-    let shl = span_eq_z(op, "<<");
-    if shl {
-        cg_use_int(g, CG_OP_SHL, at);
-    } else {
-        cg_use_int(g, CG_OP_SHR, at);
-    }
-    let count = buf_new(right.len + 48);
-    if cg_is_signed_count(g, right_type) {
-        (*g).used_shift_count = true;
-        buf_push_z(&count, "mort_shift_count_signed((int64_t)(");
-        buf_push_span(&count, right);
-        buf_push_z(&count, "), ");
-        buf_push_u64(&count, line);
-        buf_push(&count, ')');
-    } else {
-        buf_push_z(&count, "((uint64_t)(");
-        buf_push_span(&count, right);
-        buf_push_z(&count, "))");
-    }
-    let out = buf_new(left.len + count.len + 64);
-    if shl {
-        buf_push_z(&out, "mort_shl_");
-    } else {
-        buf_push_z(&out, "mort_shr_");
-    }
-    cg_fixed_name(&out, at);
-    buf_push_z(&out, "((");
-    buf_push_span(&out, cg_ct_span(g, typ));
-    buf_push_z(&out, ")(");
-    buf_push_span(&out, left);
-    buf_push_z(&out, "), ");
-    buf_push_span(&out, buf_span(&count));
-    buf_push(&out, ')');
-    free(count.data as *void);
-    return out;
 }
 
 // ----- deferred cleanup -----
@@ -333,7 +149,8 @@ fn cg_emit_defers(g: *Cg, start: u64) {
                 cg_em_buf(g, &b);
             }
             // Python sums the emitted lines, which do not include their newlines.
-            let text = (*(*g).cur).len - first_len - ((*g).emitted - first_line);
+            let text = cg_true_len(g, ts_sub(buf_span((*g).cur), first_len, (*(*g).cur).len))
+                - ((*g).emitted - first_line);
             cg_spend_replay(g, nodes * CG_REPLAY_UNITS_PER_NODE + text, exit_site);
         }
     }
@@ -477,6 +294,7 @@ fn cg_emit_try_unwrap(g: *Cg, e: *Node) {
     let value = buf_new(48);
     buf_push_z(&value, "mort_try_value_");
     buf_push_u64(&value, try_id);
+    (*e).num = try_id + 1;
     let init = buf_new(48);
     buf_push_span(&init, name);
     buf_push_z(&init, ".data.v_Ok");
@@ -548,6 +366,7 @@ fn cg_prep_binary_right(g: *Cg, p: *PrepStack, e: *Node) {
     if (cx_op_is(c, op, "&&") || cx_op_is(c, op, "||")) && ck_contains_try((*e).b) {
         let short_id = (*g).try_id;
         (*g).try_id += 1;
+        (*e).num = short_id + 1;
         let name = buf_new(32);
         buf_push_z(&name, "mort_short_");
         buf_push_u64(&name, short_id);
@@ -595,6 +414,7 @@ fn cg_prep_index_done(g: *Cg, e: *Node) {
     let name = buf_new(32);
     buf_push_z(&name, "mort_index_obj_");
     buf_push_u64(&name, (*g).index_id);
+    (*e).num = (*g).index_id + 1;
     (*g).index_id += 1;
     let init = cg_expr(g, obj);
     let decl = buf_new(96);
@@ -684,19 +504,17 @@ fn cg_assign(g: *Cg, s: *Node) {
     cg_prepare_try(g, value_node);
     let operation = ts_sub(op, 0, op.len - 1);
     let right = cg_expr(g, value_node);
-    let star = buf_new(40);
-    buf_push(&star, '*');
-    buf_push_span(&star, temp_span);
+    let star = tx_new(40);
+    tx_app_z(star, "*");
+    tx_app_span(star, temp_span);
     let value = buf_new(96);
     if cg_fixed_index(g, target_type) != CG_FIXED_COUNT {
         if span_eq_z(operation, "<<") || span_eq_z(operation, ">>") {
-            free(value.data as *void);
-            value = cg_fixed_shift(g, target_type, operation, buf_span(&star), right,
-                (*value_node).etype, (*s).line);
+            cg_fixed_shift(g, target_type, operation, star, right, (*value_node).etype, (*s).line);
         } else {
-            free(value.data as *void);
-            value = cg_fixed_binary(g, target_type, operation, buf_span(&star), right, (*s).line);
+            cg_fixed_binary(g, target_type, operation, star, right, (*s).line);
         }
+        buf_push_span(&value, tx_span(star));
     } else {
         buf_push_z(&value, "(*");
         buf_push_span(&value, temp_span);
@@ -714,7 +532,7 @@ fn cg_assign(g: *Cg, s: *Node) {
     buf_push(&line, ';');
     cg_em_buf(g, &line);
     free(value.data as *void);
-    free(star.data as *void);
+    tx_free(star);
     free(temp.data as *void);
 }
 
@@ -994,6 +812,7 @@ fn cg_match(g: *Cg, s: *Node) {
 
 // `_gen_stmt`.
 fn cg_stmt(g: *Cg, s: *Node) {
+    cg_release_text(g);
     (*(*g).c).current_node = s;
     let kind = (*s).kind;
     if kind == NodeKind.LET {

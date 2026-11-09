@@ -1,9 +1,8 @@
-// Standalone code generator driver for the differential test (PLAN.md, T6).
+// Code generator driver for the differential test (PLAN.md, T6 and T7).
 //
-// Usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT FORCED
+// Usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT
 //
-// Checks the program as check_main does, then writes its C. FORCED holds the
-// effects of expressions while they are placeholders (py_codegen_dump.py).
+// Checks the program as check_main does, then writes its C.
 // Exit status: 0 written, 1 a diagnostic on stderr, 2 usage or I/O failure.
 
 import support;
@@ -21,10 +20,11 @@ import manifest;
 import codegen;
 import cg_stmt;
 import cg_helpers;
+import cg_expr;
 
 fn main() -> int {
-    if arg_count() != 5 {
-        eprintln("usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT FORCED");
+    if arg_count() != 4 {
+        eprintln("usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT");
         return 2;
     }
     let strings = intern_new();
@@ -43,19 +43,17 @@ fn main() -> int {
     checker.current_statement = 0 as *Node;
     let generator = cg_new(&checker, &program, freestanding, test_mode);
     cg_collect_aggregate_types(&generator);
-    let forced = cm_read_all(arg_get(4));
-    if forced.cap == 0 {
-        eprintln("cg_main: cannot read the forced file");
-        return 2;
-    }
-    cg_apply_forced(&generator, buf_span(&forced));
     let output = cg_generate(&generator);
     let handle = file_open(arg_get(3), "wb");
     if handle == (0 as *void) {
         eprintln("cg_main: cannot write the C output");
         return 2;
     }
-    file_write(handle, output.data, output.len);
+    let wrote = cg_write_output(&generator, handle, &output);
     file_close(handle);
+    if !wrote {
+        eprintln("cg_main: cannot write the C output");
+        return 2;
+    }
     return 0;
 }

@@ -1,0 +1,57 @@
+// Test helper: writes format(value, ".17g") of many doubles, one per line.
+//
+// Usage: float_g17_main INPUT OUTPUT
+//
+// INPUT is a sequence of little-endian 64-bit binary64 bit patterns: finite and
+// non-negative, as the lexer produces. Exit status 0, or 2 on a usage or I/O failure.
+
+import support;
+import cg_float;
+
+fn fg_fail(message: *u8) -> int {
+    eprintln(message);
+    return 2;
+}
+
+fn main() -> int {
+    if arg_count() != 3 {
+        return fg_fail("usage: float_g17_main INPUT OUTPUT");
+    }
+    let input = file_open(arg_get(1), "rb");
+    if input == (0 as *void) {
+        return fg_fail("float_g17_main: cannot read input");
+    }
+    let raw = buf_new(65536);
+    let chunk = sup_alloc(65536) as *u8;
+    loop {
+        let got = file_read(input, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            buf_push(&raw, chunk[i]);
+        }
+    }
+    file_close(input);
+    let out = buf_new(65536);
+    let at: u64 = 0;
+    while at + 8 <= raw.len {
+        let bits: u64 = 0;
+        for k: u64 in 0..8 {
+            bits = bits | ((raw.data[at + k] as u64) << (k * 8));
+        }
+        cg_push_float_g17(&out, bits);
+        buf_push(&out, 10);
+        at += 8;
+    }
+    let output = file_open(arg_get(2), "wb");
+    if output == (0 as *void) {
+        return fg_fail("float_g17_main: cannot write output");
+    }
+    let written = file_write(output, out.data, out.len);
+    file_close(output);
+    if written != out.len {
+        return fg_fail("float_g17_main: short write");
+    }
+    return 0;
+}

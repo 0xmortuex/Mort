@@ -1,10 +1,6 @@
-// C code generator, part 1 (PLAN.md, task T6): type text, declarations, drop
-// helpers, statements and helper selection, ported from mort/codegen.py.
-//
-// `cg_expr` is the one piece that belongs to T7. It writes a named placeholder
-// for an expression, and selfhost/py_codegen_dump.py runs the real Python
-// generator with the same placeholder, so every other byte of the output can
-// be compared now. T7 replaces only `cg_expr`.
+// C code generator: type text, declarations, drop helpers, the program head and
+// helper selection (PLAN.md, T6 and T7), ported from mort/codegen.py. Statements are
+// in cg_stmt.mx and expressions in cg_expr.mx.
 //
 // Output is built in byte buffers, one for the program head and one for the
 // bodies, so no list of lines is ever held. Everything that Python iterates in
@@ -19,6 +15,8 @@ import check_expr;
 import check_call;
 import cg_helpers;
 import cg_stmt;
+import bignum;
+import cg_expr;
 
 // `used_*` flags, in the order mort/codegen.py sets them.
 enum CgFlag {
@@ -74,6 +72,20 @@ struct Cg {
     replayed: u64,
     fixed_names: U64Vec,
     t_drop_prefix: u64,
+    // Expression generation (cg_expr.mx).
+    spine: PtrVec,
+    spine_index: PtrVec,
+    live_text: PtrVec,
+    scratch: Buf,
+    array_repeat_bytes: u64,
+    big_repeats: PtrVec,
+    token_mark: *u8,
+    duplicated_text: u64,
+    regen_depth: u64,
+    regen_visits: u64,
+    i64_max: BigInt,
+    i32_max: BigInt,
+    two64: BigInt,
 }
 
 // ----- emitting -----
@@ -1267,7 +1279,13 @@ fn cg_new(c: *Ck, program: *Program, freestanding: bool, test_mode: bool) -> Cg 
         match_id: 0, try_id: 0, return_id: 0, range_id: 0, assign_id: 0, index_id: 0,
         defer_scopes: ptrvec_new(), loop_defer_bases: u64vec_new(), replayed: 0,
         fixed_names: u64vec_new(), t_drop_prefix: intern_z((*c).s, "$drop$"),
+        spine: ptrvec_new(), spine_index: ptrvec_new(), live_text: ptrvec_new(),
+        scratch: buf_new(256), array_repeat_bytes: 0, big_repeats: ptrvec_new(),
+        token_mark: sup_alloc(1) as *u8, duplicated_text: 0, regen_depth: 0, regen_visits: 0,
+        i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFF), i32_max: bn_from_u64(0x7FFFFFFF),
+        two64: bn_add(bn_from_u64(0xFFFFFFFFFFFFFFFF), bn_from_u64(1)),
     };
+    *g.token_mark = CG_TOKEN_BYTE;
     let names = "i8\0i16\0i32\0i64\0u8\0u16\0u32\0u64\0";
     let at: u64 = 0;
     for i: u64 in 0..CG_FIXED_COUNT {
@@ -1721,6 +1739,7 @@ fn cg_generate(g: *Cg) -> Buf {
             !(*decl).flag);
         buf_push(&b, ';');
         free(cname.data as *void);
+        cg_release_text(g);
         let stored = sup_alloc(sizeof<Buf>()) as *Buf;
         *stored = b;
         ptrvec_push(&globals, stored as *void);
@@ -1766,93 +1785,4 @@ fn cg_generate(g: *Cg) -> Buf {
     cg_emit_main(g);
     free(body.data as *void);
     return out;
-}
-
-// Reads the `FLAG`, `INT` and `STR` lines the differential test passes while
-// expressions are placeholders (see selfhost/py_codegen_dump.py). T7 removes it:
-// the real expression generator sets these as a side effect.
-fn cg_flag_id(name: Span) -> u64 {
-    if span_eq_z(name, "used_inb") { return CgFlag.INB as u64; }
-    if span_eq_z(name, "used_outb") { return CgFlag.OUTB as u64; }
-    if span_eq_z(name, "used_inw") { return CgFlag.INW as u64; }
-    if span_eq_z(name, "used_outw") { return CgFlag.OUTW as u64; }
-    if span_eq_z(name, "used_inl") { return CgFlag.INL as u64; }
-    if span_eq_z(name, "used_outl") { return CgFlag.OUTL as u64; }
-    if span_eq_z(name, "used_println") { return CgFlag.PRINTLN as u64; }
-    if span_eq_z(name, "used_eprintln") { return CgFlag.EPRINTLN as u64; }
-    if span_eq_z(name, "used_print") { return CgFlag.PRINT as u64; }
-    if span_eq_z(name, "used_print_float") { return CgFlag.PRINT_FLOAT as u64; }
-    if span_eq_z(name, "used_assert") { return CgFlag.ASSERT as u64; }
-    if span_eq_z(name, "used_alloc") { return CgFlag.ALLOC as u64; }
-    if span_eq_z(name, "used_free") { return CgFlag.FREE as u64; }
-    if span_eq_z(name, "used_len") { return CgFlag.LEN as u64; }
-    if span_eq_z(name, "used_bounds") { return CgFlag.BOUNDS as u64; }
-    if span_eq_z(name, "used_time") { return CgFlag.TIME as u64; }
-    if span_eq_z(name, "used_file") { return CgFlag.FILE as u64; }
-    if span_eq_z(name, "used_args") { return CgFlag.ARGS as u64; }
-    if span_eq_z(name, "used_threads") { return CgFlag.THREADS as u64; }
-    if span_eq_z(name, "used_mutexes") { return CgFlag.MUTEXES as u64; }
-    if span_eq_z(name, "used_atomics") { return CgFlag.ATOMICS as u64; }
-    if span_eq_z(name, "used_network") { return CgFlag.NETWORK as u64; }
-    if span_eq_z(name, "used_secure_random") { return CgFlag.SECURE_RANDOM as u64; }
-    if span_eq_z(name, "used_tls") { return CgFlag.TLS as u64; }
-    sup_die("cg_main: unknown flag in the forced file");
-    return 0;
-}
-
-fn cg_op_id(name: Span) -> u64 {
-    if span_eq_z(name, "wrap") { return CG_OP_WRAP; }
-    if span_eq_z(name, "float_cast") { return CG_OP_FLOAT_CAST; }
-    if span_eq_z(name, "shl") { return CG_OP_SHL; }
-    if span_eq_z(name, "shr") { return CG_OP_SHR; }
-    if span_eq_z(name, "div") { return CG_OP_DIV; }
-    if span_eq_z(name, "rem") { return CG_OP_REM; }
-    sup_die("cg_main: unknown integer helper in the forced file");
-    return 0;
-}
-
-fn cg_hex_digit(c: u8) -> u8 {
-    if c >= '0' && c <= '9' { return c - '0'; }
-    return c - 'a' + 10;
-}
-
-fn cg_add_forced_string(g: *Cg, hex: Span) {
-    let n = hex.len / 2;
-    let bytes = sup_alloc(n + 1) as *u8;
-    for i: u64 in 0..n {
-        bytes[i] = cg_hex_digit(hex.data[2 * i]) * 16 + cg_hex_digit(hex.data[2 * i + 1]);
-    }
-    let value = sup_alloc(sizeof<Span>()) as *Span;
-    *value = Span { data: bytes, len: n };
-    ptrvec_push(&(*g).strings, value as *void);
-}
-
-fn cg_apply_forced(g: *Cg, text: Span) {
-    let start: u64 = 0;
-    for i: u64 in 0..text.len {
-        if text.data[i] != 10 {
-            continue;
-        }
-        let line = ts_sub(text, start, i);
-        start = i + 1;
-        if ts_starts_with(line, "FLAG ") {
-            (*g).flags[cg_flag_id(ts_sub(line, 5, line.len))] = true;
-        } else if ts_starts_with(line, "INT ") {
-            let rest = ts_sub(line, 4, line.len);
-            let cut = ts_find(rest, ' ');
-            let op = ts_sub(rest, 0, cut);
-            let typ = ts_sub(rest, cut + 1, rest.len);
-            if span_eq_z(op, "shift_count") {
-                (*g).used_shift_count = true;
-            } else {
-                let at = cg_fixed_index(g, intern((*g).s, typ));
-                if at == CG_FIXED_COUNT {
-                    sup_die("cg_main: unknown type in the forced file");
-                }
-                (*g).int_helpers[cg_op_id(op) * CG_FIXED_COUNT + at] = true;
-            }
-        } else if ts_starts_with(line, "STR ") {
-            cg_add_forced_string(g, ts_sub(line, 4, line.len));
-        }
-    }
 }

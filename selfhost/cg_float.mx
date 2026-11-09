@@ -1,0 +1,159 @@
+// Python's format(value, ".17g") for a binary64 literal (PLAN.md, T7), used by the
+// expression generator.
+//
+// Exact integer arithmetic on PrBig from pyrepr.mx: no floating point and no libc
+// conversion, as section 4 of the plan requires. 17 significant digits are produced
+// by long division and the remainder decides the rounding, half to even, which is
+// what dtoa's mode 2 does.
+
+import support;
+import pyrepr;
+
+fn cf_free_big(b: PrBig) {
+    free(b.data as *void);
+}
+
+// Writes the text for `bits`, a finite non-negative binary64 from the lexer.
+fn cg_push_float_g17(out: *Buf, bits: u64) {
+    if bits == 0 {
+        buf_push(out, '0');
+        return;
+    }
+    if ((bits >> 52) & 0x7FF) == 0x7FF {
+        sup_die("mort: internal error: float literal is not finite");
+    }
+    let fraction = bits & 0xFFFFFFFFFFFFF;
+    let biased = (bits >> 52) & 0x7FF;
+    let mantissa = fraction;
+    let exponent: i64 = -1074;
+    if biased != 0 {
+        mantissa = fraction | (1 << 52);
+        exponent = (biased as i64) - 1075;
+    }
+    let num = prb_from(mantissa);
+    let den = prb_from(1);
+    if exponent >= 0 {
+        prb_shl(&num, exponent as u64);
+    } else {
+        prb_shl(&den, (0 - exponent) as u64);
+    }
+    let mantissa_bits: i64 = 0;
+    let rest = mantissa;
+    while rest > 0 {
+        mantissa_bits += 1;
+        rest = rest >> 1;
+    }
+    let power = pr_estimate_power(mantissa_bits + exponent - 1);
+    if power >= 0 {
+        prb_mul_pow10(&den, power as u64);
+    } else {
+        prb_mul_pow10(&num, (0 - power) as u64);
+    }
+    let scratch = prb_from(0);
+    loop {
+        prb_copy_into(&scratch, &den);
+        prb_mul_small(&scratch, 10);
+        if prb_cmp(&num, &scratch) < 0 {
+            break;
+        }
+        prb_copy_into(&den, &scratch);
+        power += 1;
+    }
+    while prb_cmp(&num, &den) < 0 {
+        prb_mul_small(&num, 10);
+        power -= 1;
+    }
+    cf_free_big(scratch);
+
+    let digits = buf_new(17);
+    for i: u64 in 0..17 {
+        let digit: u8 = 0;
+        while prb_cmp(&num, &den) >= 0 {
+            prb_sub(&num, &den);
+            digit += 1;
+        }
+        buf_push(&digits, digit);
+        if i != 16 {
+            prb_mul_small(&num, 10);
+        }
+    }
+    prb_shl(&num, 1);
+    let doubled = prb_cmp(&num, &den);
+    cf_free_big(num);
+    cf_free_big(den);
+    if doubled > 0 || (doubled == 0 && (digits.data[16] % 2) == 1) {
+        let at: u64 = 16;
+        loop {
+            if digits.data[at] != 9 {
+                digits.data[at] += 1;
+                break;
+            }
+            digits.data[at] = 0;
+            if at == 0 {
+                digits.data[0] = 1;
+                power += 1;
+                break;
+            }
+            at -= 1;
+        }
+    }
+    let kept: u64 = 17;
+    while kept > 1 && digits.data[kept - 1] == 0 {
+        kept -= 1;
+    }
+    cf_layout(out, &digits, kept, power);
+    free(digits.data as *void);
+}
+
+fn cf_digit(out: *Buf, digits: *Buf, at: u64) {
+    buf_push(out, 48 + (*digits).data[at]);
+}
+
+fn cf_layout(out: *Buf, digits: *Buf, kept: u64, power: i64) {
+    if power < -4 || power >= 17 {
+        cf_digit(out, digits, 0);
+        if kept > 1 {
+            buf_push(out, '.');
+            for i: u64 in 1..kept {
+                cf_digit(out, digits, i);
+            }
+        }
+        buf_push(out, 'e');
+        let magnitude = power;
+        if power < 0 {
+            buf_push(out, '-');
+            magnitude = 0 - power;
+        } else {
+            buf_push(out, '+');
+        }
+        if magnitude < 10 {
+            buf_push(out, '0');
+        }
+        buf_push_u64(out, magnitude as u64);
+        return;
+    }
+    if power < 0 {
+        buf_push_z(out, "0.");
+        for _i: i64 in 0..(0 - power - 1) {
+            buf_push(out, '0');
+        }
+        for i: u64 in 0..kept {
+            cf_digit(out, digits, i);
+        }
+        return;
+    }
+    let whole = (power as u64) + 1;
+    for i: u64 in 0..whole {
+        if i < kept {
+            cf_digit(out, digits, i);
+        } else {
+            buf_push(out, '0');
+        }
+    }
+    if whole < kept {
+        buf_push(out, '.');
+        for i: u64 in whole..kept {
+            cf_digit(out, digits, i);
+        }
+    }
+}

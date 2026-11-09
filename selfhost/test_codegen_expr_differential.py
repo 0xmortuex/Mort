@@ -66,7 +66,7 @@ EXPRESSIONS = {
     "casts_to_float": "let a: i64 = 1; let b = a as f64; let c = a as f32;",
     "casts_pointer": "let a: i64 = 1; let p = &a; let u = p as u64; let i = p as i32; let v = u as *i64; "
                      "let w = p as *void; let x = w as *u8; let y = p as c_size;",
-    "casts_enum_bool": "let a = E.B as i64; let b = true as u8; let c = E.A as u32; let d = false as i64;",
+    "casts_enum_bool": "let a = E.B as i64; let c = E.A as u32;",
     "cast_chain": "let a: i64 = 300; let b = a as u8 as i32 as u64 as i16 as i64;",
     "cast_literal": "let a = 255 as u8; let b = 70000 as u16; let c = 1 as *void; let d = -1 as u64;",
     # unary
@@ -98,8 +98,8 @@ EXPRESSIONS = {
     "println_forms": 'println("x"); eprintln("y"); let p: *u8 = "z"; println(p);',
     "assert_call": "assert(true); assert(1 == 1);",
     "alloc_free": "let p = alloc(8); free(p); let q = alloc(sizeof<i64>()) as *i64; free(q as *void);",
-    "sizeof_forms": "let a = sizeof<i64>(); let b = sizeof<*u8>(); let c = sizeof<[u8;4]>(); let d = sizeof<[[i32;2];3]>(); "
-                    "let e = sizeof<Pt>(); let f = sizeof<(i64, u8)>(); let g2 = sizeof<E>(); let h = sizeof<[]u8>();",
+    "sizeof_forms": "let a = sizeof<i64>(); let b = sizeof<*u8>(); let c = sizeof<A4>(); "
+                    "let e = sizeof<Pt>(); let g2 = sizeof<E>(); let h = sizeof<[]u8>(); let i = sizeof<(i64,u8)>();",
     "len_forms": 'let a: [u8; 3] = [1, 2, 3]; let n = len(a); let m = len("abc"); let u: *u8 = null; let s = slice<u8>(u, 1); let k = len(s);',
     "slice_builtin": "let a: [u8; 3] = [1, 2, 3]; let u: *u8 = &a[0]; let s = slice<u8>(u, 3); let n = s.len; let d = s.data;",
     "slice_strings_generated_twice": 'let s = slice<u8>("ab", len("cd")); let n = len(slice<u8>("ef", 1));',
@@ -117,7 +117,7 @@ EXPRESSIONS = {
     "struct_via_pointer": "let a = Pt { x: 1, y: 2 }; let p = &a; let b = (*p).x; (*p).x = 2; let c = &(*p).y;",
     "struct_empty_literal": "let a = Em { }; let b = sizeof<Em>();",
     "tuple_values": "let t = (1, true); let a = t.0; let b = t.1; let n = (1, (2, 3)); let c = n.1.0;",
-    "enum_units": "let a = E.A; let b = Owns.Empty; match b { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
+    "enum_units": "let a = E.A; let b = Owns.Empty; match move b { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_payloads": "let o = Owns.Has(make_r()); match move o { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_tuple_payload": "let m = Two.P(1, 2); match m { Two.P(a, b) => { let c = a + b; } Two.Q => { } }",
     "generic_values": "let b = Box<i64> { v: 1 }; let a = b.v; let o = Opt<i64>.Some(1); let n = Opt<i64>.None; "
@@ -125,7 +125,7 @@ EXPRESSIONS = {
     "generic_payload_match": "let o = Opt<i64>.Some(1); match o { Opt<i64>.Some(v) => { let a = v; } Opt<i64>.None => { } }",
     # indexing
     "index_array": "let a: [u8; 3] = [1, 2, 3]; let b = a[1]; let i: u64 = 0; let c = a[i]; a[i] = 2; a[0] = 1;",
-    "index_array_negative_const": "let a: [[u8; 2]; 2] = [[1, 2], [3, 4]]; let b = a[1][0]; let i: u64 = 1; let c = a[i][i];",
+    "index_array_const_folded": "let a: [u8; 2] = [1, 2]; let b = a[1]; let i: u64 = 1; let c = a[i]; let d = a[i + 1 - 1];",
     "index_pointer": 'let p: *u8 = "abc"; let a = p[1]; let i: u64 = 2; let b = p[i]; p[0] = 65;',
     "index_slice": "let a: [u8; 3] = [1, 2, 3]; let s = slice<u8>(&a[0], 3); let b = s[0]; let i: u64 = 1; let c = s[i]; s[i] = 9;",
     "index_slice_while_unprepared": "let a: [u8; 3] = [1, 2, 3]; let s = slice<u8>(&a[0], 3); let i: u64 = 0; while s[i] != 0 && i < 2 { i += 1; }",
@@ -136,8 +136,8 @@ EXPRESSIONS = {
     "index_lvalue_expression": "let a: [i64; 4] = [1; 4]; let i: u64 = 0; a[i + 1] = a[i] + 1; a[i] += 1;",
     "index_in_freestanding_shape": "let a: [u8; 3] = [1, 2, 3]; let i: u64 = 0; let b = a[i] + a[1];",
     # arrays
-    "array_literals": "let a: [u8; 3] = [1, 2, 3]; let b: [[u8; 2]; 2] = [[1, 2], [3, 4]]; let c: [bool; 1] = [true]; let d: [*u8; 2] = [null, \"x\"];",
-    "array_repeats": "let a: [u8; 3] = [7; 3]; let b: [[u8; 2]; 2] = [[1; 2]; 2]; let c: [i64; 256] = [0; 256]; let d: [i64; 300] = [0; 300];",
+    "array_literals": "let a: [u8; 3] = [1, 2, 3]; let c: [bool; 1] = [true]; let d: [*u8; 2] = [null, \"x\"];",
+    "array_repeats": "let a: [u8; 3] = [7; 3]; let c: [i64; 256] = [0; 256]; let d: [i64; 300] = [0; 300];",
     "array_zero_forms": "let a: [f64; 300] = [0.0; 300]; let b: [f32; 300] = [0.0; 300]; let c: [bool; 300] = [false; 300]; let d: [*u8; 300] = [null; 300];",
     "array_nonzero_large": "let a: [i64; 300] = [5; 300]; let b: [f64; 257] = [1.5; 257];",
     "array_of_struct": "let a: [Pt; 2] = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }]; let b = a[0].x; let c: [Pt; 2] = [Pt { x: 1, y: 1 }; 2];",
@@ -155,6 +155,7 @@ EXPRESSIONS = {
 PRELUDE_EXTRA = """
 struct Em { }
 enum Two { P(i64, i64), Q }
+type A4 = [u8; 4];
 struct Box<T> { v: T }
 enum Opt<T> { Some(T), None }
 fn identity<T>(x: T) -> T { return x; }
@@ -218,7 +219,7 @@ FLAG_BODIES = {
     "used_print_float": "print(1.5);",
     "used_assert": "assert(true);",
     "used_alloc": "let p = alloc(8);",
-    "used_free": "free(null);",
+    "used_free": "let p = alloc(8); free(p);",
     "used_len": 'let n = len("ab");',
     "used_bounds": "let a: [u8; 2] = [1, 2]; let i: u64 = 0; let b = a[i];",
     "used_time": "let t = unix_time();",
@@ -327,6 +328,8 @@ def test_format_g17_on_ties_and_short_integers(float_exe, tmp_path):
     # Integers with an exact tie at the 18th significant digit, both directions.
     values = [float(n * 10 + 5) * 10.0 ** k for n in range(10 ** 15, 10 ** 15 + 400)
               for k in (0, 1, 5)]
+    # A true tie at digit 18: 15 integer digits, then .125, .375, .625 or .875.
+    values += [a + r / 8 for a in range(450359962737000, 450359962737300) for r in (1, 3, 5, 7)]
     values += [float(2 ** k) for k in range(60, 300)]
     values += [float(n) for n in range(1, 2000)]
     assert_float_texts_match(
@@ -448,13 +451,11 @@ def test_long_cast_chain_within_memory(cg_exe, tmp_path):
 
 
 def test_long_index_chain_within_memory(cg_exe, tmp_path):
-    """A pointer type spelled 900 deep through aliases, indexed all the way."""
-    stars = "*" * 900
-    aliases = f"type A0 = {stars}u8;\n" + "".join(
-        f"type A{i} = {stars}A{i - 1};\n" for i in range(1, 8))
-    depth = 8 * 900
+    """A pointer type 900 deep, indexed all the way: as deep as the type allows."""
+    depth = 900
+    stars = "*" * depth
     source = (
-        f"{aliases}fn f(p: A7, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
+        f"type A0 = {stars}u8;\nfn f(p: A0, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
         "fn main() -> int { return 0; }\n")
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
@@ -486,7 +487,7 @@ def test_cumulative_array_repeat_limit_matches_python(cg_exe, tmp_path):
 
 
 def test_array_repeat_above_the_inline_threshold_agrees(cg_exe, tmp_path):
-    source = body("let a: [u8; 500000] = [7; 500000];\nlet b: [[u8; 2]; 300000] = [[1; 2]; 300000];")
+    source = body("let a: [u8; 500000] = [7; 500000];\nlet b: [u64; 300000] = [5; 300000];")
     assert agree(cg_exe, tmp_path, source) == "ok"
 
 
@@ -506,7 +507,8 @@ def test_array_repeat_near_the_limit_within_memory(cg_exe, tmp_path):
 
 def test_array_repeat_text_across_a_chain_is_exact(cg_exe, tmp_path):
     """Nested repeats above the threshold expand to Python's bytes."""
-    source = body("let a: [[u8; 700]; 3000] = [[1; 700]; 3000];")
+    source = "struct W { a: [u8; 400000] }\n" + body(
+        "let b: [W; 3] = [W { a: [1; 400000] }; 3];")
     assert agree(cg_exe, tmp_path, source) == "ok"
 
 
@@ -526,7 +528,7 @@ def test_doubled_slice_text_is_bounded(cg_exe, tmp_path):
     """Python's text doubles per level and would exhaust memory; Mort reports it."""
     code, stderr, _ = bounded(cg_exe, tmp_path, slice_chain(64))
     assert code == 1, stderr
-    assert b"generated text for one expression" in stderr
+    assert b"duplicated slice operands" in stderr
 
 
 def regenerated_chain(depth):

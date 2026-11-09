@@ -1,0 +1,95 @@
+// Test-only: installs helper use the compiler itself did not compute, so the program
+// head can be compared for combinations no real program can reach (threads in a
+// freestanding build, a signed shift with no wrap). Only cg_forced_main.mx imports
+// this; the compiler driver cg_main.mx takes no such input.
+
+import support;
+import typestr;
+import ast;
+import codegen;
+
+fn cg_flag_id(name: Span) -> u64 {
+    if span_eq_z(name, "used_inb") { return CgFlag.INB as u64; }
+    if span_eq_z(name, "used_outb") { return CgFlag.OUTB as u64; }
+    if span_eq_z(name, "used_inw") { return CgFlag.INW as u64; }
+    if span_eq_z(name, "used_outw") { return CgFlag.OUTW as u64; }
+    if span_eq_z(name, "used_inl") { return CgFlag.INL as u64; }
+    if span_eq_z(name, "used_outl") { return CgFlag.OUTL as u64; }
+    if span_eq_z(name, "used_println") { return CgFlag.PRINTLN as u64; }
+    if span_eq_z(name, "used_eprintln") { return CgFlag.EPRINTLN as u64; }
+    if span_eq_z(name, "used_print") { return CgFlag.PRINT as u64; }
+    if span_eq_z(name, "used_print_float") { return CgFlag.PRINT_FLOAT as u64; }
+    if span_eq_z(name, "used_assert") { return CgFlag.ASSERT as u64; }
+    if span_eq_z(name, "used_alloc") { return CgFlag.ALLOC as u64; }
+    if span_eq_z(name, "used_free") { return CgFlag.FREE as u64; }
+    if span_eq_z(name, "used_len") { return CgFlag.LEN as u64; }
+    if span_eq_z(name, "used_bounds") { return CgFlag.BOUNDS as u64; }
+    if span_eq_z(name, "used_time") { return CgFlag.TIME as u64; }
+    if span_eq_z(name, "used_file") { return CgFlag.FILE as u64; }
+    if span_eq_z(name, "used_args") { return CgFlag.ARGS as u64; }
+    if span_eq_z(name, "used_threads") { return CgFlag.THREADS as u64; }
+    if span_eq_z(name, "used_mutexes") { return CgFlag.MUTEXES as u64; }
+    if span_eq_z(name, "used_atomics") { return CgFlag.ATOMICS as u64; }
+    if span_eq_z(name, "used_network") { return CgFlag.NETWORK as u64; }
+    if span_eq_z(name, "used_secure_random") { return CgFlag.SECURE_RANDOM as u64; }
+    if span_eq_z(name, "used_tls") { return CgFlag.TLS as u64; }
+    sup_die("cg_main: unknown flag in the forced file");
+    return 0;
+}
+
+fn cg_op_id(name: Span) -> u64 {
+    if span_eq_z(name, "wrap") { return CG_OP_WRAP; }
+    if span_eq_z(name, "float_cast") { return CG_OP_FLOAT_CAST; }
+    if span_eq_z(name, "shl") { return CG_OP_SHL; }
+    if span_eq_z(name, "shr") { return CG_OP_SHR; }
+    if span_eq_z(name, "div") { return CG_OP_DIV; }
+    if span_eq_z(name, "rem") { return CG_OP_REM; }
+    sup_die("cg_main: unknown integer helper in the forced file");
+    return 0;
+}
+
+fn cg_hex_digit(c: u8) -> u8 {
+    if c >= '0' && c <= '9' { return c - '0'; }
+    return c - 'a' + 10;
+}
+
+fn cg_add_forced_string(g: *Cg, hex: Span) {
+    let n = hex.len / 2;
+    let bytes = sup_alloc(n + 1) as *u8;
+    for i: u64 in 0..n {
+        bytes[i] = cg_hex_digit(hex.data[2 * i]) * 16 + cg_hex_digit(hex.data[2 * i + 1]);
+    }
+    let value = sup_alloc(sizeof<Span>()) as *Span;
+    *value = Span { data: bytes, len: n };
+    ptrvec_push(&(*g).strings, value as *void);
+}
+
+fn cg_apply_forced(g: *Cg, text: Span) {
+    let start: u64 = 0;
+    for i: u64 in 0..text.len {
+        if text.data[i] != 10 {
+            continue;
+        }
+        let line = ts_sub(text, start, i);
+        start = i + 1;
+        if ts_starts_with(line, "FLAG ") {
+            (*g).flags[cg_flag_id(ts_sub(line, 5, line.len))] = true;
+        } else if ts_starts_with(line, "INT ") {
+            let rest = ts_sub(line, 4, line.len);
+            let cut = ts_find(rest, ' ');
+            let op = ts_sub(rest, 0, cut);
+            let typ = ts_sub(rest, cut + 1, rest.len);
+            if span_eq_z(op, "shift_count") {
+                (*g).used_shift_count = true;
+            } else {
+                let at = cg_fixed_index(g, intern((*g).s, typ));
+                if at == CG_FIXED_COUNT {
+                    sup_die("cg_main: unknown type in the forced file");
+                }
+                (*g).int_helpers[cg_op_id(op) * CG_FIXED_COUNT + at] = true;
+            }
+        } else if ts_starts_with(line, "STR ") {
+            cg_add_forced_string(g, ts_sub(line, 4, line.len));
+        }
+    }
+}

@@ -24,6 +24,7 @@ from test_codegen_differential import (  # noqa: E402,F401
     compare_with_effects,
 )
 import py_codegen_dump  # noqa: E402
+from test_codegen_expr_differential import body, expression_program  # noqa: E402
 
 MAIN = "fn main() -> int { return 0; }\n"
 
@@ -156,6 +157,136 @@ MUTANTS = {
 }
 
 
+def expr(name):
+    return expression_program(name)
+
+
+def rep(text):
+    return body(text)
+
+
+# Expression kinds, generics, pattern matching, moves, defers, integers and floats.
+EXPRESSION_MUTANTS = {
+    # literals and integer helpers
+    "int_above_limit_by_length_only": (
+        "cg_expr.mx", "        return digits.len > 19;\n", "        return digits.len >= 19;\n",
+        [rep("let a: i64 = 1000000000000000000;")]),
+    "int_literal_suffix_boundary": (
+        "cg_expr.mx", "        if bn_mag_cmp(value, (*g).i32_max) > 0 {\n",
+        "        if bn_mag_cmp(value, (*g).i32_max) >= 0 {\n",
+        [rep("let a: i64 = 2147483647 - 1 + 1;")]),
+    "int64_min_pattern_lost": (
+        "cg_expr.mx", "            let pattern = bn_add(value, (*g).two64);\n",
+        "            let pattern = bn_copy(value);\n",
+        [rep("let d: i64 = -9223372036854775807 - 1;")]),
+    "unary_negate_becomes_complement": (
+        "cg_expr.mx", "            cg_fixed_unary(g, at, span_eq_z(op, \"-\"), t);\n",
+        "            cg_fixed_unary(g, at, false, t);\n", [expr("unary_i32")]),
+    "signed_shift_count_unchecked": (
+        "cg_expr.mx", "    let signed_count = cg_is_signed_count(g, right_type);\n",
+        "    let signed_count = false;\n", [expr("binary_shift_i32")]),
+    "div_uses_rem_helper_name": (
+        "cg_expr.mx", '            buf_push_z(p, "div_");\n', '            buf_push_z(p, "rem_");\n',
+        [expr("binary_arith_i64")]),
+    "pointer_cast_loses_uintptr": (
+        "cg_expr.mx", '    if ts_starts_with(source_type, "*") {\n', "    if false {\n",
+        [expr("casts_pointer")]),
+    # floats
+    "float_cast_helper_misnamed": (
+        "cg_expr.mx", 'buf_push_z(p, "mort_float_to_");', 'buf_push_z(p, "mort_float_");',
+        [expr("casts_from_float")]),
+    "float_whole_number_keeps_no_point": (
+        "cg_expr.mx", "    if plain {\n", "    if !plain {\n", [rep("let a: f64 = 100.0;")]),
+    "f32_suffix_on_f64": (
+        "cg_expr.mx", 'span_eq_z(cg_text(g, (*e).etype), "f32")',
+        'span_eq_z(cg_text(g, (*e).etype), "f64")', [expr("casts_from_f32")]),
+    "g17_rounds_ties_up": (
+        "cg_float.mx", "    if doubled > 0 || (doubled == 0 && (digits.data[16] % 2) == 1) {\n",
+        "    if doubled >= 0 {\n", [rep("let a: f64 = 450359962737049.125;")]),
+    # expression kinds
+    "index_generates_object_first": (
+        "cg_expr.mx", "            let index = cg_gx(g, (*e).b);\n",
+        "            let index = tx_new(4);\n"
+        "            tx_free(cg_gx(g, (*e).a));\n"
+        "            tx_app_txt(index, cg_gx(g, (*e).b));\n",
+        [expr("index_evaluates_index_first")]),
+    "unprepared_slice_index_keeps_one_object": (
+        "cg_expr.mx", "        tx_app_span(t, obj);\n", '        tx_app_z(t, "m_s");\n',
+        [expr("index_slice_while_unprepared")]),
+    "prepared_slice_index_ignores_temporary": (
+        "cg_expr.mx",
+        "            if ts_is_slice((*g).s, (*(*e).a).etype) && (*e).num != 0 {\n",
+        "            if false {\n", [expr("index_slice")]),
+    "constant_array_index_gets_bounds": (
+        "cg_expr.mx",
+        "    if !ts_is_array((*g).s, obj_type) || (*g).freestanding || (*(*e).b).cv != (0 as *void) {\n",
+        "    if !ts_is_array((*g).s, obj_type) || (*g).freestanding {\n", [expr("index_array")]),
+    "array_repeat_zero_boundary": (
+        "cg_expr.mx", "    if count > CG_ZERO_REPEAT_MIN && cg_is_zero_element(vs) {\n",
+        "    if count >= CG_ZERO_REPEAT_MIN && cg_is_zero_element(vs) {\n", [expr("array_repeats")]),
+    "big_repeat_separator_loses_space": (
+        "cg_expr.mx", '            cw_span(w, span_z(", "));\n', '            cw_span(w, span_z(","));\n',
+        [rep("let a: [u8; 500000] = [7; 500000];")]),
+    "slice_len_field_not_renamed": (
+        "cg_expr.mx", '        if span_eq_z(field, "len") {\n', "        if false {\n",
+        [expr("index_slice_field_chain")]),
+    # generics and calls
+    "generic_struct_literal_tag_not_mangled": (
+        "cg_expr.mx",
+        "    let tag = cg_text(g, cg_type_tag(g, (*e).name));\n"
+        "    let p = cg_scratch_reset(g);\n"
+        '    buf_push_z(p, "(struct mort_");\n',
+        "    let tag = cg_text(g, (*e).name);\n"
+        "    let p = cg_scratch_reset(g);\n"
+        '    buf_push_z(p, "(struct mort_");\n', [expr("generic_values")]),
+    "generic_instance_call_not_mangled": (
+        "cg_expr.mx",
+        '        buf_push_z(p, "mort_");\n        cg_sym(g, p, resolved);\n',
+        '        buf_push_z(p, "mort_");\n        buf_push_span(p, cg_text(g, resolved));\n',
+        [expr("generic_values")]),
+    "indirect_call_loses_m_prefix": (
+        "cg_expr.mx",
+        '        buf_push_z(p, "m_");\n        buf_push_span(p, name_text);\n        buf_push(p, \'(\');\n',
+        "        buf_push_span(p, name_text);\n        buf_push(p, '(');\n",
+        [expr("fn_pointer")]),
+    # pattern matching and enums
+    "enum_payload_field_prefix_lost": (
+        "cg_expr.mx", '    buf_push_z(p, ", .data.v_");\n', '    buf_push_z(p, ", .data.");\n',
+        [expr("enum_payloads")]),
+    "tuple_payload_binding_loses_field": (
+        "cg_stmt.mx", "        if (*f).payload_arity > 1 {\n", "        if false {\n",
+        [expr("enum_tuple_payload")]),
+    "unit_enum_constant_case": (
+        "cg_expr.mx", '        tx_app_z(t, "MORT_");\n        tx_app_span(t, tag);\n        tx_app_z(t, "_");\n        tx_app_span(t, field);\n    }\n    return t;\n',
+        '        tx_app_z(t, "mort_");\n        tx_app_span(t, tag);\n        tx_app_z(t, "_");\n        tx_app_span(t, field);\n    }\n    return t;\n',
+        [expr("enum_compare")]),
+    # moves and defers
+    "move_leaves_source_live": (
+        "cg_expr.mx", '    buf_push_z(p, " = false), ");\n', '    buf_push_z(p, " = true), ");\n',
+        [expr("move_resource")]),
+    "plain_move_treated_as_resource": (
+        "cg_expr.mx", "        if f != (0 as *Facts) && !(*f).is_resource_move {\n",
+        "        if false {\n", [expr("move_plain")]),
+    "deferred_destroy_clears_liveness": (
+        "cg_expr.mx", "    if f == (0 as *Facts) || (*f).destroys_binding == NO_TEXT || (*f).deferred_destroy {\n",
+        "    if f == (0 as *Facts) || (*f).destroys_binding == NO_TEXT {\n",
+        [expr("destroy_deferred")]),
+    "defer_destroy_keeps_scope_drop": (
+        "cg_stmt.mx", "                if !((*item).is_resource && (*item).name == binding) {\n",
+        "                if true {\n", [expr("destroy_deferred")]),
+    "replay_charge_ignores_big_repeats": (
+        "cg_stmt.mx",
+        "            let text = cg_true_len(g, ts_sub(buf_span((*g).cur), first_len, (*(*g).cur).len))\n"
+        "                - ((*g).emitted - first_line);\n",
+        "            let text = (*(*g).cur).len - first_len - (*g).emitted + first_line;\n"
+        "            text = 0;\n",
+        ["fn g(v: i64) -> i64 { return v; }\nfn main() -> int {\n" + "defer g(1);\n" * 2000
+         + "if true { return 1; }\n" * 2000 + "return 0;\n}\n"]),
+}
+
+MUTANTS.update(EXPRESSION_MUTANTS)
+
+
 def probe_disagreements(exe, entry, tmp_path):
     probes = entry[3]
     effects = entry[4] if len(entry) > 4 else None
@@ -198,6 +329,7 @@ def test_probes_agree_on_the_real_generator(cg_exe, cg_forced_exe, tmp_path):
 
 def test_there_are_enough_mutants():
     assert len(MUTANTS) >= 6
+    assert len(EXPRESSION_MUTANTS) >= 10
 
 
 @pytest.mark.parametrize("name", sorted(MUTANTS))
