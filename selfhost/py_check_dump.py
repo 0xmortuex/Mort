@@ -604,7 +604,10 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     try:
         error = None
         try:
-            mortc.compile_files_to_c(
+            # The reference's depth is its own recursion limit: mort.depth's frame
+            # budget would stop it at 1000 frames, which is what these comparisons
+            # are there to reach past.
+            mortc.compile_files_to_c.__wrapped__(
                 [str(path)], freestanding=mode == "freestanding",
                 test_mode=mode == "test")
         except _StopCodegen:

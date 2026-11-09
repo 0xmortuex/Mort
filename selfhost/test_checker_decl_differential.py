@@ -920,13 +920,16 @@ def mortc_check(tmp_path, source):
 
 
 @pytest.mark.parametrize(
-    "star,accepted", [("", 987), ("*", 493)], ids=["direct", "pointer"])
-def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
+    "star,accepted,first_line", [("", 993, 1), ("*", 495, 497)], ids=["direct", "pointer"])
+def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted, first_line):
     def chain(count):
         links = "".join(f"type A{i} = {star}A{i + 1};\n" for i in range(count))
         return links + f"type A{count} = u8;\n" + OK_MAIN
 
-    for count, rejected in ((accepted, False), (accepted + 1, True), (1500, True)):
+    # One past the limit, a pointer chain fails validating types, located at the
+    # last alias; a much longer one fails resolving aliases, at the first.
+    for count, rejected, line in ((accepted, False, None), (accepted + 1, True, first_line),
+                                  (1500, True, 1)):
         source = chain(count)
         python_code, python_error = mortc_check(tmp_path, source)
         assert (python_code != 0) == rejected, python_error
@@ -935,7 +938,7 @@ def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
             check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
         if rejected:
             assert code == 1, stderr
-            expected = f"{path}:1:1: error: source nesting exceeds the compiler safety limit"
+            expected = f"{path}:{line}:1: error: source nesting exceeds the compiler safety limit"
             assert python_error.splitlines()[0] == f"mortc: {expected}"
             assert stderr.decode("utf-8") == expected
         else:

@@ -25,7 +25,7 @@ import check_dump;
 // Python's default recursion limit, less the frames the real compiler has on
 // the stack by the time it resolves the first alias. Measured with
 // `mortc.py --check` and pinned by test_alias_chain_limit_matches_mortc.
-const CK_MAX_DEPTH: u64 = 989;
+const CK_MAX_DEPTH: u64 = 995;
 
 // Python applies these three to generic functions; ck_charge_generic applies
 // them to struct and enum instances too (PLAN.md, section 11).
@@ -741,11 +741,13 @@ fn ck_substitute(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
 fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
     let s = (*c).s;
     let cached: u64 = 0;
+    // Python's frame check comes before its cache lookup.
+    ck_enter(c);
     if ((*stack).len == 0 || tb_has(&(*c).aliases, t))
             && map_get(&(*c).alias_cache, t, &cached) {
+        ck_leave(c);
         return cached;
     }
-    ck_enter(c);
     ck_charge_text(c, t);
     let result = t;
     if tb_has(&(*c).aliases, t) {
@@ -951,7 +953,11 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
     if behind_pointer {
         memo = &(*c).valid_behind_pointer;
     }
+    // Python spends two frames a level here, _valid_type and _check_valid_type,
+    // and checks the first before its memo.
+    ck_enter(c);
     if map_has(memo, type_in) {
+        ck_leave(c);
         return true;
     }
     ck_charge_text(c, type_in);
@@ -1020,6 +1026,7 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
         free(params.data as *void);
     }
     ck_leave(c);
+    ck_leave(c);
     if result {
         map_put(memo, type_in, 1);
     }
@@ -1029,14 +1036,20 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
 // `_valid_sizeof_type`: an array of arrays has a size though no C declaration, so
 // an alias may name one and sizeof may measure it.
 fn ck_valid_sizeof(c: *Ck, t: u64) -> bool {
+    // A Python frame of its own, _valid_sizeof_type.
+    ck_enter(c);
+    let result = false;
     let resolved = ck_resolve_alias(c, t);
     if ts_is_array((*c).s, resolved) {
         let elem: u64 = 0;
         let count: u64 = 0;
         ck_array_parts(c, resolved, &elem, &count);
-        return count != ck_decimal(c, 0) && ck_valid_sizeof(c, elem);
+        result = count != ck_decimal(c, 0) && ck_valid_sizeof(c, elem);
+    } else {
+        result = ck_valid(c, resolved);
     }
-    return ck_valid(c, resolved);
+    ck_leave(c);
+    return result;
 }
 
 fn ck_new_struct_info() -> *StructInfo {

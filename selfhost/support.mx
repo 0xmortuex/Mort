@@ -303,30 +303,44 @@ fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
 }
 
 // Set by the mortc driver: diagnostics then look like mortc.py's, with the
-// `mortc: ` prefix and MortError.render()'s source excerpt.
+// `mortc: ` prefix and MortError.render()'s source excerpt. Source files are
+// registered by the driver as it reads them, so this file itself reads nothing.
 let DIAG_RENDER: bool = false;
+// A global's initializer must be constant, so the list lives in one array slot.
+let DIAG_SOURCE_SLOT: [*u8; 1] = [""];
+let DIAG_HAS_SOURCES: bool = false;
 
-// Reads a whole file; `cap` 0 means it could not be opened.
-fn sup_read_file(path: *u8) -> Buf {
-    let handle = file_open(path, "rb");
-    let contents = buf_new(1);
-    if handle == (0 as *void) {
-        contents.cap = 0;
-        return contents;
+struct DiagSource {
+    path: Span,
+    bytes: Span,
+}
+
+fn diag_register_source(path: Span, bytes: Span) {
+    if !DIAG_HAS_SOURCES {
+        let list = sup_alloc(sizeof<PtrVec>()) as *PtrVec;
+        *list = ptrvec_new();
+        DIAG_SOURCE_SLOT[0] = list as *u8;
+        DIAG_HAS_SOURCES = true;
     }
-    let chunk = sup_alloc(65536) as *u8;
-    loop {
-        let got = file_read(handle, chunk, 65536);
-        if got == 0 {
-            break;
-        }
-        for i: u64 in 0..got {
-            buf_push(&contents, chunk[i]);
+    let entry = sup_alloc(sizeof<DiagSource>()) as *DiagSource;
+    *entry = DiagSource { path: path, bytes: bytes };
+    ptrvec_push(DIAG_SOURCE_SLOT[0] as *PtrVec, entry as *void);
+}
+
+fn diag_find_source(path: *u8, out: *Span) -> bool {
+    if !DIAG_HAS_SOURCES {
+        return false;
+    }
+    let list = DIAG_SOURCE_SLOT[0] as *PtrVec;
+    let wanted = span_z(path);
+    for i: u64 in 0..(*list).len {
+        let entry = ptrvec_get(list, i) as *DiagSource;
+        if span_eq((*entry).path, wanted) {
+            *out = (*entry).bytes;
+            return true;
         }
     }
-    file_close(handle);
-    free(chunk as *void);
-    return contents;
+    return false;
 }
 
 fn diag_push_spaces(out: *Buf, count: u64) {
@@ -379,8 +393,8 @@ fn diag_utf8_step(data: *u8, n: u64, i: u64, out: *Buf) -> u64 {
 
 // MortError.render()'s excerpt: nothing when the file or line does not exist.
 fn diag_push_excerpt(out: *Buf, path: *u8, line: u64, col: u64) {
-    let raw = sup_read_file(path);
-    if raw.cap == 0 {
+    let raw = span_z("");
+    if !diag_find_source(path, &raw) {
         return;
     }
     let data = raw.data;

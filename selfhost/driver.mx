@@ -298,12 +298,13 @@ fn dr_load(d: *Driver, path: Span, depth: u64) {
         return;
     }
     map_put(&(*d).loaded, key, 0);
-    let raw = sup_read_file(abs.data);
+    let raw = cm_read_all(abs.data);
     if raw.cap == 0 {
         let msg = buf_new(128);
         buf_push_z(&msg, "cannot read imported source");
         dr_fail(abs, 0, &msg);
     }
+    diag_register_source(abs, buf_span(&raw));
     let source = lx_decode_source(buf_span(&raw));
     if !source.valid {
         let msg = buf_new(64);

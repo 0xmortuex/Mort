@@ -31,6 +31,19 @@ error: conflicting types for 'strtod'
 
 Interim: declare the exact C signature (`end: **c_char`).
 
+### T8 and T9: nothing blocked; one environment limit
+
+Stage-2 reached the fixpoint with no language gap. With an empty zig cache under a
+500 MB per-process limit, the C compiler fails:
+
+```
+error: unable to generate DLL import .lib file for ntdll: OutOfMemory
+error: unable to build compiler_rt: OutOfMemory
+error: unable to build libzigc: OutOfMemory
+```
+
+`bootstrap.py` gives the C compiler its own limit, 1500 MB, for that reason.
+
 ### Python compiler defects
 
 - `mort/lexer.py:207`: a decimal literal over 4300 digits raises an uncaught

@@ -11,7 +11,24 @@ import typestr;
 import checker;
 
 fn cm_read_all(path: *u8) -> Buf {
-    return sup_read_file(path);
+    let handle = file_open(path, "rb");
+    let contents = buf_new(1);
+    if handle == (0 as *void) {
+        contents.cap = 0;
+        return contents;
+    }
+    let chunk = sup_alloc(65536) as *u8;
+    loop {
+        let got = file_read(handle, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            buf_push(&contents, chunk[i]);
+        }
+    }
+    file_close(handle);
+    return contents;
 }
 
 // One `FILE` entry of the manifest and its aliases.
