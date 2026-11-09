@@ -547,8 +547,8 @@ class SyntaxGrammar:
             return [">"] if node.name == "angle-close" else []
         return Generator(self.rules, leaf)
 
-    def accepts(self, tokens, overrides=None, site=None, visited=None):
-        return Recognizer(self, tokens, overrides, site, visited).run()
+    def accepts(self, tokens, overrides=None, site=None, visited=None, nesting=None):
+        return Recognizer(self, tokens, overrides, site, visited, nesting).run()
 
     def index(self, body):
         """Make a node built after construction usable by the recognizer."""
@@ -562,8 +562,10 @@ class SyntaxGrammar:
 class Recognizer:
     """LL(1) reading of the grammar, with the predicates §3.3 defines."""
 
-    def __init__(self, grammar, tokens, overrides=None, site=None, visited=None):
+    def __init__(self, grammar, tokens, overrides=None, site=None, visited=None, nesting=None):
         self.g = grammar
+        self.nesting = nesting      # (rule, deepest allowed) to reject deeper recursion
+        self.depth = 0
         self.toks = [[t.type, t.value] for t in tokens]
         self.i = 0
         self.no_struct = False
@@ -585,7 +587,14 @@ class Recognizer:
         saved = self.no_struct
         if self.visited is not None:
             self.visited.add(name)
+        limited = self.nesting is not None and self.nesting[0] == name
+        if limited:
+            self.depth += 1
+            if self.depth > self.nesting[1]:
+                raise Reject
         self.match(self.body(name))
+        if limited:
+            self.depth -= 1
         self.no_struct = saved
 
     def _has(self, node):
@@ -1405,6 +1414,34 @@ def test_function_types_followed_by_another_type_in_a_list(program, expected):
     assert _run_program(program).stdout == expected
 
 
+@pytest.mark.parametrize("program,expected", [
+    (("struct B<T> { v: T } fn main() -> int {"
+      " let b = B<(i64, i64)> { v: (3, 4) }; print(b.v.0 + b.v.1); return 0; }"),
+     "7\n"),
+    (("struct B<T, U> { v: T, w: U } fn main() -> int {"
+      " let b = B<(i64, (i64, i64)), i64> { v: (1, (2, 3)), w: 4 };"
+      " print(b.v.1.1 + b.w); return 0; }"),
+     "7\n"),
+    (("enum E<T> { N, S(T) } fn add(a: i64, b: i64) -> i64 { return a + b; }"
+      " fn main() -> int { let e = E<fn(i64, i64) -> i64>.S(add);"
+      " match e { E<fn(i64, i64) -> i64>.S(f) => { print(f(5, 6)); }"
+      " E<fn(i64, i64) -> i64>.N => {} } return 0; }"),
+     "11\n"),
+    (("enum E<T> { N, S(T) } fn main() -> int {"
+      " let e = E<fn(i64, i64) -> i64>.N;"
+      " match e { E<fn(i64, i64) -> i64>.S(f) => { print(1); }"
+      " E<fn(i64, i64) -> i64>.N => { print(2); } } return 0; }"),
+     "2\n"),
+    (("enum E<T, U> { N, S(T, U) } fn main() -> int {"
+      " let e = E<(i64, i64), fn(i64, i64) -> i64>.N;"
+      " match e { E<(i64, i64), fn(i64, i64) -> i64>.S(a, f) => {}"
+      " E<(i64, i64), fn(i64, i64) -> i64>.N => { print(9); } } return 0; }"),
+     "9\n"),
+])
+def test_a_comma_inside_parentheses_does_not_split_type_arguments(program, expected):
+    assert _run_program(program).stdout == expected
+
+
 def test_sizeof_accepts_array_types():
     assert _run_program(
         "type A = [u16; 4]; type B = [[u8; 3]; 2];"
@@ -1793,6 +1830,7 @@ def check_precedence(spec, parser_cls=Parser, lexer_cls=Lexer):
 
 
 LEXICAL_FORMS = {
+    "tuple-index": (["0", "7", "09"], ["1_0", "1a"]),
     "trivia": (["", " \t\r\n", "//", "// c", "// c\n", "/* c */", "/* /* n */ */", "/**/",
                 "/* * / */", " /**/ // x\n", "/* a /* b /* c */ d */ e */"],
                ["/*", "/* /* */", "/* */ */", "*/", "/"]),
@@ -1810,6 +1848,65 @@ LEXICAL_FORMS = {
 }
 
 
+# Beyond this many iterations a repetition counts as exercised. The check below
+# narrows every repetition to this bound, so any smaller limit is rejected too.
+REPETITION_BOUND = 8
+_LONG = REPETITION_BOUND + 4
+_DIGITS = "0123456789"
+_HEX_DIGITS = _DIGITS + "abcdefABCDEF"
+_ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# Every ASCII character, then samples of what the Unicode-wide classes also hold.
+CHARACTER_SAMPLES = [chr(code) for code in range(0x80)] + list(
+    "\u0080 ª²µ×éÿĀ٣€日\U0001f600")
+
+
+def _exhaustive_lexical_forms():
+    """Tokens written from the lexer's character sets, independent of the grammar."""
+    letters = [c for c in CHARACTER_SAMPLES if c.isalpha() or c == "_"]
+    continuing = [c for c in CHARACTER_SAMPLES if c.isalnum() or c == "_"]
+    latin1 = [c for c in CHARACTER_SAMPLES if ord(c) <= 255 and c not in "'\\\n\0"]
+    string = [c for c in CHARACTER_SAMPLES if c not in '"\\\n\0']
+    forms = {
+        "tuple-index": [*_DIGITS, *("1" + d for d in _DIGITS), "1" * _LONG],
+        "IDENT": [*letters, *("z" + c for c in continuing), "z" * _LONG],
+        "INT": [*("0" + p + d for p in "xX" for d in _HEX_DIGITS),
+                *("0x0" + d for d in _HEX_DIGITS), *("0x0_" + d for d in _HEX_DIGITS),
+                *("0" + p + d for p in "oO" for d in "01234567"),
+                *("0o0" + d for d in "01234567"), *("0o0_" + d for d in "01234567"),
+                *("0" + p + d for p in "bB" for d in "01"),
+                *("0b0" + d for d in "01"), *("0b0_" + d for d in "01"),
+                *_DIGITS, *("1" + d for d in _DIGITS), *("1_" + d for d in _DIGITS),
+                "0x" + "f" * _LONG, "0o" + "7" * _LONG, "0b" + "1" * _LONG, "1" * _LONG,
+                "0x" + "_f".join("f" * _LONG), "0o" + "_7".join("7" * _LONG),
+                "0b" + "_1".join("1" * _LONG), "_1".join("1" * _LONG)],
+        "FLOAT": [*(d + ".5" for d in _DIGITS), *("1" + d + ".5" for d in _DIGITS),
+                  *("1_" + d + ".5" for d in _DIGITS), *("1." + d for d in _DIGITS),
+                  *("1.5" + d for d in _DIGITS), *(d + "e1" for d in _DIGITS),
+                  *("1e" + d for d in _DIGITS), *("1e0" + d for d in _DIGITS),
+                  *("1.5e" + s + d for s in ("", "+", "-") for d in _DIGITS),
+                  "1E1", "1.5E1", "1E+1", "1E-1", "1e+1", "1e-1",
+                  "1." + "5" * _LONG, "1e" + "0" * _LONG, "1.5e" + "0" * _LONG,
+                  "1" * _LONG + ".5", "_1".join("1" * _LONG) + ".5",
+                  "1" * _LONG + "e1"],
+        "CHAR": [*(f"'{c}'" for c in latin1),
+                 *(f"'\\{e}'" for e in ("n", "r", "t", "0", "\\", "'", '"')),
+                 *(f"'\\x{d}0'" for d in _HEX_DIGITS), *(f"'\\x0{d}'" for d in _HEX_DIGITS)],
+        "STRING": [*(f'"{c}"' for c in string),
+                   *(f'"\\{c}"' for c in CHARACTER_SAMPLES if c != "\0"),
+                   '"' + "s" * _LONG + '"', '"' + "\\n" * _LONG + '"'],
+        "trivia": [*(f"//{c}z" for c in CHARACTER_SAMPLES if c != "\n"),
+                   *(f"/* {c} */" for c in CHARACTER_SAMPLES),
+                   " " * _LONG, "\t" * _LONG, "\r" * _LONG, "\n" * _LONG,
+                   "//" + "c" * _LONG, "/*" + "c" * _LONG + "*/",
+                   "/*" * _LONG + "*/" * _LONG, "/**/" * _LONG, "//\n" * _LONG],
+    }
+    return forms
+
+
+for _name, _accepted in _exhaustive_lexical_forms().items():
+    LEXICAL_FORMS[_name][0].extend(_accepted)
+
+
 def check_lexical_forms(spec, parser_cls=Parser, lexer_cls=Lexer):
     try:
         grammar = LexicalGrammar(spec)
@@ -1819,6 +1916,8 @@ def check_lexical_forms(spec, parser_cls=Parser, lexer_cls=Lexer):
     for name, (accepted, rejected) in LEXICAL_FORMS.items():
         if name == "trivia":
             lexed = lambda text: is_trivia(text, lexer_cls)
+        elif name == "tuple-index":
+            lexed = lambda text: is_tuple_index(text, lexer_cls)
         else:
             lexed = lambda text, n=name: single_token(text, lexer_cls) == T[n]
         for text in accepted:
@@ -1849,7 +1948,11 @@ def lex_with(source, lexer_cls):
         return None
 
 
-PROSE_SECTIONS = ("2", "3", "19", "20", "21", "22", "23")
+# Every numbered section is normative, and most of their sentences have no other
+# executable guard, so all are pinned. The preamble and the appendices are not:
+# the preamble states the document's status and the appendices state versioning
+# policy and what is left undefined, so neither gives a rule a program can break.
+PROSE_SECTIONS = tuple(str(number) for number in range(1, 24))
 
 
 def prose_digests(spec):
@@ -1867,8 +1970,24 @@ def prose_digests(spec):
 # Update a digest only after confirming that the changed sentence still matches the
 # implementation. It makes a normative edit a deliberate two-place change.
 PROSE_DIGESTS = {
+    "1": "35bf33708e8bff26",
     "2": "7eeda75f7d16579f",
     "3": "08fbd9110264f7e2",
+    "4": "c59829edf427f392",
+    "5": "0df028a68b1cef08",
+    "6": "8409203f8c899018",
+    "7": "395fbd276605eae2",
+    "8": "20e068bac71b5af5",
+    "9": "64bf888b11dfb6c5",
+    "10": "a969deb1c430de10",
+    "11": "ced0775a10379023",
+    "12": "3a67e59abb518ecb",
+    "13": "6c9eefbf90deb427",
+    "14": "0873ac56ee42692b",
+    "15": "cdd693f4e64d26b2",
+    "16": "396f635b9b36e536",
+    "17": "8f9e052c2d06308d",
+    "18": "d83b1e349b0850f8",
     "19": "9a73fd9c2ae1d25a",
     "20": "3253b0571e3bacde",
     "21": "37d8b13040ddf4ca",
@@ -2068,3 +2187,195 @@ def test_every_rule_reference_alternative_triple_is_load_bearing():
         sys.setrecursionlimit(limit)
     assert total > 1000
     assert set(missed) == set(EQUIVALENT_NARROWINGS), missed[:40]
+
+
+# ----- every repetition and every character must be load-bearing ----------------
+# A triple drops a whole alternative or repetition. It says nothing about a limit
+# on how many times a repetition runs, or about one member of a character set.
+
+def at_most(inner, count):
+    return Seq([Opt(inner) for _ in range(count)])
+
+
+def is_recursive(rules, name):
+    return any(target == name or name in _rules_under(rules, target)
+               for target in referenced({name: rules[name]}) if target in rules)
+
+
+def recursive_rules(rules):
+    return [name for name in rules if is_recursive(rules, name)]
+
+
+def undetected_repetitions():
+    grammar = SyntaxGrammar(SPEC_TEXT)
+    forms = [lex(f) for f in read_forms(ACCEPTED_FORMS)]
+    forms = sorted((t for t in forms if len(t) > REPETITION_BOUND), key=len, reverse=True)
+    total = 0
+    missed = []
+
+    def detected(**narrowing):
+        return any(not grammar.accepts(tokens, **narrowing) for tokens in forms)
+
+    for name, body in grammar.rules.items():
+        for node in walk(body):
+            if isinstance(node, Rep):
+                total += 1
+                changed = replace_node(body, node, at_most(node.inner, REPETITION_BOUND))
+                grammar.index(changed)
+                if not detected(overrides={name: changed}):
+                    missed.append(f"{name}: repeat at most {REPETITION_BOUND}")
+    for name in recursive_rules(grammar.rules):
+        total += 1
+        if not detected(nesting=(name, REPETITION_BOUND)):
+            missed.append(f"{name}: nest at most {REPETITION_BOUND}")
+    return total, missed
+
+
+def test_every_repetition_is_exercised_beyond_small_counts():
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 8000))
+    try:
+        total, missed = undetected_repetitions()
+    finally:
+        sys.setrecursionlimit(limit)
+    assert total > 40
+    assert missed == []
+
+
+def members(grammar, node):
+    """The single characters ``node`` can match, or None if it matches longer text."""
+    if isinstance(node, Lit):
+        return [node.text] if len(node.text) == 1 else None
+    if isinstance(node, Special):
+        return [c for c in CHARACTER_SAMPLES if CHAR_CLASSES[node.name](c)]
+    if isinstance(node, Ref):
+        return members(grammar, grammar.rules[node.name])
+    if isinstance(node, Alt):
+        found = [members(grammar, option) for option in node.options]
+        if any(item is None for item in found):
+            return None
+        return [c for item in found for c in item]
+    if isinstance(node, Except):
+        base = members(grammar, node.base)
+        return None if base is None else [
+            c for c in base if not any(True for _ in grammar.ends(node.excluded, c, 0))]
+    return None
+
+
+def lexical_narrowings(grammar):
+    """(label, rule, changed body, characters a detecting token must contain)."""
+    token_rules = (*TOKEN_RULES, "tuple-index", "trivia")
+    names = {*token_rules}
+    for name in token_rules:
+        names |= set(_rules_under(grammar.rules, name))
+    for name in sorted(names):
+        body = grammar.rules[name]
+        nodes = list(walk(body))
+        excluded = {id(n) for e in nodes if isinstance(e, Except) for n in walk(e.excluded)}
+        excepted = excluded | {id(n) for e in nodes if isinstance(e, Except) for n in walk(e.base)}
+        for what, changed in drops(body):
+            if not any(isinstance(n, Alt) and id(n) in excluded for n in nodes):
+                yield f"{name}: {what}", name, changed, ""
+        for node in nodes:
+            if isinstance(node, Rep):
+                yield (f"{name}: repeat at most {REPETITION_BOUND}", name,
+                       replace_node(body, node, at_most(node.inner, REPETITION_BOUND)), "")
+            if isinstance(node, Alt) or id(node) in excepted or isinstance(node, Lit):
+                continue
+            for character in members(grammar, node) or ():
+                yield (f"{name}: {node!r} without {character!r}", name,
+                       replace_node(body, node, Except(node, Lit(character))), character)
+        if is_recursive(grammar.rules, name):
+            nested = NOTHING
+            for _ in range(REPETITION_BOUND):
+                nested = _substitute(body, name, nested)
+            yield f"{name}: nest at most {REPETITION_BOUND}", name, nested, ""
+
+
+def _substitute(node, name, replacement):
+    if isinstance(node, Ref) and node.name == name:
+        return replacement
+    if isinstance(node, Seq):
+        return Seq([_substitute(item, name, replacement) for item in node.items])
+    if isinstance(node, Alt):
+        return Alt([_substitute(item, name, replacement) for item in node.options])
+    if isinstance(node, Opt):
+        return Opt(_substitute(node.inner, name, replacement))
+    if isinstance(node, Rep):
+        return Rep(_substitute(node.inner, name, replacement))
+    return node
+
+
+def undetected_lexical_narrowings():
+    grammar = LexicalGrammar(SPEC_TEXT)
+    corpus = [(name, text) for name, (accepted, _) in LEXICAL_FORMS.items() for text in accepted]
+    total = 0
+    missed = []
+    for label, name, changed, character in lexical_narrowings(grammar):
+        total += 1
+        original = grammar.rules[name]
+        grammar.rules[name] = changed
+        try:
+            caught = any(not grammar.full(rule, text) for rule, text in corpus
+                         if character in text)
+        finally:
+            grammar.rules[name] = original
+        if not caught:
+            missed.append(label)
+    return total, missed
+
+
+def test_every_character_and_repetition_of_the_lexical_grammar_is_load_bearing():
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 8000))
+    try:
+        total, missed = undetected_lexical_narrowings()
+    finally:
+        sys.setrecursionlimit(limit)
+    assert total > 1000
+    assert missed == [], (len(missed), missed[:60])
+
+
+REVIEWED_NARROWINGS = {
+    "path": ('path = IDENT, { ".", IDENT } ;',
+             'path = IDENT, [ ".", IDENT ], [ ".", IDENT ] ;'),
+    "generic-params": ('generic-params = "<", IDENT, { ",", IDENT }, ">" ;',
+                       'generic-params = "<", IDENT, [ ",", IDENT ], [ ",", IDENT ], ">" ;'),
+    "hex-digit": ('"a" | "b" | "c" | "d" | "e" | "f"', '"a" | "b" | "d" | "e" | "f"'),
+    "octal-digit": ('octal-digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;',
+                    'octal-digit = "0" | "1" | "2" | "3" | "4" | "6" | "7" ;'),
+    "fraction": ('fraction = ".", digit, { digit } ;', 'fraction = ".", digit, [ digit ] ;'),
+    "exponent": ('[ "+" | "-" ], digit, { digit } ;', '[ "+" | "-" ], digit, [ digit ] ;'),
+    "cast": ('cast = unary, { "as", type } ;', 'cast = unary, [ "as", type ], [ "as", type ] ;'),
+    "char-plain": ('char-plain = ? latin1 ? - ( "\'" | "\\" | ? LF ? | ? NUL ? ) ;',
+                   'char-plain = ? latin1 ? - ( "\'" | "\\" | ? LF ? | ? NUL ? | "q" ) ;'),
+    "ident-continue": ('ident-continue = ? alnum ? | "_" ;',
+                       'ident-continue = ( ? alnum ? - "Q" ) | "_" ;'),
+    "string-escape": ('string-escape = "\\", ( ? any ? - ? NUL ? ) ;',
+                      'string-escape = "\\", ( ? any ? - ( ? NUL ? | "q" ) ) ;'),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REVIEWED_NARROWINGS))
+def test_harness_detects_each_repetition_and_character_narrowing(name):
+    old, new = REVIEWED_NARROWINGS[name]
+    assert old in SPEC_TEXT, old
+    changed = SPEC_TEXT.replace(old, new, 1)
+    assert check_forms(changed) + check_lexical_forms(changed)
+
+
+def _section_body(number):
+    start = re.search(rf"^## {number}\. .*$", SPEC_TEXT, re.MULTILINE).end()
+    following = re.search(r"^## ", SPEC_TEXT[start:], re.MULTILINE)
+    return start, start + (following.start() if following else len(SPEC_TEXT) - start)
+
+
+@pytest.mark.parametrize("number", PROSE_SECTIONS)
+def test_harness_detects_a_prose_edit_in_each_numbered_section(number):
+    start, end = _section_body(number)
+    word = re.compile(r"\b(must|may|is|are|the)\b")
+    outside_fences = re.sub(r"^```.*?^```$", lambda m: "\0" * len(m.group()),
+                            SPEC_TEXT[start:end], flags=re.DOTALL | re.MULTILINE)
+    at = start + word.search(outside_fences).start()
+    changed = SPEC_TEXT[:at] + "not " + SPEC_TEXT[at:]
+    assert check_prose(changed)

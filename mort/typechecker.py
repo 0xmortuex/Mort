@@ -139,9 +139,9 @@ def generic_parts(t):
     args = []
     start = depth = 0
     for index, char in enumerate(inner):
-        if char == "<":
+        if char in "<(":
             depth += 1
-        elif char == ">" and inner[index - 1:index] != "-":
+        elif (char == ">" and inner[index - 1:index] != "-") or char == ")":
             depth -= 1
         elif char == "," and depth == 0:
             args.append(inner[start:index])

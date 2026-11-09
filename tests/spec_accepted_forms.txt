@@ -2344,3 +2344,52 @@ type a = u32 ;
 type a = u64 ;
 type a = u8 ;
 type a = void ;
+// Repetition counts: every { } and every recursive rule, run ten times.
+const a = a ; const a = a ; const a = a ; const a = a ; const a = a ; const a = a ; const a = a ; const a = a ; const a = a ; const a = a ;
+import a . a . a . a . a . a . a . a . a . a ;
+enum a { a ( T , T , T , T , T , T , T , T , T , T ) }
+enum a < a , a , a , a , a , a , a , a , a , a > { }
+fn a ( a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T ) { }
+type a = fn ( T , T , T , T , T , T , T , T , T , T ) -> T ;
+type a = A < T , T , T , T , T , T , T , T , T , T > ;
+struct a { a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T , a : T }
+enum a { a , a , a , a , a , a , a , a , a , a }
+type a = ( T , T , T , T , T , T , T , T , T , T ) ;
+const a = a || a || a || a || a || a || a || a || a || a ;
+const a = a && a && a && a && a && a && a && a && a && a ;
+const a = a | a | a | a | a | a | a | a | a | a ;
+const a = a ^ a ^ a ^ a ^ a ^ a ^ a ^ a ^ a ^ a ;
+const a = a & a & a & a & a & a & a & a & a & a ;
+const a = a == a == a == a == a == a == a == a == a == a ;
+const a = a < a < a < a < a < a < a < a < a < a ;
+const a = a << a << a << a << a << a << a << a << a << a ;
+const a = a + a + a + a + a + a + a + a + a + a ;
+const a = a * a * a * a * a * a * a * a * a * a ;
+const a = a as T as T as T as T as T as T as T as T as T as T ;
+const a = a . a . a . a . a . a . a . a . a . a . a ;
+const a = a ( a , a , a , a , a , a , a , a , a , a ) ;
+const a = [ a , a , a , a , a , a , a , a , a , a ] ;
+const a = a { a : a , a : a , a : a , a : a , a : a , a : a , a : a , a : a , a : a , a : a } ;
+fn a ( ) { a ; a ; a ; a ; a ; a ; a ; a ; a ; a ; }
+fn a ( ) { match a { a => { } a => { } a => { } a => { } a => { } a => { } a => { } a => { } a => { } a => { } } }
+type a = fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> fn ( ) -> T ;
+type a = ( a , ( a , ( a , ( a , ( a , ( a , ( a , ( a , ( a , ( a , a ) ) ) ) ) ) ) ) ) ) ;
+type a = * * * * * * * * * * a ;
+type a = [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] a ;
+type a = [ [ [ [ [ [ [ [ [ [ a ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ; 2 ] ;
+type a = A < A < A < A < A < A < A < A < A < A < T > > > > > > > > > > ;
+const a = ( ( ( ( ( ( ( ( ( ( a ) ) ) ) ) ) ) ) ) ) ;
+const a = [ [ [ [ [ [ [ [ [ [ a ] ] ] ] ] ] ] ] ] ] ;
+const a = [ a , [ a , [ a , [ a , [ a , [ a , [ a , [ a , [ a , [ a , a ] ] ] ] ] ] ] ] ] ] ;
+const a = - - - - - - - - - - a ;
+const a = a ( a ( a ( a ( a ( a ( a ( a ( a ( a ( a ) ) ) ) ) ) ) ) ) ) ;
+const a = a [ a [ a [ a [ a [ a [ a [ a [ a [ a [ a ] ] ] ] ] ] ] ] ] ] ;
+const a = a { a : a { a : a { a : a { a : a { a : a { a : a { a : a { a : a { a : a { a : a } } } } } } } } } } ;
+fn a ( ) { { { { { { { { { { { } } } } } } } } } } }
+fn a ( ) { if a { if a { if a { if a { if a { if a { if a { if a { if a { if a { } } } } } } } } } } }
+fn a ( ) { if a { } else if a { } else if a { } else if a { } else if a { } else if a { } else if a { } else if a { } else if a { } else if a { } else if a { } }
+fn a ( ) { while a { while a { while a { while a { while a { while a { while a { while a { while a { while a { } } } } } } } } } } }
+fn a ( ) { loop { loop { loop { loop { loop { loop { loop { loop { loop { loop { } } } } } } } } } } }
+fn a ( ) { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { for a in a .. a { } } } } } } } } } } }
+fn a ( ) { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { match a { a => { } } } } } } } } } } } } } } } } } } } } }
+type a = ( T , T , T , T , T , T , T , T , T , T , T , T ) ;
