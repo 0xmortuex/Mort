@@ -712,6 +712,136 @@ def test_deep_pointer_types_are_resolved_once(check_exe, tmp_path):
     assert code == 0, stderr
 
 
+@pytest.mark.parametrize(
+    "template,type_syntax",
+    [("struct G<T> { x: *T }", "G"), ("enum G<T> { S(*T), N }", "G")],
+    ids=["struct", "enum"])
+def test_generic_limits_come_before_argument_validation(check_exe, tmp_path, template, type_syntax):
+    """Validating the arguments is what recurses, so the limits must come
+    first: an over-long unknown argument gets the limit, not "unknown type"."""
+    source = f"{template}\nstruct S {{ a: {type_syntax}<{'*' * 257}Nope> }}\n" + OK_MAIN
+    assert_generic_limit(check_exe, tmp_path, source, 1, "G", NESTED_TOO_DEEP)
+
+
+TYPE_TOO_LONG = "type is longer than 65536 characters"
+TYPE_WORK_EXCEEDED = "type processing exceeds the limit of 1000000 work units in one program"
+GENERIC_WORK_EXCEEDED = "generic instantiation exceeds the limit of 1000000 work units in one program"
+
+
+def alias_chain(count, link):
+    return "type A0 = u8;\n" + "".join(
+        f"type A{i + 1} = {link.format(a=f'A{i}')};\n" for i in range(count))
+
+
+def assert_type_limit(exe, tmp_path, source, line, message=TYPE_TOO_LONG):
+    """Python on main has no such limit; the expected texts and lines were
+    measured from fix/frontend-crashes (see PLAN.md, section 11), so a hostile
+    program is checked only for what Mort reports, under the memory limit."""
+    path = _written(tmp_path, source)
+    code, stderr = run_mort_bounded(exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    assert stderr.decode("utf-8") == f"{path}:{line}: error: {message}"
+
+
+@pytest.mark.parametrize(
+    "link,line",
+    [("({a}, {a})", 15), ("fn({a}, {a}) -> {a}", 10), ("G<{a}, {a}>", 15),
+     ("*({a}, {a})", 15), ("[({a}, {a}); 2]", 14)],
+    ids=["tuple", "function", "generic", "pointer_to_tuple", "array_of_tuple"])
+def test_doubling_alias_expansion_is_bounded_and_located(check_exe, tmp_path, link, line):
+    source = alias_chain(22, link) + "struct G<X, Y> { a: *X, b: *Y }\n" + OK_MAIN
+    assert_type_limit(check_exe, tmp_path, source, line)
+
+
+def test_doubling_aliases_declared_in_reverse_are_located_at_the_first_alias(check_exe, tmp_path):
+    aliases = "".join(f"type A{i + 1} = (A{i}, A{i});\n" for i in range(21, -1, -1))
+    assert_type_limit(check_exe, tmp_path, aliases + "type A0 = u8;\n" + OK_MAIN, 1)
+
+
+def test_struct_field_type_over_the_limit_is_located(check_exe, tmp_path):
+    source = alias_chain(13, "({a}, {a})") + "struct S { a: (A13, A13) }\n" + OK_MAIN
+    assert_type_limit(check_exe, tmp_path, source, 15)
+
+
+def test_annotation_over_the_limit_is_located(check_exe, tmp_path):
+    source = (alias_chain(13, "({a}, {a})")
+              + "fn main() -> int {\n  let x: (A13, A13) = missing;\n  return 0;\n}\n")
+    assert_type_limit(check_exe, tmp_path, source, 16)
+
+
+def _pad_name(extra):
+    # A13 expands to 40957 characters; `(A13,pad)` is that plus 3 and the pad.
+    return "L" * (65536 - 40957 - 3 + extra)
+
+
+def test_type_of_exactly_the_limit_is_accepted(check_exe, tmp_path):
+    pad = _pad_name(0)
+    source = (alias_chain(13, "({a}, {a})") + f"type B = (A13, {pad});\n"
+              f"struct {pad} {{ }}\n" + OK_MAIN)
+    path = _written(tmp_path, source)
+    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 0, stderr
+
+
+def test_type_one_past_the_limit_is_rejected(check_exe, tmp_path):
+    pad = _pad_name(1)
+    source = (alias_chain(13, "({a}, {a})") + f"type B = (A13, {pad});\n"
+              f"struct {pad} {{ }}\n" + OK_MAIN)
+    assert_type_limit(check_exe, tmp_path, source, 15)
+
+
+def test_many_distinct_large_types_exhaust_the_budget(check_exe, tmp_path):
+    uses = "".join(f"type B{i} = (A12, A12, T{i});\n" for i in range(2000))
+    source = alias_chain(12, "({a}, {a})") + uses + OK_MAIN
+    assert_type_limit(check_exe, tmp_path, source, 1575, TYPE_WORK_EXCEEDED)
+
+
+def _large_valid_aliases(count):
+    return (alias_chain(12, "({a}, {a})")
+            + "".join(f"type B{i} = (A12, A12, T{i});\n" for i in range(count))
+            + "".join(f"struct T{i} {{ }}\n" for i in range(count)) + OK_MAIN)
+
+
+def test_budget_boundary_is_exact(check_exe, tmp_path):
+    """222 and 223 are where fix/frontend-crashes' Python changes its answer, so
+    every charge on the path (expansion, validation, re-resolution) must match."""
+    path = _written(tmp_path, _large_valid_aliases(222))
+    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 0, stderr
+    assert_type_limit(check_exe, tmp_path, _large_valid_aliases(223), 236, TYPE_WORK_EXCEEDED)
+
+
+def test_budget_names_generic_instantiation_once_a_generic_is_built(check_exe, tmp_path):
+    structs = "".join(f"struct T{i} {{ }}\n" for i in range(400))
+    fields = ", ".join(f"f{i}: H<T{i}>" for i in range(400))
+    source = (alias_chain(12, "({a}, {a})") + "struct H<T> { a: (T, A12, A12) }\n"
+              + structs + f"struct S {{ {fields} }}\n" + OK_MAIN)
+    assert_type_limit(check_exe, tmp_path, source, 13, GENERIC_WORK_EXCEEDED)
+
+
+def test_aggregate_walk_charges_every_field(check_exe, tmp_path):
+    """Validation is remembered, but each by-value field's dependencies are
+    walked, and charged, every time: measured the same in Python."""
+    fields = ", ".join(f"f{i}: A13" for i in range(2000))
+    source = alias_chain(13, "({a}, {a})") + f"struct S {{ {fields} }}\n" + OK_MAIN
+    assert_type_limit(check_exe, tmp_path, source, 14, TYPE_WORK_EXCEEDED)
+
+
+def test_repeated_use_of_a_large_pointer_type_is_validated_once(check_exe, tmp_path):
+    """A pointer's aggregate walk is free, so validating `*A13` per field would
+    be the only cost: re-charging it spends the budget on a few fields."""
+    fields = ", ".join(f"f{i}: *A13" for i in range(300))
+    source = alias_chain(13, "({a}, {a})") + f"struct S {{ {fields} }}\n" + OK_MAIN
+    path = _written(tmp_path, source)
+    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 0, stderr
+
+
+def test_alias_chain_below_the_type_limit_agrees_with_python(check_exe, tmp_path):
+    source = alias_chain(13, "({a}, {a})") + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
+
+
 def test_nesting_at_the_limit_still_agrees_with_python(check_exe, tmp_path):
     depth = 200
     nested = "G<" * depth + "u8" + ">" * depth
@@ -813,6 +943,18 @@ def test_multi_file_module_program(check_exe, tmp_path):
         "import lib as u;\nfn main() -> int { return u.add(1, 2); }\n",
         encoding="utf-8")
     assert compare(check_exe, main_path, "hosted", tmp_path) == "ok"
+
+
+def test_test_block_calls_through_its_own_import_alias(check_exe, tmp_path):
+    """Regression: with no function in the root file, the last function checked
+    is the imported module's, whose aliases must not be used for the test block."""
+    (tmp_path / "lib.mx").write_text(
+        "module util;\npub fn add(a: i64, b: i64) -> i64 { return a + b; }\n",
+        encoding="utf-8")
+    main_path = tmp_path / "main.mx"
+    main_path.write_text(
+        'import lib as u;\ntest "a" { let x = u.add(1, 2); }\n', encoding="utf-8")
+    assert compare(check_exe, main_path, "test", tmp_path) == "ok"
 
 
 def test_private_function_taken_as_a_value_across_modules(check_exe, tmp_path):

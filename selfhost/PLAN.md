@@ -462,6 +462,21 @@ where the Python checker's behaviour stops being mechanical.
   that branch. Python on `main` has no such limits and cannot finish these
   inputs, so these tests run Mort alone, under a 500 MB limit, with the expected
   text built from the rule.
+- **Type work and length limits.** `checker.mx` ports `WorkMeter`: every program
+  is metered from the start of checking, types shorter than 64 characters cost
+  nothing, and each primitive charges its length divided by 64 (`ck_pointee`,
+  `ck_slice_elem`, `ck_array_parts`, `ck_generic_parts`, `ck_tuple_parts`,
+  `ck_function_parts`, `ck_substitute`, `ck_resolve`, `ck_valid`), so nothing is
+  charged per case. Every type built goes through `ck_made`, which charges it and
+  rejects more than 65536 characters (`type is longer than 65536 characters`).
+  Spending past 1,000,000 units reports `type processing exceeds the limit of
+  1000000 work units in one program`, or `generic instantiation exceeds ...` once
+  a generic has been instantiated. Alias names are cached during cycle tracing,
+  valid answers are remembered, and the failure is located at the node on record
+  (`current_node`), as Python's `_work_location` does. Python on `main` has none
+  of this, so these tests run Mort alone under the 500 MB guard, with the lines
+  measured from that branch. The old `ts_substitute` and `ts_is_function` moved
+  here as charged primitives.
 - **Depth.** Expressions use an explicit work stack. Type and alias recursion
   counts `CK_MAX_DEPTH` (993), which is the real `mortc.py --check` boundary for
   alias chains (991 direct and 495 pointer links accepted, one more rejected,
@@ -504,3 +519,41 @@ When that branch lands, T4 must also:
 - Drop `CK_MAX_DEPTH`'s frame-count derivation if the branch's located overflow
   diagnostic and alias cache change where Python gives up; the cache already makes
   Mort accept reversed alias chains that `main` rejects.
+- Re-mirror the meter from what actually lands. The work and length limits above
+  follow the uncommitted working tree of `fix/frontend-crashes` read on
+  2026-11-09 (the tip was `4b65338`, whose committed `WorkMeter` still arms at the
+  first instantiation and has no `type processing` text). Compare against the
+  merged `mort/typechecker.py` and move these cases to the differential, keeping
+  the pinned lines only if they still hold.
+- **Instance charge sites and costs.** Two counters exist today. `ck_charge_generic`
+  charges a struct or enum instance before its arguments are validated, as
+  `nodes x (1 + type_argument_chars / 64)` into `generic_work`, and reports
+  `generic instantiation of 'X' exceeds ...`. Python's `_charge_instantiation`
+  runs after validation, charges `8 x (1 + fields)` (enums, `8` per variant and
+  payload plus `8`) into the one meter, and reports the unnamed `generic
+  instantiation exceeds ...`. `work_instantiated` is set before validation here
+  and after it there. Adopt Python's site, costs and text, and share the counter
+  with T5's function instantiation; the budget-exhausted test then changes its
+  expected text.
+- **Location.** Mort has no columns: where Python reports `16:3` Mort reports `16`.
+  `work.site`, `current_statement` and the column-based choice in `fail` are not
+  ported (they need the parser's columns and T5). The apply-aliases walk now
+  matches Python's preorder at the level of program lists and of the children's
+  `a`, `b`, `c`, `items` slots, but Python uses each node's field order; if the
+  differential finds a node reported differently, it is this.
+- **Mort-only limits.** The 256-level and 4096-character checks are, in Python,
+  function-instantiation limits; `ck_charge_generic` applies them to struct and
+  enum arguments too. Mort therefore rejects some programs Python accepts (a
+  struct argument over 4096 characters). 256 nesting stays Mort-only until Python's
+  depth rejection replaces what it guards against, at the same time as the
+  `CK_MAX_DEPTH` item above.
+- **Charges not mirrored.** `ck_valid` charges a pointer's pointee once and has no
+  `behind_pointer` in its memo key (Python's `_valid_type` calls `pointee` up to
+  three times and keys on the pair), so port `_valid_type` first and then re-check
+  unit counts. Body-phase charges (drop analysis, statements) are T5's: 2000
+  fields of a pointer to a 40,000-character alias pass here and exhaust the budget
+  in Python.
+- **`generic_parts`.** That branch splits generic arguments with
+  `_split_type_list`; `ts_generic_parts` still counts only angle brackets, as
+  `main` does, so a tuple argument such as `G<u8,(a,b)>` is rejected here and on
+  `main` and accepted there. Port the split with the rest.

@@ -194,14 +194,6 @@ fn ts_function_parts(s: *Interner, h: u64, params: *U64Vec, result: *u64) -> boo
     return true;
 }
 
-fn ts_is_function(s: *Interner, h: u64) -> bool {
-    let params = u64vec_new();
-    let result: u64 = 0;
-    let found = ts_function_parts(s, h, &params, &result);
-    free(params.data as *void);
-    return found;
-}
-
 // How many type constructors deep a type string goes; `type_nesting` on
 // fix/frontend-crashes. Pointers, slices and function results are prefixes with
 // nothing closing them, so they deepen everything up to the enclosing separator.
@@ -347,55 +339,4 @@ fn ts_subst_index(names: *U64Vec, h: u64, out: *u64) -> bool {
         }
     }
     return false;
-}
-
-fn ts_substitute(s: *Interner, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
-    let index: u64 = 0;
-    if ts_subst_index(names, h, &index) {
-        return u64vec_get(values, index);
-    }
-    if ts_is_ptr(s, h) {
-        let inner = ts_substitute(s, ts_pointee(s, h), names, values);
-        if ts_is_const_ptr(s, h) {
-            return ts_prefix_and(s, "*const ", inner);
-        }
-        return ts_prefix_and(s, "*", inner);
-    }
-    if ts_is_slice(s, h) {
-        let inner = ts_substitute(s, ts_slice_elem(s, h), names, values);
-        return ts_make_slice(s, ts_is_const_slice(s, h), inner);
-    }
-    if ts_is_array(s, h) {
-        let elem: u64 = 0;
-        let count: u64 = 0;
-        ts_array_parts(s, h, &elem, &count);
-        return ts_make_array(s, ts_substitute(s, elem, names, values), count);
-    }
-    let params = u64vec_new();
-    let result: u64 = 0;
-    if ts_function_parts(s, h, &params, &result) {
-        let mapped = u64vec_new();
-        for i: u64 in 0..params.len {
-            u64vec_push(&mapped, ts_substitute(s, u64vec_get(&params, i), names, values));
-        }
-        return ts_make_function(s, &mapped, ts_substitute(s, result, names, values));
-    }
-    let tuple = u64vec_new();
-    if ts_tuple_parts(s, h, &tuple) {
-        let mapped = u64vec_new();
-        for i: u64 in 0..tuple.len {
-            u64vec_push(&mapped, ts_substitute(s, u64vec_get(&tuple, i), names, values));
-        }
-        return ts_make_tuple(s, &mapped);
-    }
-    let base: u64 = 0;
-    let args = u64vec_new();
-    if ts_generic_parts(s, h, &base, &args) {
-        let mapped = u64vec_new();
-        for i: u64 in 0..args.len {
-            u64vec_push(&mapped, ts_substitute(s, u64vec_get(&args, i), names, values));
-        }
-        return ts_make_generic(s, base, &mapped);
-    }
-    return h;
 }
