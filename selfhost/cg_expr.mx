@@ -11,9 +11,12 @@
 // limit, so `cg_gx` walks it with an explicit stack. Every other operand recurses
 // and is bounded by the parser's MAX_NESTING.
 //
-// Two things in Python have no bound and would exhaust memory; Mort reports them:
-// a slice operand without a prepared temporary is written twice, and a `slice` or
-// `len` of a slice generates its arguments twice. Each doubles per nesting level.
+// Two things in Python double per nesting level. A slice operand without a prepared
+// temporary is written twice, and a `slice` or `len` of a slice generates its
+// arguments twice. Mort charges what is really produced, so anything Python compiles
+// at a sensible size is accepted: a large duplicated operand is one shared token that
+// expands when the output is written, and a second generation that has no effect
+// reuses the first text. Only output that would be enormous is reported.
 //
 // Array repeats that make more than CG_BIG_REPEAT bytes of text are not expanded in
 // memory. They stay a short token in every buffer and expand when the output is
@@ -37,10 +40,12 @@ const CG_ZERO_REPEAT_MIN: u64 = 256;
 
 // Above this a repeat's text is held as a token until the output is written.
 const CG_BIG_REPEAT: u64 = 1048576;
-// Limits on what Python leaves unbounded; see the header. Neither is reachable by a
-// program without a slice index nested through dozens of levels.
-const CG_MAX_DUPLICATED_TEXT: u64 = 67108864;
-const CG_MAX_REGENERATED_NODES: u64 = 4000000;
+// Limits on what Python leaves unbounded; see the header. They bound output Python
+// cannot produce at a sensible size either: a gigabyte of duplicated text, and the
+// string table and generation work of doubled literals.
+const CG_MAX_DUPLICATED_TEXT: u64 = 1073741824;
+const CG_MAX_STRINGS: u64 = 8000000;
+const CG_MAX_REGENERATED_NODES: u64 = 256000000;
 // Bytes the writer buffers between calls to file_write.
 const CG_WRITE_CHUNK: u64 = 1048576;
 
@@ -416,6 +421,31 @@ fn cg_compose_field(g: *Cg, e: *Node, t: *Txt) {
     tx_app_span(t, field);
 }
 
+// Moves `t`'s text out to a shared token, so writing it twice costs a reference.
+fn cg_share_text(g: *Cg, t: *Txt) {
+    let value = tx_span(t);
+    let bytes = cg_true_len(g, value);
+    let index = cg_add_big(g, value, 1, bytes, CG_BIG_SHARED);
+    let cap: u64 = 64;
+    (*t).base = sup_alloc(cap) as *u8;
+    (*t).cap = cap;
+    (*t).head = cap / 2;
+    (*t).tail = cap / 2;
+    tx_app_token(g, t, index);
+}
+
+fn cg_push_token(g: *Cg, b: *Buf, index: u64) {
+    buf_push_span(b, Span { data: &(*g).token_mark[0], len: 1 });
+    buf_push_u64(b, index);
+    buf_push_span(b, Span { data: &(*g).token_mark[0], len: 1 });
+}
+
+fn tx_app_token(g: *Cg, t: *Txt, index: u64) {
+    tx_app_span(t, Span { data: &(*g).token_mark[0], len: 1 });
+    tx_app_u64(g, t, index);
+    tx_app_span(t, Span { data: &(*g).token_mark[0], len: 1 });
+}
+
 // Python's `_tuple_parts(e.obj.type)`, which only charges on the way to the same text.
 fn cg_charge_tuple_parts(g: *Cg, obj_type: u64) {
     if !ts_starts_with(cg_text(g, obj_type), "(") {
@@ -470,7 +500,10 @@ fn cg_charge_duplicate(g: *Cg, e: *Node, text_len: u64) {
 
 fn cg_compose_index(g: *Cg, e: *Node, t: *Txt, index: *Txt) {
     if ts_is_slice((*g).s, (*(*e).a).etype) {
-        cg_charge_duplicate(g, e, tx_len(t));
+        cg_charge_duplicate(g, e, cg_true_len(g, tx_span(t)));
+        if tx_len(t) > CG_BIG_REPEAT {
+            cg_share_text(g, t);
+        }
         let obj = buf_new(tx_len(t) + 1);
         buf_push_span(&obj, tx_span(t));
         cg_compose_slice_index(g, e, t, buf_span(&obj), index);
@@ -515,7 +548,7 @@ fn cg_visit(g: *Cg, e: *Node) {
     (*g).regen_visits += 1;
     if (*g).regen_visits > CG_MAX_REGENERATED_NODES {
         let msg = m_new();
-        m_s(&msg, "expressions under nested slice calls are generated too many times; the limit is ");
+        m_s(&msg, "expressions under nested slice calls are regenerated too many times; the limit is ");
         m_u(&msg, CG_MAX_REGENERATED_NODES);
         m_s(&msg, " nodes in one program");
         cg_limit_fail(g, e, buf_span(&msg));
@@ -640,14 +673,26 @@ fn cg_int_text(g: *Cg, e: *Node) -> *Txt {
 }
 
 fn cg_string_literal(g: *Cg, e: *Node) -> *Txt {
-    let raw = cg_text(g, (*e).name);
-    let bytes = sup_alloc(raw.len + 1) as *u8;
-    for i: u64 in 0..raw.len {
-        bytes[i] = raw.data[i];
-    }
-    let value = sup_alloc(sizeof<Span>()) as *Span;
-    *value = Span { data: bytes, len: raw.len };
     let index = (*g).strings.len;
+    if index >= CG_MAX_STRINGS {
+        let msg = m_new();
+        m_s(&msg, "the string table exceeds the limit of ");
+        m_u(&msg, CG_MAX_STRINGS);
+        m_s(&msg, " entries in one program");
+        cg_limit_fail(g, e, buf_span(&msg));
+    }
+    // Each generation of a literal adds an entry but shares the first one's text.
+    let value = (*e).cv as *Span;
+    if value == (0 as *Span) {
+        let raw = cg_text(g, (*e).name);
+        let bytes = sup_alloc(raw.len + 1) as *u8;
+        for i: u64 in 0..raw.len {
+            bytes[i] = raw.data[i];
+        }
+        value = sup_alloc(sizeof<Span>()) as *Span;
+        *value = Span { data: bytes, len: raw.len };
+        (*e).cv = value as *void;
+    }
     ptrvec_push(&(*g).strings, value as *void);
     let b = buf_new(32);
     buf_push_z(&b, "mort_str_");
@@ -746,10 +791,23 @@ fn cg_array_literal(g: *Cg, e: *Node) -> *Txt {
 
 // ----- array repeats -----
 
+const CG_BIG_ARRAY: u64 = 0;
+const CG_BIG_SHARED: u64 = 1;
+const CG_BIG_STRINGS: u64 = 2;
+
 struct BigRepeat {
     value: Span,
     count: u64,
     bytes: u64,
+    kind: u64,
+}
+
+fn cg_add_big(g: *Cg, value: Span, count: u64, bytes: u64, kind: u64) -> u64 {
+    let big = sup_alloc(sizeof<BigRepeat>()) as *BigRepeat;
+    *big = BigRepeat { value: value, count: count, bytes: bytes, kind: kind };
+    let index = (*g).big_repeats.len;
+    ptrvec_push(&(*g).big_repeats, big as *void);
+    return index;
 }
 
 fn cg_digits_value(digits: Span) -> u64 {
@@ -826,15 +884,10 @@ fn cg_array_repeat(g: *Cg, e: *Node) -> *Txt {
     }
     let bytes = count * per;
     if bytes > CG_BIG_REPEAT {
-        let big = sup_alloc(sizeof<BigRepeat>()) as *BigRepeat;
         // The value's text stays alive for the writer.
-        *big = BigRepeat { value: vs, count: count, bytes: bytes };
-        let index = (*g).big_repeats.len;
-        ptrvec_push(&(*g).big_repeats, big as *void);
+        let index = cg_add_big(g, vs, count, bytes, CG_BIG_ARRAY);
         let t = tx_new(32);
-        tx_app_span(t, Span { data: &(*g).token_mark[0], len: 1 });
-        tx_app_u64(g, t, index);
-        tx_app_span(t, Span { data: &(*g).token_mark[0], len: 1 });
+        tx_app_token(g, t, index);
         return t;
     }
     let t = tx_new(bytes + 8);
@@ -1166,8 +1219,69 @@ fn cg_call(g: *Cg, e: *Node) -> *Txt {
         tx_app_z(t, ")))");
         return t;
     }
+    if span_eq_z(name_text, "slice") {
+        return cg_slice_builtin(g, e);
+    }
+    if span_eq_z(name_text, "len") && ts_is_slice((*g).s, (*ast_item((*e).items, 0)).etype) {
+        let first = cg_first_generation(g, ast_item((*e).items, 0));
+        let t = cg_second_generation(g, ast_item((*e).items, 0), first);
+        tx_pre_z(t, "(");
+        tx_app_z(t, ").length");
+        return t;
+    }
     let args = cg_join_args(g, e);
     return cg_call_named(g, e, f, name_text, args);
+}
+
+// One generation of an argument Python generates twice, and whether generating it
+// again could change anything.
+struct FirstGeneration {
+    text: *Txt,
+    reusable: bool,
+    last: *Node,
+}
+
+fn cg_first_generation(g: *Cg, arg: *Node) -> FirstGeneration {
+    let strings = (*g).strings.len;
+    let repeats = (*g).array_repeat_bytes;
+    let spent = (*(*g).c).work_spent;
+    let t = cg_gx(g, arg);
+    return FirstGeneration {
+        text: t,
+        reusable: strings == (*g).strings.len && repeats == (*g).array_repeat_bytes
+            && spent == (*(*g).c).work_spent,
+        last: (*(*g).c).current_node,
+    };
+}
+
+// A generation with no effects gave the same text the second one would.
+fn cg_second_generation(g: *Cg, arg: *Node, first: FirstGeneration) -> *Txt {
+    if first.reusable {
+        (*(*g).c).current_node = first.last;
+        return first.text;
+    }
+    tx_free(first.text);
+    return cg_regenerate(g, arg);
+}
+
+// `slice<T>(p, n)`: Python's join generates both arguments, then the compound
+// literal generates them again, with the type name first.
+fn cg_slice_builtin(g: *Cg, e: *Node) -> *Txt {
+    let items = (*e).items;
+    let first_data = cg_first_generation(g, ast_item(items, 0));
+    let first_len = cg_first_generation(g, ast_item(items, 1));
+    let name = buf_new(64);
+    buf_push(&name, '(');
+    cg_slice_c_name(g, &name, (*e).etype);
+    buf_push_z(&name, "){ .data = ");
+    let t = cg_second_generation(g, ast_item(items, 0), first_data);
+    let count = cg_second_generation(g, ast_item(items, 1), first_len);
+    tx_pre_span(t, buf_span(&name));
+    free(name.data as *void);
+    tx_app_z(t, ", .length = ");
+    tx_app_txt(t, count);
+    tx_app_z(t, " }");
+    return t;
 }
 
 fn cg_call_named(g: *Cg, e: *Node, f: *Facts, n: Span, args: *Txt) -> *Txt {
@@ -1221,29 +1335,7 @@ fn cg_call_named(g: *Cg, e: *Node, f: *Facts, n: Span, args: *Txt) -> *Txt {
             ck_array_parts((*g).c, arg_type, &elem, &count);
             return cg_new_text(g, cg_text(g, count));
         }
-        if ts_is_slice((*g).s, arg_type) {
-            tx_free(args);
-            let t = cg_regenerate(g, ast_item((*e).items, 0));
-            tx_pre_z(t, "(");
-            tx_app_z(t, ").length");
-            return t;
-        }
         return cg_destroyed(g, f, cg_named_call(args, "mort_len"));
-    }
-    if span_eq_z(n, "slice") {
-        tx_free(args);
-        let items = (*e).items;
-        let t = cg_regenerate(g, ast_item(items, 0));
-        let count = cg_regenerate(g, ast_item(items, 1));
-        let p = cg_scratch_reset(g);
-        buf_push(p, '(');
-        cg_slice_c_name(g, p, (*e).etype);
-        buf_push_z(p, "){ .data = ");
-        cg_pre_scratch(g, t);
-        tx_app_z(t, ", .length = ");
-        tx_app_txt(t, count);
-        tx_app_z(t, " }");
-        return t;
     }
     if cg_is_thread_builtin(n) || cg_is_mutex_builtin(n) || cg_is_atomic_builtin(n)
             || cg_is_net_builtin(n) || span_eq_z(n, "secure_random_fill") || cg_is_tls_builtin(n) {
@@ -1348,7 +1440,32 @@ fn cw_text(w: *CgWriter, g: *Cg, text: Span) {
     cw_span(w, ts_sub(text, start, text.len));
 }
 
+// The string table, one line per entry, in `mort_str_N` order.
+fn cw_strings(w: *CgWriter, g: *Cg) {
+    for i: u64 in 0..(*g).strings.len {
+        if i != 0 {
+            buf_push(&(*w).pending, 10);
+        }
+        buf_push_z(&(*w).pending, "static uint8_t mort_str_");
+        buf_push_u64(&(*w).pending, i);
+        buf_push_z(&(*w).pending, "[] = \"");
+        buf_push_span(&(*w).pending, *(ptrvec_get(&(*g).strings, i) as *Span));
+        buf_push_z(&(*w).pending, "\";");
+        if (*w).pending.len >= CG_WRITE_CHUNK {
+            cw_flush(w);
+        }
+    }
+}
+
 fn cw_repeat(w: *CgWriter, g: *Cg, big: *BigRepeat) {
+    if (*big).kind == CG_BIG_STRINGS {
+        cw_strings(w, g);
+        return;
+    }
+    if (*big).kind == CG_BIG_SHARED {
+        cw_text(w, g, (*big).value);
+        return;
+    }
     cw_span(w, span_z("{"));
     for i: u64 in 0..(*big).count {
         if i != 0 {

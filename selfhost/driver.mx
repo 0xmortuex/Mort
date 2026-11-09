@@ -18,11 +18,10 @@ import pyrepr;
 
 extern fn getcwd(buf: *c_char, size: u64) -> *c_char;
 
-// The deepest import chain Python accepts, measured on minimal files: the root is
-// depth 0. Python's limit is frames, so a file with deeper grammar stops it a few
-// levels sooner, with a located nesting error where this reports the import depth
-// (PLAN.md, section 16). Pinned by test_import_depth_boundary.
-const DR_MAX_IMPORT_DEPTH: u64 = 978;
+// A backstop for load()'s own recursion. The parser's frame budget, which is told
+// each file's import depth, rejects a chain first, as Python's does; pinned by
+// test_import_depth_boundary.
+const DR_MAX_IMPORT_DEPTH: u64 = 1000;
 
 struct LoadedFile {
     path: u64,
@@ -320,7 +319,7 @@ fn dr_load(d: *Driver, path: Span, depth: u64) {
     if !lx_tokenize(lexer) {
         diag_fatal(abs.data, (*lexer).err_line, (*lexer).err_col, (*lexer).err_message);
     }
-    let program = parse_program(&(*lexer).tokens, (*d).strings, abs.data);
+    let program = parse_program(&(*lexer).tokens, (*d).strings, abs.data, depth);
     let file = intern((*d).strings, abs);
     for i: u64 in 0..(*lexer).tokens.len {
         let line_key = ck_line_key(file, (*lexer).tokens.data[i].line);

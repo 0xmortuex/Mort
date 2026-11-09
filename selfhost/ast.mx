@@ -61,6 +61,11 @@ import support;
 
 const NO_TEXT: u64 = 0xFFFFFFFFFFFFFFFF;
 
+// mort/depth.py: how many Python frames one compile may use. The parser and
+// the checker count the frames the Python compiler would be using, so both
+// compilers reject the same programs at the same place.
+const COMPILE_FRAME_BUDGET: u64 = 1000;
+
 enum NodeKind {
     IMPORT_DECL, STRUCT_DECL, STRUCT_FIELD, TYPE_ALIAS_DECL, FN_DECL, PARAM,
     ENUM_DECL, ENUM_VARIANT, EXTERN_FN_DECL, TEST_DECL,

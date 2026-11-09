@@ -496,19 +496,14 @@ def test_import_depth_limit_matches_python(stage2, tmp_path):
 
 
 def test_import_depth_boundary(stage2, tmp_path):
-    """977 is the deepest chain Python accepts; past it both reject. The wording
-    can differ at the boundary (PLAN.md, section 16), so only the limit is compared."""
+    """977 is the deepest chain inside the frame budget. Past it both compilers
+    reject, at the same place and with the same text."""
     accepted = tmp_path / "accepted"
     assert assert_matches_python(stage2, [import_chain(accepted, 977)], tmp_path) == "ok"
     for depth in (978, 1100):
-        directory = tmp_path / f"rejected{depth}"
-        root = import_chain(directory, depth)
-        kind, expected = python_outcome([root])
-        assert kind == "reject" and b"exceeds the compiler safety limit" in expected
-        code, stderr, produced = stage2_outcome(stage2, [root], tmp_path)
-        assert code == 1 and produced is None, stderr
-        assert stderr == (b"mortc: error: source nesting or import depth exceeds "
-                          b"the compiler safety limit")
+        root = import_chain(tmp_path / f"rejected{depth}", depth)
+        assert assert_matches_python(stage2, [root], tmp_path) == "reject"
+        assert b"exceeds the compiler safety limit" in python_outcome([root])[1]
 
 
 # ----- command line -----

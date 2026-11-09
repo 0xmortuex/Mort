@@ -71,7 +71,7 @@ fn main() -> int {
         diag_fatal(in_path, lexer.err_line, lexer.err_col, lexer.err_message);
     }
     let strings = intern_new();
-    let program = parse_program(&lexer.tokens, &strings, in_path);
+    let program = parse_program(&lexer.tokens, &strings, in_path, 0);
     let dump = buf_new(4096);
     dump_program_ast(&dump, &strings, &program);
     if !pm_write_all(out_path, &dump) {

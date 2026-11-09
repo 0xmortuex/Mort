@@ -25,7 +25,8 @@ from test_codegen_differential import (  # noqa: E402,F401
 )
 import py_codegen_dump  # noqa: E402
 from test_codegen_expr_differential import (  # noqa: E402
-    assert_condition_texts_match, body, expression_program, replay_cjk_program,
+    CJK, assert_condition_texts_match, body, expression_program, replay_cjk_program,
+    slice_while_chain,
 )
 
 MAIN = "fn main() -> int { return 0; }\n"
@@ -302,6 +303,35 @@ EXPRESSION_MUTANTS = {
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, binding_const);\n",
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, false);\n",
         [statement("const_array_of_fn"), declaration("global_const_array_of_fn")]),
+    # Doubled work is charged by what is really generated.
+    "second_generation_always_reused": (
+        "cg_expr.mx", "    if first.reusable {\n", "    if true {\n",
+        [expr("slice_strings_generated_twice")]),
+    "shared_token_written_as_a_repeat": (
+        "cg_expr.mx",
+        "    if (*big).kind == CG_BIG_SHARED {\n        cw_text(w, g, (*big).value);\n        return;\n    }\n",
+        "", [slice_while_chain(18)]),
+    "type_charges_count_bytes": (
+        "typestr.mx", "        if (t.data[i] & 0xC0) != 0x80 {\n", "        if true {\n",
+        ["struct " + CJK * 2000 + " { x: i64 }\nfn id<T>(x: T) -> T { return x; }\n"
+         "fn main() -> int { let a = id(" + CJK * 2000 + " { x: 1 }); return 0; }\n"]),
+    # What an independent mutation pass found the probes did not reach.
+    "try_runs_only_its_own_scope_defers": (
+        "cg_stmt.mx",
+        "    (*g).indent += 1;\n    cg_emit_defers(g, 0);\n    let ret = buf_new(128);\n",
+        "    (*g).indent += 1;\n    cg_emit_defers(g, (*g).defer_scopes.len - 1);\n    let ret = buf_new(128);\n",
+        [declaration("try_in_nested_scope_runs_outer_defers")]),
+    "wildcard_binding_uses_position": (
+        "cg_stmt.mx", "            buf_push_u64(&payload, u64vec_get((*f).binding_indices, i));\n",
+        "            buf_push_u64(&payload, i);\n", [expr("enum_wildcard_binding")]),
+    "folded_i32_max_gets_ll": (
+        "codegen.mx", "bn_from_u64(0x7FFFFFFF)", "bn_from_u64(0x7FFFFFFE)", [expr("int_fold_edges")]),
+    "folded_i64_max_gets_ull": (
+        "codegen.mx", "i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFF)", "i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFE)",
+        [expr("int_fold_edges")]),
+    "folded_i64_min_keeps_ll": (
+        "cg_expr.mx", "        if bn_is_negative(value) {\n            let pattern",
+        "        if false {\n            let pattern", [expr("int_fold_edges")]),
     # Helper marks reached only from a compound assignment: real-run flags no longer
     # hide them, because nothing tells the generator which helpers a program uses.
     "compound_assign_loses_wrap_mark": (
@@ -365,7 +395,7 @@ def build_mutant(tmp_path, filename, old, new, driver="cg_main"):
     target.write_bytes(text.replace(old, new).encode("utf-8"))
     exe = tmp_path / "mutant.exe"
     result = subprocess.run(
-        [sys.executable, str(ROOT / "mortc.py"), str(source / f"{driver}.mx"), "-o", str(exe)],
+        [sys.executable, str(ROOT / "mortc.py"), str(source / f"{driver}.mx"), "-O", "0", "-o", str(exe)],
         capture_output=True, text=True, cwd=tmp_path)
     assert result.returncode == 0, f"mutant does not compile:\n{result.stdout}\n{result.stderr}"
     return exe

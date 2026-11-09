@@ -225,7 +225,8 @@ DECLARATIONS = {
     "try_short_circuit": "enum Result<V, E> { Ok(V), Err(E) }\nfn a() -> Result<bool, i64> { return Result<bool, i64>.Ok(true); }\nfn b(x: bool) -> Result<bool, i64> { let v = x && try a(); let w = x || try a(); return Result<bool, i64>.Ok(v); }\n",
     "try_in_condition": "enum Result<V, E> { Ok(V), Err(E) }\nfn a() -> Result<bool, i64> { return Result<bool, i64>.Ok(true); }\nfn b() -> Result<bool, i64> { while try a() { break; } if try a() { } return Result<bool, i64>.Ok(true); }\n",
     "try_defer_exit": "enum Result<V, E> { Ok(V), Err(E) }\nfn f() -> void { }\nfn a() -> Result<i64, i64> { return Result<i64, i64>.Ok(1); }\nfn b() -> Result<i64, i64> { defer f(); let v = try a(); return Result<i64, i64>.Ok(v); }\n",
-    "try_in_index_and_call": "enum Result<V, E> { Ok(V), Err(E) }\nfn a() -> Result<i64, i64> { return Result<i64, i64>.Ok(1); }\nfn c(x: i64, y: i64) -> i64 { return x; }\nfn b(s: []i64) -> Result<i64, i64> { let v = s[try a()]; let w = c(try a(), try a()); let t = (try a(), 1); return Result<i64, i64>.Ok(v); }\n",
+    "try_in_nested_scope_runs_outer_defers": "enum Result<V, E> { Ok(V), Err(E) }\nfn f() -> void { }\nfn a() -> Result<i64, i64> { return Result<i64, i64>.Ok(1); }\nfn b() -> Result<i64, i64> { defer f(); { defer f(); while true { defer f(); let v = try a(); break; } } return Result<i64, i64>.Ok(1); }\n",
+    "try_in_index_and_call":"enum Result<V, E> { Ok(V), Err(E) }\nfn a() -> Result<i64, i64> { return Result<i64, i64>.Ok(1); }\nfn c(x: i64, y: i64) -> i64 { return x; }\nfn b(s: []i64) -> Result<i64, i64> { let v = s[try a()]; let w = c(try a(), try a()); let t = (try a(), 1); return Result<i64, i64>.Ok(v); }\n",
     "slice_index_temp": "fn b(s: []u8) -> u8 { return s[0]; }\n",
     "non_ascii_names": "struct Größe { länge: i64 }\nfn größe(ä: i64) -> i64 { return ä; }\n",
     "test_blocks": 'test "one" { let a = 1; }\ntest "two" { assert(true); defer g2(); }\nfn g2() -> void { }\n',
@@ -449,7 +450,7 @@ def test_defer_replay_stays_within_memory(cg_exe, tmp_path):
 
 
 def test_reversed_struct_chain_agrees(cg_exe, tmp_path):
-    count = 1500
+    count = 600  # inside the frame budget; test_long_reversed_chain covers past it
     decls = "".join(f"struct S{i} {{ a: S{i + 1} }}\n" for i in range(count))
     source = f"{decls}struct S{count} {{ x: i64 }}\nfn main() -> int {{ return 0; }}\n"
     assert agree(cg_exe, tmp_path, source) == "ok"
@@ -461,16 +462,22 @@ def test_long_reversed_chain_stays_within_memory(cg_exe, tmp_path):
     source = f"{decls}struct S{count} {{ x: i64 }}\nfn main() -> int {{ return 0; }}\n"
     code, stderr, _ = bounded(cg_exe, tmp_path, source)
     assert code == 1, stderr
-    assert b"exceeds the limit of 1000000 work units" in stderr
+    assert b"source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_long_operator_chain_does_not_recurse(cg_exe, tmp_path):
-    """`_prepare_try_expr` must walk a left spine of any depth."""
-    chain = " + 1" * 300000
+    """`_prepare_try_expr` must walk a left spine at the frame budget, and a chain
+    far past it must be a located error rather than a crash."""
+    chain = " + 1" * 490
     source = f"fn main() -> int {{\nlet x: i64 = 1{chain};\nreturn 0;\n}}\n"
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
     assert c_out.read_bytes().count(b"int64_t m_x = ") == 1
+    chain = " + 1" * 300000
+    source = f"fn main() -> int {{\nlet x: i64 = 1{chain};\nreturn 0;\n}}\n"
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1, stderr
+    assert b"source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_deep_pointer_alias_does_not_overflow_the_stack(cg_exe, tmp_path):

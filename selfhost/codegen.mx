@@ -537,7 +537,7 @@ fn cg_visit_type(g: *Cg, start: u64) {
         let angle = ts_find(text, '<');
         if angle != text.len && ts_ends_with(text, '>') {
             let inner = ts_sub(text, angle + 1, text.len - 1);
-            ck_charge_len(c, inner.len);
+            ck_charge_len(c, ts_cp_len(inner));
             let items = u64vec_new();
             ts_split_type_list(s, inner, &items);
             for i: u64 in 0..items.len {
@@ -1536,15 +1536,11 @@ fn cg_emit_strings(g: *Cg) {
     if (*g).strings.len == 0 {
         return;
     }
-    for i: u64 in 0..(*g).strings.len {
-        let b = buf_new(128);
-        buf_push_z(&b, "static uint8_t mort_str_");
-        buf_push_u64(&b, i);
-        buf_push_z(&b, "[] = \"");
-        buf_push_span(&b, *(ptrvec_get(&(*g).strings, i) as *Span));
-        buf_push_z(&b, "\";");
-        cg_em_buf(g, &b);
-    }
+    // A token: the writer streams the table, which can be most of a program's text.
+    let index = cg_add_big(g, Span { data: 0 as *u8, len: 0 }, 0, 0, CG_BIG_STRINGS);
+    let b = buf_new(32);
+    cg_push_token(g, &b, index);
+    cg_em_buf(g, &b);
     cg_blank(g);
 }
 
@@ -1781,8 +1777,9 @@ fn cg_generate(g: *Cg) -> Buf {
         }
         cg_blank(g);
     }
-    buf_push_span(&out, buf_span(&body));
+    // A token, like the string table: the body can be most of the program, and
+    // copying it into `out` would hold it twice.
+    cg_push_token(g, &out, cg_add_big(g, buf_span(&body), 0, 0, CG_BIG_SHARED));
     cg_emit_main(g);
-    free(body.data as *void);
     return out;
 }

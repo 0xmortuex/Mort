@@ -51,6 +51,11 @@ EXPRESSIONS = {
     "int_folds": "let a: i64 = 1 + 2 * 3; let b: i64 = 1 << 40; let c: u64 = (1 << 63) - 1 + (1 << 63); "
                  "let d: i64 = -9223372036854775807 - 1; let e: i64 = -2147483649; let f: i32 = -2147483648; "
                  "let g: i64 = ~0; let h: u8 = ~0 & 255;",
+    "int_fold_edges": "let a: i64 = 2147483646 + 1; let b: i64 = 2147483647 + 1; let c: i64 = -2147483646 - 1; "
+                      "let d: i64 = -2147483647 - 1; let e: i64 = -2147483647 - 2; let f: i32 = 2147483646 + 1; "
+                      "let g2: u64 = 9223372036854775806 + 1; let h: u64 = 9223372036854775807 + 1; "
+                      "let i: i64 = 9223372036854775806 + 1; let j: i64 = -9223372036854775806 - 1; "
+                      "let k: u64 = 18446744073709551614 + 1; let l: i64 = -9223372036854775807 - 1;",
     "char_lits": "let a = 'a'; let b: u8 = '\\n'; let c = '\\x7f'; let d: i64 = 'z';",
     "bool_null": "let p: *u8 = null; let q = true; let r = false; let s = !q;",
     "strings": 'let s = "hi"; let t = "a\\nb\\"c"; println(s); println(t); println("");',
@@ -120,6 +125,8 @@ EXPRESSIONS = {
     "enum_units": "let a = E.A; let b = Owns.Empty; match move b { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_payloads": "let o = Owns.Has(make_r()); match move o { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_tuple_payload": "let m = Two.P(1, 2); match m { Two.P(a, b) => { let c = a + b; } Two.Q => { } }",
+    "enum_wildcard_binding": "let m = Two.P(1, 2); match m { Two.P(_, b) => { let c = b; } Two.Q => { } } "
+                             "let n = Two.P(3, 4); match n { Two.P(a, _) => { let c = a; } Two.Q => { } }",
     "generic_values": "let b = Box<i64> { v: 1 }; let a = b.v; let o = Opt<i64>.Some(1); let n = Opt<i64>.None; "
                       "let c = identity(1); let d = identity<u8>(2); let e = identity(true);",
     "generic_payload_match": "let o = Opt<i64>.Some(1); match o { Opt<i64>.Some(v) => { let a = v; } Opt<i64>.None => { } }",
@@ -421,7 +428,7 @@ def test_generated_c_runs_and_matches_the_model(cg_exe, tmp_path, spec):
 
 # ----- left-deep expressions, against Python, then Mort alone at scale -----
 
-DEEP = 1500
+DEEP = 480  # inside the 1000-frame budget of mort/depth.py
 
 
 def deep_spines():
@@ -460,34 +467,45 @@ def test_deep_index_chain_agrees_with_python(cg_exe, tmp_path):
     assert agree(cg_exe, tmp_path, source) == "ok"
 
 
-LARGE = 300000
+NEAR_BUDGET = 490  # just inside the 1000-frame budget of mort/depth.py
+PAST_BUDGET = 300000
+NESTING = b"source nesting exceeds the compiler safety limit"
 
 
 def test_long_non_constant_chain_within_memory(cg_exe, tmp_path):
-    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * LARGE};")
+    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * NEAR_BUDGET};")
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
     text = c_out.read_bytes()
-    assert text.count(b"mort_wrap_i64(") == LARGE + 1  # the helper's definition is one
+    assert text.count(b"mort_wrap_i64(") == NEAR_BUDGET + 1  # the helper's definition is one
+    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * PAST_BUDGET};")
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_long_cast_chain_within_memory(cg_exe, tmp_path):
-    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (LARGE // 2)};")
+    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (NEAR_BUDGET // 2)};")
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
-    assert c_out.stat().st_size > LARGE
+    assert c_out.stat().st_size > NEAR_BUDGET
+    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (PAST_BUDGET // 2)};")
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_long_index_chain_within_memory(cg_exe, tmp_path):
-    """A pointer type 900 deep, indexed all the way: as deep as the type allows."""
-    depth = 900
-    stars = "*" * depth
-    source = (
-        f"type A0 = {stars}u8;\nfn f(p: A0, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
-        "fn main() -> int { return 0; }\n")
-    code, stderr, c_out = bounded(cg_exe, tmp_path, source)
+    """A pointer type near the budget, indexed all the way; past it, a located error."""
+    def chain(depth):
+        stars = "*" * depth
+        return (
+            f"type A0 = {stars}u8;\nfn f(p: A0, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
+            "fn main() -> int { return 0; }\n")
+
+    code, stderr, c_out = bounded(cg_exe, tmp_path, chain(NEAR_BUDGET))
     assert code == 0, stderr
-    assert c_out.read_bytes().count(b"[m_i]") == depth
+    assert c_out.read_bytes().count(b"[m_i]") == NEAR_BUDGET
+    code, stderr, _ = bounded(cg_exe, tmp_path, chain(900))
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_nesting_at_the_parser_limit_does_not_overflow(cg_exe, tmp_path):
@@ -559,6 +577,57 @@ def test_doubled_slice_text_is_bounded(cg_exe, tmp_path):
     assert b"duplicated slice operands" in stderr
 
 
+def slice_while_chain(depth):
+    """An unprepared `while` condition: no temporaries, and no defer replay budget."""
+    slice_type = "[]" * depth + "u8"
+    return (
+        f"fn main() -> int {{\nlet p: *{slice_type[2:]} = null;\n"
+        f"let s = slice<{slice_type[2:]}>(p, 1);\n"
+        f"while s{'[0]' * depth} != 0 {{ break; }}\nreturn 0;\n}}\n")
+
+
+def test_doubled_slice_text_agrees_at_python_sizes(cg_exe, tmp_path):
+    """Python writes about 13 MB here; Mort must not reject it."""
+    assert agree(cg_exe, tmp_path, slice_chain(18)) == "ok"
+    assert agree(cg_exe, tmp_path, slice_while_chain(18)) == "ok"
+
+
+def test_doubled_slice_text_is_exact_beyond_the_inline_threshold(cg_exe, tmp_path):
+    """21 levels is about 109 MB of C: Python compiles it, so Mort must, in bounded memory.
+
+    Depth 18 is compared byte for byte in test_..._at_python_sizes. The `while` line
+    obeys L(d) = 2 L(d - 1) + c, so 18 and 19 predict 21 exactly; the head does not."""
+    lines = []
+    for depth in (18, 19, 21):
+        code, stderr, c_out = bounded(cg_exe, tmp_path, slice_while_chain(depth))
+        assert code == 0, stderr
+        data = c_out.read_bytes()
+        assert b"\xff" not in data
+        start = data.index(b"while (")
+        lines.append(data.index(b"\n", start) - start)
+    constant = lines[1] - 2 * lines[0]
+    assert lines[2] == 8 * (lines[0] + constant) - constant
+
+
+def nested_len_slice(depth):
+    expression = "1"
+    for _ in range(depth):
+        expression = f"len(slice<u8>(u, {expression}))"
+    return body(f"let u: *u8 = null;\nlet n = {expression};")
+
+
+def test_nested_len_of_slice_agrees(cg_exe, tmp_path):
+    """Python's work is 4^11 nodes for 1,090 bytes of text: nothing should reject it."""
+    assert agree(cg_exe, tmp_path, nested_len_slice(11)) == "ok"
+
+
+def test_nested_len_of_slice_is_linear(cg_exe, tmp_path):
+    """Without string literals the second generation repeats nothing, so reuse the first."""
+    code, stderr, c_out = bounded(cg_exe, tmp_path, nested_len_slice(30))
+    assert code == 0, stderr
+    assert c_out.read_bytes().count(b"mort_bounds") == 0
+
+
 def regenerated_chain(depth):
     expression = '"s"'
     for _ in range(depth):
@@ -574,7 +643,38 @@ def test_regeneration_is_bounded(cg_exe, tmp_path):
     """Each `slice` or `len` of a slice generates its arguments twice."""
     code, stderr, _ = bounded(cg_exe, tmp_path, regenerated_chain(60))
     assert code == 1, stderr
-    assert b"generated too many times" in stderr
+    assert b"string table" in stderr
+
+
+# ----- type text is charged and limited in code points, as Python measures it -----
+
+CJK = "漢"
+
+
+def test_long_cjk_struct_name_within_python_limits_agrees(cg_exe, tmp_path):
+    """30,000 characters is under MAX_TYPE_LENGTH; its 90,000 UTF-8 bytes are not."""
+    name = CJK * 30000
+    source = (
+        f"struct {name} {{ x: i64 }}\nfn f(a: *{name}) -> *{name} {{ return a; }}\n"
+        f"fn main() -> int {{ let a: *{name} = null; let b = f(a); return 0; }}\n")
+    assert agree(cg_exe, tmp_path, source) == "ok"
+
+
+def test_cjk_generic_argument_within_python_limit_agrees(cg_exe, tmp_path):
+    """Instantiation allows 4096 characters of type argument, not 4096 bytes."""
+    name = CJK * 2000
+    source = (
+        f"struct {name} {{ x: i64 }}\nfn id<T>(x: T) -> T {{ return x; }}\n"
+        f"fn main() -> int {{ let a = id({name} {{ x: 1 }}); return 0; }}\n")
+    assert agree(cg_exe, tmp_path, source) == "ok"
+
+
+def test_cjk_type_charges_are_free_below_the_threshold(cg_exe, tmp_path):
+    """A 63-character name is free to Python; in bytes it would spend the budget."""
+    name = CJK * 63
+    lets = "".join(f"let a{i}: {name} = {name} {{ x: 1 }};\n" for i in range(50000))
+    source = f"struct {name} {{ x: i64 }}\nfn main() -> int {{\n{lets}return 0;\n}}\n"
+    assert agree(cg_exe, tmp_path, source) == "ok"
 
 
 def test_deterministic_over_runs(cg_exe, tmp_path):
@@ -597,6 +697,21 @@ def replay_cjk_program():
 
 def test_replay_budget_counts_code_points(cg_exe, tmp_path):
     assert agree(cg_exe, tmp_path, replay_cjk_program()) == "ok"
+
+
+def replay_cjk_at_the_limit():
+    """A long deferred name replayed to about the replay budget: charged in code
+    points, so its UTF-8 is three times the budget and must never be held twice."""
+    name = CJK * 9000
+    defers = f"defer {name}();\n" * 29
+    exits = "if true { return 1; }\n" * 180
+    return f"fn {name}() -> i64 {{ return 1; }}\nfn main() -> int {{\n{defers}{exits}return 0;\n}}\n"
+
+
+def test_replay_text_stays_within_memory(cg_exe, tmp_path):
+    code, stderr, c_out = bounded(cg_exe, tmp_path, replay_cjk_at_the_limit())
+    assert code == 0, stderr
+    assert c_out.stat().st_size > 100_000_000
 
 
 def test_driver_takes_no_effects_input(tmp_path):

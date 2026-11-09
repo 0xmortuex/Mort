@@ -8,9 +8,11 @@ Every expected value comes from running the real Python checker; see
 py_check_dump.py for the dump format and for what is compared when the Python
 checker stops on an error only the type phase (T5) can see.
 """
+import functools
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -74,7 +76,7 @@ def compare(exe, path, mode, tmp_path):
         return "load"  # import resolution is T8's; nothing here can be compared
     assert expected.outcome != "crash", f"{path}: Python crash"
     if expected.outcome == "parse":
-        manifest = f"MODE {mode}\nFILE {expected.failing_file}\n"
+        manifest = py_check_dump.failing_manifest(mode, expected)
         code, stderr, _dump = run_mort(exe, manifest, tmp_path)
         assert code == 1, f"{path}: {stderr!r}"
         assert stderr.decode("utf-8") == expected.error, path
@@ -659,25 +661,23 @@ def assert_generic_limit(exe, tmp_path, source, line, template, problem):
 NESTED_TOO_DEEP = "has a type argument nested more than 256 levels deep"
 
 
+# These expansions reach the frame budget first, in both compilers, before the
+# nesting limit on type arguments Mort also applies.
 def test_unbounded_generic_struct_expansion_is_rejected(check_exe, tmp_path):
-    assert_generic_limit(
-        check_exe, tmp_path, "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n" + OK_MAIN,
-        1, "G", NESTED_TOO_DEEP)
+    source = "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_unbounded_generic_enum_expansion_is_rejected(check_exe, tmp_path):
-    assert_generic_limit(
-        check_exe, tmp_path, "enum O<T> { S(*O<*T>), N }\nstruct S { g: O<u8> }\n" + OK_MAIN,
-        1, "O", NESTED_TOO_DEEP)
+    source = "enum O<T> { S(*O<*T>), N }\nstruct S { g: O<u8> }\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_deeply_nested_generic_arguments_are_rejected(check_exe, tmp_path):
     depth = 900
     nested = "G<" * depth + "u8" + ">" * depth
-    assert_generic_limit(
-        check_exe, tmp_path,
-        f"struct G<T> {{ x: T }}\nstruct S {{ a: {nested} }}\n" + OK_MAIN,
-        1, "G", NESTED_TOO_DEEP)
+    source = f"struct G<T> {{ x: T }}\nstruct S {{ a: {nested} }}\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_doubling_generic_arguments_are_rejected(check_exe, tmp_path):
@@ -757,7 +757,7 @@ def test_deep_pointer_types_are_resolved_once(check_exe, tmp_path):
     """Re-resolving a deep type at each level costs cubic time; the guard's
     timeout turns that into a failure. Python on main has the same cost, so
     only the Mort side runs."""
-    field_type = "*" * 900 + "u8"
+    field_type = "*" * 480 + "u8"  # 2 frames per level: the budget allows 490
     fields = ", ".join(f"f{i}: {field_type}" for i in range(400))
     path = _written(tmp_path, f"struct S {{ {fields} }}\n" + OK_MAIN)
     code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
@@ -920,16 +920,13 @@ def mortc_check(tmp_path, source):
 
 
 @pytest.mark.parametrize(
-    "star,accepted,first_line", [("", 993, 1), ("*", 495, 497)], ids=["direct", "pointer"])
-def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted, first_line):
+    "star,accepted", [("", 993), ("*", 495)], ids=["direct", "pointer"])
+def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
     def chain(count):
         links = "".join(f"type A{i} = {star}A{i + 1};\n" for i in range(count))
         return links + f"type A{count} = u8;\n" + OK_MAIN
 
-    # One past the limit, a pointer chain fails validating types, located at the
-    # last alias; a much longer one fails resolving aliases, at the first.
-    for count, rejected, line in ((accepted, False, None), (accepted + 1, True, first_line),
-                                  (1500, True, 1)):
+    for count, rejected in ((accepted, False), (accepted + 1, True), (1500, True)):
         source = chain(count)
         python_code, python_error = mortc_check(tmp_path, source)
         assert (python_code != 0) == rejected, python_error
@@ -938,11 +935,110 @@ def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted, fi
             check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
         if rejected:
             assert code == 1, stderr
-            expected = f"{path}:{line}:1: error: source nesting exceeds the compiler safety limit"
-            assert python_error.splitlines()[0] == f"mortc: {expected}"
-            assert stderr.decode("utf-8") == expected
+            assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
+            assert stderr.decode("utf-8").endswith(
+                ": error: source nesting exceeds the compiler safety limit")
         else:
             assert code == 0, stderr
+
+
+# The exact diagnostic of the real compiler at its limit: which node holds
+# `current_node` when the budget runs out depends on the order of the walks.
+TYPE_SHAPES = {
+    "fn_type": lambda n: "fn(" * n + "u8" + ") -> u8" * n,
+    "tuple_type": lambda n: "(u8, " * n + "u8" + ")" * n,
+    "generic_struct": lambda n: "G<" * n + "u8" + ">" * n,
+    "pointer_type": lambda n: "*" * n + "u8",
+}
+FORMAT_MAIN = OK_MAIN.replace("{", "{{").replace("}", "}}")
+TYPE_PLACES = {
+    "param": "struct G<T> {{ a: *T }}\nfn g(a: {}) -> i64 {{\nlet b = 1 + 1;\nreturn 1 + 2;\n}}\n" + FORMAT_MAIN,
+    "return": "struct G<T> {{ a: *T }}\nfn g() -> {} {{\nlet b = 1 + 1;\nreturn 1 + 2;\n}}\n" + FORMAT_MAIN,
+    "field": "struct G<T> {{ a: *T }}\nstruct P {{ a: {} }}\nfn g() {{\nlet b = 1 + 1;\n}}\n" + FORMAT_MAIN,
+    "let": "struct G<T> {{ a: *T }}\nfn main() -> int {{\nlet a: {} = 0;\nreturn 1 + 2;\n}}\n",
+}
+
+
+def _main_with(body):
+    return f"fn f(a: i64) -> i64 {{ return a; }}\nfn main() -> int {{\n{body}\nreturn 0;\n}}\n"
+
+
+EXACT_SHAPES = {
+    f"{kind}_in_{place}": (lambda n, kind=kind, place=place:
+                           TYPE_PLACES[place].format(TYPE_SHAPES[kind](n)))
+    for kind in TYPE_SHAPES for place in TYPE_PLACES
+}
+EXACT_SHAPES.update({
+    "left_deep": lambda n: _main_with("let x = 1" + " + 1" * n + ";"),
+    "right_deep": lambda n: _main_with("let x = " + "1 + (" * n + "1" + ")" * n + ";"),
+    "unary": lambda n: _main_with("let x = " + "-" * n + "1;"),
+    "call_args": lambda n: _main_with("let x = " + "f(" * n + "1" + ")" * n + ";"),
+    "nested_blocks": lambda n: _main_with("{ " * n + "let y = 1;" + " }" * n),
+    "nested_ifs": lambda n: _main_with("if true { " * n + "let y = 1;" + " }" * n),
+    "field_chain": lambda n: (
+        "struct N { next: *N }\nfn main() -> int {\nlet s = N { next: 0 as *N };\n"
+        "let x = s" + ".next" * n + ";\nreturn 0;\n}\n"),
+    "index_chain": lambda n: _main_with("let a = [1, 2];\nlet x = a" + "[0]" * n + ";"),
+})
+
+
+@functools.cache
+def _mortc_first_rejected(shape):
+    """The smallest nesting `mortc.py --check` rejects as too deep."""
+    def too_deep(n):
+        return "nesting exceeds" in mortc_check(directory, EXACT_SHAPES[shape](n))[1]
+
+    with tempfile.TemporaryDirectory(prefix="mort-limit-") as name:
+        directory = Path(name)
+        low, high = 1, 8
+        while not too_deep(high):
+            low, high = high, high * 2
+            assert high <= 8192, shape
+        while high - low > 1:
+            middle = (low + high) // 2
+            if too_deep(middle):
+                high = middle
+            else:
+                low = middle
+    return high
+
+
+@pytest.mark.parametrize(
+    "shape,offset", [(name, offset) for name in sorted(EXACT_SHAPES) for offset in (-1, 0, 1)])
+def test_diagnostic_at_the_limit_matches_mortc(check_exe, tmp_path, shape, offset):
+    """Offset 0 is the first nesting `mortc.py --check` rejects as too deep."""
+    source = EXACT_SHAPES[shape](_mortc_first_rejected(shape) + offset)
+    python_code, python_error = mortc_check(tmp_path, source)
+    path = tmp_path / "input.mx"
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert (code != 0) == (python_code != 0), (python_error, stderr)
+    if python_code != 0:
+        assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
+
+
+# Past the first rejected depth a type runs out earlier, in the alias walk, where
+# the node reported depends on the order the walk visits a declaration's parts.
+PAST_THE_LIMIT = [
+    (f"{kind}_in_{place}", depth)
+    for kind, depths in (
+        ("fn_type", (500, 700)), ("tuple_type", (500, 700)),
+        ("generic_struct", (500, 700)), ("pointer_type", (990, 992)))
+    for place in TYPE_PLACES for depth in depths
+] + [
+    ("left_deep", 700), ("left_deep", 1200), ("field_chain", 1200), ("index_chain", 1200),
+    ("unary", 985), ("nested_blocks", 600), ("nested_ifs", 450),
+]
+
+
+@pytest.mark.parametrize("shape,depth", PAST_THE_LIMIT)
+def test_diagnostic_past_the_limit_matches_mortc(check_exe, tmp_path, shape, depth):
+    source = EXACT_SHAPES[shape](depth)
+    python_code, python_error = mortc_check(tmp_path, source)
+    assert python_code != 0, python_error
+    path = tmp_path / "input.mx"
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
 
 
 def test_alias_depth_error_uses_the_first_token_column(check_exe, tmp_path):
@@ -978,10 +1074,11 @@ def test_shadowing_events_are_compared(check_exe, tmp_path):
 
 
 def test_deep_left_chain_is_iterative(check_exe, tmp_path):
+    """Past the frame budget: both compilers stop in _apply_type_aliases."""
     chain = " + 1" * 4000
     source = f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n"
     outcome = assert_source_agrees(check_exe, tmp_path, source)
-    assert outcome == "ok"
+    assert outcome == "error"
 
 
 def test_deep_field_chain_is_iterative(check_exe, tmp_path):
@@ -998,19 +1095,19 @@ def test_undefined_at_the_end_of_a_deep_chain(check_exe, tmp_path):
     assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
-def test_very_deep_chain_does_not_use_the_c_stack(check_exe, tmp_path):
-    """Beyond what the Python reference can run in reasonable time, so the
-    expected count comes from the source: one reference per operand."""
+def test_very_deep_chain_is_rejected_without_the_c_stack(check_exe, tmp_path):
+    """Far past the frame budget, and beyond what the Python reference runs in
+    reasonable time: located, without recursing over the chain."""
     operands = 300_000
     path = tmp_path / "input.mx"
     path.write_text(
         "fn main() -> int {\nlet a = 1;\nlet x = a" + " + a" * (operands - 1)
         + ";\nreturn 0;\n}\n", encoding="utf-8")
-    code, stderr, text = run_mort(
+    code, stderr, _text = run_mort(
         check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
-    assert code == 0, stderr
-    _tables, events = split_dump(text)
-    assert events.count('var "a" local d1 L2\n') == operands
+    assert code == 1
+    assert b":3:" in stderr
+    assert b"error: source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_multi_file_module_program(check_exe, tmp_path):
@@ -1151,9 +1248,10 @@ def test_alias_chain_past_the_depth_limit_is_a_clean_diagnostic(check_exe, tmp_p
 
 
 def test_long_struct_chain_by_value(check_exe, tmp_path):
+    """Long enough to pass the frame budget of the aggregate walk."""
     decls = "".join(f"struct S{i} {{ next: S{i + 1} }}\n" for i in range(3000))
     source = decls + "struct S3000 { x: u8 }\n" + OK_MAIN
-    assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_long_cycle_by_value(check_exe, tmp_path):
