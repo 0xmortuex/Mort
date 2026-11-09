@@ -1,0 +1,2346 @@
+// Programs the parser accepts, validated when frozen. Each must stay derivable
+// from the grammar in docs/language-specification.md. Regenerate nothing from the
+// spec: add a line by hand when a form is added to the language.
+
+const a = a ;
+enum E { A ( T , U , V ) }
+enum P<T> { S(T), N, Q(i64, *u8) } type A = fn(i64, *u8) -> void;
+enum a < a , a , a > { }
+enum a < a , a > { }
+enum a < a > { a }
+enum a < a > { }
+enum a { a ( ( T , U ) ) }
+enum a { a ( ( T , U , ) ) }
+enum a { a ( ( T , U , V ) ) }
+enum a { a ( * T ) }
+enum a { a ( * const T ) }
+enum a { a ( T ) }
+enum a { a ( T < U , V > ) }
+enum a { a ( T < U > ) }
+enum a { a ( [ T ; 2 ] ) }
+enum a { a ( [ ] T ) }
+enum a { a ( [ ] const T ) }
+enum a { a ( a ) }
+enum a { a ( a , ( T , U ) ) }
+enum a { a ( a , ( T , U , ) ) }
+enum a { a ( a , ( T , U , V ) ) }
+enum a { a ( a , * T ) }
+enum a { a ( a , * const T ) }
+enum a { a ( a , T ) }
+enum a { a ( a , T < U , V > ) }
+enum a { a ( a , T < U > ) }
+enum a { a ( a , [ T ; 2 ] ) }
+enum a { a ( a , [ ] T ) }
+enum a { a ( a , [ ] const T ) }
+enum a { a ( a , a ) }
+enum a { a ( a , bool ) }
+enum a { a ( a , fn ( ) -> T ) }
+enum a { a ( a , fn ( T ) -> V ) }
+enum a { a ( a , fn ( T , U ) -> V ) }
+enum a { a ( a , i64 ) }
+enum a { a ( a , int ) }
+enum a { a ( a , void ) }
+enum a { a ( bool ) }
+enum a { a ( fn ( ) -> T ) }
+enum a { a ( fn ( T ) -> V ) }
+enum a { a ( fn ( T , U ) -> V ) }
+enum a { a ( i64 ) }
+enum a { a ( int ) }
+enum a { a ( void ) }
+enum a { a , a ( a ) }
+enum a { a , a ( a , a ) }
+enum a { a , a , a }
+enum a { a , a , }
+enum a { a , a }
+enum a { a , }
+enum a { a }
+enum a { }
+extern fn a ( ) -> ( T , U ) ;
+extern fn a ( ) -> ( T , U , ) ;
+extern fn a ( ) -> ( T , U , V ) ;
+extern fn a ( ) -> * T ;
+extern fn a ( ) -> * const T ;
+extern fn a ( ) -> T ;
+extern fn a ( ) -> T < U , V > ;
+extern fn a ( ) -> T < U > ;
+extern fn a ( ) -> [ T ; 2 ] ;
+extern fn a ( ) -> [ ] T ;
+extern fn a ( ) -> [ ] const T ;
+extern fn a ( ) -> a ;
+extern fn a ( ) -> bool ;
+extern fn a ( ) -> fn ( ) -> T ;
+extern fn a ( ) -> fn ( T ) -> V ;
+extern fn a ( ) -> fn ( T , U ) -> V ;
+extern fn a ( ) -> i64 ;
+extern fn a ( ) -> int ;
+extern fn a ( ) -> void ;
+extern fn a ( ) ;
+extern fn a ( a : ( T , U ) ) ;
+extern fn a ( a : ( T , U , ) ) ;
+extern fn a ( a : ( T , U , V ) ) ;
+extern fn a ( a : * T ) ;
+extern fn a ( a : * const T ) ;
+extern fn a ( a : T ) ;
+extern fn a ( a : T < U , V > ) ;
+extern fn a ( a : T < U > ) ;
+extern fn a ( a : [ T ; 2 ] ) ;
+extern fn a ( a : [ ] T ) ;
+extern fn a ( a : [ ] const T ) ;
+extern fn a ( a : a ) -> a ;
+extern fn a ( a : a ) ;
+extern fn a ( a : a , a : a ) ;
+extern fn a ( a : a , a : a , a : a ) ;
+extern fn a ( a : bool ) ;
+extern fn a ( a : fn ( ) -> T ) ;
+extern fn a ( a : fn ( T ) -> V ) ;
+extern fn a ( a : fn ( T , U ) -> V ) ;
+extern fn a ( a : i64 ) ;
+extern fn a ( a : int ) ;
+extern fn a ( a : void ) ;
+extern fn null ( ) ;
+extern fn null(a: c_int) -> c_size; fn null() {} test "t" { let a = 1; }
+fn a ( ) -> ( T , U ) { }
+fn a ( ) -> ( T , U , ) { }
+fn a ( ) -> ( T , U , V ) { }
+fn a ( ) -> * T { }
+fn a ( ) -> * const T { }
+fn a ( ) -> T < U , V > { }
+fn a ( ) -> T < U > { }
+fn a ( ) -> T { }
+fn a ( ) -> [ T ; 2 ] { }
+fn a ( ) -> [ ] T { }
+fn a ( ) -> [ ] const T { }
+fn a ( ) -> a { }
+fn a ( ) -> bool { }
+fn a ( ) -> fn ( ) -> T { }
+fn a ( ) -> fn ( T ) -> V { }
+fn a ( ) -> fn ( T , U ) -> V { }
+fn a ( ) -> i64 { }
+fn a ( ) -> int { }
+fn a ( ) -> void { }
+fn a ( ) { a ; a ; }
+fn a ( ) { a ; }
+fn a ( ) { }
+fn a ( a : a ) { }
+fn a ( a : a , a : a ) { }
+fn a ( a : a , a : a , a : a ) { }
+fn a < a , a , a > ( ) { }
+fn a < a , a > ( ) { }
+fn a < a > ( ) { }
+fn a < a > ( a : a ) -> a { }
+fn f ( ) { for i in ( P { a : x } ) . a .. ( P < T > { a : x , } ) . a { } }
+fn f ( ) { if ( P < T > { a : x } ) . a { } }
+fn f ( ) { if ( P { a : x } ) . a { } }
+fn f ( ) { if a { } else if b { } else if c { } else { } }
+fn f ( ) { if a { } else if b { } else { } }
+fn f ( ) { match ( P { a : x , } ) . a { _ => { } } }
+fn f ( ) { while ( P { a : x , } ) . a { } }
+fn f() -> i64 { let a = [0; 4]; let t = (a, (b, c)); return t.1.0; }
+fn f() { a[0].b.0 = 1; *p += 2; (x) <<= 3; a >>= 1; a |= 1; a &= 1; a ^= 1; a %= 2; }
+fn f() { asm("nop"); defer g(); { let a = 1; } return; }
+fn f() { for i: u8 in 0..=3 {} for j in a..b {} loop { break; continue; } }
+fn f() { g<i64>(1); g<A<i64>, *u8>(); (g)(1); (a.b).c(1); a.b<T>(2); null(); }
+fn f() { if a < b { if c > (d) {} } while (P { x: 1 }).x > 0 {} }
+fn f() { let a = B<B<i64>> { v: 1 }; let c = E<i64>.A(1); let d = E<*u8>.B; }
+fn f() { let v = P { a: 1, b: Q<T> { c: 2 }, }; let w = i64 { }; }
+fn f() { let x = !a && -b || ~c | d ^ e & f == g != h < i > j <= k >= l << m >> n; }
+fn f() { let x = 0xFF + 0b1 + 0o7 + 1_000 + 1.5e3 + 'a' + "s" + true + false + null; }
+fn f() { let x = a + b - c * d / e % f as i64 as *const u8; y = try move z; w = &*p; }
+fn f() { match a { E.A(x, _) => {} 1 => {}, _ => {} } match move v { _ => {} } }
+fn f(a: fn() -> fn(i64) -> i64, b: (i64, (u8, bool)), c: [[u8; 2]; 3]) {}
+fn f<T>(a: T, b: []u8) -> Vec<Vec<T>> { let x: A<B<i64>> = y; let z: A<i64>= w; }
+fn null ( ) { }
+import a . a . a ;
+import a . a ;
+import a ;
+import a ; import a ;
+import a as a ;
+let a : ( T , U ) = a ;
+let a : ( T , U , ) = a ;
+let a : ( T , U , V ) = a ;
+let a : * T = a ;
+let a : * const T = a ;
+let a : T < U , V > = a ;
+let a : T < U > = a ;
+let a : T = a ;
+let a : [ T ; 2 ] = a ;
+let a : [ ] T = a ;
+let a : [ ] const T = a ;
+let a : a = a ;
+let a : bool = a ;
+let a : fn ( ) -> T = a ;
+let a : fn ( T ) -> V = a ;
+let a : fn ( T , U ) -> V = a ;
+let a : i64 = a ;
+let a : int = a ;
+let a : void = a ;
+let a = ! ! x ;
+let a = ! "s" ;
+let a = ! & x ;
+let a = ! 'c' ;
+let a = ! ( x ) ;
+let a = ! ( x , y ) ;
+let a = ! ( x , y , ) ;
+let a = ! ( x , y , z ) ;
+let a = ! * x ;
+let a = ! - x ;
+let a = ! 1 ;
+let a = ! 1.5 ;
+let a = ! E < T > . A ( x ) ;
+let a = ! E < T > . A ;
+let a = ! P < T > { a : x , } ;
+let a = ! P { a : x } ;
+let a = ! [ x , y , ] ;
+let a = ! [ x , y ] ;
+let a = ! [ x ; 2 ] ;
+let a = ! [ x ] ;
+let a = ! a ;
+let a = ! f ( ) ;
+let a = ! f ( x ) ;
+let a = ! f ( x , y ) ;
+let a = ! false ;
+let a = ! g < T > ( x ) ;
+let a = ! move x ;
+let a = ! null ;
+let a = ! true ;
+let a = ! try x ;
+let a = ! x != y ;
+let a = ! x % y ;
+let a = ! x & y ;
+let a = ! x && y ;
+let a = ! x * y ;
+let a = ! x + y ;
+let a = ! x - y ;
+let a = ! x . 0 ;
+let a = ! x . y ;
+let a = ! x / y ;
+let a = ! x ;
+let a = ! x < y ;
+let a = ! x << y ;
+let a = ! x <= y ;
+let a = ! x == y ;
+let a = ! x > y ;
+let a = ! x >= y ;
+let a = ! x >> y ;
+let a = ! x [ y ] ;
+let a = ! x ^ y ;
+let a = ! x as T ;
+let a = ! x | y ;
+let a = ! x || y ;
+let a = ! ~ x ;
+let a = "s" ;
+let a = & a ;
+let a = & x ;
+let a = 'c' ;
+let a = ( ! x ) ;
+let a = ( "s" ) ;
+let a = ( & x ) ;
+let a = ( 'c' ) ;
+let a = ( ( x ) ) ;
+let a = ( ( x , y ) ) ;
+let a = ( ( x , y , ) ) ;
+let a = ( ( x , y , z ) ) ;
+let a = ( * x ) ;
+let a = ( - x ) ;
+let a = ( 1 ) ;
+let a = ( 1.5 ) ;
+let a = ( E < T > . A ( x ) ) ;
+let a = ( E < T > . A ) ;
+let a = ( P < T > { a : x , } ) ;
+let a = ( P { a : x } ) ;
+let a = ( T , U ) . a ;
+let a = ( T , U ) ;
+let a = ( T , U , ) . a ;
+let a = ( T , U , ) ;
+let a = ( T , U , V ) . a ;
+let a = ( T , U , V ) ;
+let a = ( [ x , y , ] ) ;
+let a = ( [ x , y ] ) ;
+let a = ( [ x ; 2 ] ) ;
+let a = ( [ x ] ) ;
+let a = ( a ) ;
+let a = ( a , ! x ) ;
+let a = ( a , "s" ) ;
+let a = ( a , & x ) ;
+let a = ( a , 'c' ) ;
+let a = ( a , ( x ) ) ;
+let a = ( a , ( x , y ) ) ;
+let a = ( a , ( x , y , ) ) ;
+let a = ( a , ( x , y , z ) ) ;
+let a = ( a , * x ) ;
+let a = ( a , - x ) ;
+let a = ( a , 1 ) ;
+let a = ( a , 1.5 ) ;
+let a = ( a , E < T > . A ( x ) ) ;
+let a = ( a , E < T > . A ) ;
+let a = ( a , P < T > { a : x , } ) ;
+let a = ( a , P { a : x } ) ;
+let a = ( a , [ x , y , ] ) ;
+let a = ( a , [ x , y ] ) ;
+let a = ( a , [ x ; 2 ] ) ;
+let a = ( a , [ x ] ) ;
+let a = ( a , a ) ;
+let a = ( a , a , ! x ) ;
+let a = ( a , a , "s" ) ;
+let a = ( a , a , & x ) ;
+let a = ( a , a , 'c' ) ;
+let a = ( a , a , ( x ) ) ;
+let a = ( a , a , ( x , y ) ) ;
+let a = ( a , a , ( x , y , ) ) ;
+let a = ( a , a , ( x , y , z ) ) ;
+let a = ( a , a , * x ) ;
+let a = ( a , a , - x ) ;
+let a = ( a , a , 1 ) ;
+let a = ( a , a , 1.5 ) ;
+let a = ( a , a , E < T > . A ( x ) ) ;
+let a = ( a , a , E < T > . A ) ;
+let a = ( a , a , P < T > { a : x , } ) ;
+let a = ( a , a , P { a : x } ) ;
+let a = ( a , a , [ x , y , ] ) ;
+let a = ( a , a , [ x , y ] ) ;
+let a = ( a , a , [ x ; 2 ] ) ;
+let a = ( a , a , [ x ] ) ;
+let a = ( a , a , a ) ;
+let a = ( a , a , f ( ) ) ;
+let a = ( a , a , f ( x ) ) ;
+let a = ( a , a , f ( x , y ) ) ;
+let a = ( a , a , false ) ;
+let a = ( a , a , g < T > ( x ) ) ;
+let a = ( a , a , move x ) ;
+let a = ( a , a , null ) ;
+let a = ( a , a , true ) ;
+let a = ( a , a , try x ) ;
+let a = ( a , a , x != y ) ;
+let a = ( a , a , x % y ) ;
+let a = ( a , a , x & y ) ;
+let a = ( a , a , x && y ) ;
+let a = ( a , a , x ) ;
+let a = ( a , a , x * y ) ;
+let a = ( a , a , x + y ) ;
+let a = ( a , a , x - y ) ;
+let a = ( a , a , x . 0 ) ;
+let a = ( a , a , x . y ) ;
+let a = ( a , a , x / y ) ;
+let a = ( a , a , x < y ) ;
+let a = ( a , a , x << y ) ;
+let a = ( a , a , x <= y ) ;
+let a = ( a , a , x == y ) ;
+let a = ( a , a , x > y ) ;
+let a = ( a , a , x >= y ) ;
+let a = ( a , a , x >> y ) ;
+let a = ( a , a , x [ y ] ) ;
+let a = ( a , a , x ^ y ) ;
+let a = ( a , a , x as T ) ;
+let a = ( a , a , x | y ) ;
+let a = ( a , a , x || y ) ;
+let a = ( a , a , ~ x ) ;
+let a = ( a , f ( ) ) ;
+let a = ( a , f ( x ) ) ;
+let a = ( a , f ( x , y ) ) ;
+let a = ( a , false ) ;
+let a = ( a , g < T > ( x ) ) ;
+let a = ( a , move x ) ;
+let a = ( a , null ) ;
+let a = ( a , true ) ;
+let a = ( a , try x ) ;
+let a = ( a , x != y ) ;
+let a = ( a , x % y ) ;
+let a = ( a , x & y ) ;
+let a = ( a , x && y ) ;
+let a = ( a , x ) ;
+let a = ( a , x * y ) ;
+let a = ( a , x + y ) ;
+let a = ( a , x - y ) ;
+let a = ( a , x . 0 ) ;
+let a = ( a , x . y ) ;
+let a = ( a , x / y ) ;
+let a = ( a , x < y ) ;
+let a = ( a , x << y ) ;
+let a = ( a , x <= y ) ;
+let a = ( a , x == y ) ;
+let a = ( a , x > y ) ;
+let a = ( a , x >= y ) ;
+let a = ( a , x >> y ) ;
+let a = ( a , x [ y ] ) ;
+let a = ( a , x ^ y ) ;
+let a = ( a , x as T ) ;
+let a = ( a , x | y ) ;
+let a = ( a , x || y ) ;
+let a = ( a , ~ x ) ;
+let a = ( f ( ) ) ;
+let a = ( f ( x ) ) ;
+let a = ( f ( x , y ) ) ;
+let a = ( false ) ;
+let a = ( g < T > ( x ) ) ;
+let a = ( move x ) ;
+let a = ( null ) ;
+let a = ( true ) ;
+let a = ( try x ) ;
+let a = ( x != y ) ;
+let a = ( x % y ) ;
+let a = ( x & y ) ;
+let a = ( x && y ) ;
+let a = ( x ) ;
+let a = ( x * y ) ;
+let a = ( x + y ) ;
+let a = ( x , y ) ;
+let a = ( x , y , ) ;
+let a = ( x , y , z ) ;
+let a = ( x - y ) ;
+let a = ( x . 0 ) ;
+let a = ( x . y ) ;
+let a = ( x / y ) ;
+let a = ( x < y ) ;
+let a = ( x << y ) ;
+let a = ( x <= y ) ;
+let a = ( x == y ) ;
+let a = ( x > y ) ;
+let a = ( x >= y ) ;
+let a = ( x >> y ) ;
+let a = ( x [ y ] ) ;
+let a = ( x ^ y ) ;
+let a = ( x as T ) ;
+let a = ( x | y ) ;
+let a = ( x || y ) ;
+let a = ( ~ x ) ;
+let a = * T . a ;
+let a = * T ;
+let a = * T { } ;
+let a = * a ;
+let a = * x ;
+let a = - a ;
+let a = - x ;
+let a = 1 ;
+let a = 1.5 ;
+let a = E < T > . A ( x ) ;
+let a = E < T > . A ;
+let a = P < T > { a : x , } ;
+let a = P { a : x } ;
+let a = T . a ;
+let a = T ;
+let a = T < U , V > . a ;
+let a = T < U , V > { } ;
+let a = T < U > . a ;
+let a = T < U > { } ;
+let a = T { } ;
+let a = [ ! x ] ;
+let a = [ "s" ] ;
+let a = [ & x ] ;
+let a = [ 'c' ] ;
+let a = [ ( x ) ] ;
+let a = [ ( x , y ) ] ;
+let a = [ ( x , y , ) ] ;
+let a = [ ( x , y , z ) ] ;
+let a = [ * x ] ;
+let a = [ - x ] ;
+let a = [ 1 ] ;
+let a = [ 1.5 ] ;
+let a = [ E < T > . A ( x ) ] ;
+let a = [ E < T > . A ] ;
+let a = [ P < T > { a : x , } ] ;
+let a = [ P { a : x } ] ;
+let a = [ T ; 2 ] . a ;
+let a = [ T ; 2 ] ;
+let a = [ [ x , y , ] ] ;
+let a = [ [ x , y ] ] ;
+let a = [ [ x ; 2 ] ] ;
+let a = [ [ x ] ] ;
+let a = [ a , ! x ] ;
+let a = [ a , "s" ] ;
+let a = [ a , & x ] ;
+let a = [ a , 'c' ] ;
+let a = [ a , ( x ) ] ;
+let a = [ a , ( x , y ) ] ;
+let a = [ a , ( x , y , ) ] ;
+let a = [ a , ( x , y , z ) ] ;
+let a = [ a , * x ] ;
+let a = [ a , - x ] ;
+let a = [ a , 1 ] ;
+let a = [ a , 1.5 ] ;
+let a = [ a , E < T > . A ( x ) ] ;
+let a = [ a , E < T > . A ] ;
+let a = [ a , P < T > { a : x , } ] ;
+let a = [ a , P { a : x } ] ;
+let a = [ a , [ x , y , ] ] ;
+let a = [ a , [ x , y ] ] ;
+let a = [ a , [ x ; 2 ] ] ;
+let a = [ a , [ x ] ] ;
+let a = [ a , ] ;
+let a = [ a , a , ! x ] ;
+let a = [ a , a , "s" ] ;
+let a = [ a , a , & x ] ;
+let a = [ a , a , 'c' ] ;
+let a = [ a , a , ( x ) ] ;
+let a = [ a , a , ( x , y ) ] ;
+let a = [ a , a , ( x , y , ) ] ;
+let a = [ a , a , ( x , y , z ) ] ;
+let a = [ a , a , * x ] ;
+let a = [ a , a , - x ] ;
+let a = [ a , a , 1 ] ;
+let a = [ a , a , 1.5 ] ;
+let a = [ a , a , E < T > . A ( x ) ] ;
+let a = [ a , a , E < T > . A ] ;
+let a = [ a , a , P < T > { a : x , } ] ;
+let a = [ a , a , P { a : x } ] ;
+let a = [ a , a , [ x , y , ] ] ;
+let a = [ a , a , [ x , y ] ] ;
+let a = [ a , a , [ x ; 2 ] ] ;
+let a = [ a , a , [ x ] ] ;
+let a = [ a , a , ] ;
+let a = [ a , a , a ] ;
+let a = [ a , a , f ( ) ] ;
+let a = [ a , a , f ( x ) ] ;
+let a = [ a , a , f ( x , y ) ] ;
+let a = [ a , a , false ] ;
+let a = [ a , a , g < T > ( x ) ] ;
+let a = [ a , a , move x ] ;
+let a = [ a , a , null ] ;
+let a = [ a , a , true ] ;
+let a = [ a , a , try x ] ;
+let a = [ a , a , x != y ] ;
+let a = [ a , a , x % y ] ;
+let a = [ a , a , x & y ] ;
+let a = [ a , a , x && y ] ;
+let a = [ a , a , x * y ] ;
+let a = [ a , a , x + y ] ;
+let a = [ a , a , x - y ] ;
+let a = [ a , a , x . 0 ] ;
+let a = [ a , a , x . y ] ;
+let a = [ a , a , x / y ] ;
+let a = [ a , a , x < y ] ;
+let a = [ a , a , x << y ] ;
+let a = [ a , a , x <= y ] ;
+let a = [ a , a , x == y ] ;
+let a = [ a , a , x > y ] ;
+let a = [ a , a , x >= y ] ;
+let a = [ a , a , x >> y ] ;
+let a = [ a , a , x [ y ] ] ;
+let a = [ a , a , x ] ;
+let a = [ a , a , x ^ y ] ;
+let a = [ a , a , x as T ] ;
+let a = [ a , a , x | y ] ;
+let a = [ a , a , x || y ] ;
+let a = [ a , a , ~ x ] ;
+let a = [ a , a ] ;
+let a = [ a , f ( ) ] ;
+let a = [ a , f ( x ) ] ;
+let a = [ a , f ( x , y ) ] ;
+let a = [ a , false ] ;
+let a = [ a , g < T > ( x ) ] ;
+let a = [ a , move x ] ;
+let a = [ a , null ] ;
+let a = [ a , true ] ;
+let a = [ a , try x ] ;
+let a = [ a , x != y ] ;
+let a = [ a , x % y ] ;
+let a = [ a , x & y ] ;
+let a = [ a , x && y ] ;
+let a = [ a , x * y ] ;
+let a = [ a , x + y ] ;
+let a = [ a , x - y ] ;
+let a = [ a , x . 0 ] ;
+let a = [ a , x . y ] ;
+let a = [ a , x / y ] ;
+let a = [ a , x < y ] ;
+let a = [ a , x << y ] ;
+let a = [ a , x <= y ] ;
+let a = [ a , x == y ] ;
+let a = [ a , x > y ] ;
+let a = [ a , x >= y ] ;
+let a = [ a , x >> y ] ;
+let a = [ a , x [ y ] ] ;
+let a = [ a , x ] ;
+let a = [ a , x ^ y ] ;
+let a = [ a , x as T ] ;
+let a = [ a , x | y ] ;
+let a = [ a , x || y ] ;
+let a = [ a , ~ x ] ;
+let a = [ a ; 1 ] ;
+let a = [ a ] ;
+let a = [ f ( ) ] ;
+let a = [ f ( x ) ] ;
+let a = [ f ( x , y ) ] ;
+let a = [ false ] ;
+let a = [ g < T > ( x ) ] ;
+let a = [ move x ] ;
+let a = [ null ] ;
+let a = [ true ] ;
+let a = [ try x ] ;
+let a = [ x != y ] ;
+let a = [ x % y ] ;
+let a = [ x & y ] ;
+let a = [ x && y ] ;
+let a = [ x * y ] ;
+let a = [ x + y ] ;
+let a = [ x , y , ] ;
+let a = [ x , y ] ;
+let a = [ x - y ] ;
+let a = [ x . 0 ] ;
+let a = [ x . y ] ;
+let a = [ x / y ] ;
+let a = [ x ; 2 ] ;
+let a = [ x < y ] ;
+let a = [ x << y ] ;
+let a = [ x <= y ] ;
+let a = [ x == y ] ;
+let a = [ x > y ] ;
+let a = [ x >= y ] ;
+let a = [ x >> y ] ;
+let a = [ x [ y ] ] ;
+let a = [ x ] ;
+let a = [ x ^ y ] ;
+let a = [ x as T ] ;
+let a = [ x | y ] ;
+let a = [ x || y ] ;
+let a = [ ~ x ] ;
+let a = a & ! x ;
+let a = a & "s" ;
+let a = a & & x ;
+let a = a & 'c' ;
+let a = a & ( x ) ;
+let a = a & ( x , y ) ;
+let a = a & ( x , y , ) ;
+let a = a & ( x , y , z ) ;
+let a = a & * x ;
+let a = a & - x ;
+let a = a & 1 ;
+let a = a & 1.5 ;
+let a = a & E < T > . A ( x ) ;
+let a = a & E < T > . A ;
+let a = a & P < T > { a : x , } ;
+let a = a & P { a : x } ;
+let a = a & [ x , y , ] ;
+let a = a & [ x , y ] ;
+let a = a & [ x ; 2 ] ;
+let a = a & [ x ] ;
+let a = a & a & a ;
+let a = a & a ;
+let a = a & f ( ) ;
+let a = a & f ( x ) ;
+let a = a & f ( x , y ) ;
+let a = a & false ;
+let a = a & g < T > ( x ) ;
+let a = a & move x ;
+let a = a & null ;
+let a = a & true ;
+let a = a & try x ;
+let a = a & x != y ;
+let a = a & x % y ;
+let a = a & x & y ;
+let a = a & x && y ;
+let a = a & x * y ;
+let a = a & x + y ;
+let a = a & x - y ;
+let a = a & x . 0 ;
+let a = a & x . y ;
+let a = a & x / y ;
+let a = a & x ;
+let a = a & x < y ;
+let a = a & x << y ;
+let a = a & x <= y ;
+let a = a & x == y ;
+let a = a & x > y ;
+let a = a & x >= y ;
+let a = a & x >> y ;
+let a = a & x [ y ] ;
+let a = a & x ^ y ;
+let a = a & x as T ;
+let a = a & x | y ;
+let a = a & x || y ;
+let a = a & ~ x ;
+let a = a && ! x ;
+let a = a && "s" ;
+let a = a && & x ;
+let a = a && 'c' ;
+let a = a && ( x ) ;
+let a = a && ( x , y ) ;
+let a = a && ( x , y , ) ;
+let a = a && ( x , y , z ) ;
+let a = a && * x ;
+let a = a && - x ;
+let a = a && 1 ;
+let a = a && 1.5 ;
+let a = a && E < T > . A ( x ) ;
+let a = a && E < T > . A ;
+let a = a && P < T > { a : x , } ;
+let a = a && P { a : x } ;
+let a = a && [ x , y , ] ;
+let a = a && [ x , y ] ;
+let a = a && [ x ; 2 ] ;
+let a = a && [ x ] ;
+let a = a && a && a ;
+let a = a && a ;
+let a = a && f ( ) ;
+let a = a && f ( x ) ;
+let a = a && f ( x , y ) ;
+let a = a && false ;
+let a = a && g < T > ( x ) ;
+let a = a && move x ;
+let a = a && null ;
+let a = a && true ;
+let a = a && try x ;
+let a = a && x != y ;
+let a = a && x % y ;
+let a = a && x & y ;
+let a = a && x && y ;
+let a = a && x * y ;
+let a = a && x + y ;
+let a = a && x - y ;
+let a = a && x . 0 ;
+let a = a && x . y ;
+let a = a && x / y ;
+let a = a && x ;
+let a = a && x < y ;
+let a = a && x << y ;
+let a = a && x <= y ;
+let a = a && x == y ;
+let a = a && x > y ;
+let a = a && x >= y ;
+let a = a && x >> y ;
+let a = a && x [ y ] ;
+let a = a && x ^ y ;
+let a = a && x as T ;
+let a = a && x | y ;
+let a = a && x || y ;
+let a = a && ~ x ;
+let a = a ( ) ;
+let a = a ( a ) ;
+let a = a ( a , a ) ;
+let a = a * ! x ;
+let a = a * "s" ;
+let a = a * & x ;
+let a = a * 'c' ;
+let a = a * ( x ) ;
+let a = a * ( x , y ) ;
+let a = a * ( x , y , ) ;
+let a = a * ( x , y , z ) ;
+let a = a * * x ;
+let a = a * - x ;
+let a = a * 1 ;
+let a = a * 1.5 ;
+let a = a * E < T > . A ( x ) ;
+let a = a * E < T > . A ;
+let a = a * P < T > { a : x , } ;
+let a = a * P { a : x } ;
+let a = a * [ x , y , ] ;
+let a = a * [ x , y ] ;
+let a = a * [ x ; 2 ] ;
+let a = a * [ x ] ;
+let a = a * a * a ;
+let a = a * a ;
+let a = a * f ( ) ;
+let a = a * f ( x ) ;
+let a = a * f ( x , y ) ;
+let a = a * false ;
+let a = a * g < T > ( x ) ;
+let a = a * move x ;
+let a = a * null ;
+let a = a * true ;
+let a = a * try x ;
+let a = a * x != y ;
+let a = a * x % y ;
+let a = a * x & y ;
+let a = a * x && y ;
+let a = a * x * y ;
+let a = a * x + y ;
+let a = a * x - y ;
+let a = a * x . 0 ;
+let a = a * x . y ;
+let a = a * x / y ;
+let a = a * x ;
+let a = a * x < y ;
+let a = a * x << y ;
+let a = a * x <= y ;
+let a = a * x == y ;
+let a = a * x > y ;
+let a = a * x >= y ;
+let a = a * x >> y ;
+let a = a * x [ y ] ;
+let a = a * x ^ y ;
+let a = a * x as T ;
+let a = a * x | y ;
+let a = a * x || y ;
+let a = a * ~ x ;
+let a = a + ! x ;
+let a = a + "s" ;
+let a = a + & x ;
+let a = a + 'c' ;
+let a = a + ( x ) ;
+let a = a + ( x , y ) ;
+let a = a + ( x , y , ) ;
+let a = a + ( x , y , z ) ;
+let a = a + * x ;
+let a = a + - x ;
+let a = a + 1 ;
+let a = a + 1.5 ;
+let a = a + E < T > . A ( x ) ;
+let a = a + E < T > . A ;
+let a = a + P < T > { a : x , } ;
+let a = a + P { a : x } ;
+let a = a + [ x , y , ] ;
+let a = a + [ x , y ] ;
+let a = a + [ x ; 2 ] ;
+let a = a + [ x ] ;
+let a = a + a + a ;
+let a = a + a ;
+let a = a + f ( ) ;
+let a = a + f ( x ) ;
+let a = a + f ( x , y ) ;
+let a = a + false ;
+let a = a + g < T > ( x ) ;
+let a = a + move x ;
+let a = a + null ;
+let a = a + true ;
+let a = a + try x ;
+let a = a + x != y ;
+let a = a + x % y ;
+let a = a + x & y ;
+let a = a + x && y ;
+let a = a + x * y ;
+let a = a + x + y ;
+let a = a + x - y ;
+let a = a + x . 0 ;
+let a = a + x . y ;
+let a = a + x / y ;
+let a = a + x ;
+let a = a + x < y ;
+let a = a + x << y ;
+let a = a + x <= y ;
+let a = a + x == y ;
+let a = a + x > y ;
+let a = a + x >= y ;
+let a = a + x >> y ;
+let a = a + x [ y ] ;
+let a = a + x ^ y ;
+let a = a + x as T ;
+let a = a + x | y ;
+let a = a + x || y ;
+let a = a + ~ x ;
+let a = a . 1 ;
+let a = a . a ;
+let a = a ;
+let a = a < ! x ;
+let a = a < "s" ;
+let a = a < & x ;
+let a = a < 'c' ;
+let a = a < ( x ) ;
+let a = a < ( x , y ) ;
+let a = a < ( x , y , ) ;
+let a = a < ( x , y , z ) ;
+let a = a < * x ;
+let a = a < - x ;
+let a = a < 1 ;
+let a = a < 1.5 ;
+let a = a < E < T > . A ( x ) ;
+let a = a < E < T > . A ;
+let a = a < P < T > { a : x , } ;
+let a = a < P { a : x } ;
+let a = a < [ x , y , ] ;
+let a = a < [ x , y ] ;
+let a = a < [ x ; 2 ] ;
+let a = a < [ x ] ;
+let a = a < a , a , a > ( ) ;
+let a = a < a , a > ( ) ;
+let a = a < a ;
+let a = a < a < a ;
+let a = a < a > ( ! x ) ;
+let a = a < a > ( "s" ) ;
+let a = a < a > ( & x ) ;
+let a = a < a > ( 'c' ) ;
+let a = a < a > ( ( x ) ) ;
+let a = a < a > ( ( x , y ) ) ;
+let a = a < a > ( ( x , y , ) ) ;
+let a = a < a > ( ( x , y , z ) ) ;
+let a = a < a > ( ) ;
+let a = a < a > ( * x ) ;
+let a = a < a > ( - x ) ;
+let a = a < a > ( 1 ) ;
+let a = a < a > ( 1.5 ) ;
+let a = a < a > ( E < T > . A ( x ) ) ;
+let a = a < a > ( E < T > . A ) ;
+let a = a < a > ( P < T > { a : x , } ) ;
+let a = a < a > ( P { a : x } ) ;
+let a = a < a > ( [ x , y , ] ) ;
+let a = a < a > ( [ x , y ] ) ;
+let a = a < a > ( [ x ; 2 ] ) ;
+let a = a < a > ( [ x ] ) ;
+let a = a < a > ( a ) ;
+let a = a < a > ( a , ! x ) ;
+let a = a < a > ( a , "s" ) ;
+let a = a < a > ( a , & x ) ;
+let a = a < a > ( a , 'c' ) ;
+let a = a < a > ( a , ( x ) ) ;
+let a = a < a > ( a , ( x , y ) ) ;
+let a = a < a > ( a , ( x , y , ) ) ;
+let a = a < a > ( a , ( x , y , z ) ) ;
+let a = a < a > ( a , * x ) ;
+let a = a < a > ( a , - x ) ;
+let a = a < a > ( a , 1 ) ;
+let a = a < a > ( a , 1.5 ) ;
+let a = a < a > ( a , E < T > . A ( x ) ) ;
+let a = a < a > ( a , E < T > . A ) ;
+let a = a < a > ( a , P < T > { a : x , } ) ;
+let a = a < a > ( a , P { a : x } ) ;
+let a = a < a > ( a , [ x , y , ] ) ;
+let a = a < a > ( a , [ x , y ] ) ;
+let a = a < a > ( a , [ x ; 2 ] ) ;
+let a = a < a > ( a , [ x ] ) ;
+let a = a < a > ( a , a ) ;
+let a = a < a > ( a , f ( ) ) ;
+let a = a < a > ( a , f ( x ) ) ;
+let a = a < a > ( a , f ( x , y ) ) ;
+let a = a < a > ( a , false ) ;
+let a = a < a > ( a , g < T > ( x ) ) ;
+let a = a < a > ( a , move x ) ;
+let a = a < a > ( a , null ) ;
+let a = a < a > ( a , true ) ;
+let a = a < a > ( a , try x ) ;
+let a = a < a > ( a , x != y ) ;
+let a = a < a > ( a , x % y ) ;
+let a = a < a > ( a , x & y ) ;
+let a = a < a > ( a , x && y ) ;
+let a = a < a > ( a , x ) ;
+let a = a < a > ( a , x * y ) ;
+let a = a < a > ( a , x + y ) ;
+let a = a < a > ( a , x - y ) ;
+let a = a < a > ( a , x . 0 ) ;
+let a = a < a > ( a , x . y ) ;
+let a = a < a > ( a , x / y ) ;
+let a = a < a > ( a , x < y ) ;
+let a = a < a > ( a , x << y ) ;
+let a = a < a > ( a , x <= y ) ;
+let a = a < a > ( a , x == y ) ;
+let a = a < a > ( a , x > y ) ;
+let a = a < a > ( a , x >= y ) ;
+let a = a < a > ( a , x >> y ) ;
+let a = a < a > ( a , x [ y ] ) ;
+let a = a < a > ( a , x ^ y ) ;
+let a = a < a > ( a , x as T ) ;
+let a = a < a > ( a , x | y ) ;
+let a = a < a > ( a , x || y ) ;
+let a = a < a > ( a , ~ x ) ;
+let a = a < a > ( f ( ) ) ;
+let a = a < a > ( f ( x ) ) ;
+let a = a < a > ( f ( x , y ) ) ;
+let a = a < a > ( false ) ;
+let a = a < a > ( g < T > ( x ) ) ;
+let a = a < a > ( move x ) ;
+let a = a < a > ( null ) ;
+let a = a < a > ( true ) ;
+let a = a < a > ( try x ) ;
+let a = a < a > ( x != y ) ;
+let a = a < a > ( x % y ) ;
+let a = a < a > ( x & y ) ;
+let a = a < a > ( x && y ) ;
+let a = a < a > ( x ) ;
+let a = a < a > ( x * y ) ;
+let a = a < a > ( x + y ) ;
+let a = a < a > ( x - y ) ;
+let a = a < a > ( x . 0 ) ;
+let a = a < a > ( x . y ) ;
+let a = a < a > ( x / y ) ;
+let a = a < a > ( x < y ) ;
+let a = a < a > ( x << y ) ;
+let a = a < a > ( x <= y ) ;
+let a = a < a > ( x == y ) ;
+let a = a < a > ( x > y ) ;
+let a = a < a > ( x >= y ) ;
+let a = a < a > ( x >> y ) ;
+let a = a < a > ( x [ y ] ) ;
+let a = a < a > ( x ^ y ) ;
+let a = a < a > ( x as T ) ;
+let a = a < a > ( x | y ) ;
+let a = a < a > ( x || y ) ;
+let a = a < a > ( ~ x ) ;
+let a = a < f ( ) ;
+let a = a < f ( x ) ;
+let a = a < f ( x , y ) ;
+let a = a < false ;
+let a = a < g < T > ( x ) ;
+let a = a < move x ;
+let a = a < null ;
+let a = a < true ;
+let a = a < try x ;
+let a = a < x != y ;
+let a = a < x % y ;
+let a = a < x & y ;
+let a = a < x && y ;
+let a = a < x * y ;
+let a = a < x + y ;
+let a = a < x - y ;
+let a = a < x . 0 ;
+let a = a < x . y ;
+let a = a < x / y ;
+let a = a < x ;
+let a = a < x < y ;
+let a = a < x << y ;
+let a = a < x <= y ;
+let a = a < x == y ;
+let a = a < x > y ;
+let a = a < x >= y ;
+let a = a < x >> y ;
+let a = a < x [ y ] ;
+let a = a < x ^ y ;
+let a = a < x as T ;
+let a = a < x | y ;
+let a = a < x || y ;
+let a = a < ~ x ;
+let a = a << ! x ;
+let a = a << "s" ;
+let a = a << & x ;
+let a = a << 'c' ;
+let a = a << ( x ) ;
+let a = a << ( x , y ) ;
+let a = a << ( x , y , ) ;
+let a = a << ( x , y , z ) ;
+let a = a << * x ;
+let a = a << - x ;
+let a = a << 1 ;
+let a = a << 1.5 ;
+let a = a << E < T > . A ( x ) ;
+let a = a << E < T > . A ;
+let a = a << P < T > { a : x , } ;
+let a = a << P { a : x } ;
+let a = a << [ x , y , ] ;
+let a = a << [ x , y ] ;
+let a = a << [ x ; 2 ] ;
+let a = a << [ x ] ;
+let a = a << a ;
+let a = a << a << a ;
+let a = a << f ( ) ;
+let a = a << f ( x ) ;
+let a = a << f ( x , y ) ;
+let a = a << false ;
+let a = a << g < T > ( x ) ;
+let a = a << move x ;
+let a = a << null ;
+let a = a << true ;
+let a = a << try x ;
+let a = a << x != y ;
+let a = a << x % y ;
+let a = a << x & y ;
+let a = a << x && y ;
+let a = a << x * y ;
+let a = a << x + y ;
+let a = a << x - y ;
+let a = a << x . 0 ;
+let a = a << x . y ;
+let a = a << x / y ;
+let a = a << x ;
+let a = a << x < y ;
+let a = a << x << y ;
+let a = a << x <= y ;
+let a = a << x == y ;
+let a = a << x > y ;
+let a = a << x >= y ;
+let a = a << x >> y ;
+let a = a << x [ y ] ;
+let a = a << x ^ y ;
+let a = a << x as T ;
+let a = a << x | y ;
+let a = a << x || y ;
+let a = a << ~ x ;
+let a = a == ! x ;
+let a = a == "s" ;
+let a = a == & x ;
+let a = a == 'c' ;
+let a = a == ( x ) ;
+let a = a == ( x , y ) ;
+let a = a == ( x , y , ) ;
+let a = a == ( x , y , z ) ;
+let a = a == * x ;
+let a = a == - x ;
+let a = a == 1 ;
+let a = a == 1.5 ;
+let a = a == E < T > . A ( x ) ;
+let a = a == E < T > . A ;
+let a = a == P < T > { a : x , } ;
+let a = a == P { a : x } ;
+let a = a == [ x , y , ] ;
+let a = a == [ x , y ] ;
+let a = a == [ x ; 2 ] ;
+let a = a == [ x ] ;
+let a = a == a ;
+let a = a == a == a ;
+let a = a == f ( ) ;
+let a = a == f ( x ) ;
+let a = a == f ( x , y ) ;
+let a = a == false ;
+let a = a == g < T > ( x ) ;
+let a = a == move x ;
+let a = a == null ;
+let a = a == true ;
+let a = a == try x ;
+let a = a == x != y ;
+let a = a == x % y ;
+let a = a == x & y ;
+let a = a == x && y ;
+let a = a == x * y ;
+let a = a == x + y ;
+let a = a == x - y ;
+let a = a == x . 0 ;
+let a = a == x . y ;
+let a = a == x / y ;
+let a = a == x ;
+let a = a == x < y ;
+let a = a == x << y ;
+let a = a == x <= y ;
+let a = a == x == y ;
+let a = a == x > y ;
+let a = a == x >= y ;
+let a = a == x >> y ;
+let a = a == x [ y ] ;
+let a = a == x ^ y ;
+let a = a == x as T ;
+let a = a == x | y ;
+let a = a == x || y ;
+let a = a == ~ x ;
+let a = a [ ! x ] ;
+let a = a [ "s" ] ;
+let a = a [ & x ] ;
+let a = a [ 'c' ] ;
+let a = a [ ( x ) ] ;
+let a = a [ ( x , y ) ] ;
+let a = a [ ( x , y , ) ] ;
+let a = a [ ( x , y , z ) ] ;
+let a = a [ * x ] ;
+let a = a [ - x ] ;
+let a = a [ 1 ] ;
+let a = a [ 1.5 ] ;
+let a = a [ E < T > . A ( x ) ] ;
+let a = a [ E < T > . A ] ;
+let a = a [ P < T > { a : x , } ] ;
+let a = a [ P { a : x } ] ;
+let a = a [ [ x , y , ] ] ;
+let a = a [ [ x , y ] ] ;
+let a = a [ [ x ; 2 ] ] ;
+let a = a [ [ x ] ] ;
+let a = a [ a ] ;
+let a = a [ f ( ) ] ;
+let a = a [ f ( x ) ] ;
+let a = a [ f ( x , y ) ] ;
+let a = a [ false ] ;
+let a = a [ g < T > ( x ) ] ;
+let a = a [ move x ] ;
+let a = a [ null ] ;
+let a = a [ true ] ;
+let a = a [ try x ] ;
+let a = a [ x != y ] ;
+let a = a [ x % y ] ;
+let a = a [ x & y ] ;
+let a = a [ x && y ] ;
+let a = a [ x * y ] ;
+let a = a [ x + y ] ;
+let a = a [ x - y ] ;
+let a = a [ x . 0 ] ;
+let a = a [ x . y ] ;
+let a = a [ x / y ] ;
+let a = a [ x < y ] ;
+let a = a [ x << y ] ;
+let a = a [ x <= y ] ;
+let a = a [ x == y ] ;
+let a = a [ x > y ] ;
+let a = a [ x >= y ] ;
+let a = a [ x >> y ] ;
+let a = a [ x [ y ] ] ;
+let a = a [ x ] ;
+let a = a [ x ^ y ] ;
+let a = a [ x as T ] ;
+let a = a [ x | y ] ;
+let a = a [ x || y ] ;
+let a = a [ ~ x ] ;
+let a = a ^ ! x ;
+let a = a ^ "s" ;
+let a = a ^ & x ;
+let a = a ^ 'c' ;
+let a = a ^ ( x ) ;
+let a = a ^ ( x , y ) ;
+let a = a ^ ( x , y , ) ;
+let a = a ^ ( x , y , z ) ;
+let a = a ^ * x ;
+let a = a ^ - x ;
+let a = a ^ 1 ;
+let a = a ^ 1.5 ;
+let a = a ^ E < T > . A ( x ) ;
+let a = a ^ E < T > . A ;
+let a = a ^ P < T > { a : x , } ;
+let a = a ^ P { a : x } ;
+let a = a ^ [ x , y , ] ;
+let a = a ^ [ x , y ] ;
+let a = a ^ [ x ; 2 ] ;
+let a = a ^ [ x ] ;
+let a = a ^ a ;
+let a = a ^ a ^ a ;
+let a = a ^ f ( ) ;
+let a = a ^ f ( x ) ;
+let a = a ^ f ( x , y ) ;
+let a = a ^ false ;
+let a = a ^ g < T > ( x ) ;
+let a = a ^ move x ;
+let a = a ^ null ;
+let a = a ^ true ;
+let a = a ^ try x ;
+let a = a ^ x != y ;
+let a = a ^ x % y ;
+let a = a ^ x & y ;
+let a = a ^ x && y ;
+let a = a ^ x * y ;
+let a = a ^ x + y ;
+let a = a ^ x - y ;
+let a = a ^ x . 0 ;
+let a = a ^ x . y ;
+let a = a ^ x / y ;
+let a = a ^ x ;
+let a = a ^ x < y ;
+let a = a ^ x << y ;
+let a = a ^ x <= y ;
+let a = a ^ x == y ;
+let a = a ^ x > y ;
+let a = a ^ x >= y ;
+let a = a ^ x >> y ;
+let a = a ^ x [ y ] ;
+let a = a ^ x ^ y ;
+let a = a ^ x as T ;
+let a = a ^ x | y ;
+let a = a ^ x || y ;
+let a = a ^ ~ x ;
+let a = a as ( T , U ) ;
+let a = a as ( T , U , ) ;
+let a = a as ( T , U , V ) ;
+let a = a as * T ;
+let a = a as * const T ;
+let a = a as T ;
+let a = a as T < U , V > ;
+let a = a as T < U > ;
+let a = a as [ T ; 2 ] ;
+let a = a as [ ] T ;
+let a = a as [ ] const T ;
+let a = a as a ;
+let a = a as a as a ;
+let a = a as bool ;
+let a = a as fn ( ) -> T ;
+let a = a as fn ( T ) -> V ;
+let a = a as fn ( T , U ) -> V ;
+let a = a as i64 ;
+let a = a as int ;
+let a = a as void ;
+let a = a { a : ! x } ;
+let a = a { a : "s" } ;
+let a = a { a : & x } ;
+let a = a { a : 'c' } ;
+let a = a { a : ( x ) } ;
+let a = a { a : ( x , y ) } ;
+let a = a { a : ( x , y , ) } ;
+let a = a { a : ( x , y , z ) } ;
+let a = a { a : * x } ;
+let a = a { a : - x } ;
+let a = a { a : 1 } ;
+let a = a { a : 1.5 } ;
+let a = a { a : E < T > . A ( x ) } ;
+let a = a { a : E < T > . A } ;
+let a = a { a : P < T > { a : x , } } ;
+let a = a { a : P { a : x } } ;
+let a = a { a : [ x , y , ] } ;
+let a = a { a : [ x , y ] } ;
+let a = a { a : [ x ; 2 ] } ;
+let a = a { a : [ x ] } ;
+let a = a { a : a , a : a , a : a } ;
+let a = a { a : a , a : a , } ;
+let a = a { a : a , a : a } ;
+let a = a { a : a , } ;
+let a = a { a : a } ;
+let a = a { a : f ( ) } ;
+let a = a { a : f ( x ) } ;
+let a = a { a : f ( x , y ) } ;
+let a = a { a : false } ;
+let a = a { a : g < T > ( x ) } ;
+let a = a { a : move x } ;
+let a = a { a : null } ;
+let a = a { a : true } ;
+let a = a { a : try x } ;
+let a = a { a : x != y } ;
+let a = a { a : x % y } ;
+let a = a { a : x & y } ;
+let a = a { a : x && y } ;
+let a = a { a : x * y } ;
+let a = a { a : x + y } ;
+let a = a { a : x - y } ;
+let a = a { a : x . 0 } ;
+let a = a { a : x . y } ;
+let a = a { a : x / y } ;
+let a = a { a : x < y } ;
+let a = a { a : x << y } ;
+let a = a { a : x <= y } ;
+let a = a { a : x == y } ;
+let a = a { a : x > y } ;
+let a = a { a : x >= y } ;
+let a = a { a : x >> y } ;
+let a = a { a : x [ y ] } ;
+let a = a { a : x ^ y } ;
+let a = a { a : x as T } ;
+let a = a { a : x | y } ;
+let a = a { a : x || y } ;
+let a = a { a : x } ;
+let a = a { a : ~ x } ;
+let a = a { } ;
+let a = a | ! x ;
+let a = a | "s" ;
+let a = a | & x ;
+let a = a | 'c' ;
+let a = a | ( x ) ;
+let a = a | ( x , y ) ;
+let a = a | ( x , y , ) ;
+let a = a | ( x , y , z ) ;
+let a = a | * x ;
+let a = a | - x ;
+let a = a | 1 ;
+let a = a | 1.5 ;
+let a = a | E < T > . A ( x ) ;
+let a = a | E < T > . A ;
+let a = a | P < T > { a : x , } ;
+let a = a | P { a : x } ;
+let a = a | [ x , y , ] ;
+let a = a | [ x , y ] ;
+let a = a | [ x ; 2 ] ;
+let a = a | [ x ] ;
+let a = a | a ;
+let a = a | a | a ;
+let a = a | f ( ) ;
+let a = a | f ( x ) ;
+let a = a | f ( x , y ) ;
+let a = a | false ;
+let a = a | g < T > ( x ) ;
+let a = a | move x ;
+let a = a | null ;
+let a = a | true ;
+let a = a | try x ;
+let a = a | x != y ;
+let a = a | x % y ;
+let a = a | x & y ;
+let a = a | x && y ;
+let a = a | x * y ;
+let a = a | x + y ;
+let a = a | x - y ;
+let a = a | x . 0 ;
+let a = a | x . y ;
+let a = a | x / y ;
+let a = a | x ;
+let a = a | x < y ;
+let a = a | x << y ;
+let a = a | x <= y ;
+let a = a | x == y ;
+let a = a | x > y ;
+let a = a | x >= y ;
+let a = a | x >> y ;
+let a = a | x [ y ] ;
+let a = a | x ^ y ;
+let a = a | x as T ;
+let a = a | x | y ;
+let a = a | x || y ;
+let a = a | ~ x ;
+let a = a || ! x ;
+let a = a || "s" ;
+let a = a || & x ;
+let a = a || 'c' ;
+let a = a || ( x ) ;
+let a = a || ( x , y ) ;
+let a = a || ( x , y , ) ;
+let a = a || ( x , y , z ) ;
+let a = a || * x ;
+let a = a || - x ;
+let a = a || 1 ;
+let a = a || 1.5 ;
+let a = a || E < T > . A ( x ) ;
+let a = a || E < T > . A ;
+let a = a || P < T > { a : x , } ;
+let a = a || P { a : x } ;
+let a = a || [ x , y , ] ;
+let a = a || [ x , y ] ;
+let a = a || [ x ; 2 ] ;
+let a = a || [ x ] ;
+let a = a || a ;
+let a = a || a || a ;
+let a = a || f ( ) ;
+let a = a || f ( x ) ;
+let a = a || f ( x , y ) ;
+let a = a || false ;
+let a = a || g < T > ( x ) ;
+let a = a || move x ;
+let a = a || null ;
+let a = a || true ;
+let a = a || try x ;
+let a = a || x != y ;
+let a = a || x % y ;
+let a = a || x & y ;
+let a = a || x && y ;
+let a = a || x * y ;
+let a = a || x + y ;
+let a = a || x - y ;
+let a = a || x . 0 ;
+let a = a || x . y ;
+let a = a || x / y ;
+let a = a || x ;
+let a = a || x < y ;
+let a = a || x << y ;
+let a = a || x <= y ;
+let a = a || x == y ;
+let a = a || x > y ;
+let a = a || x >= y ;
+let a = a || x >> y ;
+let a = a || x [ y ] ;
+let a = a || x ^ y ;
+let a = a || x as T ;
+let a = a || x | y ;
+let a = a || x || y ;
+let a = a || ~ x ;
+let a = f ( ) ;
+let a = f ( x ) ;
+let a = f ( x , y ) ;
+let a = false ;
+let a = g < T > ( x ) ;
+let a = i64 . a ;
+let a = i64 ;
+let a = i64 { } ;
+let a = move a ;
+let a = move x ;
+let a = null ;
+let a = true ;
+let a = try a ;
+let a = try x ;
+let a = x != y ;
+let a = x % y ;
+let a = x & y ;
+let a = x && y ;
+let a = x * y ;
+let a = x + y ;
+let a = x - y ;
+let a = x . 0 ;
+let a = x . y ;
+let a = x / y ;
+let a = x ;
+let a = x < y ;
+let a = x << y ;
+let a = x <= y ;
+let a = x == y ;
+let a = x > y ;
+let a = x >= y ;
+let a = x >> y ;
+let a = x [ y ] ;
+let a = x ^ y ;
+let a = x as T ;
+let a = x | y ;
+let a = x || y ;
+let a = ~ a ;
+let a = ~ x ;
+let g: [i64; 3] = [1, 2, 3,]; const h: []const u8 = v; let t: (i64, u8,) = (1, 2,);
+let v = ( x , y , z , w ) ;
+let v = ( x , y , z , w , ) ;
+let v = E < T > . 0 ;
+let v = [ x , y , z , w , ] ;
+let v = [ x , y , z , w ] ;
+let v = f ( x , y , z ) ;
+module a . a . a ;
+module a . a ;
+module a ;
+module a ; import a ;
+module a.b; import std.vec; import x.y as z; pub fn f() {}
+pub fn a ( ) -> a { }
+pub fn a ( ) { }
+pub fn a ( a : a ) { }
+pub fn a < a > ( ) { }
+pub fn a < a > ( a : a ) -> a { }
+resource struct R { a: i64, b: u8, } fn destroy(r: *R) -> void {}
+resource struct a < a > { a : a }
+resource struct a < a > { }
+resource struct a { a : a }
+resource struct a { }
+struct E {} struct G<T, U> { a: T, b: *const U } enum C { A, B, }
+struct a < a , a , a > { }
+struct a < a , a > { }
+struct a < a > { a : a }
+struct a < a > { }
+struct a { a : ( T , U ) }
+struct a { a : ( T , U , ) }
+struct a { a : ( T , U , V ) }
+struct a { a : * T }
+struct a { a : * const T }
+struct a { a : T < U , V > }
+struct a { a : T < U > }
+struct a { a : T }
+struct a { a : [ T ; 2 ] }
+struct a { a : [ ] T }
+struct a { a : [ ] const T }
+struct a { a : a , a : a , a : a }
+struct a { a : a , a : a , }
+struct a { a : a , a : a }
+struct a { a : a , }
+struct a { a : a }
+struct a { a : bool }
+struct a { a : fn ( ) -> T }
+struct a { a : fn ( T ) -> V }
+struct a { a : fn ( T , U ) -> V }
+struct a { a : i64 }
+struct a { a : int }
+struct a { a : void }
+struct a { }
+test "s" { ! x ; }
+test "s" { "s" ; }
+test "s" { & x ; }
+test "s" { 'c' ; }
+test "s" { ( x ) ; }
+test "s" { ( x , y ) ; }
+test "s" { ( x , y , ) ; }
+test "s" { ( x , y , z ) ; }
+test "s" { * x ; }
+test "s" { - x ; }
+test "s" { 1 ; }
+test "s" { 1.5 ; }
+test "s" { E < T > . A ( x ) ; }
+test "s" { E < T > . A ; }
+test "s" { P < T > { a : x , } ; }
+test "s" { P { a : x } ; }
+test "s" { [ x , y , ] ; }
+test "s" { [ x , y ] ; }
+test "s" { [ x ; 2 ] ; }
+test "s" { [ x ] ; }
+test "s" { a %= a ; }
+test "s" { a &= a ; }
+test "s" { a *= a ; }
+test "s" { a += a ; }
+test "s" { a -= a ; }
+test "s" { a /= a ; }
+test "s" { a ; a ; }
+test "s" { a ; }
+test "s" { a <<= a ; }
+test "s" { a = ! x ; }
+test "s" { a = "s" ; }
+test "s" { a = & x ; }
+test "s" { a = 'c' ; }
+test "s" { a = ( x ) ; }
+test "s" { a = ( x , y ) ; }
+test "s" { a = ( x , y , ) ; }
+test "s" { a = ( x , y , z ) ; }
+test "s" { a = * x ; }
+test "s" { a = - x ; }
+test "s" { a = 1 ; }
+test "s" { a = 1.5 ; }
+test "s" { a = E < T > . A ( x ) ; }
+test "s" { a = E < T > . A ; }
+test "s" { a = P < T > { a : x , } ; }
+test "s" { a = P { a : x } ; }
+test "s" { a = [ x , y , ] ; }
+test "s" { a = [ x , y ] ; }
+test "s" { a = [ x ; 2 ] ; }
+test "s" { a = [ x ] ; }
+test "s" { a = a ; }
+test "s" { a = f ( ) ; }
+test "s" { a = f ( x ) ; }
+test "s" { a = f ( x , y ) ; }
+test "s" { a = false ; }
+test "s" { a = g < T > ( x ) ; }
+test "s" { a = move x ; }
+test "s" { a = null ; }
+test "s" { a = true ; }
+test "s" { a = try x ; }
+test "s" { a = x != y ; }
+test "s" { a = x % y ; }
+test "s" { a = x & y ; }
+test "s" { a = x && y ; }
+test "s" { a = x * y ; }
+test "s" { a = x + y ; }
+test "s" { a = x - y ; }
+test "s" { a = x . 0 ; }
+test "s" { a = x . y ; }
+test "s" { a = x / y ; }
+test "s" { a = x ; }
+test "s" { a = x < y ; }
+test "s" { a = x << y ; }
+test "s" { a = x <= y ; }
+test "s" { a = x == y ; }
+test "s" { a = x > y ; }
+test "s" { a = x >= y ; }
+test "s" { a = x >> y ; }
+test "s" { a = x [ y ] ; }
+test "s" { a = x ^ y ; }
+test "s" { a = x as T ; }
+test "s" { a = x | y ; }
+test "s" { a = x || y ; }
+test "s" { a = ~ x ; }
+test "s" { a >>= a ; }
+test "s" { a ^= a ; }
+test "s" { a |= a ; }
+test "s" { asm ( "s" ) ; }
+test "s" { break ; }
+test "s" { const a = a ; }
+test "s" { continue ; }
+test "s" { defer ! x ; }
+test "s" { defer "s" ; }
+test "s" { defer & x ; }
+test "s" { defer 'c' ; }
+test "s" { defer ( x ) ; }
+test "s" { defer ( x , y ) ; }
+test "s" { defer ( x , y , ) ; }
+test "s" { defer ( x , y , z ) ; }
+test "s" { defer * x ; }
+test "s" { defer - x ; }
+test "s" { defer 1 ; }
+test "s" { defer 1.5 ; }
+test "s" { defer E < T > . A ( x ) ; }
+test "s" { defer E < T > . A ; }
+test "s" { defer P < T > { a : x , } ; }
+test "s" { defer P { a : x } ; }
+test "s" { defer [ x , y , ] ; }
+test "s" { defer [ x , y ] ; }
+test "s" { defer [ x ; 2 ] ; }
+test "s" { defer [ x ] ; }
+test "s" { defer a ; }
+test "s" { defer f ( ) ; }
+test "s" { defer f ( x ) ; }
+test "s" { defer f ( x , y ) ; }
+test "s" { defer false ; }
+test "s" { defer g < T > ( x ) ; }
+test "s" { defer move x ; }
+test "s" { defer null ; }
+test "s" { defer true ; }
+test "s" { defer try x ; }
+test "s" { defer x != y ; }
+test "s" { defer x % y ; }
+test "s" { defer x & y ; }
+test "s" { defer x && y ; }
+test "s" { defer x * y ; }
+test "s" { defer x + y ; }
+test "s" { defer x - y ; }
+test "s" { defer x . 0 ; }
+test "s" { defer x . y ; }
+test "s" { defer x / y ; }
+test "s" { defer x ; }
+test "s" { defer x < y ; }
+test "s" { defer x << y ; }
+test "s" { defer x <= y ; }
+test "s" { defer x == y ; }
+test "s" { defer x > y ; }
+test "s" { defer x >= y ; }
+test "s" { defer x >> y ; }
+test "s" { defer x [ y ] ; }
+test "s" { defer x ^ y ; }
+test "s" { defer x as T ; }
+test "s" { defer x | y ; }
+test "s" { defer x || y ; }
+test "s" { defer ~ x ; }
+test "s" { f ( ) ; }
+test "s" { f ( x ) ; }
+test "s" { f ( x , y ) ; }
+test "s" { false ; }
+test "s" { for a : ( T , U ) in a .. a { } }
+test "s" { for a : ( T , U , ) in a .. a { } }
+test "s" { for a : ( T , U , V ) in a .. a { } }
+test "s" { for a : * T in a .. a { } }
+test "s" { for a : * const T in a .. a { } }
+test "s" { for a : T < U , V > in a .. a { } }
+test "s" { for a : T < U > in a .. a { } }
+test "s" { for a : T in a .. a { } }
+test "s" { for a : [ T ; 2 ] in a .. a { } }
+test "s" { for a : [ ] T in a .. a { } }
+test "s" { for a : [ ] const T in a .. a { } }
+test "s" { for a : a in a .. a { } }
+test "s" { for a : bool in a .. a { } }
+test "s" { for a : fn ( ) -> T in a .. a { } }
+test "s" { for a : fn ( T ) -> V in a .. a { } }
+test "s" { for a : fn ( T , U ) -> V in a .. a { } }
+test "s" { for a : i64 in a .. a { } }
+test "s" { for a : int in a .. a { } }
+test "s" { for a : void in a .. a { } }
+test "s" { for a in ! x .. a { } }
+test "s" { for a in "s" .. a { } }
+test "s" { for a in & x .. a { } }
+test "s" { for a in 'c' .. a { } }
+test "s" { for a in ( x ) .. a { } }
+test "s" { for a in ( x , y ) .. a { } }
+test "s" { for a in ( x , y , ) .. a { } }
+test "s" { for a in ( x , y , z ) .. a { } }
+test "s" { for a in * x .. a { } }
+test "s" { for a in - x .. a { } }
+test "s" { for a in 1 .. a { } }
+test "s" { for a in 1.5 .. a { } }
+test "s" { for a in E < T > . A ( x ) .. a { } }
+test "s" { for a in E < T > . A .. a { } }
+test "s" { for a in [ x , y , ] .. a { } }
+test "s" { for a in [ x , y ] .. a { } }
+test "s" { for a in [ x ; 2 ] .. a { } }
+test "s" { for a in [ x ] .. a { } }
+test "s" { for a in a .. ! x { } }
+test "s" { for a in a .. "s" { } }
+test "s" { for a in a .. & x { } }
+test "s" { for a in a .. 'c' { } }
+test "s" { for a in a .. ( x ) { } }
+test "s" { for a in a .. ( x , y ) { } }
+test "s" { for a in a .. ( x , y , ) { } }
+test "s" { for a in a .. ( x , y , z ) { } }
+test "s" { for a in a .. * x { } }
+test "s" { for a in a .. - x { } }
+test "s" { for a in a .. 1 { } }
+test "s" { for a in a .. 1.5 { } }
+test "s" { for a in a .. E < T > . A ( x ) { } }
+test "s" { for a in a .. E < T > . A { } }
+test "s" { for a in a .. [ x , y , ] { } }
+test "s" { for a in a .. [ x , y ] { } }
+test "s" { for a in a .. [ x ; 2 ] { } }
+test "s" { for a in a .. [ x ] { } }
+test "s" { for a in a .. a { a ; a ; } }
+test "s" { for a in a .. a { a ; } }
+test "s" { for a in a .. a { } }
+test "s" { for a in a .. f ( ) { } }
+test "s" { for a in a .. f ( x ) { } }
+test "s" { for a in a .. f ( x , y ) { } }
+test "s" { for a in a .. false { } }
+test "s" { for a in a .. g < T > ( x ) { } }
+test "s" { for a in a .. move x { } }
+test "s" { for a in a .. null { } }
+test "s" { for a in a .. true { } }
+test "s" { for a in a .. try x { } }
+test "s" { for a in a .. x != y { } }
+test "s" { for a in a .. x % y { } }
+test "s" { for a in a .. x & y { } }
+test "s" { for a in a .. x && y { } }
+test "s" { for a in a .. x * y { } }
+test "s" { for a in a .. x + y { } }
+test "s" { for a in a .. x - y { } }
+test "s" { for a in a .. x . 0 { } }
+test "s" { for a in a .. x . y { } }
+test "s" { for a in a .. x / y { } }
+test "s" { for a in a .. x < y { } }
+test "s" { for a in a .. x << y { } }
+test "s" { for a in a .. x <= y { } }
+test "s" { for a in a .. x == y { } }
+test "s" { for a in a .. x > y { } }
+test "s" { for a in a .. x >= y { } }
+test "s" { for a in a .. x >> y { } }
+test "s" { for a in a .. x [ y ] { } }
+test "s" { for a in a .. x ^ y { } }
+test "s" { for a in a .. x as T { } }
+test "s" { for a in a .. x { } }
+test "s" { for a in a .. x | y { } }
+test "s" { for a in a .. x || y { } }
+test "s" { for a in a .. ~ x { } }
+test "s" { for a in a ..= a { } }
+test "s" { for a in f ( ) .. a { } }
+test "s" { for a in f ( x ) .. a { } }
+test "s" { for a in f ( x , y ) .. a { } }
+test "s" { for a in false .. a { } }
+test "s" { for a in g < T > ( x ) .. a { } }
+test "s" { for a in move x .. a { } }
+test "s" { for a in null .. a { } }
+test "s" { for a in true .. a { } }
+test "s" { for a in try x .. a { } }
+test "s" { for a in x != y .. a { } }
+test "s" { for a in x % y .. a { } }
+test "s" { for a in x & y .. a { } }
+test "s" { for a in x && y .. a { } }
+test "s" { for a in x * y .. a { } }
+test "s" { for a in x + y .. a { } }
+test "s" { for a in x - y .. a { } }
+test "s" { for a in x . 0 .. a { } }
+test "s" { for a in x . y .. a { } }
+test "s" { for a in x .. a { } }
+test "s" { for a in x / y .. a { } }
+test "s" { for a in x < y .. a { } }
+test "s" { for a in x << y .. a { } }
+test "s" { for a in x <= y .. a { } }
+test "s" { for a in x == y .. a { } }
+test "s" { for a in x > y .. a { } }
+test "s" { for a in x >= y .. a { } }
+test "s" { for a in x >> y .. a { } }
+test "s" { for a in x [ y ] .. a { } }
+test "s" { for a in x ^ y .. a { } }
+test "s" { for a in x as T .. a { } }
+test "s" { for a in x | y .. a { } }
+test "s" { for a in x || y .. a { } }
+test "s" { for a in ~ x .. a { } }
+test "s" { g < T > ( x ) ; }
+test "s" { if ! x { } }
+test "s" { if "s" { } }
+test "s" { if & x { } }
+test "s" { if 'c' { } }
+test "s" { if ( x ) { } }
+test "s" { if ( x , y ) { } }
+test "s" { if ( x , y , ) { } }
+test "s" { if ( x , y , z ) { } }
+test "s" { if * x { } }
+test "s" { if - x { } }
+test "s" { if 1 { } }
+test "s" { if 1.5 { } }
+test "s" { if E < T > . A ( x ) { } }
+test "s" { if E < T > . A { } }
+test "s" { if [ x , y , ] { } }
+test "s" { if [ x , y ] { } }
+test "s" { if [ x ; 2 ] { } }
+test "s" { if [ x ] { } }
+test "s" { if a { a ; a ; } }
+test "s" { if a { a ; } }
+test "s" { if a { } else if a { } else { } }
+test "s" { if a { } else if a { } }
+test "s" { if a { } else { a ; a ; } }
+test "s" { if a { } else { a ; } }
+test "s" { if a { } else { } }
+test "s" { if a { } }
+test "s" { if f ( ) { } }
+test "s" { if f ( x ) { } }
+test "s" { if f ( x , y ) { } }
+test "s" { if false { } }
+test "s" { if g < T > ( x ) { } }
+test "s" { if move x { } }
+test "s" { if null { } }
+test "s" { if true { } }
+test "s" { if try x { } }
+test "s" { if x != y { } }
+test "s" { if x % y { } }
+test "s" { if x & y { } }
+test "s" { if x && y { } }
+test "s" { if x * y { } }
+test "s" { if x + y { } }
+test "s" { if x - y { } }
+test "s" { if x . 0 { } }
+test "s" { if x . y { } }
+test "s" { if x / y { } }
+test "s" { if x < y { } }
+test "s" { if x << y { } }
+test "s" { if x <= y { } }
+test "s" { if x == y { } }
+test "s" { if x > y { } }
+test "s" { if x >= y { } }
+test "s" { if x >> y { } }
+test "s" { if x [ y ] { } }
+test "s" { if x ^ y { } }
+test "s" { if x as T { } }
+test "s" { if x { } }
+test "s" { if x | y { } }
+test "s" { if x || y { } }
+test "s" { if ~ x { } }
+test "s" { let a : a = a ; }
+test "s" { let a = a ; }
+test "s" { loop { a ; a ; } }
+test "s" { loop { a ; } }
+test "s" { loop { } }
+test "s" { match ! x { } }
+test "s" { match "s" { } }
+test "s" { match & x { } }
+test "s" { match 'c' { } }
+test "s" { match ( x ) { } }
+test "s" { match ( x , y ) { } }
+test "s" { match ( x , y , ) { } }
+test "s" { match ( x , y , z ) { } }
+test "s" { match * x { } }
+test "s" { match - x { } }
+test "s" { match 1 { } }
+test "s" { match 1.5 { } }
+test "s" { match E < T > . A ( x ) { } }
+test "s" { match E < T > . A { } }
+test "s" { match [ x , y , ] { } }
+test "s" { match [ x , y ] { } }
+test "s" { match [ x ; 2 ] { } }
+test "s" { match [ x ] { } }
+test "s" { match a { ! x => { } } }
+test "s" { match a { "s" => { } } }
+test "s" { match a { & x => { } } }
+test "s" { match a { 'c' => { } } }
+test "s" { match a { ( x ) => { } } }
+test "s" { match a { ( x , y ) => { } } }
+test "s" { match a { ( x , y , ) => { } } }
+test "s" { match a { ( x , y , z ) => { } } }
+test "s" { match a { * x => { } } }
+test "s" { match a { - x => { } } }
+test "s" { match a { 1 => { } } }
+test "s" { match a { 1.5 => { } } }
+test "s" { match a { E < T > . A ( x ) => { } } }
+test "s" { match a { E < T > . A => { } } }
+test "s" { match a { P < T > { a : x , } => { } } }
+test "s" { match a { P { a : x } => { } } }
+test "s" { match a { [ x , y , ] => { } } }
+test "s" { match a { [ x , y ] => { } } }
+test "s" { match a { [ x ; 2 ] => { } } }
+test "s" { match a { [ x ] => { } } }
+test "s" { match a { _ => { } } }
+test "s" { match a { a => { a ; a ; } } }
+test "s" { match a { a => { a ; } } }
+test "s" { match a { a => { } , } }
+test "s" { match a { a => { } a => { } } }
+test "s" { match a { a => { } } }
+test "s" { match a { f ( ) => { } } }
+test "s" { match a { f ( x ) => { } } }
+test "s" { match a { f ( x , y ) => { } } }
+test "s" { match a { false => { } } }
+test "s" { match a { g < T > ( x ) => { } } }
+test "s" { match a { move x => { } } }
+test "s" { match a { null => { } } }
+test "s" { match a { true => { } } }
+test "s" { match a { try x => { } } }
+test "s" { match a { x != y => { } } }
+test "s" { match a { x % y => { } } }
+test "s" { match a { x & y => { } } }
+test "s" { match a { x && y => { } } }
+test "s" { match a { x * y => { } } }
+test "s" { match a { x + y => { } } }
+test "s" { match a { x - y => { } } }
+test "s" { match a { x . 0 => { } } }
+test "s" { match a { x . y => { } } }
+test "s" { match a { x / y => { } } }
+test "s" { match a { x < y => { } } }
+test "s" { match a { x << y => { } } }
+test "s" { match a { x <= y => { } } }
+test "s" { match a { x == y => { } } }
+test "s" { match a { x => { } } }
+test "s" { match a { x > y => { } } }
+test "s" { match a { x >= y => { } } }
+test "s" { match a { x >> y => { } } }
+test "s" { match a { x [ y ] => { } } }
+test "s" { match a { x ^ y => { } } }
+test "s" { match a { x as T => { } } }
+test "s" { match a { x | y => { } } }
+test "s" { match a { x || y => { } } }
+test "s" { match a { } }
+test "s" { match a { ~ x => { } } }
+test "s" { match f ( ) { } }
+test "s" { match f ( x ) { } }
+test "s" { match f ( x , y ) { } }
+test "s" { match false { } }
+test "s" { match g < T > ( x ) { } }
+test "s" { match move x { } }
+test "s" { match null { } }
+test "s" { match true { } }
+test "s" { match try x { } }
+test "s" { match x != y { } }
+test "s" { match x % y { } }
+test "s" { match x & y { } }
+test "s" { match x && y { } }
+test "s" { match x * y { } }
+test "s" { match x + y { } }
+test "s" { match x - y { } }
+test "s" { match x . 0 { } }
+test "s" { match x . y { } }
+test "s" { match x / y { } }
+test "s" { match x < y { } }
+test "s" { match x << y { } }
+test "s" { match x <= y { } }
+test "s" { match x == y { } }
+test "s" { match x > y { } }
+test "s" { match x >= y { } }
+test "s" { match x >> y { } }
+test "s" { match x [ y ] { } }
+test "s" { match x ^ y { } }
+test "s" { match x as T { } }
+test "s" { match x { } }
+test "s" { match x | y { } }
+test "s" { match x || y { } }
+test "s" { match ~ x { } }
+test "s" { move x ; }
+test "s" { null ; }
+test "s" { return ! x ; }
+test "s" { return "s" ; }
+test "s" { return & x ; }
+test "s" { return 'c' ; }
+test "s" { return ( x ) ; }
+test "s" { return ( x , y ) ; }
+test "s" { return ( x , y , ) ; }
+test "s" { return ( x , y , z ) ; }
+test "s" { return * x ; }
+test "s" { return - x ; }
+test "s" { return 1 ; }
+test "s" { return 1.5 ; }
+test "s" { return ; }
+test "s" { return E < T > . A ( x ) ; }
+test "s" { return E < T > . A ; }
+test "s" { return P < T > { a : x , } ; }
+test "s" { return P { a : x } ; }
+test "s" { return [ x , y , ] ; }
+test "s" { return [ x , y ] ; }
+test "s" { return [ x ; 2 ] ; }
+test "s" { return [ x ] ; }
+test "s" { return a ; }
+test "s" { return f ( ) ; }
+test "s" { return f ( x ) ; }
+test "s" { return f ( x , y ) ; }
+test "s" { return false ; }
+test "s" { return g < T > ( x ) ; }
+test "s" { return move x ; }
+test "s" { return null ; }
+test "s" { return true ; }
+test "s" { return try x ; }
+test "s" { return x != y ; }
+test "s" { return x % y ; }
+test "s" { return x & y ; }
+test "s" { return x && y ; }
+test "s" { return x * y ; }
+test "s" { return x + y ; }
+test "s" { return x - y ; }
+test "s" { return x . 0 ; }
+test "s" { return x . y ; }
+test "s" { return x / y ; }
+test "s" { return x ; }
+test "s" { return x < y ; }
+test "s" { return x << y ; }
+test "s" { return x <= y ; }
+test "s" { return x == y ; }
+test "s" { return x > y ; }
+test "s" { return x >= y ; }
+test "s" { return x >> y ; }
+test "s" { return x [ y ] ; }
+test "s" { return x ^ y ; }
+test "s" { return x as T ; }
+test "s" { return x | y ; }
+test "s" { return x || y ; }
+test "s" { return ~ x ; }
+test "s" { true ; }
+test "s" { try x ; }
+test "s" { while ! x { } }
+test "s" { while "s" { } }
+test "s" { while & x { } }
+test "s" { while 'c' { } }
+test "s" { while ( x ) { } }
+test "s" { while ( x , y ) { } }
+test "s" { while ( x , y , ) { } }
+test "s" { while ( x , y , z ) { } }
+test "s" { while * x { } }
+test "s" { while - x { } }
+test "s" { while 1 { } }
+test "s" { while 1.5 { } }
+test "s" { while E < T > . A ( x ) { } }
+test "s" { while E < T > . A { } }
+test "s" { while [ x , y , ] { } }
+test "s" { while [ x , y ] { } }
+test "s" { while [ x ; 2 ] { } }
+test "s" { while [ x ] { } }
+test "s" { while a { a ; a ; } }
+test "s" { while a { a ; } }
+test "s" { while a { } }
+test "s" { while f ( ) { } }
+test "s" { while f ( x ) { } }
+test "s" { while f ( x , y ) { } }
+test "s" { while false { } }
+test "s" { while g < T > ( x ) { } }
+test "s" { while move x { } }
+test "s" { while null { } }
+test "s" { while true { } }
+test "s" { while try x { } }
+test "s" { while x != y { } }
+test "s" { while x % y { } }
+test "s" { while x & y { } }
+test "s" { while x && y { } }
+test "s" { while x * y { } }
+test "s" { while x + y { } }
+test "s" { while x - y { } }
+test "s" { while x . 0 { } }
+test "s" { while x . y { } }
+test "s" { while x / y { } }
+test "s" { while x < y { } }
+test "s" { while x << y { } }
+test "s" { while x <= y { } }
+test "s" { while x == y { } }
+test "s" { while x > y { } }
+test "s" { while x >= y { } }
+test "s" { while x >> y { } }
+test "s" { while x [ y ] { } }
+test "s" { while x ^ y { } }
+test "s" { while x as T { } }
+test "s" { while x { } }
+test "s" { while x | y { } }
+test "s" { while x || y { } }
+test "s" { while ~ x { } }
+test "s" { x != y ; }
+test "s" { x % y ; }
+test "s" { x & y ; }
+test "s" { x && y ; }
+test "s" { x * y ; }
+test "s" { x + y ; }
+test "s" { x - y ; }
+test "s" { x . 0 ; }
+test "s" { x . y ; }
+test "s" { x / y ; }
+test "s" { x ; }
+test "s" { x < y ; }
+test "s" { x << y ; }
+test "s" { x <= y ; }
+test "s" { x == y ; }
+test "s" { x > y ; }
+test "s" { x >= y ; }
+test "s" { x >> y ; }
+test "s" { x [ y ] ; }
+test "s" { x ^ y ; }
+test "s" { x as T ; }
+test "s" { x | y ; }
+test "s" { x || y ; }
+test "s" { { a ; a ; } }
+test "s" { { a ; } }
+test "s" { { } }
+test "s" { }
+test "s" { ~ x ; }
+type A = ( T , U , V , W ) ;
+type A = ( T , U , V , W , ) ;
+type A = ( T , U , V , W , X ) ;
+type A = ( T , U , V , W , X , ) ;
+type A = fn ( T , U , V ) -> W ;
+type a = ( ( T , U ) , a ) ;
+type a = ( ( T , U , ) , a ) ;
+type a = ( ( T , U , V ) , a ) ;
+type a = ( * T , a ) ;
+type a = ( * const T , a ) ;
+type a = ( T , U ) ;
+type a = ( T , U , ) ;
+type a = ( T , U , V ) ;
+type a = ( T , a ) ;
+type a = ( T < U , V > , a ) ;
+type a = ( T < U > , a ) ;
+type a = ( [ T ; 2 ] , a ) ;
+type a = ( [ ] T , a ) ;
+type a = ( [ ] const T , a ) ;
+type a = ( a , ( T , U ) ) ;
+type a = ( a , ( T , U , ) ) ;
+type a = ( a , ( T , U , V ) ) ;
+type a = ( a , * T ) ;
+type a = ( a , * const T ) ;
+type a = ( a , T ) ;
+type a = ( a , T < U , V > ) ;
+type a = ( a , T < U > ) ;
+type a = ( a , [ T ; 2 ] ) ;
+type a = ( a , [ ] T ) ;
+type a = ( a , [ ] const T ) ;
+type a = ( a , a ) ;
+type a = ( a , a , ( T , U ) ) ;
+type a = ( a , a , ( T , U , ) ) ;
+type a = ( a , a , ( T , U , V ) ) ;
+type a = ( a , a , ) ;
+type a = ( a , a , * T ) ;
+type a = ( a , a , * const T ) ;
+type a = ( a , a , T ) ;
+type a = ( a , a , T < U , V > ) ;
+type a = ( a , a , T < U > ) ;
+type a = ( a , a , [ T ; 2 ] ) ;
+type a = ( a , a , [ ] T ) ;
+type a = ( a , a , [ ] const T ) ;
+type a = ( a , a , a ) ;
+type a = ( a , a , a , ( T , U ) ) ;
+type a = ( a , a , a , ( T , U , ) ) ;
+type a = ( a , a , a , ( T , U , V ) ) ;
+type a = ( a , a , a , ) ;
+type a = ( a , a , a , * T ) ;
+type a = ( a , a , a , * const T ) ;
+type a = ( a , a , a , T ) ;
+type a = ( a , a , a , T < U , V > ) ;
+type a = ( a , a , a , T < U > ) ;
+type a = ( a , a , a , [ T ; 2 ] ) ;
+type a = ( a , a , a , [ ] T ) ;
+type a = ( a , a , a , [ ] const T ) ;
+type a = ( a , a , a , a ) ;
+type a = ( a , a , a , bool ) ;
+type a = ( a , a , a , fn ( ) -> T ) ;
+type a = ( a , a , a , fn ( T ) -> V ) ;
+type a = ( a , a , a , fn ( T , U ) -> V ) ;
+type a = ( a , a , a , i64 ) ;
+type a = ( a , a , a , int ) ;
+type a = ( a , a , a , void ) ;
+type a = ( a , a , bool ) ;
+type a = ( a , a , fn ( ) -> T ) ;
+type a = ( a , a , fn ( T ) -> V ) ;
+type a = ( a , a , fn ( T , U ) -> V ) ;
+type a = ( a , a , i64 ) ;
+type a = ( a , a , int ) ;
+type a = ( a , a , void ) ;
+type a = ( a , bool ) ;
+type a = ( a , fn ( ) -> T ) ;
+type a = ( a , fn ( T ) -> V ) ;
+type a = ( a , fn ( T , U ) -> V ) ;
+type a = ( a , i64 ) ;
+type a = ( a , int ) ;
+type a = ( a , void ) ;
+type a = ( bool , a ) ;
+type a = ( fn ( ) -> T , a ) ;
+type a = ( fn ( T ) -> V , a ) ;
+type a = ( fn ( T , U ) -> V , a ) ;
+type a = ( i64 , a ) ;
+type a = ( int , a ) ;
+type a = ( void , a ) ;
+type a = * ( T , U ) ;
+type a = * ( T , U , ) ;
+type a = * ( T , U , V ) ;
+type a = * * T ;
+type a = * * const T ;
+type a = * T ;
+type a = * T < U , V > ;
+type a = * T < U > ;
+type a = * [ T ; 2 ] ;
+type a = * [ ] T ;
+type a = * [ ] const T ;
+type a = * a ;
+type a = * bool ;
+type a = * const T ;
+type a = * const a ;
+type a = * fn ( ) -> T ;
+type a = * fn ( T ) -> V ;
+type a = * fn ( T , U ) -> V ;
+type a = * i64 ;
+type a = * int ;
+type a = * void ;
+type a = T ;
+type a = T < U , V > ;
+type a = T < U > ;
+type a = [ ( T , U ) ; 1 ] ;
+type a = [ ( T , U , ) ; 1 ] ;
+type a = [ ( T , U , V ) ; 1 ] ;
+type a = [ * T ; 1 ] ;
+type a = [ * const T ; 1 ] ;
+type a = [ T ; 1 ] ;
+type a = [ T ; 2 ] ;
+type a = [ T < U , V > ; 1 ] ;
+type a = [ T < U > ; 1 ] ;
+type a = [ [ T ; 2 ] ; 1 ] ;
+type a = [ [ ] T ; 1 ] ;
+type a = [ [ ] const T ; 1 ] ;
+type a = [ ] ( T , U ) ;
+type a = [ ] ( T , U , ) ;
+type a = [ ] ( T , U , V ) ;
+type a = [ ] * T ;
+type a = [ ] * const T ;
+type a = [ ] T ;
+type a = [ ] T < U , V > ;
+type a = [ ] T < U > ;
+type a = [ ] [ T ; 2 ] ;
+type a = [ ] [ ] T ;
+type a = [ ] [ ] const T ;
+type a = [ ] a ;
+type a = [ ] bool ;
+type a = [ ] const T ;
+type a = [ ] const a ;
+type a = [ ] fn ( ) -> T ;
+type a = [ ] fn ( T ) -> V ;
+type a = [ ] fn ( T , U ) -> V ;
+type a = [ ] i64 ;
+type a = [ ] int ;
+type a = [ ] void ;
+type a = [ a ; 1 ] ;
+type a = [ bool ; 1 ] ;
+type a = [ fn ( ) -> T ; 1 ] ;
+type a = [ fn ( T ) -> V ; 1 ] ;
+type a = [ fn ( T , U ) -> V ; 1 ] ;
+type a = [ i64 ; 1 ] ;
+type a = [ int ; 1 ] ;
+type a = [ void ; 1 ] ;
+type a = a ;
+type a = a < ( T , U ) > ;
+type a = a < ( T , U , ) > ;
+type a = a < ( T , U , V ) > ;
+type a = a < * T > ;
+type a = a < * const T > ;
+type a = a < T < U , V > > ;
+type a = a < T < U > > ;
+type a = a < T > ;
+type a = a < [ T ; 2 ] > ;
+type a = a < [ ] T > ;
+type a = a < [ ] const T > ;
+type a = a < a , ( T , U ) > ;
+type a = a < a , ( T , U , ) > ;
+type a = a < a , ( T , U , V ) > ;
+type a = a < a , * T > ;
+type a = a < a , * const T > ;
+type a = a < a , T < U , V > > ;
+type a = a < a , T < U > > ;
+type a = a < a , T > ;
+type a = a < a , [ T ; 2 ] > ;
+type a = a < a , [ ] T > ;
+type a = a < a , [ ] const T > ;
+type a = a < a , a , a > ;
+type a = a < a , a > ;
+type a = a < a , bool > ;
+type a = a < a , fn ( ) -> T > ;
+type a = a < a , fn ( T ) -> V > ;
+type a = a < a , fn ( T , U ) -> V > ;
+type a = a < a , i64 > ;
+type a = a < a , int > ;
+type a = a < a , void > ;
+type a = a < a > ;
+type a = a < bool > ;
+type a = a < fn ( ) -> T > ;
+type a = a < fn ( T ) -> V > ;
+type a = a < fn ( T , U ) -> V > ;
+type a = a < i64 > ;
+type a = a < int > ;
+type a = a < void > ;
+type a = bool ;
+type a = c_char ;
+type a = c_int ;
+type a = c_long ;
+type a = c_short ;
+type a = c_size ;
+type a = c_uchar ;
+type a = c_uint ;
+type a = c_ulong ;
+type a = c_ushort ;
+type a = f32 ;
+type a = f64 ;
+type a = fn ( ( T , U ) ) -> a ;
+type a = fn ( ( T , U , ) ) -> a ;
+type a = fn ( ( T , U , V ) ) -> a ;
+type a = fn ( ) -> ( T , U ) ;
+type a = fn ( ) -> ( T , U , ) ;
+type a = fn ( ) -> ( T , U , V ) ;
+type a = fn ( ) -> * T ;
+type a = fn ( ) -> * const T ;
+type a = fn ( ) -> T ;
+type a = fn ( ) -> T < U , V > ;
+type a = fn ( ) -> T < U > ;
+type a = fn ( ) -> [ T ; 2 ] ;
+type a = fn ( ) -> [ ] T ;
+type a = fn ( ) -> [ ] const T ;
+type a = fn ( ) -> a ;
+type a = fn ( ) -> bool ;
+type a = fn ( ) -> fn ( ) -> T ;
+type a = fn ( ) -> fn ( T ) -> V ;
+type a = fn ( ) -> fn ( T , U ) -> V ;
+type a = fn ( ) -> i64 ;
+type a = fn ( ) -> int ;
+type a = fn ( ) -> void ;
+type a = fn ( * T ) -> a ;
+type a = fn ( * const T ) -> a ;
+type a = fn ( T ) -> V ;
+type a = fn ( T ) -> a ;
+type a = fn ( T , U ) -> V ;
+type a = fn ( T < U , V > ) -> a ;
+type a = fn ( T < U > ) -> a ;
+type a = fn ( [ T ; 2 ] ) -> a ;
+type a = fn ( [ ] T ) -> a ;
+type a = fn ( [ ] const T ) -> a ;
+type a = fn ( a ) -> a ;
+type a = fn ( a , ( T , U ) ) -> a ;
+type a = fn ( a , ( T , U , ) ) -> a ;
+type a = fn ( a , ( T , U , V ) ) -> a ;
+type a = fn ( a , * T ) -> a ;
+type a = fn ( a , * const T ) -> a ;
+type a = fn ( a , T ) -> a ;
+type a = fn ( a , T < U , V > ) -> a ;
+type a = fn ( a , T < U > ) -> a ;
+type a = fn ( a , [ T ; 2 ] ) -> a ;
+type a = fn ( a , [ ] T ) -> a ;
+type a = fn ( a , [ ] const T ) -> a ;
+type a = fn ( a , a ) -> a ;
+type a = fn ( a , bool ) -> a ;
+type a = fn ( a , fn ( ) -> T ) -> a ;
+type a = fn ( a , fn ( T ) -> V ) -> a ;
+type a = fn ( a , fn ( T , U ) -> V ) -> a ;
+type a = fn ( a , i64 ) -> a ;
+type a = fn ( a , int ) -> a ;
+type a = fn ( a , void ) -> a ;
+type a = fn ( bool ) -> a ;
+type a = fn ( fn ( ) -> T ) -> a ;
+type a = fn ( fn ( T ) -> V ) -> a ;
+type a = fn ( fn ( T , U ) -> V ) -> a ;
+type a = fn ( i64 ) -> a ;
+type a = fn ( int ) -> a ;
+type a = fn ( void ) -> a ;
+type a = i16 ;
+type a = i32 ;
+type a = i64 ;
+type a = i8 ;
+type a = int ;
+type a = u16 ;
+type a = u32 ;
+type a = u64 ;
+type a = u8 ;
+type a = void ;

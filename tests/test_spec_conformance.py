@@ -17,6 +17,7 @@ generator from that text alone, and compares them with ``mort/lexer.py`` and
 that a problem is reported. Fenced ``mort`` examples in the document are
 compiled and run with their asserted output.
 """
+import hashlib
 import os
 import random
 import re
@@ -438,6 +439,7 @@ class SyntaxGrammar:
                 if gated and name not in self.gated_rules:
                     self.gated_rules.add(name)
                     changed = True
+        self.kept = []
         self.node_first = {}
         self.node_null = {}
         self.node_gated = {}
@@ -505,7 +507,7 @@ class SyntaxGrammar:
         known = set(self.rules) | set(TOKEN_RULES)
         for name in sorted(referenced(self.rules) - known):
             problems.append(f"undefined rule {name!r}")
-        for name in sorted(set(self.rules) - referenced(self.rules) - {"program"}):
+        for name in sorted(set(self.rules) - set(_rules_under(self.rules, "program")) - {"program"}):
             problems.append(f"unreachable rule {name!r}")
         for name, body in self.rules.items():
             for node in walk(body):
@@ -545,18 +547,29 @@ class SyntaxGrammar:
             return [">"] if node.name == "angle-close" else []
         return Generator(self.rules, leaf)
 
-    def accepts(self, tokens):
-        return Recognizer(self, tokens).run()
+    def accepts(self, tokens, overrides=None, site=None, visited=None):
+        return Recognizer(self, tokens, overrides, site, visited).run()
+
+    def index(self, body):
+        """Make a node built after construction usable by the recognizer."""
+        self.kept.append(body)
+        for node in walk(body):
+            self.node_first[id(node)] = self._first(node)
+            self.node_null[id(node)] = self._nullable(node)
+            self.node_gated[id(node)] = self._gated(node)
 
 
 class Recognizer:
     """LL(1) reading of the grammar, with the predicates §3.3 defines."""
 
-    def __init__(self, grammar, tokens):
+    def __init__(self, grammar, tokens, overrides=None, site=None, visited=None):
         self.g = grammar
         self.toks = [[t.type, t.value] for t in tokens]
         self.i = 0
         self.no_struct = False
+        self.overrides = overrides or {}
+        self.site = site            # (Ref node id, {rule: body}) applied inside that Ref
+        self.visited = visited      # collects rule names and Ref node ids reached
 
     def run(self):
         try:
@@ -565,9 +578,14 @@ class Recognizer:
             return False
         return self.toks[self.i][0] == T.EOF
 
+    def body(self, name):
+        return self.overrides.get(name, self.g.rules[name])
+
     def rule(self, name):
         saved = self.no_struct
-        self.match(self.g.rules[name])
+        if self.visited is not None:
+            self.visited.add(name)
+        self.match(self.body(name))
         self.no_struct = saved
 
     def _has(self, node):
@@ -596,7 +614,7 @@ class Recognizer:
         if isinstance(node, (Opt, Rep)):
             return self.can_start(node.inner)
         if isinstance(node, Ref):
-            return self.can_start(self.g.rules[node.name])
+            return self.can_start(self.body(node.name))
         return False
 
     def predicate(self, name):
@@ -646,7 +664,15 @@ class Recognizer:
                     raise Reject
                 self.i += 1
             else:
-                self.rule(node.name)
+                if self.visited is not None:
+                    self.visited.add(id(node))
+                if self.site is not None and self.site[0] == id(node):
+                    saved = self.overrides
+                    self.overrides = {**saved, **self.site[1]}
+                    self.rule(node.name)
+                    self.overrides = saved
+                else:
+                    self.rule(node.name)
         elif isinstance(node, Seq):
             for item in node.items:
                 self.match(item)
@@ -951,7 +977,7 @@ def check_lexical(spec, lexer_cls=Lexer):
             problems.append(f"lexical rule {name!r} is missing")
     if problems:
         return problems
-    pool = "_.xeE09'\"\\+-/*\na"
+    pool = "_.xeE09'\"\\+-/*\na$@#`?"
     for name, verdict in verdicts.items():
         negatives = 0
         samples = list(generator.sentences(name))
@@ -1551,3 +1577,494 @@ def test_the_specification_states_the_reviewed_rule(pattern):
 def test_generic_lookaheads_required_behaviour(source):
     assert parser_verdict(source) == "accept"
     assert SyntaxGrammar(SPEC_TEXT).accepts(lex(source)) is True
+
+
+# ----- one-sided changes the review showed the first harness missed ------------
+
+def _problems(spec=SPEC_TEXT, parser_cls=Parser, lexer_cls=Lexer):
+    found = list(check_tokens(spec))
+    found += check_lexical(spec, lexer_cls=lexer_cls)
+    found += check_syntax(spec, parser_cls=parser_cls, mutants=800)
+    for detector in FOCUSED_DETECTORS:
+        found += detector(spec, parser_cls, lexer_cls)
+    return found
+
+
+FOCUSED_DETECTORS = []
+
+_SPEC_ONLY_CHANGES = {
+    "index": ('index = "[", expression, "]" ;', 'index = "[", additive, "]" ;'),
+    "call-args": ('call-args = "(", [ expression,', 'call-args = "(", [ primary,'),
+    "pattern": ('match-pattern = "_" | expression ;', 'match-pattern = "_" | literal ;'),
+    "tuple": ('tuple-type = "(", type, ",", type, [ ",", [ type-list ] ], ")" ;',
+              'tuple-type = "(", type, ",", type, ")" ;'),
+    "slice": ('"]", [ "const" ], type', '"]", type'),
+    "field": ('field-access = ".", ( IDENT | INT ) ;', 'field-access = ".", IDENT ;'),
+    "ladder": ('additive = multiply, { ( "+" | "-" ), multiply } ;',
+               'additive = multiply, { ( "*" | "-" ), multiply } ;'),
+    "table": ("| 9 | `+` `-` | left |", "| 9 | `-` `+` `*` | left |"),
+    "prose": ("`>=` token it consumes the `>` and leaves a `=`",
+              "`>=` token it consumes the `>` and leaves nothing"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_SPEC_ONLY_CHANGES))
+def test_harness_detects_each_reviewed_spec_change(name):
+    old, new = _SPEC_ONLY_CHANGES[name]
+    assert old in SPEC_TEXT, old
+    assert _problems(spec=SPEC_TEXT.replace(old, new, 1))
+
+
+class _ParserLetWithoutInitializer(Parser):
+    def _let_stmt(self, mutable=True):
+        from mort import mort_ast as A
+        if self._peek(2).type == T.SEMI:
+            line = self._advance().line
+            name = self._expect(T.IDENT, "name").value
+            self._expect(T.SEMI, "';'")
+            return A.Let(name, None, A.IntLit(0, line), line, mutable=mutable)
+        return super()._let_stmt(mutable)
+
+
+class _ParserNarrowPatterns(Parser):
+    def _match_stmt(self):
+        original = self._expression
+        depth = {"n": 0}
+
+        def narrowed():
+            depth["n"] += 1
+            try:
+                return self._postfix() if depth["n"] > 1 else original()
+            finally:
+                depth["n"] -= 1
+        self._expression = narrowed
+        try:
+            return super()._match_stmt()
+        finally:
+            self._expression = original
+
+
+class _ParserFieldInitEquals(Parser):
+    def _struct_lit(self):
+        for offset in range(len(self.toks) - self.i):
+            token = self._peek(offset)
+            if token.type == T.ASSIGN:
+                token.type = T.COLON
+            if token.type in (T.RBRACE, T.SEMI):
+                break
+        return super()._struct_lit()
+
+
+class _ParserSwappedPrecedence(Parser):
+    def _term(self):
+        from mort import mort_ast as A
+        left = self._factor()
+        while self._peek().type in (T.STAR, T.SLASH, T.PERCENT):
+            op = self._advance()
+            left = A.Binary(op.value, left, self._factor(), op.line)
+        return left
+
+    def _factor(self):
+        from mort import mort_ast as A
+        left = self._cast()
+        while self._peek().type in (T.PLUS, T.MINUS):
+            op = self._advance()
+            left = A.Binary(op.value, left, self._cast(), op.line)
+        return left
+
+
+@pytest.mark.parametrize("parser_cls", [
+    _ParserLetWithoutInitializer, _ParserNarrowPatterns,
+    _ParserFieldInitEquals, _ParserSwappedPrecedence,
+])
+def test_harness_detects_each_reviewed_parser_change(parser_cls):
+    assert _problems(parser_cls=parser_cls)
+
+
+class _LexerFlatComments(Lexer):
+    def _block_comment(self):
+        line, col = self.line, self.col
+        self._advance()
+        self._advance()
+        while not (self._peek() == "*" and self._peek(1) == "/"):
+            if self.i >= len(self.src):
+                raise MortError("unterminated block comment", line, col)
+            self._advance()
+        self._advance()
+        self._advance()
+
+
+class _LexerDollarLetters(Lexer):
+    def __init__(self, src):
+        super().__init__(src.replace("$", "d"))
+
+
+@pytest.mark.parametrize("lexer_cls", [_LexerFlatComments, _LexerDollarLetters])
+def test_harness_detects_each_reviewed_lexer_change(lexer_cls):
+    assert _problems(lexer_cls=lexer_cls)
+
+
+# ----- frozen, parser-validated corpus -----------------------------------------
+# Generated sentences come from the spec, so a spec that loses a form just
+# generates fewer of them. These files were validated against the parser and are
+# independent of the grammar text: a form the spec stops deriving is a failure.
+
+ACCEPTED_FORMS = ROOT / "tests" / "spec_accepted_forms.txt"
+REJECTED_FORMS = ROOT / "tests" / "spec_rejected_forms.txt"
+
+
+def read_forms(path):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [line for line in lines if line.strip() and not line.startswith("//")]
+
+
+def check_forms(spec, parser_cls=Parser, lexer_cls=Lexer):
+    problems = []
+    try:
+        grammar = SyntaxGrammar(spec)
+    except EbnfError as error:
+        return [str(error)]
+    for source in read_forms(ACCEPTED_FORMS):
+        if parser_verdict(source, parser_cls) != "accept":
+            problems.append(f"parser no longer accepts frozen form: {source}")
+        if not grammar.accepts(lex(source)):
+            problems.append(f"grammar no longer derives frozen form: {source}")
+    for source in read_forms(REJECTED_FORMS):
+        if parser_verdict(source, parser_cls) != "reject":
+            problems.append(f"parser no longer rejects frozen form: {source}")
+        if grammar.accepts(lex(source)):
+            problems.append(f"grammar no longer rejects frozen form: {source}")
+    return problems
+
+
+def check_precedence(spec, parser_cls=Parser, lexer_cls=Lexer):
+    """The table in section 3.5, the grammar's ladder and the parser must agree."""
+    match = re.search(r"### 3\.5 Precedence\n(.*?)\n###? ", spec, re.DOTALL)
+    if match is None:
+        return ["section 3.5 is missing"]
+    table = {}
+    for level, cells in re.findall(r"^\| (\d+) \| (.+?) \| \w+ \|$", match.group(1), re.MULTILINE):
+        table[int(level)] = re.findall(r"`([^`]+)`", cells.replace("\\|", "|"))
+    try:
+        rules = parse_ebnf(grammar_text(spec, "syntax"))
+    except EbnfError as error:
+        return [str(error)]
+    problems = []
+    ladder = []
+    name = "logical-or"
+    while name != "cast":
+        body = rules.get(name)
+        if not (isinstance(body, Seq) and len(body.items) == 2 and isinstance(body.items[1], Rep)):
+            return [f"rule {name} is not a precedence level"]
+        repeated = body.items[1].inner
+        ladder.append(sorted(n.text for n in walk(repeated.items[0]) if isinstance(n, Lit)))
+        name = body.items[0].name
+    for index, operators in enumerate(ladder, start=1):
+        if sorted(table.get(index, [])) != operators:
+            problems.append(f"level {index}: table {table.get(index)} but grammar {operators}")
+    prefix = sorted(n.text for n in walk(rules["unary-op"]) if isinstance(n, Lit))
+    if table.get(11) != ["as"]:
+        problems.append("level 11 must be the cast")
+    if sorted(table.get(12, [])) != prefix:
+        problems.append(f"prefix operators: table {table.get(12)} but grammar {prefix}")
+
+    def parse(text):
+        return parser_cls(Lexer(f"let v = {text};").tokenize()).parse().globals[0].expr
+
+    levels = {op: level for level, ops in table.items() if level <= len(ladder) for op in ops}
+    for first, first_level in levels.items():
+        for second, second_level in levels.items():
+            try:
+                tree = parse(f"x {first} y {second} z")
+            except MortError as error:
+                problems.append(f"x {first} y {second} z does not parse: {error}")
+                continue
+            groups_left = first_level >= second_level
+            top = second if groups_left else first
+            if getattr(tree, "op", None) != top:
+                problems.append(f"x {first} y {second} z groups with {tree.op}, table says {top}")
+    for text, kind in (("- x as i64", "Cast"), ("x as i64 * y", "Binary"), ("- x . y", "Unary"),
+                       ("* x [ y ]", "Unary"), ("! f ( )", "Unary"), ("x as i64 as u8", "Cast")):
+        if type(parse(text)).__name__ != kind:
+            problems.append(f"{text} is not a {kind} at the top")
+    if type(parse("- x as i64").expr).__name__ != "Unary":
+        problems.append("a cast applies to the preceding unary expression")
+    return problems
+
+
+LEXICAL_FORMS = {
+    "trivia": (["", " \t\r\n", "//", "// c", "// c\n", "/* c */", "/* /* n */ */", "/**/",
+                "/* * / */", " /**/ // x\n", "/* a /* b /* c */ d */ e */"],
+               ["/*", "/* /* */", "/* */ */", "*/", "/"]),
+    "IDENT": (["a", "_", "a1", "_1", "a_b", "letx", "\u00e9", "\u65e5\u672c"],
+              ["1a", "a$", "$a", "a-b", "a b", "@a", "#a", "`a", "a?"]),
+    "INT": (["0", "7", "09", "1_000", "0x1F", "0XaF", "0x1_F", "0o7", "0O7", "0o1_7", "0b1", "0B0",
+             "0b1_0"],
+            ["1_", "1__2", "0x", "0x_1", "0x1_", "0o", "0o8", "0b", "0b2", "12a", "1.5"]),
+    "FLOAT": (["1.5", "1.5e3", "1e3", "1E3", "1e+3", "1e-3", "1_0.5", "1_0e3", "1.5E-2"],
+              ["1.", ".5", "1e", "1e+", "1.5_0", "1.5e3x", "1_.5"]),
+    "CHAR": (["'a'", "'\\n'", "'\\r'", "'\\t'", "'\\0'", "'\\\\'", "'\\''", "'\\\"'", "'\\x41'", "'\"'"],
+             ["''", "'ab'", "'\\q'", "'\\x4'", "'\\xZZ'", "'a", "'\u20ac'"]),
+    "STRING": (['""', '"a"', '"\\n"', '"\\""', '"\\\\"', '"\'"', '"\u00e9"'],
+               ['"', '"a', '"\\"']),
+}
+
+
+def check_lexical_forms(spec, parser_cls=Parser, lexer_cls=Lexer):
+    try:
+        grammar = LexicalGrammar(spec)
+    except EbnfError as error:
+        return [str(error)]
+    problems = []
+    for name, (accepted, rejected) in LEXICAL_FORMS.items():
+        if name == "trivia":
+            lexed = lambda text: is_trivia(text, lexer_cls)
+        else:
+            lexed = lambda text, n=name: single_token(text, lexer_cls) == T[n]
+        for text in accepted:
+            if not lexed(text):
+                problems.append(f"lexer rejects frozen {name} {text!r}")
+            if not grammar.full(name, text):
+                problems.append(f"grammar rejects frozen {name} {text!r}")
+        for text in rejected:
+            if lexed(text):
+                problems.append(f"lexer accepts frozen bad {name} {text!r}")
+            if grammar.full(name, text):
+                problems.append(f"grammar accepts frozen bad {name} {text!r}")
+    tokens = ("IDENT", "INT", "keyword", "punctuator", "trivia")
+    for code in range(0x20, 0x7f):
+        for text in (chr(code), "a" + chr(code), chr(code) + "a"):
+            whole = any(grammar.full(rule, text) for rule in tokens)
+            if whole and lex_with(text, lexer_cls) is None:
+                problems.append(f"grammar derives {text!r} but the lexer rejects it")
+            if len(text) == 1 and not whole and lex_with(text, lexer_cls) is not None:
+                problems.append(f"lexer accepts character {text!r} the grammar lacks")
+    return problems
+
+
+def lex_with(source, lexer_cls):
+    try:
+        return lexer_cls(source).tokenize()
+    except MortError:
+        return None
+
+
+PROSE_SECTIONS = ("2", "3", "19", "20", "21", "22", "23")
+
+
+def prose_digests(spec):
+    """A digest of each normative section's prose, with fenced blocks removed."""
+    parts = re.split(r"^## (?=\d+\. )", spec, flags=re.MULTILINE)
+    digests = {}
+    for part in parts[1:]:
+        number = part.split(".", 1)[0]
+        if number in PROSE_SECTIONS:
+            bare = re.sub(r"^```.*?^```$", "", part.split("\n## ")[0], flags=re.DOTALL | re.MULTILINE)
+            digests[number] = hashlib.sha256(" ".join(bare.split()).encode()).hexdigest()[:16]
+    return digests
+
+
+# Update a digest only after confirming that the changed sentence still matches the
+# implementation. It makes a normative edit a deliberate two-place change.
+PROSE_DIGESTS = {
+    "2": "7eeda75f7d16579f",
+    "3": "08fbd9110264f7e2",
+    "19": "9a73fd9c2ae1d25a",
+    "20": "3253b0571e3bacde",
+    "21": "37d8b13040ddf4ca",
+    "22": "ecedf07a78cb0402",
+    "23": "5c1c7224d336be0f",
+}
+
+
+def check_prose(spec, parser_cls=Parser, lexer_cls=Lexer):
+    found = prose_digests(spec)
+    return [f"section {n} prose changed: re-verify it, then update PROSE_DIGESTS to {found.get(n)}"
+            for n in PROSE_SECTIONS if found.get(n) != PROSE_DIGESTS.get(n)]
+
+
+FOCUSED_DETECTORS[:] = [check_forms, check_precedence, check_prose, check_lexical_forms]
+
+
+@pytest.mark.parametrize("check", FOCUSED_DETECTORS, ids=lambda f: f.__name__)
+def test_focused_checks_hold(check):
+    assert check(SPEC_TEXT) == []
+
+
+def test_exhaustive_edits_of_the_witnesses_get_the_same_verdict():
+    grammar = SyntaxGrammar(SPEC_TEXT)
+    problems = []
+    pool = [",", ";", ":", "=", "(", ")", "{", "}", "[", "]", "<", ">", ".", "..", "->", "=>",
+            "*", "&", "1", "a", "_", "let", "as", "const"]
+    for form in WITNESSES:
+        words = form.split(" ")
+        variants = []
+        for start in range(len(words)):
+            variants += [words[:start] + words[start + span:] for span in (1, 2, 3)]
+            variants += [words[:start] + [token] + words[start + 1:] for token in pool]
+        for variant in variants:
+            source = " ".join(variant)
+            tokens = lex(source)
+            if tokens is None:
+                continue
+            verdict = parser_verdict(source)
+            if verdict != "constraint" and grammar.accepts(tokens) != (verdict == "accept"):
+                problems.append(f"{verdict}: {source}")
+    assert problems == []
+
+
+# ----- every (rule, reference, alternative) triple must be load-bearing ---------
+
+def replace_node(node, target, replacement):
+    if node is target:
+        return replacement
+    if isinstance(node, Seq):
+        return Seq([replace_node(item, target, replacement) for item in node.items])
+    if isinstance(node, Alt):
+        return Alt([replace_node(item, target, replacement) for item in node.options])
+    if isinstance(node, Opt):
+        return Opt(replace_node(node.inner, target, replacement))
+    if isinstance(node, Rep):
+        return Rep(replace_node(node.inner, target, replacement))
+    return node
+
+
+NOTHING = Seq([])
+
+
+def drops(body):
+    """Each way to remove one alternative, repetition or option from a rule."""
+    for node in walk(body):
+        if isinstance(node, Alt):
+            for index in range(len(node.options)):
+                kept = node.options[:index] + node.options[index + 1:]
+                yield f"drop alternative {index}", replace_node(body, node, Alt(kept))
+        elif isinstance(node, (Opt, Rep)):
+            yield f"remove {type(node).__name__}", replace_node(body, node, NOTHING)
+
+
+def rule_narrowings(body):
+    """Each one-place change to a rule that should make it match less."""
+    yield from drops(body)
+    for node in walk(body):
+        if isinstance(node, Seq):
+            for index in range(len(node.items)):
+                if not isinstance(node.items[index], Special):
+                    yield (f"drop item {index}",
+                           replace_node(body, node, Seq(node.items[:index] + node.items[index + 1:])))
+        elif isinstance(node, Opt):
+            yield "require optional", replace_node(body, node, node.inner)
+        elif isinstance(node, Rep):
+            yield "repeat at most once", replace_node(body, node, Opt(node.inner))
+            yield "repeat at least once", replace_node(body, node, Seq([node.inner, node]))
+
+
+def head_references(rules, start):
+    """Rules and tokens a reference to ``start`` can narrow to at its head."""
+    found = []
+    frontier = [start]
+    while frontier:
+        name = frontier.pop()
+        for head in _heads(rules[name]):
+            if head not in found and head != start:
+                found.append(head)
+                if head in rules and head not in OPAQUE_HEADS:
+                    frontier.append(head)
+    return found
+
+
+def _heads(node):
+    if isinstance(node, Ref):
+        return [node.name]
+    if isinstance(node, Alt):
+        return [name for option in node.options for name in _heads(option)]
+    if isinstance(node, Seq):
+        names = []
+        for item in node.items:
+            if isinstance(item, Special):
+                continue
+            names += _heads(item)
+            if not isinstance(item, (Opt, Rep)):
+                break
+        return names
+    return []
+
+
+# Reference targets whose alternatives are covered once at rule level. Types inside
+# a struct literal or qualifier are checked at their own reference sites.
+SITE_LEAVES = {"scalar-type", "struct-literal", "generic-qualifier"}
+OPAQUE_HEADS = {"struct-literal", "generic-qualifier"}
+
+
+def triples(grammar):
+    """(label, overrides, site, key) for each narrowing, key being what must be reached."""
+    rules = grammar.rules
+    for name, body in rules.items():
+        for what, changed in rule_narrowings(body):
+            yield f"{name}: {what}", {name: changed}, None, name
+        for ref in walk(body):
+            if not isinstance(ref, Ref) or ref.name not in rules:
+                continue
+            target = ref.name
+            if target in OPAQUE_HEADS or (name in OPAQUE_HEADS and target == "type"):
+                continue  # the predicate fixes the first token, so no alternative differs
+            for narrower in head_references(rules, target):
+                unit = isinstance(rules[target], Ref) and rules[target].name == narrower
+                if not unit:
+                    label = f"{name}/{target}: only {narrower}"
+                    yield label, {name: replace_node(body, ref, Ref(narrower))}, None, id(ref)
+            for inner in [target, *head_references(rules, target)]:
+                if inner in rules and inner not in SITE_LEAVES:
+                    for what, changed in drops(rules[inner]):
+                        yield f"{name}/{target}/{inner}: {what}", None, (id(ref), {inner: changed}), id(ref)
+
+
+# Narrowings that cannot change what the grammar accepts. A stale entry fails the test.
+EQUIVALENT_NARROWINGS = {
+    "postfix-op: drop item 2": "the predicate guarantees '(' follows, and the next postfix-op reads it",
+    "generic-qualifier: drop item 1": "the predicate guarantees '.' follows, and postfix reads it",
+}
+
+
+def undetected_triples():
+    grammar = SyntaxGrammar(SPEC_TEXT)
+    forms = [(lex(f), f) for f in read_forms(ACCEPTED_FORMS)]
+    rejected = [lex(f) for f in read_forms(REJECTED_FORMS)]
+    reaches = {}
+    for tokens, _ in forms:
+        visited = set()
+        assert grammar.accepts(tokens, visited=visited)
+        for key in visited:
+            reaches.setdefault(key, []).append(tokens)
+    for tokens_list in reaches.values():
+        tokens_list.sort(key=len)
+    missed = []
+    total = 0
+    for label, overrides, site, key in triples(grammar):
+        total += 1
+        for changed in [*(overrides or {}).values(), *(site[1].values() if site else ())]:
+            grammar.index(changed)
+        detected = False
+        try:
+            for tokens in reaches.get(key, ()):
+                if not grammar.accepts(tokens, overrides=overrides, site=site):
+                    detected = True
+                    break
+            if not detected:
+                detected = any(grammar.accepts(t, overrides=overrides, site=site) for t in rejected)
+        except RecursionError:
+            detected = True  # dropping a prefix can leave a left-recursive rule
+        if not detected:
+            missed.append(label)
+    return total, missed
+
+
+def test_every_rule_reference_alternative_triple_is_load_bearing():
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 5000))
+    try:
+        total, missed = undetected_triples()
+    finally:
+        sys.setrecursionlimit(limit)
+    assert total > 1000
+    assert set(missed) == set(EQUIVALENT_NARROWINGS), missed[:40]
