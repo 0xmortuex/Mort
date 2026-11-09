@@ -18,10 +18,11 @@ import pyrepr;
 
 extern fn getcwd(buf: *c_char, size: u64) -> *c_char;
 
-// Python's load() recursion: the depth at which compile_files_to_c reports
-// "source nesting or import depth exceeds the compiler safety limit". Pinned by
-// test_import_depth_limit_matches_python.
-const DR_MAX_IMPORT_DEPTH: u64 = 985;
+// The deepest import chain Python accepts, measured on minimal files: the root is
+// depth 0. Python's limit is frames, so a file with deeper grammar stops it a few
+// levels sooner, with a located nesting error where this reports the import depth
+// (PLAN.md, section 16). Pinned by test_import_depth_boundary.
+const DR_MAX_IMPORT_DEPTH: u64 = 978;
 
 struct LoadedFile {
     path: u64,

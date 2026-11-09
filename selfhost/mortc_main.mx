@@ -1,9 +1,12 @@
 // The Mort-written compiler's driver (PLAN.md, T8). The compiler stages are this
 // file compiled: it reads a program from the filesystem, resolves its imports and
 // writes one C file. Diagnostics are mortc.py's, byte for byte, plus the subset
-// gate of T9 on programs the compiler would otherwise accept.
+// gate of T9 on programs the compiler would otherwise accept. --no-subset-gate
+// turns the gate off, so that the phases can be compared with Python on the whole
+// language; the stages never use it.
 //
-// Usage: mortc_main [--check] [--emit-c] [--freestanding] [--std-dir DIR] -o OUTPUT FILE...
+// Usage: mortc_main [--check] [--emit-c] [--freestanding] [--no-subset-gate]
+//                   [--std-dir DIR] -o OUTPUT FILE...
 //
 // Exit status: 0 success, 1 a diagnostic, 2 usage or I/O failure.
 
@@ -28,7 +31,7 @@ import driver;
 import subset;
 
 fn main_usage() -> int {
-    eprintln("usage: mortc_main [--check] [--emit-c] [--freestanding] [--std-dir DIR] -o OUTPUT FILE...");
+    eprintln("usage: mortc_main [--check] [--emit-c] [--freestanding] [--no-subset-gate] [--std-dir DIR] -o OUTPUT FILE...");
     return 2;
 }
 
@@ -67,6 +70,7 @@ fn main() -> int {
     let output = 0 as *u8;
     let check_only = false;
     let freestanding = false;
+    let subset_gate = true;
     let std_dir = span_z("");
     let files = ptrvec_new();
     let i: u64 = 1;
@@ -88,6 +92,8 @@ fn main() -> int {
             check_only = true;
         } else if span_eq_z(span_z(text), "--freestanding") {
             freestanding = true;
+        } else if span_eq_z(span_z(text), "--no-subset-gate") {
+            subset_gate = false;
         } else if span_eq_z(span_z(text), "--emit-c") {
             // The driver only ever produces C; accepted for mortc.py's spelling.
         } else if main_is_option(text) {
@@ -97,7 +103,7 @@ fn main() -> int {
         }
         i += 1;
     }
-    if files.len == 0 || (output == (0 as *u8) && !check_only) {
+    if files.len == 0 {
         return main_usage();
     }
     DIAG_RENDER = true;
@@ -108,6 +114,9 @@ fn main() -> int {
             return main_cannot_find(path);
         }
         file_close(handle);
+    }
+    if output == (0 as *u8) && !check_only {
+        return main_usage();
     }
     let strings = intern_new();
     let first_columns = map_new();
@@ -124,10 +133,12 @@ fn main() -> int {
         let loaded = ptrvec_get(&d.files, k) as *LoadedFile;
         sb_collect_names(&gate, &(*loaded).program);
     }
-    for k: u64 in 0..d.files.len {
-        let loaded = ptrvec_get(&d.files, k) as *LoadedFile;
-        gate.file = (*loaded).path;
-        sb_check_file(&gate, &(*loaded).program);
+    if subset_gate {
+        for k: u64 in 0..d.files.len {
+            let loaded = ptrvec_get(&d.files, k) as *LoadedFile;
+            gate.file = (*loaded).path;
+            sb_check_file(&gate, &(*loaded).program);
+        }
     }
     ck_run(&checker);
     // Code generation locates a spent budget at its current node alone.

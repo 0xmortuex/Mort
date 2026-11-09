@@ -116,7 +116,36 @@ jobs:
         run: python -m pip install -e ".[dev]"
 
       - name: Run the selfhost tests
-        run: python -m pytest selfhost -q
+        # test_bootstrap.py runs in the bootstrap job, on Linux and Windows.
+        run: python -m pytest selfhost -q --ignore=selfhost/test_bootstrap.py
+
+  bootstrap:
+    # The release gate of selfhost/PLAN.md: stage-1 builds stage-2, and the C of
+    # stage-2 equals the C of stage-1 and the Python compiler's, byte for byte.
+    name: Self-hosting fixpoint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Mort and the Zig C toolchain
+        run: python -m pip install -e ".[dev]"
+
+      - name: Build the stages and require C1 == C2 and C0 == C1
+        run: python selfhost/bootstrap.py
+
+      - name: Run the stage-2 driver, determinism and rejection tests
+        run: python -m pytest selfhost/test_bootstrap.py -q
 
   differential:
     name: Differential C backends and optimization levels

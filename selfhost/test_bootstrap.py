@@ -84,21 +84,24 @@ def python_outcome(files, freestanding=False):
     return "ok", text.encode("utf-8")
 
 
-def stage2_outcome(exe, files, tmp_path, freestanding=False, cwd=None, std_dir=ROOT / "std"):
+def stage2_outcome(exe, files, tmp_path, freestanding=False, cwd=None, std_dir=ROOT / "std",
+                   gate=True):
     out = tmp_path / "stage2-out.c"
     if out.exists():
         out.unlink()
     flags = ["--freestanding"] if freestanding else []
+    if not gate:
+        flags.append("--no-subset-gate")
     if std_dir is not None:
         flags += ["--std-dir", str(std_dir)]
     code, _, stderr = run_stage(exe, *flags, "-o", out, *files, cwd=cwd)
     return code, stderr, out.read_bytes() if out.exists() else None
 
 
-def assert_matches_python(exe, files, tmp_path, freestanding=False, cwd=None):
+def assert_matches_python(exe, files, tmp_path, freestanding=False, cwd=None, gate=True):
     """Stage-2 and Python must accept with equal C, or reject with equal text."""
     kind, expected = python_outcome(files, freestanding)
-    code, stderr, produced = stage2_outcome(exe, files, tmp_path, freestanding, cwd)
+    code, stderr, produced = stage2_outcome(exe, files, tmp_path, freestanding, cwd, gate=gate)
     if kind == "reject":
         assert code == 1, f"stage-2 exit {code}; python: {expected!r}; stderr: {stderr!r}"
         assert stderr == expected
@@ -388,7 +391,24 @@ IMPORT_CASES = {
 @pytest.mark.parametrize("name", sorted(IMPORT_CASES))
 def test_import_resolution_matches_python(stage2, tmp_path, name):
     write_tree(tmp_path, IMPORT_CASES[name])
-    assert_matches_python(stage2, [tmp_path / "main.mx"], tmp_path)
+    # Gate off: nested, module and std imports are outside the subset, and their
+    # resolution must still equal Python's byte for byte.
+    assert_matches_python(stage2, [tmp_path / "main.mx"], tmp_path, gate=False)
+
+
+@pytest.mark.parametrize("name, reason", [
+    ("nested_directory", b"import that is not one relative segment"),
+    ("module_alias_call", b"import alias"),
+    ("module_default_alias", b"qualified or payload call"),
+    ("std_import_used", b"import that is not one relative segment"),
+])
+def test_gate_rejects_imports_outside_the_subset(stage2, tmp_path, name, reason):
+    write_tree(tmp_path, IMPORT_CASES[name])
+    assert python_outcome([tmp_path / "main.mx"])[0] == "ok"
+    code, stderr, produced = stage2_outcome(stage2, [tmp_path / "main.mx"], tmp_path)
+    assert code == 1 and produced is None, stderr
+    assert reason in stderr and GATE_TEXT.encode("utf-8") in stderr, stderr
+    assert b".mx:" in stderr, stderr
 
 
 def test_import_cases_exercise_both_outcomes(stage2, tmp_path):
@@ -461,15 +481,34 @@ def test_paths_with_spaces(stage2, tmp_path):
     assert assert_matches_python(stage2, [tmp_path / "with space" / "main.mx"], tmp_path) == "reject"
 
 
-def test_import_depth_limit_matches_python(stage2, tmp_path):
-    # A long linear chain of imports; the deepest one is well within the limit.
-    depth = 300
+def import_chain(directory, depth):
     tree = {f"m{i}.mx": f"import m{i + 1};\nfn f{i}() -> int {{ return f{i + 1}(); }}\n"
             for i in range(depth)}
     tree[f"m{depth}.mx"] = f"fn f{depth}() -> int {{ return 0; }}\n"
     tree["main.mx"] = "import m0;\nfn main() -> int { return f0(); }\n"
-    write_tree(tmp_path, tree)
-    assert assert_matches_python(stage2, [tmp_path / "main.mx"], tmp_path) == "ok"
+    write_tree(directory, tree)
+    return directory / "main.mx"
+
+
+def test_import_depth_limit_matches_python(stage2, tmp_path):
+    root = import_chain(tmp_path, 300)
+    assert assert_matches_python(stage2, [root], tmp_path) == "ok"
+
+
+def test_import_depth_boundary(stage2, tmp_path):
+    """977 is the deepest chain Python accepts; past it both reject. The wording
+    can differ at the boundary (PLAN.md, section 16), so only the limit is compared."""
+    accepted = tmp_path / "accepted"
+    assert assert_matches_python(stage2, [import_chain(accepted, 977)], tmp_path) == "ok"
+    for depth in (978, 1100):
+        directory = tmp_path / f"rejected{depth}"
+        root = import_chain(directory, depth)
+        kind, expected = python_outcome([root])
+        assert kind == "reject" and b"exceeds the compiler safety limit" in expected
+        code, stderr, produced = stage2_outcome(stage2, [root], tmp_path)
+        assert code == 1 and produced is None, stderr
+        assert stderr == (b"mortc: error: source nesting or import depth exceeds "
+                          b"the compiler safety limit")
 
 
 # ----- command line -----
