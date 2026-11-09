@@ -25,7 +25,7 @@ from test_codegen_differential import (  # noqa: E402,F401
 )
 import py_codegen_dump  # noqa: E402
 from test_codegen_expr_differential import (  # noqa: E402
-    assert_condition_texts_match, body, expression_program,
+    assert_condition_texts_match, body, expression_program, replay_cjk_program,
 )
 
 MAIN = "fn main() -> int { return 0; }\n"
@@ -291,6 +291,37 @@ EXPRESSION_MUTANTS = {
         "            text = 0;\n",
         ["fn g(v: i64) -> i64 { return v; }\nfn main() -> int {\n" + "defer g(1);\n" * 2000
          + "if true { return 1; }\n" * 2000 + "return 0;\n}\n"]),
+    "replay_charge_counts_bytes": (
+        "cg_expr.mx",
+        "            if (text.data[i] & 0xC0) != 0x80 {\n                total += 1;\n            }\n",
+        "            total += 1;\n",
+        [replay_cjk_program()]),
+    # const arrays of function pointers keep the const on the elements.
+    "const_fn_array_loses_const": (
+        "codegen.mx",
+        "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, binding_const);\n",
+        "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, false);\n",
+        [statement("const_array_of_fn"), declaration("global_const_array_of_fn")]),
+    # Helper marks reached only from a compound assignment: real-run flags no longer
+    # hide them, because nothing tells the generator which helpers a program uses.
+    "compound_assign_loses_wrap_mark": (
+        "cg_expr.mx", "        cg_use_int(g, CG_OP_WRAP, at);\n", "",
+        [rep("let a: i64 = 1;\na += 2;")]),
+    "compound_assign_loses_div_mark": (
+        "cg_expr.mx", "            cg_use_int(g, CG_OP_DIV, at);\n", "",
+        [rep("let a: i64 = 1;\na /= 2;")]),
+    "compound_assign_loses_rem_mark": (
+        "cg_expr.mx", "            cg_use_int(g, CG_OP_REM, at);\n", "",
+        [rep("let a: i64 = 1;\na %= 2;")]),
+    "compound_assign_loses_shl_mark": (
+        "cg_expr.mx", "        cg_use_int(g, CG_OP_SHL, at);\n", "",
+        [rep("let a: u8 = 1;\nlet n: u32 = 1;\na <<= n;")]),
+    "compound_assign_loses_shr_mark": (
+        "cg_expr.mx", "        cg_use_int(g, CG_OP_SHR, at);\n", "",
+        [rep("let a: u8 = 1;\nlet n: u32 = 1;\na >>= n;")]),
+    "compound_assign_loses_shift_count_mark": (
+        "cg_expr.mx", "        (*g).used_shift_count = true;\n", "",
+        [rep("let a: i64 = 1;\nlet n: i32 = 2;\na <<= n;")]),
 }
 
 MUTANTS.update(EXPRESSION_MUTANTS)
