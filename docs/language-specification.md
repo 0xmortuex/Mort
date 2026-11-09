@@ -632,8 +632,30 @@ when constant and a controlled execution failure otherwise.
   is logical.
 
 All-literal integer expressions are evaluated with arbitrary precision before
-contextual range checking. Consequently an out-of-range literal expression is
-a compile-time error rather than a wrapping runtime expression.
+contextual range checking, with one exception: a constant `<<` whose count
+exceeds 64 and whose left operand is not zero evaluates to exactly 2^65, whatever
+the operand's value or sign and whatever the count. Consequently an out-of-range
+literal expression is a compile-time error rather than a wrapping runtime
+expression, and `(1 << 70) >> 70` is 0 where exact arithmetic would give 1.
+
+```mort run
+fn main() -> int {
+    print((1 << 64) >> 64);
+    print((1 << 70) >> 70);
+    print((3 << 70) >> 65);
+    return 0;
+}
+```
+
+```output
+1
+0
+1
+```
+
+```mort reject="does not fit in i64"
+fn main() -> int { let a: i64 = 1 << 70; return 0; }
+```
 
 The deterministic wrapping rules in this subsection apply to fixed-width Mort
 types. Arithmetic on `c_*` types follows the target ABI and should be confined
@@ -816,6 +838,14 @@ exceeds any of these limits:
 - A binary operator folded during checking must not produce a constant whose
   magnitude needs more than 262144 bits, even if a later operation would reduce
   it.
+- The initialisers generated for array repeat expressions in one program must
+  not total more than 256 MiB (268435456 bytes). A repeat counts its element
+  count times the length of the element's generated C plus 2. A repeat of more
+  than 256 elements whose element is a zero value counts nothing.
+- Source nesting and import depth have no fixed numeric limit. They are bounded
+  by the host stack available to the compiler, and exceeding it is the
+  diagnostic `source nesting exceeds the compiler safety limit`, or for imports
+  `source nesting or import depth exceeds the compiler safety limit`.
 
 Portable Mort source must not depend on:
 
@@ -1479,8 +1509,8 @@ fn main() -> int { let a = [1, 2]; f(slice(&a[0], 2)); return 0; }
 ```
 
 `%`, `&`, `|`, `^`, `<<`, `>>` and `~` do not apply to floats. Pointers support only
-`==` and `!=`. A constant integer expression is evaluated with arbitrary precision
-before its range is checked. `<` and the other ordering operators do not produce
+`==` and `!=`. A constant integer expression is evaluated with arbitrary precision,
+except for the capped constant `<<` of section 7.1, before its range is checked. `<` and the other ordering operators do not produce
 a constant integer expression. A constant zero divisor and a constant negative shift
 count are compile-time errors.
 

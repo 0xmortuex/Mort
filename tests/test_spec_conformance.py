@@ -1865,8 +1865,11 @@ _DIGITS = "0123456789"
 _HEX_DIGITS = _DIGITS + "abcdefABCDEF"
 _ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # Every ASCII character, then samples of what the Unicode-wide classes also hold.
-CHARACTER_SAMPLES = [chr(code) for code in range(0x80)] + list(
-    "\u0080 ª²µ×éÿĀ٣€日\U0001f600")
+# All of Latin-1 is listed; beyond it, one member of each identifier category
+# (Lt, Lm, Nd, Nl and others) and a stride across the identifier characters.
+CHARACTER_SAMPLES = [chr(code) for code in range(0x100)] + list(
+    "\u0100\u01c5\u02b0\u0663\u2167\u20ac\u65e5\U0001f600") + [
+    chr(code) for code in range(0x101, 0x110000, 0x1009) if chr(code).isalnum()]
 
 
 def _exhaustive_lexical_forms():
@@ -1985,11 +1988,11 @@ PROSE_DIGESTS = {
     "4": "972ff7caa597d066",
     "5": "0df028a68b1cef08",
     "6": "8409203f8c899018",
-    "7": "395fbd276605eae2",
+    "7": "1e5f7981bcbf314d",
     "8": "20e068bac71b5af5",
     "9": "64bf888b11dfb6c5",
     "10": "a969deb1c430de10",
-    "11": "ba36daa6139e9ff7",
+    "11": "a805710130b487fc",
     "12": "3a67e59abb518ecb",
     "13": "6c9eefbf90deb427",
     "14": "0873ac56ee42692b",
@@ -1997,7 +2000,7 @@ PROSE_DIGESTS = {
     "16": "396f635b9b36e536",
     "17": "8f9e052c2d06308d",
     "18": "d83b1e349b0850f8",
-    "19": "9a73fd9c2ae1d25a",
+    "19": "287e924e96456a5f",
     "20": "3253b0571e3bacde",
     "21": "37d8b13040ddf4ca",
     "22": "ecedf07a78cb0402",
@@ -2360,6 +2363,10 @@ REVIEWED_NARROWINGS = {
                    'char-plain = ? latin1 ? - ( "\'" | "\\" | ? LF ? | ? NUL ? | "q" ) ;'),
     "ident-continue": ('ident-continue = ? alnum ? | "_" ;',
                        'ident-continue = ( ? alnum ? - "Q" ) | "_" ;'),
+    "ident-continue-eszett": ('ident-continue = ? alnum ? | "_" ;',
+                              'ident-continue = ( ? alnum ? - "\u00df" ) | "_" ;'),
+    "ident-start-eszett": ('ident-start = ? alpha ? | "_" ;',
+                           'ident-start = ( ? alpha ? - "\u00df" ) | "_" ;'),
     "string-escape": ('string-escape = "\\", ( ? any ? - ? NUL ? ) ;',
                       'string-escape = "\\", ( ? any ? - ( ? NUL ? | "q" ) ) ;'),
 }
