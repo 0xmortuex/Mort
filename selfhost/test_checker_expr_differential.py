@@ -12,6 +12,7 @@ message and location must be equal and the walk up to that point the same.
 import ast
 import collections
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1027,12 +1028,21 @@ def _mutable_sources():
     return usable
 
 
+TYPE_WORDS = ("u8", "u16", "u32", "u64", "i8", "i32", "i64", "bool")
+VALUE_WORDS = ("0", "1", "300", "70000", "true", "null")
+
+
 def _mutate(rng, source):
-    """Line-level and token-level mistakes, a few per mutant."""
+    """Mistakes that mostly still parse, so that they reach the type checker:
+    a changed type or value, a name swapped for another from the same file,
+    and occasionally a line removed, doubled or moved."""
     lines = source.split("\n")
+    names = sorted({
+        word for line in lines for word in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", line)
+        if word not in TYPE_WORDS})
     for _ in range(rng.randint(1, 3)):
         index = rng.randrange(len(lines))
-        op = rng.randrange(6)
+        op = rng.randrange(12)
         if op == 0:
             del lines[index]
             if not lines:
@@ -1043,12 +1053,18 @@ def _mutate(rng, source):
             other = rng.randrange(len(lines))
             lines[index], lines[other] = lines[other], lines[index]
         else:
-            words = lines[index].split(" ")
-            if words:
-                spot = rng.randrange(len(words))
-                words[spot] = rng.choice(
-                    ("u8", "i64", "true", "1", "300", "null", "x", "bool", "as", "move"))
-                lines[index] = " ".join(words)
+            spots = list(re.finditer(r"[A-Za-z_][A-Za-z_0-9]*|[0-9]+", lines[index]))
+            if not spots:
+                continue
+            spot = rng.choice(spots)
+            word = spot.group()
+            if word in TYPE_WORDS:
+                new = rng.choice(TYPE_WORDS)
+            elif word.isdigit() or word in ("true", "false", "null"):
+                new = rng.choice(VALUE_WORDS)
+            else:
+                new = rng.choice(names)
+            lines[index] = lines[index][:spot.start()] + new + lines[index][spot.end():]
     return "\n".join(lines)
 
 
