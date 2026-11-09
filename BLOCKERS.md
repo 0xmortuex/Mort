@@ -50,6 +50,12 @@ Interim: declare the exact C signature (`end: **c_char`).
   `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
   emits the two characters with separate pushes instead. T6 and T7 reproduce this
   scan's output, so fixing it changes what they must match.
+- `mort/typechecker.py:443` (`_validate_aggregate_cycles`): `for dependency in
+  graph[name]` iterates a `set`, so which of several by-value cycles is reported
+  depends on `PYTHONHASHSEED`. With `struct A { b: B, c: C } struct B { a: A }
+  struct C { a: A }` the message is either `A -> B -> A` or `A -> C -> A`. Found
+  by T4, whose reference (`selfhost/py_check_dump.py`) makes that iteration
+  insertion-ordered so the comparison is stable.
 
 Found by the program generator (T2c). None is fixed here; the generator stays
 clear of each one, and says so where it does:
@@ -82,4 +88,5 @@ clear of each one, and says so where it does:
   `fn main() -> int { return 0; } test "t" { let x: u8 = 1; assert(x == 1); }`
   Python's events include the test's `bind`, `var` and `call`; Mort's stop after
   `fn "main"`. It fails the three generated full programs with a test block
-  (`full6`, `full7`, `full8`) in the declaration-checker differential.
+  (`full6`, `full7`, `full8`) in the declaration-checker differential. Fixed by
+  T4, which checks test blocks in every mode; those programs now pass.

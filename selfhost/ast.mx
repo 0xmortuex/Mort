@@ -83,6 +83,13 @@ struct Node {
     c: *Node,
     items: *PtrVec,
     names: *U64Vec,
+    // Set by the checker's merge step, not the parser (mort_ast's `filename`,
+    // `mod_name`, `symbol_name` and `import_aliases`). `import_aliases` is the
+    // file's alias map, shared by every declaration in that file.
+    file: u64,
+    mod_name: u64,
+    symbol: u64,
+    import_aliases: *Map,
     name_line: u64,
     name_col: u64,
     col: u64,
@@ -95,6 +102,8 @@ fn ast_new(kind: NodeKind, line: u64) -> *Node {
         kind: kind, line: line, name: NO_TEXT, ty: NO_TEXT, num: 0, flag: false,
         a: 0 as *Node, b: 0 as *Node, c: 0 as *Node,
         items: 0 as *PtrVec, names: 0 as *U64Vec, name_line: 0, name_col: 0,
+        file: NO_TEXT, mod_name: NO_TEXT, symbol: NO_TEXT,
+        import_aliases: 0 as *Map,
         col: 0, paren_col: 0,
     };
     return node;

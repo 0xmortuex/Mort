@@ -1,0 +1,2884 @@
+// Checker, part 1: declarations and name resolution (PLAN.md, task T4).
+//
+// A port of mort/typechecker.py's `check()` up to the end of the declaration
+// phase, plus a walk of every function body that follows the same evaluation
+// order and reports the same name errors, without computing expression types.
+// That type-dependent half is T5, which will replace the marked places below.
+//
+// Output (see selfhost/py_check_dump.py): the tables taken when the declaration
+// phase finishes, then one event per binding, variable reference and call.
+//
+// Tables are insertion ordered (a vector next to a lookup map) and nothing here
+// iterates a map, so output depends only on the source. Expressions are walked
+// with an explicit stack: chains of binary, postfix and cast operators build
+// left-deep trees of any depth, and recursion over them would overflow the
+// C stack. Everything else recurses only over what the parser's depth limit
+// bounds, or counts its depth in `depth` (ck_enter).
+
+import support;
+import ast;
+import pyrepr;
+import typestr;
+
+// Python's default recursion limit, less the frames the real compiler has on
+// the stack by the time it resolves the first alias. Measured with
+// `mortc.py --check` and pinned by test_alias_chain_limit_matches_mortc.
+const CK_MAX_DEPTH: u64 = 989;
+
+// Python applies these three to generic functions; ck_charge_generic applies
+// them to struct and enum instances too (PLAN.md, section 11).
+const MAX_GENERIC_INSTANTIATIONS: u64 = 16384;
+const MAX_GENERIC_WORK: u64 = 1000000;
+// WorkMeter in mort/typechecker.py: every program is metered from the start of
+// checking, and no type the compiler builds is longer than MAX_TYPE_LENGTH.
+const WORK_CHARS_PER_UNIT: u64 = 64;
+const WORK_UNITS_PER_NODE: u64 = 8;
+const MAX_TYPE_LENGTH: u64 = 65536;
+const MAX_TYPE_ARGUMENT_LENGTH: u64 = 4096;
+const MAX_TYPE_ARGUMENT_NESTING: u64 = 256;
+
+const W_EXPR: u64 = 0;
+const W_CALL_DONE: u64 = 1;
+const W_SLIT_FIELD: u64 = 2;
+const W_SLIT_DONE: u64 = 3;
+
+// What a call resolves to, carried on the stack until its arguments are done.
+const CALL_ENUM: u64 = 0;
+const CALL_BUILTIN: u64 = 1;
+const CALL_BINDING: u64 = 2;
+const CALL_FN: u64 = 3;
+const CALL_TEMPLATE: u64 = 4;
+
+// ----- ordered table: a Python dict -----
+
+struct Table {
+    tmap: Map,
+    tkeys: U64Vec,
+    titems: PtrVec,
+}
+
+fn tb_new() -> Table {
+    return Table { tmap: map_new(), tkeys: u64vec_new(), titems: ptrvec_new() };
+}
+
+fn tb_has(t: *Table, key: u64) -> bool {
+    return map_has(&(*t).tmap, key);
+}
+
+fn tb_get(t: *Table, key: u64) -> *void {
+    let index: u64 = 0;
+    if !map_get(&(*t).tmap, key, &index) {
+        sup_die("mort: internal error: missing table key");
+    }
+    return ptrvec_get(&(*t).titems, index);
+}
+
+// Assigning to an existing key keeps its position, as a Python dict does.
+fn tb_put(t: *Table, key: u64, item: *void) {
+    let index: u64 = 0;
+    if map_get(&(*t).tmap, key, &index) {
+        ptrvec_set(&(*t).titems, index, item);
+        return;
+    }
+    map_put(&(*t).tmap, key, (*t).tkeys.len);
+    u64vec_push(&(*t).tkeys, key);
+    ptrvec_push(&(*t).titems, item);
+}
+
+fn tb_len(t: *Table) -> u64 {
+    return (*t).tkeys.len;
+}
+
+fn tb_key(t: *Table, index: u64) -> u64 {
+    return u64vec_get(&(*t).tkeys, index);
+}
+
+fn tb_item(t: *Table, index: u64) -> *void {
+    return ptrvec_get(&(*t).titems, index);
+}
+
+// ----- table contents -----
+
+struct StructInfo {
+    done: bool,
+    fnames: U64Vec,
+    ftypes: U64Vec,
+}
+
+struct EnumInfo {
+    done: bool,
+    vnames: U64Vec,
+    payload: U64Vec,    // NO_TEXT when the variant has no payload
+    payloads: PtrVec,   // *U64Vec of declared payload types
+}
+
+struct FuncInfo {
+    params: U64Vec,
+    ret: u64,
+    decl: *Node,
+}
+
+struct GlobalInfo {
+    decl_type: u64,
+    mutable: bool,
+}
+
+struct Binding {
+    bname: u64,
+    depth: u64,
+    bline: u64,
+    bkind: u64,
+    bmutable: bool,
+    bprev: u64,
+}
+
+fn ck_box(value: u64) -> *void {
+    let p = sup_alloc(sizeof<u64>()) as *u64;
+    *p = value;
+    return p as *void;
+}
+
+fn ck_unbox(p: *void) -> u64 {
+    return *(p as *u64);
+}
+
+// ----- checker state -----
+
+struct Ck {
+    s: *Interner,
+    program: *Program,
+    out_path: *u8,
+    freestanding: bool,
+    test_mode: bool,
+    depth: u64,
+    generic_instantiations: u64,
+    work_spent: u64,
+    work_instantiated: bool,
+    work_site: *Node,
+    current_node: *Node,
+    current_statement: *Node,
+    first_columns: *Map,
+    alias_cache: Map,
+    valid_types: Map,
+    valid_behind_pointer: Map,
+
+    aliases: Table,
+    alias_decls: Table,
+    enums: Table,
+    enum_templates: Table,
+    structs: Table,
+    struct_templates: Table,
+    funcs: Table,
+    func_templates: Table,
+    globals: Table,
+    aggregate_decls: Table,
+    resource_templates: Table,
+
+    int_types: Map,
+    float_types: Map,
+    builtin_names: Map,
+    generic_builtins: Map,
+    c_keywords: Map,
+    resource_struct_names: Map,
+    resource_struct_order: U64Vec,
+    destructor_symbols: Map,
+    destructor_order: U64Vec,
+    extern_names: Map,
+    extern_order: U64Vec,
+
+    t_void: u64,
+    t_bool: u64,
+    t_i64: u64,
+    t_main: u64,
+    t_destroy: u64,
+    t_underscore: u64,
+    t_assign: u64,
+    t_sizeof: u64,
+    k_variable: u64,
+    k_parameter: u64,
+    k_loop: u64,
+    k_match: u64,
+
+    bindings: PtrVec,
+    bind_map: Map,
+    scope_starts: U64Vec,
+    scope_depth: u64,
+
+    current_module: u64,
+    current_aliases: *Map,
+    loop_depth: u64,
+
+    stack_nodes: PtrVec,
+    stack_phases: U64Vec,
+    stack_extras: U64Vec,
+
+    tables: Buf,
+    tables_done: bool,
+    events: Buf,
+}
+
+fn ck_make_set(s: *Interner, out: *Map, names: *u8) {
+    // `names` is space separated; the set never has to be iterated.
+    let span = span_z(names);
+    let start: u64 = 0;
+    for i: u64 in 0..span.len + 1 {
+        if i == span.len || span.data[i] == ' ' {
+            if i > start {
+                map_put(out, intern(s, ts_sub(span, start, i)), 1);
+            }
+            start = i + 1;
+        }
+    }
+}
+
+// ----- messages and failure -----
+
+fn m_new() -> Buf {
+    return buf_new(128);
+}
+
+fn m_s(b: *Buf, text: *u8) {
+    buf_push_z(b, text);
+}
+
+fn m_t(c: *Ck, b: *Buf, h: u64) {
+    buf_push_span(b, intern_text((*c).s, h));
+}
+
+fn m_r(c: *Ck, b: *Buf, h: u64) {
+    pr_push_str_repr(b, intern_text((*c).s, h));
+}
+
+fn m_u(b: *Buf, value: u64) {
+    buf_push_u64(b, value);
+}
+
+fn ck_write_output(c: *Ck) {
+    let handle = file_open((*c).out_path, "wb");
+    if handle == (0 as *void) {
+        sup_die("check_main: cannot write the output file");
+    }
+    let marker = "--events--\n";
+    file_write(handle, (*c).tables.data, (*c).tables.len);
+    file_write(handle, marker, span_z(marker).len);
+    file_write(handle, (*c).events.data, (*c).events.len);
+    file_close(handle);
+}
+
+fn ck_exit_diag(c: *Ck, line: u64, col: u64, file: u64, message: Span) {
+    ck_write_output(c);
+    let text = buf_new(256);
+    if file != NO_TEXT {
+        diag_format(&text, intern_text((*c).s, file).data, line, col, message);
+    } else {
+        buf_push_z(&text, "error");
+        if line != 0 {
+            buf_push_z(&text, " (line ");
+            buf_push_u64(&text, line);
+            buf_push_z(&text, ")");
+        }
+        buf_push_z(&text, ": ");
+        for i: u64 in 0..message.len {
+            buf_push(&text, message.data[i]);
+        }
+    }
+    buf_push(&text, 0);
+    eprintln(text.data);
+    exit(EXIT_DIAGNOSTIC);
+}
+
+fn ck_fail_node(c: *Ck, node: *Node, message: *Buf) {
+    if node == (0 as *Node) {
+        ck_exit_diag(c, 0, 0, NO_TEXT, buf_span(message));
+    }
+    ck_exit_diag(c, (*node).line, (*node).col, (*node).file, buf_span(message));
+}
+
+fn ck_fail_z(c: *Ck, node: *Node, text: *u8) {
+    let b = m_new();
+    m_s(&b, text);
+    ck_fail_node(c, node, &b);
+}
+
+// The key of a file and line in `first_columns`.
+fn ck_line_key(file: u64, line: u64) -> u64 {
+    return file * 4294967296 + line;
+}
+
+// `_nesting_error`: at the node reached, in its column or else that of the
+// line's first token.
+fn ck_fail_nesting(c: *Ck) {
+    let node = (*c).current_node;
+    let msg = m_new();
+    m_s(&msg, "source nesting exceeds the compiler safety limit");
+    if node == (0 as *Node) {
+        ck_fail_node(c, node, &msg);
+    }
+    let col = (*node).col;
+    if col == 0 {
+        col = 1;
+        let first: u64 = 0;
+        if (*node).file != NO_TEXT
+                && map_get((*c).first_columns, ck_line_key((*node).file, (*node).line), &first) {
+            col = first;
+        }
+    }
+    ck_exit_diag(c, (*node).line, col, (*node).file, buf_span(&msg));
+}
+
+fn ck_enter(c: *Ck) {
+    (*c).depth += 1;
+    if (*c).depth > CK_MAX_DEPTH {
+        ck_fail_nesting(c);
+    }
+}
+
+fn ck_leave(c: *Ck) {
+    (*c).depth -= 1;
+}
+
+// ----- events -----
+
+fn ck_q(c: *Ck, out: *Buf, h: u64) {
+    let text = intern_text((*c).s, h);
+    buf_push(out, '"');
+    for i: u64 in 0..text.len {
+        let b = text.data[i];
+        if b == 92 || b == 34 || b < 0x20 || b > 0x7E {
+            buf_push_z(out, "\\x");
+            buf_push_hex2(out, b);
+        } else {
+            buf_push(out, b);
+        }
+    }
+    buf_push(out, '"');
+}
+
+fn ck_q_list(c: *Ck, out: *Buf, list: *U64Vec) {
+    buf_push(out, '[');
+    if list != (0 as *U64Vec) {
+        for i: u64 in 0..(*list).len {
+            if i != 0 {
+                buf_push(out, ',');
+            }
+            ck_q(c, out, u64vec_get(list, i));
+        }
+    }
+    buf_push(out, ']');
+}
+
+fn ck_ev_where(c: *Ck, b: *Binding) {
+    buf_push_z(&(*c).events, " local d");
+    buf_push_u64(&(*c).events, (*b).depth);
+    buf_push_z(&(*c).events, " L");
+    buf_push_u64(&(*c).events, (*b).bline);
+    buf_push(&(*c).events, 10);
+}
+
+fn ck_ev_bind(c: *Ck, b: *Binding) {
+    buf_push_z(&(*c).events, "bind ");
+    ck_q(c, &(*c).events, (*b).bname);
+    buf_push(&(*c).events, ' ');
+    ck_q(c, &(*c).events, (*b).bkind);
+    buf_push_z(&(*c).events, " d");
+    buf_push_u64(&(*c).events, (*b).depth);
+    buf_push_z(&(*c).events, " L");
+    buf_push_u64(&(*c).events, (*b).bline);
+    buf_push(&(*c).events, 10);
+}
+
+fn ck_ev_head(c: *Ck, tag: *u8, name: u64) {
+    buf_push_z(&(*c).events, tag);
+    buf_push(&(*c).events, ' ');
+    ck_q(c, &(*c).events, name);
+}
+
+fn ck_ev_end(c: *Ck) {
+    buf_push(&(*c).events, 10);
+}
+
+fn ck_ev_tail(c: *Ck, text: *u8) {
+    buf_push(&(*c).events, ' ');
+    buf_push_z(&(*c).events, text);
+    ck_ev_end(c);
+}
+
+fn ck_ev_fn(c: *Ck, symbol: u64) {
+    buf_push_z(&(*c).events, " fn ");
+    ck_q(c, &(*c).events, symbol);
+    ck_ev_end(c);
+}
+
+// ----- text helpers -----
+
+fn ck_names_len(list: *U64Vec) -> u64 {
+    if list == (0 as *U64Vec) {
+        return 0;
+    }
+    return (*list).len;
+}
+
+fn ck_items_len(list: *PtrVec) -> u64 {
+    if list == (0 as *PtrVec) {
+        return 0;
+    }
+    return (*list).len;
+}
+
+fn ck_has_dot(c: *Ck, name: u64) -> bool {
+    let text = intern_text((*c).s, name);
+    return ts_find(text, '.') != text.len;
+}
+
+fn ck_join_dot(c: *Ck, left: u64, right: u64) -> u64 {
+    let b = buf_new(64);
+    m_t(c, &b, left);
+    buf_push(&b, '.');
+    m_t(c, &b, right);
+    return ts_take((*c).s, &b);
+}
+
+fn ck_decimal(c: *Ck, value: u64) -> u64 {
+    let b = buf_new(32);
+    buf_push_u64(&b, value);
+    return ts_take((*c).s, &b);
+}
+
+fn ck_u64vec_has(list: *U64Vec, value: u64) -> bool {
+    for i: u64 in 0..(*list).len {
+        if u64vec_get(list, i) == value {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ck_payload_type(c: *Ck, list: *U64Vec) -> u64 {
+    if (*list).len == 1 {
+        return u64vec_get(list, 0);
+    }
+    return ts_make_tuple((*c).s, list);
+}
+
+// ----- charged type primitives -----
+//
+// The `WorkMeter` charges of mort/typechecker.py, at the same primitives: a scan, copy or split costs its length divided by
+// WORK_CHARS_PER_UNIT each time it runs, and every type built is charged and
+// capped, so total type work is bounded whatever the shape of the program.
+
+fn ck_column_of(n: *Node) -> u64 {
+    if n == (0 as *Node) {
+        return 0;
+    }
+    if (*n).paren_col != 0 {
+        return (*n).paren_col;
+    }
+    return (*n).col;
+}
+
+// `WorkMeter.fail` with `_work_location`: the most specific node with a column.
+fn ck_work_fail(c: *Ck, message: *Buf) {
+    let node = (*c).current_node;
+    if ck_column_of(node) == 0 && (*c).current_statement != (0 as *Node) {
+        node = (*c).current_statement;
+    }
+    if node == (0 as *Node)
+            || (ck_column_of(node) == 0 && ck_column_of((*c).work_site) != 0) {
+        if (*c).work_site != (0 as *Node) {
+            node = (*c).work_site;
+        }
+    }
+    if node == (0 as *Node) {
+        ck_exit_diag(c, 0, 0, NO_TEXT, buf_span(message));
+    }
+    ck_exit_diag(c, (*node).line, ck_column_of(node), (*node).file, buf_span(message));
+}
+
+fn ck_spend(c: *Ck, units: u64) {
+    if units == 0 {
+        return;
+    }
+    (*c).work_spent += units;
+    if (*c).work_spent > MAX_GENERIC_WORK {
+        let msg = m_new();
+        if (*c).work_instantiated {
+            m_s(&msg, "generic instantiation");
+        } else {
+            m_s(&msg, "type processing");
+        }
+        m_s(&msg, " exceeds the limit of ");
+        m_u(&msg, MAX_GENERIC_WORK);
+        m_s(&msg, " work units in one program");
+        ck_work_fail(c, &msg);
+    }
+}
+
+fn ck_charge_len(c: *Ck, length: u64) {
+    ck_spend(c, length / WORK_CHARS_PER_UNIT);
+}
+
+fn ck_charge_text(c: *Ck, t: u64) {
+    ck_charge_len(c, intern_text((*c).s, t).len);
+}
+
+// `made_type`: every type the compiler builds is charged and capped.
+fn ck_made(c: *Ck, t: u64) -> u64 {
+    let length = intern_text((*c).s, t).len;
+    ck_charge_len(c, length);
+    if length > MAX_TYPE_LENGTH {
+        let msg = m_new();
+        m_s(&msg, "type is longer than ");
+        m_u(&msg, MAX_TYPE_LENGTH);
+        m_s(&msg, " characters");
+        ck_work_fail(c, &msg);
+    }
+    return t;
+}
+
+fn ck_pointee(c: *Ck, t: u64) -> u64 {
+    ck_charge_text(c, t);
+    return ts_pointee((*c).s, t);
+}
+
+fn ck_slice_elem(c: *Ck, t: u64) -> u64 {
+    ck_charge_text(c, t);
+    return ts_slice_elem((*c).s, t);
+}
+
+fn ck_array_parts(c: *Ck, t: u64, elem: *u64, count: *u64) {
+    ck_charge_text(c, t);
+    ts_array_parts((*c).s, t, elem, count);
+}
+
+// `_split_type_list` charges the list it splits; each `*_parts` below reaches it
+// with the same text as Python's.
+fn ck_generic_parts(c: *Ck, t: u64, base: *u64, args: *U64Vec) -> bool {
+    let text = intern_text((*c).s, t);
+    let cut = ts_find(text, '<');
+    if cut != text.len && ts_ends_with(text, '>') {
+        ck_charge_len(c, text.len - cut - 2);
+    }
+    return ts_generic_parts((*c).s, t, base, args);
+}
+
+fn ck_tuple_parts(c: *Ck, t: u64, out: *U64Vec) -> bool {
+    let text = intern_text((*c).s, t);
+    if ts_starts_with(text, "(") && ts_ends_with(text, ')') {
+        ck_charge_len(c, text.len - 2);
+    }
+    return ts_tuple_parts((*c).s, t, out);
+}
+
+fn ck_list_chars(c: *Ck, list: *U64Vec) -> u64 {
+    let total: u64 = 0;
+    for i: u64 in 0..(*list).len {
+        total += intern_text((*c).s, u64vec_get(list, i)).len;
+    }
+    if (*list).len != 0 {
+        total += (*list).len - 1;
+    }
+    return total;
+}
+
+fn ck_function_parts(c: *Ck, t: u64, params: *U64Vec, result: *u64) -> bool {
+    if !ts_starts_with(intern_text((*c).s, t), "fn(") {
+        return false;
+    }
+    ck_charge_text(c, t);
+    if !ts_function_parts((*c).s, t, params, result) {
+        return false;
+    }
+    ck_charge_len(c, ck_list_chars(c, params));
+    return true;
+}
+
+fn ck_is_function(c: *Ck, t: u64) -> bool {
+    let params = u64vec_new();
+    let result: u64 = 0;
+    let found = ck_function_parts(c, t, &params, &result);
+    free(params.data as *void);
+    return found;
+}
+
+fn ck_substitute(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
+    let s = (*c).s;
+    ck_charge_text(c, h);
+    let index: u64 = 0;
+    if ts_subst_index(names, h, &index) {
+        return u64vec_get(values, index);
+    }
+    if ts_is_ptr(s, h) {
+        let inner = ck_substitute(c, ck_pointee(c, h), names, values);
+        if ts_is_const_ptr(s, h) {
+            return ck_made(c, ts_prefix_and(s, "*const ", inner));
+        }
+        return ck_made(c, ts_prefix_and(s, "*", inner));
+    }
+    if ts_is_slice(s, h) {
+        let inner = ck_substitute(c, ck_slice_elem(c, h), names, values);
+        return ck_made(c, ts_make_slice(s, ts_is_const_slice(s, h), inner));
+    }
+    if ts_is_array(s, h) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, h, &elem, &count);
+        return ck_made(c, ts_make_array(s, ck_substitute(c, elem, names, values), count));
+    }
+    let params = u64vec_new();
+    let result: u64 = 0;
+    if ck_function_parts(c, h, &params, &result) {
+        let mapped = u64vec_new();
+        for i: u64 in 0..params.len {
+            u64vec_push(&mapped, ck_substitute(c, u64vec_get(&params, i), names, values));
+        }
+        let new_result = ck_substitute(c, result, names, values);
+        return ck_made(c, ts_make_function(s, &mapped, new_result));
+    }
+    let tuple = u64vec_new();
+    if ck_tuple_parts(c, h, &tuple) {
+        let mapped = u64vec_new();
+        for i: u64 in 0..tuple.len {
+            u64vec_push(&mapped, ck_substitute(c, u64vec_get(&tuple, i), names, values));
+        }
+        return ck_made(c, ts_make_tuple(s, &mapped));
+    }
+    let base: u64 = 0;
+    let args = u64vec_new();
+    if ck_generic_parts(c, h, &base, &args) {
+        let mapped = u64vec_new();
+        for i: u64 in 0..args.len {
+            u64vec_push(&mapped, ck_substitute(c, u64vec_get(&args, i), names, values));
+        }
+        return ck_made(c, ts_make_generic(s, base, &mapped));
+    }
+    return h;
+}
+
+// ----- aliases -----
+
+// Results are cached by type, as on fix/frontend-crashes: without it each level
+// of a deep type re-resolves its whole inner type. A resolved name depends only
+// on the fixed alias table. `stack` is non-empty only while tracing an alias
+// body for cycles; alias names are cached even then, because a finished
+// expansion has no cycle and repeating it is exponential.
+fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
+    let s = (*c).s;
+    let cached: u64 = 0;
+    if ((*stack).len == 0 || tb_has(&(*c).aliases, t))
+            && map_get(&(*c).alias_cache, t, &cached) {
+        return cached;
+    }
+    ck_enter(c);
+    ck_charge_text(c, t);
+    let result = t;
+    if tb_has(&(*c).aliases, t) {
+        if ck_u64vec_has(stack, t) {
+            let b = m_new();
+            m_s(&b, "cyclic type alias: ");
+            for i: u64 in 0..(*stack).len {
+                m_t(c, &b, u64vec_get(stack, i));
+                m_s(&b, " -> ");
+            }
+            m_t(c, &b, t);
+            ck_fail_node(c, tb_get(&(*c).alias_decls, t) as *Node, &b);
+        }
+        u64vec_push(stack, t);
+        result = ck_resolve(c, ck_unbox(tb_get(&(*c).aliases, t)), stack);
+        u64vec_pop(stack);
+    } else if ts_is_ptr(s, t) {
+        let inner = ck_resolve(c, ck_pointee(c, t), stack);
+        if ts_is_const_ptr(s, t) {
+            result = ck_made(c, ts_prefix_and(s, "*const ", inner));
+        } else {
+            result = ck_made(c, ts_prefix_and(s, "*", inner));
+        }
+    } else if ts_is_slice(s, t) {
+        let inner = ck_resolve(c, ck_slice_elem(c, t), stack);
+        result = ck_made(c, ts_make_slice(s, ts_is_const_slice(s, t), inner));
+    } else if ts_is_array(s, t) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, t, &elem, &count);
+        result = ck_made(c, ts_make_array(s, ck_resolve(c, elem, stack), count));
+    } else {
+        let params = u64vec_new();
+        let fn_result: u64 = 0;
+        if ck_function_parts(c, t, &params, &fn_result) {
+            let mapped = u64vec_new();
+            for i: u64 in 0..params.len {
+                u64vec_push(&mapped, ck_resolve(c, u64vec_get(&params, i), stack));
+            }
+            let resolved_result = (*c).t_void;
+            if fn_result != (*c).t_void {
+                resolved_result = ck_resolve(c, fn_result, stack);
+            }
+            result = ck_made(c, ts_make_function(s, &mapped, resolved_result));
+        } else {
+            let tuple = u64vec_new();
+            if ck_tuple_parts(c, t, &tuple) {
+                let mapped = u64vec_new();
+                for i: u64 in 0..tuple.len {
+                    u64vec_push(&mapped, ck_resolve(c, u64vec_get(&tuple, i), stack));
+                }
+                result = ck_made(c, ts_make_tuple(s, &mapped));
+            } else {
+                let base: u64 = 0;
+                let args = u64vec_new();
+                if ck_generic_parts(c, t, &base, &args) {
+                    let mapped = u64vec_new();
+                    for i: u64 in 0..args.len {
+                        u64vec_push(&mapped, ck_resolve(c, u64vec_get(&args, i), stack));
+                    }
+                    result = ck_made(c, ts_make_generic(s, base, &mapped));
+                }
+            }
+        }
+    }
+    ck_leave(c);
+    if (*stack).len == 0 || tb_has(&(*c).aliases, t) {
+        map_put(&(*c).alias_cache, t, result);
+    }
+    return result;
+}
+
+fn ck_resolve_alias(c: *Ck, t: u64) -> u64 {
+    let stack = u64vec_new();
+    return ck_resolve(c, t, &stack);
+}
+
+// _apply_type_aliases: rewrites every type written in the program.
+fn ck_apply_node(c: *Ck, n: *Node) {
+    let s = (*c).s;
+    let kind = (*n).kind;
+    if (*n).line != 0 {
+        (*c).current_node = n;
+    }
+    if kind == NodeKind.TYPE_ALIAS_DECL || kind == NodeKind.FN_DECL
+            || kind == NodeKind.EXTERN_FN_DECL || kind == NodeKind.PARAM
+            || kind == NodeKind.STRUCT_FIELD || kind == NodeKind.CAST {
+        (*n).ty = ck_resolve_alias(c, (*n).ty);
+    } else if kind == NodeKind.ENUM_VARIANT {
+        if ck_names_len((*n).names) != 0 {
+            let list = (*n).names;
+            for i: u64 in 0..(*list).len {
+                u64vec_set(list, i, ck_resolve_alias(c, u64vec_get(list, i)));
+            }
+            if (*list).len == 1 {
+                (*n).ty = u64vec_get(list, 0);
+            } else {
+                (*n).ty = ck_made(c, ts_make_tuple(s, list));
+            }
+        }
+    } else if (kind == NodeKind.LET || kind == NodeKind.FOR) && (*n).ty != NO_TEXT {
+        (*n).ty = ck_resolve_alias(c, (*n).ty);
+    } else if kind == NodeKind.STRUCT_LIT {
+        (*n).name = ck_resolve_alias(c, (*n).name);
+    } else if kind == NodeKind.FIELD_ACCESS {
+        let obj = (*n).a;
+        if (*obj).kind == NodeKind.VAR && tb_has(&(*c).aliases, (*obj).name) {
+            (*obj).name = ck_resolve_alias(c, (*obj).name);
+        }
+    } else if kind == NodeKind.CALL {
+        let list = (*n).names;
+        if list != (0 as *U64Vec) {
+            for i: u64 in 0..(*list).len {
+                u64vec_set(list, i, ck_resolve_alias(c, u64vec_get(list, i)));
+            }
+        }
+        if ck_has_dot(c, (*n).name) {
+            let text = intern_text(s, (*n).name);
+            let cut: u64 = 0;
+            for i: u64 in 0..text.len {
+                if text.data[i] == '.' {
+                    cut = i;
+                }
+            }
+            let qualifier = ts_sub_h(s, text, 0, cut);
+            let resolved = ck_resolve_alias(c, qualifier);
+            if resolved != qualifier {
+                let member = ts_sub_h(s, text, cut + 1, text.len);
+                (*n).name = ck_join_dot(c, resolved, member);
+            }
+        }
+    }
+}
+
+// Pushed in reverse so that popping visits a node's children in order: the walk
+// reaches nodes in the order Python's recursive `visit` does, and so a type
+// limit is reported at the same node.
+fn ck_push_children(stack: *PtrVec, n: *Node) {
+    if (*n).items != (0 as *PtrVec) {
+        let i = (*(*n).items).len;
+        while i > 0 {
+            i -= 1;
+            ptrvec_push(stack, ptrvec_get((*n).items, i));
+        }
+    }
+    if (*n).c != (0 as *Node) {
+        ptrvec_push(stack, (*n).c as *void);
+    }
+    if (*n).b != (0 as *Node) {
+        ptrvec_push(stack, (*n).b as *void);
+    }
+    if (*n).a != (0 as *Node) {
+        ptrvec_push(stack, (*n).a as *void);
+    }
+}
+
+fn ck_apply_list(c: *Ck, stack: *PtrVec, list: *PtrVec) {
+    let i = (*list).len;
+    while i > 0 {
+        i -= 1;
+        ptrvec_push(stack, ptrvec_get(list, i));
+    }
+}
+
+fn ck_apply_aliases(c: *Ck) {
+    let p = (*c).program;
+    let stack = ptrvec_new();
+    ck_apply_list(c, &stack, (*p).aliases);
+    ck_apply_list(c, &stack, (*p).tests);
+    ck_apply_list(c, &stack, (*p).enums);
+    ck_apply_list(c, &stack, (*p).externs);
+    ck_apply_list(c, &stack, (*p).globals);
+    ck_apply_list(c, &stack, (*p).structs);
+    ck_apply_list(c, &stack, (*p).funcs);
+    while stack.len > 0 {
+        let node = ptrvec_pop(&stack) as *Node;
+        ck_apply_node(c, node);
+        ck_push_children(&stack, node);
+    }
+}
+
+// ----- type validity and generic instantiation -----
+
+fn ck_is_int(c: *Ck, t: u64) -> bool {
+    return map_has(&(*c).int_types, t);
+}
+
+fn ck_is_float(c: *Ck, t: u64) -> bool {
+    return map_has(&(*c).float_types, t);
+}
+
+// `_valid_type`. A true answer cannot change, so it is remembered: one huge type
+// used many times is validated, and charged, once. False answers are not kept.
+// C spells arrays around the declared name, so an array nested in any other type
+// has no C form, except a slice of arrays behind a pointer.
+fn ck_valid(c: *Ck, type_in: u64) -> bool {
+    return ck_valid_at(c, type_in, false);
+}
+
+fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
+    let s = (*c).s;
+    let memo = &(*c).valid_types;
+    if behind_pointer {
+        memo = &(*c).valid_behind_pointer;
+    }
+    if map_has(memo, type_in) {
+        return true;
+    }
+    ck_charge_text(c, type_in);
+    ck_enter(c);
+    let t = ck_resolve_alias(c, type_in);
+    let result = false;
+    if ts_is_ptr(s, t) {
+        let inner = ck_pointee(c, t);
+        if inner == (*c).t_void {
+            result = true;
+        } else {
+            ck_charge_text(c, t);
+            if !ts_is_array(s, inner) {
+                ck_charge_text(c, t);
+                result = ck_valid_at(c, inner, true);
+            }
+        }
+    } else if ts_is_array(s, t) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, t, &elem, &count);
+        let zero = ck_decimal(c, 0);
+        result = count != zero && !ts_is_array(s, elem) && ck_valid(c, elem);
+    } else if ts_is_slice(s, t) {
+        let elem = ck_slice_elem(c, t);
+        result = elem != (*c).t_void && (behind_pointer || !ts_is_array(s, elem))
+            && ck_valid(c, elem);
+    } else {
+        let params = u64vec_new();
+        let fn_result: u64 = 0;
+        if ck_function_parts(c, t, &params, &fn_result) {
+            result = true;
+            for i: u64 in 0..params.len {
+                let item = u64vec_get(&params, i);
+                if item == (*c).t_void || ts_is_array(s, item) || !ck_valid(c, item) {
+                    result = false;
+                    break;
+                }
+            }
+            result = result && !ts_is_array(s, fn_result)
+                && (fn_result == (*c).t_void || ck_valid(c, fn_result));
+        } else {
+            let tuple = u64vec_new();
+            if ck_tuple_parts(c, t, &tuple) {
+                result = true;
+                for i: u64 in 0..tuple.len {
+                    let item = u64vec_get(&tuple, i);
+                    if item == (*c).t_void || !ck_valid(c, item) {
+                        result = false;
+                        break;
+                    }
+                }
+            } else {
+                let base: u64 = 0;
+                let args = u64vec_new();
+                if ck_generic_parts(c, t, &base, &args) {
+                    result = ck_instantiate_struct(c, t) || ck_instantiate_enum(c, t);
+                } else {
+                    result = ck_is_int(c, t) || ck_is_float(c, t) || t == (*c).t_bool
+                        || tb_has(&(*c).structs, t) || tb_has(&(*c).enums, t);
+                }
+                free(args.data as *void);
+            }
+            free(tuple.data as *void);
+        }
+        free(params.data as *void);
+    }
+    ck_leave(c);
+    if result {
+        map_put(memo, type_in, 1);
+    }
+    return result;
+}
+
+fn ck_new_struct_info() -> *StructInfo {
+    let info = sup_alloc(sizeof<StructInfo>()) as *StructInfo;
+    *info = StructInfo { done: false, fnames: u64vec_new(), ftypes: u64vec_new() };
+    return info;
+}
+
+fn ck_new_enum_info() -> *EnumInfo {
+    let info = sup_alloc(sizeof<EnumInfo>()) as *EnumInfo;
+    *info = EnumInfo { done: false, vnames: u64vec_new(), payload: u64vec_new(), payloads: ptrvec_new() };
+    return info;
+}
+
+fn ck_set_field(info: *StructInfo, name: u64, typ: u64) {
+    for i: u64 in 0..(*info).fnames.len {
+        if u64vec_get(&(*info).fnames, i) == name {
+            u64vec_set(&(*info).ftypes, i, typ);
+            return;
+        }
+    }
+    u64vec_push(&(*info).fnames, name);
+    u64vec_push(&(*info).ftypes, typ);
+}
+
+fn ck_field_index(info: *StructInfo, name: u64, out: *u64) -> bool {
+    for i: u64 in 0..(*info).fnames.len {
+        if u64vec_get(&(*info).fnames, i) == name {
+            *out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ck_variant_index(info: *EnumInfo, name: u64, out: *u64) -> bool {
+    for i: u64 in 0..(*info).vnames.len {
+        if u64vec_get(&(*info).vnames, i) == name {
+            *out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn ck_all_valid(c: *Ck, list: *U64Vec) -> bool {
+    for i: u64 in 0..(*list).len {
+        if !ck_valid(c, u64vec_get(list, i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Python's limits on generic functions, which Mort also applies to struct and
+// enum instances (PLAN.md, section 11), before validating the arguments, because
+// validating them is what recurses.
+fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
+    (*c).generic_instantiations += 1;
+    let msg = m_new();
+    m_s(&msg, "generic instantiation of ");
+    m_r(c, &msg, (*template).name);
+    m_s(&msg, " ");
+    if (*c).generic_instantiations > MAX_GENERIC_INSTANTIATIONS {
+        m_s(&msg, "exceeds the limit of ");
+        m_u(&msg, MAX_GENERIC_INSTANTIATIONS);
+        m_s(&msg, " in one program");
+        ck_fail_node(c, template, &msg);
+    }
+    for i: u64 in 0..(*args).len {
+        if intern_text((*c).s, u64vec_get(args, i)).len > MAX_TYPE_ARGUMENT_LENGTH {
+            m_s(&msg, "has a type argument longer than ");
+            m_u(&msg, MAX_TYPE_ARGUMENT_LENGTH);
+            m_s(&msg, " characters");
+            ck_fail_node(c, template, &msg);
+        }
+    }
+    for i: u64 in 0..(*args).len {
+        if ts_type_nesting(intern_text((*c).s, u64vec_get(args, i))) > MAX_TYPE_ARGUMENT_NESTING {
+            m_s(&msg, "has a type argument nested more than ");
+            m_u(&msg, MAX_TYPE_ARGUMENT_NESTING);
+            m_s(&msg, " levels deep");
+            ck_fail_node(c, template, &msg);
+        }
+    }
+    free(msg.data as *void);
+}
+
+// `_charge_instantiation`, after the arguments are known to be valid.
+fn ck_charge_instantiation(c: *Ck, nodes: u64, site: *Node) {
+    (*c).work_instantiated = true;
+    if ck_column_of(site) != 0 {
+        (*c).work_site = site;
+    }
+    ck_spend(c, nodes * WORK_UNITS_PER_NODE);
+}
+
+fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
+    let s = (*c).s;
+    if tb_has(&(*c).structs, concrete) {
+        return true;
+    }
+    let base: u64 = 0;
+    let args = u64vec_new();
+    ck_generic_parts(c, concrete, &base, &args);
+    if !tb_has(&(*c).struct_templates, base) {
+        return false;
+    }
+    let template = tb_get(&(*c).struct_templates, base) as *Node;
+    if args.len != ck_names_len((*template).names) {
+        return false;
+    }
+    ck_charge_generic(c, template, &args);
+    if !ck_all_valid(c, &args) {
+        return false;
+    }
+    ck_charge_instantiation(c, 1 + ck_items_len((*template).items), template);
+    let fields = ptrvec_new();
+    for i: u64 in 0..ck_items_len((*template).items) {
+        let declared = ast_item((*template).items, i);
+        let field = ast_new(NodeKind.STRUCT_FIELD, (*declared).line);
+        (*field).name = (*declared).name;
+        (*field).ty = ck_substitute(c, (*declared).ty, (*template).names, &args);
+        ptrvec_push(&fields, field as *void);
+    }
+    let info = ck_new_struct_info();
+    tb_put(&(*c).structs, concrete, info as *void);
+    for i: u64 in 0..fields.len {
+        let field = ptrvec_get(&fields, i) as *Node;
+        let typ = (*field).ty;
+        if typ == concrete {
+            let b = m_new();
+            m_s(&b, "generic struct ");
+            m_r(c, &b, concrete);
+            m_s(&b, " cannot contain itself by value");
+            ck_fail_node(c, template, &b);
+        }
+        if !ck_valid(c, typ) {
+            let b = m_new();
+            m_s(&b, "field ");
+            m_r(c, &b, (*field).name);
+            m_s(&b, " of ");
+            m_r(c, &b, concrete);
+            m_s(&b, " has unknown type ");
+            m_t(c, &b, typ);
+            ck_fail_node(c, template, &b);
+        }
+        ck_set_field(info, (*field).name, typ);
+    }
+    (*info).done = true;
+    let decl = ast_new(NodeKind.STRUCT_DECL, (*template).line);
+    (*decl).name = concrete;
+    (*decl).names = ast_new_names();
+    (*decl).items = ast_new_items();
+    (*decl).flag = (*template).flag;
+    for i: u64 in 0..fields.len {
+        ptrvec_push((*decl).items, ptrvec_get(&fields, i));
+    }
+    ptrvec_push((*(*c).program).structs, decl as *void);
+    let roots = u64vec_new();
+    u64vec_push(&roots, concrete);
+    ck_validate_cycles(c, &roots, template);
+    return true;
+}
+
+fn ck_instantiate_enum(c: *Ck, concrete: u64) -> bool {
+    let s = (*c).s;
+    if tb_has(&(*c).enums, concrete) {
+        return true;
+    }
+    let base: u64 = 0;
+    let args = u64vec_new();
+    ck_generic_parts(c, concrete, &base, &args);
+    if !tb_has(&(*c).enum_templates, base) {
+        return false;
+    }
+    let template = tb_get(&(*c).enum_templates, base) as *Node;
+    if args.len != ck_names_len((*template).names) {
+        return false;
+    }
+    ck_charge_generic(c, template, &args);
+    if !ck_all_valid(c, &args) {
+        return false;
+    }
+    let nodes: u64 = 1;
+    for i: u64 in 0..ck_items_len((*template).items) {
+        nodes += 1 + ck_names_len((*ast_item((*template).items, i)).names);
+    }
+    ck_charge_instantiation(c, nodes, template);
+    let variants = ptrvec_new();
+    for i: u64 in 0..ck_items_len((*template).items) {
+        let declared = ast_item((*template).items, i);
+        let variant = ast_new(NodeKind.ENUM_VARIANT, (*declared).line);
+        (*variant).name = (*declared).name;
+        (*variant).names = ast_new_names();
+        for j: u64 in 0..ck_names_len((*declared).names) {
+            u64vec_push((*variant).names,
+                ck_substitute(c, u64vec_get((*declared).names, j), (*template).names, &args));
+        }
+        if (*(*variant).names).len != 0 {
+            (*variant).ty = ck_payload_type(c, (*variant).names);
+        }
+        ptrvec_push(&variants, variant as *void);
+    }
+    let info = ck_new_enum_info();
+    tb_put(&(*c).enums, concrete, info as *void);
+    for i: u64 in 0..variants.len {
+        let variant = ptrvec_get(&variants, i) as *Node;
+        let payload_type = (*variant).ty;
+        if payload_type == concrete {
+            let b = m_new();
+            m_s(&b, "generic enum ");
+            m_r(c, &b, concrete);
+            m_s(&b, " cannot contain itself by value");
+            ck_fail_node(c, template, &b);
+        }
+        if payload_type != NO_TEXT && !ck_valid(c, payload_type) {
+            let b = m_new();
+            m_s(&b, "variant ");
+            m_t(c, &b, concrete);
+            m_s(&b, ".");
+            m_t(c, &b, (*variant).name);
+            m_s(&b, " has unknown payload type ");
+            m_t(c, &b, payload_type);
+            ck_fail_node(c, template, &b);
+        }
+        u64vec_push(&(*info).vnames, (*variant).name);
+        u64vec_push(&(*info).payload, payload_type);
+        ptrvec_push(&(*info).payloads, (*variant).names as *void);
+    }
+    (*info).done = true;
+    let decl = ast_new(NodeKind.ENUM_DECL, (*template).line);
+    (*decl).name = concrete;
+    (*decl).file = (*template).file;
+    (*decl).names = ast_new_names();
+    (*decl).items = ast_new_items();
+    for i: u64 in 0..variants.len {
+        ptrvec_push((*decl).items, ptrvec_get(&variants, i));
+    }
+    ptrvec_push((*(*c).program).enums, decl as *void);
+    let roots = u64vec_new();
+    u64vec_push(&roots, concrete);
+    ck_validate_cycles(c, &roots, template);
+    return true;
+}
+
+// ----- by-value aggregate cycles -----
+
+fn ck_agg_deps(c: *Ck, type_in: u64, out: *U64Vec) {
+    let s = (*c).s;
+    ck_enter(c);
+    let t = ck_resolve_alias(c, type_in);
+    if ts_is_array(s, t) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, t, &elem, &count);
+        ck_agg_deps(c, elem, out);
+    } else {
+        let tuple = u64vec_new();
+        if ck_tuple_parts(c, t, &tuple) {
+            for i: u64 in 0..tuple.len {
+                ck_agg_deps(c, u64vec_get(&tuple, i), out);
+            }
+        } else if !ts_is_ptr(s, t) && !ts_is_slice(s, t) && !ck_is_function(c, t) {
+            if tb_has(&(*c).structs, t) || tb_has(&(*c).enums, t) {
+                u64vec_push(out, t);
+            }
+        }
+    }
+    ck_leave(c);
+}
+
+fn ck_in_graph(c: *Ck, name: u64) -> bool {
+    if tb_has(&(*c).structs, name) {
+        return (*(tb_get(&(*c).structs, name) as *StructInfo)).done;
+    }
+    if tb_has(&(*c).enums, name) {
+        return (*(tb_get(&(*c).enums, name) as *EnumInfo)).done;
+    }
+    return false;
+}
+
+// The field or payload order matches Python's insertion-ordered reference:
+// duplicates are harmless, because a repeated dependency is already complete.
+fn ck_deps_of(c: *Ck, name: u64) -> *U64Vec {
+    let out = sup_alloc(sizeof<U64Vec>()) as *U64Vec;
+    *out = u64vec_new();
+    if tb_has(&(*c).structs, name) {
+        let info = tb_get(&(*c).structs, name) as *StructInfo;
+        for i: u64 in 0..(*info).ftypes.len {
+            ck_agg_deps(c, u64vec_get(&(*info).ftypes, i), out);
+        }
+    } else if tb_has(&(*c).enums, name) {
+        let info = tb_get(&(*c).enums, name) as *EnumInfo;
+        for i: u64 in 0..(*info).payload.len {
+            let payload = u64vec_get(&(*info).payload, i);
+            if payload != NO_TEXT {
+                ck_agg_deps(c, payload, out);
+            }
+        }
+    }
+    return out;
+}
+
+// The explicit stack keeps long by-value chains (one struct holding the next)
+// away from the C stack. `roots` null means every struct, then every enum.
+fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
+    let complete = map_new();
+    let names = u64vec_new();
+    if roots == (0 as *U64Vec) {
+        for i: u64 in 0..tb_len(&(*c).structs) {
+            u64vec_push(&names, tb_key(&(*c).structs, i));
+        }
+        for i: u64 in 0..tb_len(&(*c).enums) {
+            u64vec_push(&names, tb_key(&(*c).enums, i));
+        }
+    } else {
+        for i: u64 in 0..(*roots).len {
+            u64vec_push(&names, u64vec_get(roots, i));
+        }
+    }
+    let visiting = u64vec_new();
+    let frames = ptrvec_new();
+    let positions = u64vec_new();
+    for i: u64 in 0..names.len {
+        let root = u64vec_get(&names, i);
+        if map_has(&complete, root) {
+            continue;
+        }
+        ck_spend(c, 1);
+        if !ck_in_graph(c, root) {
+            continue;
+        }
+        u64vec_push(&visiting, root);
+        ptrvec_push(&frames, ck_deps_of(c, root) as *void);
+        u64vec_push(&positions, 0);
+        while frames.len > 0 {
+            let top = frames.len - 1;
+            let deps = ptrvec_get(&frames, top) as *U64Vec;
+            let at = u64vec_get(&positions, top);
+            if at < (*deps).len {
+                u64vec_set(&positions, top, at + 1);
+                let dep = u64vec_get(deps, at);
+                if map_has(&complete, dep) {
+                    continue;
+                }
+                ck_spend(c, 1);
+                if !ck_in_graph(c, dep) {
+                    continue;
+                }
+                let dep_deps = ck_deps_of(c, dep);
+                if ck_u64vec_has(&visiting, dep) {
+                    let b = m_new();
+                    m_s(&b, "aggregate by-value cycle: ");
+                    let started = false;
+                    for j: u64 in 0..visiting.len {
+                        let item = u64vec_get(&visiting, j);
+                        if item == dep {
+                            started = true;
+                        }
+                        if started {
+                            m_t(c, &b, item);
+                            m_s(&b, " -> ");
+                        }
+                    }
+                    m_t(c, &b, dep);
+                    let target = node;
+                    if target == (0 as *Node) && tb_has(&(*c).aggregate_decls, dep) {
+                        target = tb_get(&(*c).aggregate_decls, dep) as *Node;
+                    }
+                    ck_fail_node(c, target, &b);
+                }
+                u64vec_push(&visiting, dep);
+                ptrvec_push(&frames, dep_deps as *void);
+                u64vec_push(&positions, 0);
+            } else {
+                ptrvec_pop(&frames);
+                u64vec_pop(&positions);
+                map_put(&complete, u64vec_pop(&visiting), 1);
+            }
+        }
+    }
+}
+
+// ----- the declaration phase -----
+
+fn ck_dup_names(c: *Ck, list: *U64Vec) -> bool {
+    let seen = map_new();
+    for i: u64 in 0..ck_names_len(list) {
+        let name = u64vec_get(list, i);
+        if map_has(&seen, name) {
+            return true;
+        }
+        map_put(&seen, name, 1);
+    }
+    return false;
+}
+
+fn ck_fail_named(c: *Ck, node: *Node, before: *u8, name: u64, after: *u8) {
+    let b = m_new();
+    m_s(&b, before);
+    m_r(c, &b, name);
+    m_s(&b, after);
+    ck_fail_node(c, node, &b);
+}
+
+fn ck_check_aliases(c: *Ck) {
+    let list = (*(*c).program).aliases;
+    for i: u64 in 0..(*list).len {
+        let d = ast_item(list, i);
+        if tb_has(&(*c).aliases, (*d).name) || ck_is_int(c, (*d).name)
+                || ck_is_float(c, (*d).name)
+                || (*d).name == (*c).t_bool || (*d).name == (*c).t_void {
+            ck_fail_named(c, d, "type alias ", (*d).name, " is already defined");
+        }
+        tb_put(&(*c).aliases, (*d).name, ck_box((*d).ty));
+        tb_put(&(*c).alias_decls, (*d).name, d as *void);
+    }
+    let count = tb_len(&(*c).aliases);
+    for i: u64 in 0..count {
+        let name = tb_key(&(*c).aliases, i);
+        (*c).current_node = tb_get(&(*c).alias_decls, name) as *Node;
+        tb_put(&(*c).aliases, name, ck_box(ck_resolve_alias(c, name)));
+    }
+    ck_apply_aliases(c);
+}
+
+fn ck_check_enums(c: *Ck) {
+    let list = (*(*c).program).enums;
+    let count = (*list).len;
+    for i: u64 in 0..count {
+        let d = ast_item(list, i);
+        if ck_items_len((*d).items) == 0 {
+            ck_fail_named(c, d, "enum ", (*d).name, " must have at least one variant");
+        }
+        let seen = map_new();
+        let dup = false;
+        for j: u64 in 0..(*(*d).items).len {
+            let name = (*ast_item((*d).items, j)).name;
+            if map_has(&seen, name) {
+                dup = true;
+            }
+            map_put(&seen, name, 1);
+        }
+        if dup {
+            ck_fail_named(c, d, "enum ", (*d).name, " has a duplicate variant");
+        }
+        if ck_names_len((*d).names) != 0 {
+            if tb_has(&(*c).enum_templates, (*d).name) || tb_has(&(*c).enums, (*d).name)
+                    || tb_has(&(*c).aliases, (*d).name) {
+                ck_fail_named(c, d, "enum ", (*d).name, " is already defined");
+            }
+            if ck_dup_names(c, (*d).names) {
+                ck_fail_named(c, d, "enum ", (*d).name, " has a duplicate generic parameter");
+            }
+            tb_put(&(*c).enum_templates, (*d).name, d as *void);
+            continue;
+        }
+        if tb_has(&(*c).enums, (*d).name) || tb_has(&(*c).aliases, (*d).name) {
+            ck_fail_named(c, d, "enum ", (*d).name, " is already defined");
+        }
+        let info = ck_new_enum_info();
+        for j: u64 in 0..(*(*d).items).len {
+            let v = ast_item((*d).items, j);
+            u64vec_push(&(*info).vnames, (*v).name);
+            u64vec_push(&(*info).payload, (*v).ty);
+            ptrvec_push(&(*info).payloads, (*v).names as *void);
+        }
+        (*info).done = true;
+        tb_put(&(*c).enums, (*d).name, info as *void);
+        tb_put(&(*c).aggregate_decls, (*d).name, d as *void);
+    }
+}
+
+fn ck_check_structs(c: *Ck) {
+    let list = (*(*c).program).structs;
+    for i: u64 in 0..(*list).len {
+        let d = ast_item(list, i);
+        let name = (*d).name;
+        if ck_names_len((*d).names) != 0 {
+            if tb_has(&(*c).struct_templates, name) || tb_has(&(*c).structs, name)
+                    || tb_has(&(*c).enum_templates, name) || tb_has(&(*c).enums, name)
+                    || tb_has(&(*c).aliases, name) {
+                ck_fail_named(c, d, "struct ", name, " is already defined");
+            }
+            if ck_dup_names(c, (*d).names) {
+                ck_fail_named(c, d, "struct ", name, " has a duplicate generic parameter");
+            }
+            tb_put(&(*c).struct_templates, name, d as *void);
+            if (*d).flag {
+                ck_add_resource_struct(c, name);
+            }
+            continue;
+        }
+        if tb_has(&(*c).structs, name) || tb_has(&(*c).enums, name)
+                || tb_has(&(*c).aliases, name) {
+            ck_fail_named(c, d, "struct ", name, " is already defined");
+        }
+        tb_put(&(*c).structs, name, ck_new_struct_info() as *void);
+        if (*d).flag {
+            ck_add_resource_struct(c, name);
+        }
+        tb_put(&(*c).aggregate_decls, name, d as *void);
+    }
+    // `list(self.program.structs)` is a copy: instances made below are not
+    // revisited here.
+    let count = (*list).len;
+    for i: u64 in 0..count {
+        let d = ast_item(list, i);
+        if ck_names_len((*d).names) != 0 {
+            continue;
+        }
+        let info = tb_get(&(*c).structs, (*d).name) as *StructInfo;
+        for j: u64 in 0..ck_items_len((*d).items) {
+            let f = ast_item((*d).items, j);
+            let index: u64 = 0;
+            if ck_field_index(info, (*f).name, &index) {
+                let b = m_new();
+                m_s(&b, "field ");
+                m_r(c, &b, (*f).name);
+                m_s(&b, " declared twice in struct ");
+                m_r(c, &b, (*d).name);
+                ck_fail_node(c, d, &b);
+            }
+            if !ck_valid(c, (*f).ty) {
+                let b = m_new();
+                m_s(&b, "field ");
+                m_r(c, &b, (*f).name);
+                m_s(&b, " of ");
+                m_r(c, &b, (*d).name);
+                m_s(&b, " has unknown type ");
+                m_t(c, &b, (*f).ty);
+                ck_fail_node(c, d, &b);
+            }
+            ck_set_field(info, (*f).name, (*f).ty);
+        }
+        (*info).done = true;
+    }
+}
+
+fn ck_add_resource_struct(c: *Ck, name: u64) {
+    if !map_has(&(*c).resource_struct_names, name) {
+        map_put(&(*c).resource_struct_names, name, 1);
+        u64vec_push(&(*c).resource_struct_order, name);
+    }
+}
+
+fn ck_check_enum_payloads(c: *Ck) {
+    let list = (*(*c).program).enums;
+    let count = (*list).len;
+    for i: u64 in 0..count {
+        let d = ast_item(list, i);
+        if ck_names_len((*d).names) != 0 {
+            continue;
+        }
+        for j: u64 in 0..ck_items_len((*d).items) {
+            let v = ast_item((*d).items, j);
+            if (*v).ty != NO_TEXT && !ck_valid(c, (*v).ty) {
+                let b = m_new();
+                m_s(&b, "variant ");
+                m_t(c, &b, (*d).name);
+                m_s(&b, ".");
+                m_t(c, &b, (*v).name);
+                m_s(&b, " has unknown payload type ");
+                m_t(c, &b, (*v).ty);
+                ck_fail_node(c, d, &b);
+            }
+        }
+    }
+}
+
+fn ck_check_alias_targets(c: *Ck) {
+    let list = (*(*c).program).aliases;
+    for i: u64 in 0..(*list).len {
+        let d = ast_item(list, i);
+        if (*d).ty == (*c).t_void || !ck_valid(c, (*d).ty) {
+            let b = m_new();
+            m_s(&b, "type alias ");
+            m_r(c, &b, (*d).name);
+            m_s(&b, " has invalid target ");
+            m_t(c, &b, (*d).ty);
+            ck_fail_node(c, d, &b);
+        }
+    }
+}
+
+fn ck_check_function(c: *Ck, f: *Node) {
+    let symbol = (*f).symbol;
+    if tb_has(&(*c).funcs, symbol) || tb_has(&(*c).func_templates, symbol)
+            || map_has(&(*c).builtin_names, (*f).name) {
+        ck_fail_named(c, f, "function ", (*f).name, " is already defined");
+    }
+    let is_extern = (*f).kind == NodeKind.EXTERN_FN_DECL;
+    if !is_extern && ck_names_len((*f).names) != 0 {
+        if ck_dup_names(c, (*f).names) {
+            ck_fail_named(c, f, "function ", (*f).name, " has a duplicate generic parameter");
+        }
+        tb_put(&(*c).func_templates, symbol, f as *void);
+        return;
+    }
+    if is_extern && map_has(&(*c).c_keywords, (*f).name) {
+        ck_fail_named(c, f, "external function name ", (*f).name, " is reserved by C");
+    }
+    let params = (*f).items;
+    for i: u64 in 0..ck_items_len(params) {
+        let p = ast_item(params, i);
+        if (*p).ty == (*c).t_void {
+            ck_fail_named(c, f, "parameter ", (*p).name, " cannot have type void");
+        }
+        if !ck_valid(c, (*p).ty) {
+            let b = m_new();
+            m_s(&b, "parameter ");
+            m_r(c, &b, (*p).name);
+            m_s(&b, " has unknown type ");
+            m_t(c, &b, (*p).ty);
+            ck_fail_node(c, f, &b);
+        }
+        if ts_is_array((*c).s, (*p).ty) {
+            ck_fail_named(c, f, "parameter ", (*p).name,
+                " cannot be an array; pass a pointer to its elements instead");
+        }
+    }
+    let ret = (*f).ty;
+    if ret != (*c).t_void {
+        if !ck_valid(c, ret) {
+            let b = m_new();
+            m_s(&b, "function ");
+            m_r(c, &b, (*f).name);
+            m_s(&b, " has unknown return type ");
+            m_t(c, &b, ret);
+            ck_fail_node(c, f, &b);
+        }
+        if ts_is_array((*c).s, ret) {
+            ck_fail_named(c, f, "function ", (*f).name, " cannot return an array");
+        }
+    }
+    let info = sup_alloc(sizeof<FuncInfo>()) as *FuncInfo;
+    *info = FuncInfo { params: u64vec_new(), ret: ret, decl: f };
+    for i: u64 in 0..ck_items_len(params) {
+        u64vec_push(&(*info).params, (*ast_item(params, i)).ty);
+    }
+    tb_put(&(*c).funcs, symbol, info as *void);
+    if is_extern && !map_has(&(*c).extern_names, (*f).name) {
+        map_put(&(*c).extern_names, (*f).name, 1);
+        u64vec_push(&(*c).extern_order, (*f).name);
+    }
+}
+
+fn ck_check_functions(c: *Ck) {
+    let p = (*c).program;
+    for i: u64 in 0..(*(*p).externs).len {
+        ck_check_function(c, ast_item((*p).externs, i));
+    }
+    for i: u64 in 0..(*(*p).funcs).len {
+        ck_check_function(c, ast_item((*p).funcs, i));
+    }
+}
+
+fn ck_names_equal(a: *U64Vec, b: *U64Vec) -> bool {
+    let n = ck_names_len(a);
+    if n != ck_names_len(b) {
+        return false;
+    }
+    for i: u64 in 0..n {
+        if u64vec_get(a, i) != u64vec_get(b, i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn ck_check_resources(c: *Ck) {
+    let s = (*c).s;
+    let structs = (*(*c).program).structs;
+    let i: u64 = 0;
+    while i < (*structs).len {
+        let st = ast_item(structs, i);
+        i += 1;
+        if !(*st).flag {
+            continue;
+        }
+        let lookup = (*st).name;
+        let base: u64 = 0;
+        let args = u64vec_new();
+        if ck_generic_parts(c, (*st).name, &base, &args) {
+            lookup = base;
+        }
+        let declaration = st;
+        if tb_has(&(*c).struct_templates, lookup) {
+            declaration = tb_get(&(*c).struct_templates, lookup) as *Node;
+        }
+        let params = (*declaration).names;
+        let declared_name = buf_new(64);
+        m_t(c, &declared_name, (*declaration).name);
+        if ck_names_len(params) != 0 {
+            buf_push(&declared_name, '<');
+            ts_join_list(&declared_name, s, params);
+            buf_push(&declared_name, '>');
+        }
+        let expected = ts_prefix_and(s, "*", intern(s, buf_span(&declared_name)));
+        let funcs = (*(*c).program).funcs;
+        let matches: u64 = 0;
+        let first = 0 as *Node;
+        for j: u64 in 0..(*funcs).len {
+            let f = ast_item(funcs, j);
+            if (*f).name == (*c).t_destroy && (*f).ty == (*c).t_void
+                    && ck_items_len((*f).items) == 1
+                    && (*ast_item((*f).items, 0)).ty == expected
+                    && ck_names_equal((*f).names, params) {
+                if matches == 0 {
+                    first = f;
+                }
+                matches += 1;
+            }
+        }
+        if matches != 1 {
+            let b = m_new();
+            m_s(&b, "resource struct ");
+            m_r(c, &b, (*declaration).name);
+            m_s(&b, " requires exactly one fn destroy(value: ");
+            m_t(c, &b, expected);
+            m_s(&b, ") -> void");
+            ck_fail_node(c, declaration, &b);
+        }
+        (*st).symbol = (*first).symbol;
+        tb_put(&(*c).resource_templates, (*declaration).name, ck_box((*first).symbol));
+        if !map_has(&(*c).destructor_symbols, (*first).symbol) {
+            map_put(&(*c).destructor_symbols, (*first).symbol, 1);
+            u64vec_push(&(*c).destructor_order, (*first).symbol);
+        }
+    }
+}
+
+// ----- scopes -----
+
+fn ck_find_binding(c: *Ck, name: u64) -> *Binding {
+    let index: u64 = 0;
+    if map_get(&(*c).bind_map, name, &index) && index != 0 {
+        return ptrvec_get(&(*c).bindings, index - 1) as *Binding;
+    }
+    return 0 as *Binding;
+}
+
+fn ck_push_scope(c: *Ck) {
+    u64vec_push(&(*c).scope_starts, (*c).bindings.len);
+    (*c).scope_depth += 1;
+}
+
+fn ck_pop_scope(c: *Ck) {
+    let start = u64vec_pop(&(*c).scope_starts);
+    while (*c).bindings.len > start {
+        let b = ptrvec_pop(&(*c).bindings) as *Binding;
+        map_put(&(*c).bind_map, (*b).bname, (*b).bprev);
+    }
+    (*c).scope_depth -= 1;
+}
+
+fn ck_reset_scopes(c: *Ck) {
+    while (*c).scope_depth > 0 {
+        ck_pop_scope(c);
+    }
+    ck_push_scope(c);
+}
+
+fn ck_new_binding(c: *Ck, name: u64, kind: u64, line: u64, mutable: bool) -> *Binding {
+    let previous: u64 = 0;
+    map_get(&(*c).bind_map, name, &previous);
+    let b = sup_alloc(sizeof<Binding>()) as *Binding;
+    *b = Binding {
+        bname: name, depth: (*c).scope_depth, bline: line, bkind: kind,
+        bmutable: mutable, bprev: previous,
+    };
+    ptrvec_push(&(*c).bindings, b as *void);
+    map_put(&(*c).bind_map, name, (*c).bindings.len);
+    ck_ev_bind(c, b);
+    return b;
+}
+
+fn ck_declare(c: *Ck, name: u64, kind: u64, node: *Node, mutable: bool) {
+    let existing = ck_find_binding(c, name);
+    if existing != (0 as *Binding) && (*existing).depth == (*c).scope_depth {
+        ck_fail_named(c, node, "variable ", name, " already declared in this scope");
+    }
+    ck_new_binding(c, name, kind, (*node).line, mutable);
+}
+
+fn ck_binding_mutable(c: *Ck, name: u64) -> bool {
+    let b = ck_find_binding(c, name);
+    if b != (0 as *Binding) {
+        return (*b).bmutable;
+    }
+    if tb_has(&(*c).globals, name) {
+        return (*(tb_get(&(*c).globals, name) as *GlobalInfo)).mutable;
+    }
+    return true;
+}
+
+fn ck_alias_module(c: *Ck, alias: u64, out: *u64) -> bool {
+    if (*c).current_aliases == (0 as *Map) {
+        return false;
+    }
+    return map_get((*c).current_aliases, alias, out);
+}
+
+// `self.current_module + "." + name` when that is a function, else `name`.
+fn ck_resolve_function_name(c: *Ck, name: u64) -> u64 {
+    if (*c).current_module != NO_TEXT {
+        let local = ck_join_dot(c, (*c).current_module, name);
+        if tb_has(&(*c).funcs, local) || tb_has(&(*c).func_templates, local) {
+            return local;
+        }
+    }
+    return name;
+}
+
+fn ck_decl_of(c: *Ck, symbol: u64) -> *Node {
+    if tb_has(&(*c).func_templates, symbol) {
+        return tb_get(&(*c).func_templates, symbol) as *Node;
+    }
+    return (*(tb_get(&(*c).funcs, symbol) as *FuncInfo)).decl;
+}
+
+fn ck_is_private(c: *Ck, decl: *Node) -> bool {
+    if (*decl).kind == NodeKind.EXTERN_FN_DECL {
+        return false;
+    }
+    return (*decl).mod_name != NO_TEXT && (*decl).mod_name != (*c).current_module
+        && !(*decl).flag;
+}
+
+// ----- expressions -----
+//
+// Every place the Python checker looks at a value's type is omitted here (T5
+// will add them); the walk visits sub-expressions in the same order.
+
+fn ck_push_work(c: *Ck, node: *Node, phase: u64, extra: u64) {
+    ptrvec_push(&(*c).stack_nodes, node as *void);
+    u64vec_push(&(*c).stack_phases, phase);
+    u64vec_push(&(*c).stack_extras, extra);
+}
+
+fn ck_contains_try(root: *Node) -> bool {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        if (*n).kind == NodeKind.TRY {
+            return true;
+        }
+        ck_push_children(&stack, n);
+    }
+    return false;
+}
+
+fn ck_var(c: *Ck, n: *Node) {
+    let name = (*n).name;
+    let b = ck_find_binding(c, name);
+    if b != (0 as *Binding) {
+        ck_ev_head(c, "var", name);
+        ck_ev_where(c, b);
+        return;
+    }
+    if tb_has(&(*c).globals, name) {
+        ck_ev_head(c, "var", name);
+        ck_ev_tail(c, "global");
+        return;
+    }
+    let resolved = ck_resolve_function_name(c, name);
+    if tb_has(&(*c).func_templates, resolved) {
+        let msg = m_new();
+        m_s(&msg, "generic function ");
+        m_r(c, &msg, name);
+        m_s(&msg, " cannot be used directly as a value; wrap it in a concrete function");
+        ck_fail_node(c, n, &msg);
+    }
+    if tb_has(&(*c).funcs, resolved) {
+        let decl = ck_decl_of(c, resolved);
+        if ck_is_private(c, decl) {
+            let msg = m_new();
+            m_s(&msg, "function ");
+            m_r(c, &msg, name);
+            m_s(&msg, " is private to module ");
+            m_r(c, &msg, (*decl).mod_name);
+            ck_fail_node(c, n, &msg);
+        }
+        ck_ev_head(c, "var", name);
+        ck_ev_fn(c, resolved);
+        return;
+    }
+    ck_fail_named(c, n, "undefined variable ", name, "");
+}
+
+fn ck_move(c: *Ck, n: *Node) {
+    let inner = (*n).a;
+    if (*inner).kind != NodeKind.VAR {
+        ck_fail_z(c, n, "move expects a local binding");
+    }
+    let name = (*inner).name;
+    let b = ck_find_binding(c, name);
+    if b == (0 as *Binding) {
+        ck_fail_named(c, n, "move expects a local binding, got ", name, "");
+    }
+    ck_ev_head(c, "move", name);
+    ck_ev_where(c, b);
+}
+
+fn ck_struct_info(c: *Ck, name: u64) -> *StructInfo {
+    return tb_get(&(*c).structs, name) as *StructInfo;
+}
+
+fn ck_slit_start(c: *Ck, n: *Node) {
+    let name = (*n).name;
+    ck_valid(c, name);
+    if !tb_has(&(*c).structs, name) {
+        ck_fail_named(c, n, "unknown struct ", name, "");
+    }
+    ck_push_work(c, n, W_SLIT_DONE, 0);
+    ck_push_work(c, n, W_SLIT_FIELD, 0);
+}
+
+fn ck_slit_field(c: *Ck, n: *Node, index: u64) {
+    let items = (*n).items;
+    if index >= ck_items_len(items) {
+        return;
+    }
+    let info = ck_struct_info(c, (*n).name);
+    let field = ast_item(items, index);
+    let fname = (*field).name;
+    let at: u64 = 0;
+    if !ck_field_index(info, fname, &at) {
+        let msg = m_new();
+        m_s(&msg, "struct ");
+        m_r(c, &msg, (*n).name);
+        m_s(&msg, " has no field ");
+        m_r(c, &msg, fname);
+        ck_fail_node(c, n, &msg);
+    }
+    for i: u64 in 0..index {
+        if (*ast_item(items, i)).name == fname {
+            ck_fail_named(c, n, "field ", fname, " set twice");
+        }
+    }
+    let ftype = u64vec_get(&(*info).ftypes, at);
+    let value = (*field).a;
+    ck_push_work(c, n, W_SLIT_FIELD, index + 1);
+    if ts_is_array((*c).s, ftype)
+            && ((*value).kind == NodeKind.ARRAY_LIT || (*value).kind == NodeKind.ARRAY_REPEAT) {
+        ck_array_expr(c, value, ftype, n);
+    } else {
+        ck_push_work(c, value, W_EXPR, 0);
+    }
+}
+
+fn ck_slit_done(c: *Ck, n: *Node) {
+    let info = ck_struct_info(c, (*n).name);
+    let items = (*n).items;
+    let missing = u64vec_new();
+    for i: u64 in 0..(*info).fnames.len {
+        let fname = u64vec_get(&(*info).fnames, i);
+        let seen = false;
+        for j: u64 in 0..ck_items_len(items) {
+            if (*ast_item(items, j)).name == fname {
+                seen = true;
+            }
+        }
+        if !seen {
+            u64vec_push(&missing, fname);
+        }
+    }
+    if missing.len != 0 {
+        let msg = m_new();
+        m_s(&msg, "struct ");
+        m_r(c, &msg, (*n).name);
+        m_s(&msg, " literal is missing field(s): ");
+        for i: u64 in 0..missing.len {
+            if i != 0 {
+                m_s(&msg, ", ");
+            }
+            m_t(c, &msg, u64vec_get(&missing, i));
+        }
+        ck_fail_node(c, n, &msg);
+    }
+    ck_ev_head(c, "struct", (*n).name);
+    ck_ev_end(c);
+}
+
+fn ck_field_access(c: *Ck, n: *Node) {
+    let obj = (*n).a;
+    if (*obj).kind != NodeKind.VAR {
+        ck_push_work(c, obj, W_EXPR, 0);
+        return;
+    }
+    let obj_name = (*obj).name;
+    ck_valid(c, obj_name);
+    let mod_name: u64 = 0;
+    if ck_alias_module(c, obj_name, &mod_name) {
+        let resolved = ck_join_dot(c, mod_name, (*n).name);
+        if tb_has(&(*c).func_templates, resolved) {
+            let msg = m_new();
+            m_s(&msg, "generic function ");
+            m_t(c, &msg, obj_name);
+            m_s(&msg, ".");
+            m_t(c, &msg, (*n).name);
+            m_s(&msg, " cannot be used directly as a value; wrap it in a concrete function");
+            ck_fail_node(c, n, &msg);
+        }
+        if tb_has(&(*c).funcs, resolved) {
+            let decl = ck_decl_of(c, resolved);
+            if !(*decl).flag || (*decl).kind == NodeKind.EXTERN_FN_DECL {
+                let msg = m_new();
+                m_s(&msg, "function ");
+                m_t(c, &msg, obj_name);
+                m_s(&msg, ".");
+                m_t(c, &msg, (*n).name);
+                m_s(&msg, " is private to module ");
+                m_r(c, &msg, mod_name);
+                ck_fail_node(c, n, &msg);
+            }
+            buf_push_z(&(*c).events, "field ");
+            ck_q(c, &(*c).events, obj_name);
+            buf_push(&(*c).events, ' ');
+            ck_q(c, &(*c).events, (*n).name);
+            ck_ev_fn(c, resolved);
+            return;
+        }
+    }
+    if tb_has(&(*c).enums, obj_name) {
+        let info = tb_get(&(*c).enums, obj_name) as *EnumInfo;
+        let at: u64 = 0;
+        if !ck_variant_index(info, (*n).name, &at) {
+            let msg = m_new();
+            m_s(&msg, "enum ");
+            m_r(c, &msg, obj_name);
+            m_s(&msg, " has no variant ");
+            m_r(c, &msg, (*n).name);
+            ck_fail_node(c, n, &msg);
+        }
+        if u64vec_get(&(*info).payload, at) != NO_TEXT {
+            let msg = m_new();
+            m_s(&msg, "variant ");
+            m_t(c, &msg, obj_name);
+            m_s(&msg, ".");
+            m_t(c, &msg, (*n).name);
+            m_s(&msg, " requires a payload");
+            ck_fail_node(c, n, &msg);
+        }
+        buf_push_z(&(*c).events, "field ");
+        ck_q(c, &(*c).events, obj_name);
+        buf_push(&(*c).events, ' ');
+        ck_q(c, &(*c).events, (*n).name);
+        ck_ev_tail(c, "enum");
+        return;
+    }
+    ck_push_work(c, obj, W_EXPR, 0);
+}
+
+fn ck_push_args(c: *Ck, n: *Node) {
+    let items = (*n).items;
+    let count = ck_items_len(items);
+    let i = count;
+    while i > 0 {
+        i -= 1;
+        ck_push_work(c, ast_item(items, i), W_EXPR, 0);
+    }
+}
+
+fn ck_sizeof(c: *Ck, n: *Node) {
+    if ck_items_len((*n).items) != 0 || ck_names_len((*n).names) != 1 {
+        ck_fail_z(c, n, "sizeof expects exactly one type argument and no values");
+    }
+    let target = u64vec_get((*n).names, 0);
+    if target == (*c).t_void || !ck_valid(c, target) {
+        let msg = m_new();
+        m_s(&msg, "sizeof has invalid type argument ");
+        m_t(c, &msg, target);
+        ck_fail_node(c, n, &msg);
+    }
+    ck_ev_head(c, "call", (*n).name);
+    ck_ev_tail(c, "builtin");
+}
+
+fn ck_call(c: *Ck, n: *Node) {
+    let s = (*c).s;
+    let name = (*n).name;
+    let dotted = ck_has_dot(c, name);
+    let argc = ck_items_len((*n).items);
+    if dotted {
+        let text = intern_text(s, name);
+        let cut: u64 = 0;
+        for i: u64 in 0..text.len {
+            if text.data[i] == '.' {
+                cut = i;
+            }
+        }
+        let enum_name = ts_sub_h(s, text, 0, cut);
+        let variant_name = ts_sub_h(s, text, cut + 1, text.len);
+        ck_valid(c, enum_name);
+        if tb_has(&(*c).enums, enum_name) {
+            let info = tb_get(&(*c).enums, enum_name) as *EnumInfo;
+            let at: u64 = 0;
+            if ck_variant_index(info, variant_name, &at) {
+                if u64vec_get(&(*info).payload, at) == NO_TEXT {
+                    let msg = m_new();
+                    m_s(&msg, "variant ");
+                    m_t(c, &msg, enum_name);
+                    m_s(&msg, ".");
+                    m_t(c, &msg, variant_name);
+                    m_s(&msg, " has no payload");
+                    ck_fail_node(c, n, &msg);
+                }
+                let payloads = ptrvec_get(&(*info).payloads, at) as *U64Vec;
+                if argc != ck_names_len(payloads) {
+                    let msg = m_new();
+                    m_s(&msg, "variant ");
+                    m_t(c, &msg, enum_name);
+                    m_s(&msg, ".");
+                    m_t(c, &msg, variant_name);
+                    m_s(&msg, " expects ");
+                    m_u(&msg, ck_names_len(payloads));
+                    m_s(&msg, " payloads");
+                    ck_fail_node(c, n, &msg);
+                }
+                ck_push_work(c, n, W_CALL_DONE, CALL_ENUM);
+                ck_push_args(c, n);
+                return;
+            }
+        }
+    }
+    if ck_names_len((*n).names) != 0 && map_has(&(*c).builtin_names, name)
+            && !map_has(&(*c).generic_builtins, name) {
+        ck_fail_named(c, n, "builtin ", name,
+            " is not generic and cannot take type arguments");
+    }
+    if name == (*c).t_sizeof {
+        ck_sizeof(c, n);
+        return;
+    }
+    if !dotted && map_has(&(*c).builtin_names, name) {
+        ck_push_work(c, n, W_CALL_DONE, CALL_BUILTIN);
+        ck_push_args(c, n);
+        return;
+    }
+    if !dotted {
+        let b = ck_find_binding(c, name);
+        if b != (0 as *Binding) || tb_has(&(*c).globals, name) {
+            ck_push_work(c, n, W_CALL_DONE, CALL_BINDING);
+            ck_push_args(c, n);
+            return;
+        }
+    }
+    let resolved = name;
+    if dotted {
+        let text = intern_text(s, name);
+        let first = ts_find(text, '.');
+        let alias = ts_sub_h(s, text, 0, first);
+        let member = ts_sub_h(s, text, first + 1, text.len);
+        let mod_name: u64 = 0;
+        if !ck_alias_module(c, alias, &mod_name) {
+            ck_fail_named(c, n, "unknown module or import alias ", alias, "");
+        }
+        resolved = ck_join_dot(c, mod_name, member);
+    } else {
+        resolved = ck_resolve_function_name(c, name);
+    }
+    if !tb_has(&(*c).funcs, resolved) && !tb_has(&(*c).func_templates, resolved) {
+        ck_fail_named(c, n, "call to undefined function ", name, "");
+    }
+    let decl = ck_decl_of(c, resolved);
+    if ck_is_private(c, decl) {
+        let msg = m_new();
+        m_s(&msg, "function ");
+        m_r(c, &msg, name);
+        m_s(&msg, " is private to module ");
+        m_r(c, &msg, (*decl).mod_name);
+        ck_fail_node(c, n, &msg);
+    }
+    let is_template = tb_has(&(*c).func_templates, resolved);
+    if !is_template && ck_names_len((*n).names) != 0 {
+        ck_fail_named(c, n, "function ", name,
+            " is not generic and cannot take type arguments");
+    }
+    let expected: u64 = 0;
+    if is_template {
+        expected = ck_items_len((*decl).items);
+    } else {
+        expected = (*(tb_get(&(*c).funcs, resolved) as *FuncInfo)).params.len;
+    }
+    if argc != expected {
+        let msg = m_new();
+        m_s(&msg, "function ");
+        m_r(c, &msg, name);
+        m_s(&msg, " expects ");
+        m_u(&msg, expected);
+        m_s(&msg, " argument(s), got ");
+        m_u(&msg, argc);
+        ck_fail_node(c, n, &msg);
+    }
+    (*n).symbol = resolved;
+    if is_template {
+        ck_push_work(c, n, W_CALL_DONE, CALL_TEMPLATE);
+    } else {
+        ck_push_work(c, n, W_CALL_DONE, CALL_FN);
+    }
+    ck_push_args(c, n);
+}
+
+fn ck_call_done(c: *Ck, n: *Node, what: u64) {
+    let name = (*n).name;
+    if what == CALL_TEMPLATE {
+        let decl = ck_decl_of(c, (*n).symbol);
+        let type_args = (*n).names;
+        let given = ck_names_len(type_args);
+        if given != 0 && given != ck_names_len((*decl).names) {
+            let msg = m_new();
+            m_s(&msg, "generic function ");
+            m_r(c, &msg, name);
+            m_s(&msg, " expects ");
+            m_u(&msg, ck_names_len((*decl).names));
+            m_s(&msg, " type argument(s), got ");
+            m_u(&msg, given);
+            ck_fail_node(c, n, &msg);
+        }
+        for i: u64 in 0..given {
+            let arg = u64vec_get(type_args, i);
+            if arg == (*c).t_void || !ck_valid(c, arg) {
+                let msg = m_new();
+                m_s(&msg, "generic function ");
+                m_r(c, &msg, name);
+                m_s(&msg, " has invalid type argument ");
+                m_t(c, &msg, arg);
+                ck_fail_node(c, n, &msg);
+            }
+        }
+    }
+    ck_ev_head(c, "call", name);
+    if what == CALL_ENUM {
+        ck_ev_tail(c, "enum");
+    } else if what == CALL_BUILTIN {
+        ck_ev_tail(c, "builtin");
+    } else if what == CALL_BINDING {
+        let b = ck_find_binding(c, name);
+        if b != (0 as *Binding) {
+            ck_ev_where(c, b);
+        } else {
+            ck_ev_tail(c, "global");
+        }
+    } else {
+        ck_ev_fn(c, (*n).symbol);
+    }
+}
+
+fn ck_expr_step(c: *Ck, n: *Node) {
+    let kind = (*n).kind;
+    if kind == NodeKind.VAR {
+        ck_var(c, n);
+    } else if kind == NodeKind.MOVE {
+        ck_move(c, n);
+    } else if kind == NodeKind.UNARY || kind == NodeKind.CAST || kind == NodeKind.TRY {
+        ck_push_work(c, (*n).a, W_EXPR, 0);
+    } else if kind == NodeKind.BINARY || kind == NodeKind.INDEX {
+        ck_push_work(c, (*n).b, W_EXPR, 0);
+        ck_push_work(c, (*n).a, W_EXPR, 0);
+    } else if kind == NodeKind.STRUCT_LIT {
+        ck_slit_start(c, n);
+    } else if kind == NodeKind.TUPLE_LIT {
+        ck_push_args(c, n);
+    } else if kind == NodeKind.FIELD_ACCESS {
+        ck_field_access(c, n);
+    } else if kind == NodeKind.ARRAY_LIT || kind == NodeKind.ARRAY_REPEAT {
+        ck_fail_z(c, n,
+            "an array literal is only allowed as a variable's initialiser (let x: [T; N] = ...)");
+    } else if kind == NodeKind.CALL {
+        ck_call(c, n);
+    }
+}
+
+fn ck_expr(c: *Ck, root: *Node) {
+    let base = (*c).stack_nodes.len;
+    ck_push_work(c, root, W_EXPR, 0);
+    while (*c).stack_nodes.len > base {
+        let n = ptrvec_pop(&(*c).stack_nodes) as *Node;
+        let phase = u64vec_pop(&(*c).stack_phases);
+        let extra = u64vec_pop(&(*c).stack_extras);
+        if phase == W_EXPR {
+            (*c).current_node = n;
+            ck_expr_step(c, n);
+        } else if phase == W_CALL_DONE {
+            ck_call_done(c, n, extra);
+        } else if phase == W_SLIT_FIELD {
+            ck_slit_field(c, n, extra);
+        } else {
+            ck_slit_done(c, n);
+        }
+    }
+}
+
+// _check_array_expr, minus the element coercions that need T5.
+fn ck_array_expr(c: *Ck, expr: *Node, decl_type: u64, node: *Node) {
+    let s = (*c).s;
+    let elem: u64 = 0;
+    let size: u64 = NO_TEXT;
+    if decl_type != NO_TEXT {
+        if !ts_is_array(s, decl_type) {
+            let msg = m_new();
+            m_s(&msg, "type mismatch: array value assigned to ");
+            m_t(c, &msg, decl_type);
+            ck_fail_node(c, node, &msg);
+        }
+        if !ck_valid(c, decl_type) {
+            let msg = m_new();
+            m_s(&msg, "unknown type ");
+            m_t(c, &msg, decl_type);
+            ck_fail_node(c, node, &msg);
+        }
+        ck_array_parts(c, decl_type, &elem, &size);
+    }
+    if (*expr).kind == NodeKind.ARRAY_REPEAT {
+        ck_expr(c, (*expr).a);
+        if size != NO_TEXT && (*expr).name != size {
+            let msg = m_new();
+            m_s(&msg, "array size mismatch: declared ");
+            m_t(c, &msg, size);
+            m_s(&msg, ", literal has ");
+            m_t(c, &msg, (*expr).name);
+            ck_fail_node(c, node, &msg);
+        }
+    } else {
+        let items = (*expr).items;
+        let count = ck_items_len(items);
+        for i: u64 in 0..count {
+            ck_expr(c, ast_item(items, i));
+        }
+        if size != NO_TEXT && ck_decimal(c, count) != size {
+            let msg = m_new();
+            m_s(&msg, "array expects ");
+            m_t(c, &msg, size);
+            m_s(&msg, " elements, got ");
+            m_u(&msg, count);
+            ck_fail_node(c, node, &msg);
+        }
+    }
+}
+
+// ----- statements -----
+
+fn ck_block_stmts(c: *Ck, block: *Node) {
+    let items = (*block).items;
+    for i: u64 in 0..ck_items_len(items) {
+        ck_stmt(c, ast_item(items, i));
+    }
+}
+
+fn ck_block(c: *Ck, block: *Node) {
+    ck_push_scope(c);
+    ck_block_stmts(c, block);
+    ck_pop_scope(c);
+}
+
+fn ck_assignment_root(n: *Node) -> *Node {
+    let cursor = n;
+    while cursor != (0 as *Node) {
+        let kind = (*cursor).kind;
+        if kind == NodeKind.VAR {
+            return cursor;
+        }
+        if kind == NodeKind.FIELD_ACCESS || kind == NodeKind.INDEX {
+            cursor = (*cursor).a;
+        } else {
+            return 0 as *Node;
+        }
+    }
+    return 0 as *Node;
+}
+
+fn ck_let(c: *Ck, s: *Node) {
+    let expr = (*s).a;
+    if (*expr).kind == NodeKind.ARRAY_LIT || (*expr).kind == NodeKind.ARRAY_REPEAT {
+        ck_array_expr(c, expr, (*s).ty, s);
+        ck_declare(c, (*s).name, (*c).k_variable, s, (*s).flag);
+        return;
+    }
+    ck_expr(c, expr);
+    if (*s).ty != NO_TEXT {
+        if !ck_valid(c, (*s).ty) {
+            let msg = m_new();
+            m_s(&msg, "variable ");
+            m_r(c, &msg, (*s).name);
+            m_s(&msg, " has unknown type ");
+            m_t(c, &msg, (*s).ty);
+            ck_fail_node(c, s, &msg);
+        }
+        if ts_is_array((*c).s, (*s).ty) {
+            ck_fail_z(c, s,
+                "an array must be initialised with an array literal ([..] or [value; n])");
+        }
+    }
+    ck_declare(c, (*s).name, (*c).k_variable, s, (*s).flag);
+}
+
+fn ck_assign(c: *Ck, s: *Node) {
+    ck_expr(c, (*s).a);
+    let root = ck_assignment_root((*s).a);
+    if root != (0 as *Node) && !ck_binding_mutable(c, (*root).name) {
+        ck_fail_named(c, s, "cannot assign to const binding ", (*root).name, "");
+    }
+    if (*s).name != (*c).t_assign {
+        // The Python checker builds `Binary(op, target, expr)`: the target is
+        // evaluated a second time.
+        ck_expr(c, (*s).a);
+    }
+    ck_expr(c, (*s).b);
+}
+
+// A pattern `Name.Variant(..)` names an enum by its dotted prefix.
+fn ck_payload_pattern(c: *Ck, pattern: *Node, enum_out: *u64, variant_out: *u64) -> bool {
+    if (*pattern).kind != NodeKind.CALL {
+        return false;
+    }
+    let s = (*c).s;
+    let name = (*pattern).name;
+    let text = intern_text(s, name);
+    if ts_find(text, '.') == text.len {
+        return false;
+    }
+    let cut: u64 = 0;
+    for i: u64 in 0..text.len {
+        if text.data[i] == '.' {
+            cut = i;
+        }
+    }
+    let prefix = ts_sub_h(s, text, 0, cut);
+    ck_valid(c, prefix);
+    if !tb_has(&(*c).enums, prefix) {
+        return false;
+    }
+    *enum_out = prefix;
+    *variant_out = ts_sub_h(s, text, cut + 1, text.len);
+    return true;
+}
+
+fn ck_payload_arm(c: *Ck, arm: *Node, enum_name: u64, variant: u64, names_out: *U64Vec) {
+    let info = tb_get(&(*c).enums, enum_name) as *EnumInfo;
+    let at: u64 = 0;
+    if !ck_variant_index(info, variant, &at) {
+        let msg = m_new();
+        m_s(&msg, "enum ");
+        m_r(c, &msg, enum_name);
+        m_s(&msg, " has no variant ");
+        m_r(c, &msg, variant);
+        ck_fail_node(c, arm, &msg);
+    }
+    if u64vec_get(&(*info).payload, at) == NO_TEXT {
+        let msg = m_new();
+        m_s(&msg, "variant ");
+        m_t(c, &msg, enum_name);
+        m_s(&msg, ".");
+        m_t(c, &msg, variant);
+        m_s(&msg, " has no payload");
+        ck_fail_node(c, arm, &msg);
+    }
+    let payloads = ptrvec_get(&(*info).payloads, at) as *U64Vec;
+    let count = ck_names_len(payloads);
+    let args = (*(*arm).a).items;
+    let all_vars = ck_items_len(args) == count;
+    if all_vars {
+        for i: u64 in 0..count {
+            if (*ast_item(args, i)).kind != NodeKind.VAR {
+                all_vars = false;
+            }
+        }
+    }
+    if !all_vars {
+        let msg = m_new();
+        m_s(&msg, "payload match patterns require ");
+        if count == 1 {
+            m_s(&msg, "one binding name");
+        } else {
+            m_u(&msg, count);
+            m_s(&msg, " binding names");
+        }
+        ck_fail_node(c, arm, &msg);
+    }
+    for i: u64 in 0..count {
+        let name = (*ast_item(args, i)).name;
+        if name != (*c).t_underscore {
+            u64vec_push(names_out, name);
+        }
+    }
+    if ck_dup_names(c, names_out) {
+        ck_fail_z(c, arm, "payload match bindings must have unique names");
+    }
+}
+
+fn ck_match(c: *Ck, s: *Node) {
+    ck_expr(c, (*s).a);
+    let arms = (*s).items;
+    let count = ck_items_len(arms);
+    let wildcard_seen = false;
+    for index: u64 in 0..count {
+        let arm = ast_item(arms, index);
+        let pattern = (*arm).a;
+        let names = u64vec_new();
+        if pattern == (0 as *Node) {
+            if wildcard_seen {
+                ck_fail_z(c, arm, "match has more than one wildcard arm");
+            }
+            if index != count - 1 {
+                ck_fail_z(c, arm, "the wildcard match arm must be last");
+            }
+            wildcard_seen = true;
+        } else {
+            if ck_contains_try(pattern) {
+                ck_fail_z(c, arm,
+                    "try is not allowed in a match pattern; evaluate it before the match subject");
+            }
+            let enum_name: u64 = 0;
+            let variant: u64 = 0;
+            if ck_payload_pattern(c, pattern, &enum_name, &variant) {
+                ck_payload_arm(c, arm, enum_name, variant, &names);
+            } else {
+                ck_expr(c, pattern);
+            }
+        }
+        ck_push_scope(c);
+        for i: u64 in 0..names.len {
+            ck_new_binding(c, u64vec_get(&names, i), (*c).k_match, (*arm).line, true);
+        }
+        ck_block_stmts(c, (*arm).b);
+        ck_pop_scope(c);
+    }
+}
+
+fn ck_stmt(c: *Ck, s: *Node) {
+    (*c).current_node = s;
+    (*c).current_statement = 0 as *Node;
+    if ck_column_of(s) != 0 {
+        (*c).current_statement = s;
+    }
+    let kind = (*s).kind;
+    if kind == NodeKind.LET {
+        ck_let(c, s);
+    } else if kind == NodeKind.ASSIGN {
+        ck_assign(c, s);
+    } else if kind == NodeKind.RETURN {
+        if (*s).a != (0 as *Node) {
+            ck_expr(c, (*s).a);
+        }
+    } else if kind == NodeKind.IF {
+        ck_expr(c, (*s).a);
+        ck_block(c, (*s).b);
+        if (*s).c != (0 as *Node) {
+            if (*(*s).c).kind == NodeKind.IF {
+                ck_stmt(c, (*s).c);
+            } else {
+                ck_block(c, (*s).c);
+            }
+        }
+    } else if kind == NodeKind.WHILE {
+        ck_expr(c, (*s).a);
+        (*c).loop_depth += 1;
+        ck_block(c, (*s).b);
+        (*c).loop_depth -= 1;
+    } else if kind == NodeKind.FOR {
+        ck_expr(c, (*s).a);
+        ck_expr(c, (*s).b);
+        ck_push_scope(c);
+        ck_new_binding(c, (*s).name, (*c).k_loop, (*s).line, true);
+        (*c).loop_depth += 1;
+        ck_block_stmts(c, (*s).c);
+        (*c).loop_depth -= 1;
+        ck_pop_scope(c);
+    } else if kind == NodeKind.MATCH {
+        ck_match(c, s);
+    } else if kind == NodeKind.BLOCK {
+        ck_block(c, s);
+    } else if kind == NodeKind.EXPR_STMT {
+        ck_expr(c, (*s).a);
+    } else if kind == NodeKind.DEFER {
+        if ck_contains_try((*s).a) {
+            ck_fail_z(c, s, "try is not allowed inside defer because propagation occurs after the surrounding scope has begun cleanup");
+        }
+        ck_expr(c, (*s).a);
+    } else if kind == NodeKind.BREAK {
+        if (*c).loop_depth == 0 {
+            ck_fail_z(c, s, "'break' is only allowed inside a loop");
+        }
+    } else if kind == NodeKind.CONTINUE {
+        if (*c).loop_depth == 0 {
+            ck_fail_z(c, s, "'continue' is only allowed inside a loop");
+        }
+    }
+}
+
+fn ck_function_body(c: *Ck, f: *Node) {
+    ck_ev_head(c, "fn", (*f).symbol);
+    ck_ev_end(c);
+    (*c).current_module = (*f).mod_name;
+    (*c).current_aliases = (*f).import_aliases;
+    (*c).loop_depth = 0;
+    ck_reset_scopes(c);
+    let params = (*f).items;
+    for i: u64 in 0..ck_items_len(params) {
+        ck_declare(c, (*ast_item(params, i)).name, (*c).k_parameter, f, true);
+    }
+    ck_block_stmts(c, (*f).a);
+}
+
+fn ck_test_body(c: *Ck, t: *Node) {
+    (*c).current_module = (*t).mod_name;
+    (*c).current_aliases = (*t).import_aliases;
+    (*c).loop_depth = 0;
+    ck_reset_scopes(c);
+    ck_block_stmts(c, (*t).a);
+}
+
+// ----- globals -----
+
+fn ck_check_globals(c: *Ck) {
+    let list = (*(*c).program).globals;
+    for i: u64 in 0..(*list).len {
+        let g = ast_item(list, i);
+        let name = (*g).name;
+        if tb_has(&(*c).globals, name) || tb_has(&(*c).funcs, name)
+                || tb_has(&(*c).func_templates, name) || tb_has(&(*c).structs, name)
+                || tb_has(&(*c).enums, name) || map_has(&(*c).builtin_names, name) {
+            ck_fail_named(c, g, "global ", name, " conflicts with another name");
+        }
+        let expr = (*g).a;
+        if (*expr).kind == NodeKind.ARRAY_LIT || (*expr).kind == NodeKind.ARRAY_REPEAT {
+            ck_array_expr(c, expr, (*g).ty, g);
+        } else {
+            ck_expr(c, expr);
+            if (*g).ty != NO_TEXT && !ck_valid(c, (*g).ty) {
+                let msg = m_new();
+                m_s(&msg, "global ");
+                m_r(c, &msg, name);
+                m_s(&msg, " has unknown type ");
+                m_t(c, &msg, (*g).ty);
+                ck_fail_node(c, g, &msg);
+            }
+        }
+        let info = sup_alloc(sizeof<GlobalInfo>()) as *GlobalInfo;
+        *info = GlobalInfo { decl_type: (*g).ty, mutable: (*g).flag };
+        tb_put(&(*c).globals, name, info as *void);
+    }
+}
+
+// ----- tables dump -----
+
+fn ck_tb_line_start(c: *Ck, tag: *u8, name: u64) {
+    buf_push_z(&(*c).tables, tag);
+    buf_push(&(*c).tables, ' ');
+    ck_q(c, &(*c).tables, name);
+}
+
+fn ck_tb_space_q(c: *Ck, h: u64) {
+    buf_push(&(*c).tables, ' ');
+    ck_q(c, &(*c).tables, h);
+}
+
+fn ck_tb_space_list(c: *Ck, list: *U64Vec) {
+    buf_push(&(*c).tables, ' ');
+    ck_q_list(c, &(*c).tables, list);
+}
+
+fn ck_tb_end(c: *Ck) {
+    buf_push(&(*c).tables, 10);
+}
+
+fn ck_tb_fn_attrs(c: *Ck, decl: *Node) {
+    buf_push(&(*c).tables, ' ');
+    if (*decl).kind == NodeKind.FN_DECL && (*decl).mod_name != NO_TEXT {
+        ck_q(c, &(*c).tables, (*decl).mod_name);
+    } else {
+        buf_push(&(*c).tables, '-');
+    }
+    if (*decl).kind == NodeKind.FN_DECL && (*decl).flag {
+        buf_push_z(&(*c).tables, " 1");
+    } else {
+        buf_push_z(&(*c).tables, " 0");
+    }
+}
+
+fn ck_dump_tables(c: *Ck) {
+    for i: u64 in 0..tb_len(&(*c).aliases) {
+        ck_tb_line_start(c, "alias", tb_key(&(*c).aliases, i));
+        ck_tb_space_q(c, ck_unbox(tb_item(&(*c).aliases, i)));
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..tb_len(&(*c).enum_templates) {
+        ck_tb_line_start(c, "enum-template", tb_key(&(*c).enum_templates, i));
+        ck_tb_space_list(c, (*(tb_item(&(*c).enum_templates, i) as *Node)).names);
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..tb_len(&(*c).enums) {
+        let name = tb_key(&(*c).enums, i);
+        ck_tb_line_start(c, "enum", name);
+        ck_tb_end(c);
+        let info = tb_item(&(*c).enums, i) as *EnumInfo;
+        for j: u64 in 0..(*info).vnames.len {
+            buf_push_z(&(*c).tables, "variant ");
+            ck_q(c, &(*c).tables, name);
+            ck_tb_space_q(c, u64vec_get(&(*info).vnames, j));
+            let payload = u64vec_get(&(*info).payload, j);
+            buf_push(&(*c).tables, ' ');
+            if payload != NO_TEXT {
+                ck_q(c, &(*c).tables, payload);
+            } else {
+                buf_push(&(*c).tables, '-');
+            }
+            ck_tb_space_list(c, ptrvec_get(&(*info).payloads, j) as *U64Vec);
+            ck_tb_end(c);
+        }
+    }
+    for i: u64 in 0..tb_len(&(*c).struct_templates) {
+        ck_tb_line_start(c, "struct-template", tb_key(&(*c).struct_templates, i));
+        ck_tb_space_list(c, (*(tb_item(&(*c).struct_templates, i) as *Node)).names);
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..tb_len(&(*c).structs) {
+        let name = tb_key(&(*c).structs, i);
+        ck_tb_line_start(c, "struct", name);
+        ck_tb_end(c);
+        let info = tb_item(&(*c).structs, i) as *StructInfo;
+        for j: u64 in 0..(*info).fnames.len {
+            buf_push_z(&(*c).tables, "field ");
+            ck_q(c, &(*c).tables, name);
+            ck_tb_space_q(c, u64vec_get(&(*info).fnames, j));
+            ck_tb_space_q(c, u64vec_get(&(*info).ftypes, j));
+            ck_tb_end(c);
+        }
+    }
+    for i: u64 in 0..tb_len(&(*c).func_templates) {
+        let decl = tb_item(&(*c).func_templates, i) as *Node;
+        ck_tb_line_start(c, "fn-template", tb_key(&(*c).func_templates, i));
+        ck_tb_space_list(c, (*decl).names);
+        ck_tb_space_q(c, (*decl).ty);
+        let ptypes = u64vec_new();
+        for j: u64 in 0..ck_items_len((*decl).items) {
+            u64vec_push(&ptypes, (*ast_item((*decl).items, j)).ty);
+        }
+        ck_tb_space_list(c, &ptypes);
+        ck_tb_fn_attrs(c, decl);
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..tb_len(&(*c).funcs) {
+        let info = tb_item(&(*c).funcs, i) as *FuncInfo;
+        ck_tb_line_start(c, "fn", tb_key(&(*c).funcs, i));
+        ck_tb_space_list(c, &(*info).params);
+        ck_tb_space_q(c, (*info).ret);
+        ck_tb_fn_attrs(c, (*info).decl);
+        if (*(*info).decl).kind == NodeKind.EXTERN_FN_DECL {
+            buf_push_z(&(*c).tables, " extern");
+        } else {
+            buf_push_z(&(*c).tables, " fn");
+        }
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..(*c).resource_struct_order.len {
+        ck_tb_line_start(c, "resource-struct", u64vec_get(&(*c).resource_struct_order, i));
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..tb_len(&(*c).resource_templates) {
+        ck_tb_line_start(c, "destructor-template", tb_key(&(*c).resource_templates, i));
+        ck_tb_space_q(c, ck_unbox(tb_item(&(*c).resource_templates, i)));
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..(*c).destructor_order.len {
+        ck_tb_line_start(c, "destructor", u64vec_get(&(*c).destructor_order, i));
+        ck_tb_end(c);
+    }
+    for i: u64 in 0..(*c).extern_order.len {
+        ck_tb_line_start(c, "extern", u64vec_get(&(*c).extern_order, i));
+        ck_tb_end(c);
+    }
+    let globals = (*(*c).program).globals;
+    for i: u64 in 0..(*globals).len {
+        let g = ast_item(globals, i);
+        if !tb_has(&(*c).globals, (*g).name) {
+            continue;
+        }
+        let info = tb_get(&(*c).globals, (*g).name) as *GlobalInfo;
+        ck_tb_line_start(c, "global", (*g).name);
+        buf_push(&(*c).tables, ' ');
+        if (*info).decl_type != NO_TEXT {
+            ck_q(c, &(*c).tables, (*info).decl_type);
+        } else {
+            buf_push(&(*c).tables, '-');
+        }
+        if (*info).mutable {
+            buf_push_z(&(*c).tables, " 1");
+        } else {
+            buf_push_z(&(*c).tables, " 0");
+        }
+        ck_tb_end(c);
+    }
+    let struct_decls = (*(*c).program).structs;
+    for i: u64 in 0..(*struct_decls).len {
+        let d = ast_item(struct_decls, i);
+        ck_tb_line_start(c, "struct-decl", (*d).name);
+        if (*d).flag {
+            buf_push_z(&(*c).tables, " 1 ");
+        } else {
+            buf_push_z(&(*c).tables, " 0 ");
+        }
+        if (*d).symbol != NO_TEXT {
+            ck_q(c, &(*c).tables, (*d).symbol);
+        } else {
+            buf_push(&(*c).tables, '-');
+        }
+        ck_tb_end(c);
+    }
+    let enum_decls = (*(*c).program).enums;
+    for i: u64 in 0..(*enum_decls).len {
+        ck_tb_line_start(c, "enum-decl", (*ast_item(enum_decls, i)).name);
+        ck_tb_end(c);
+    }
+    (*c).tables_done = true;
+}
+
+// ----- the whole pass -----
+
+fn ck_check_main(c: *Ck) {
+    if (*c).freestanding || (*c).test_mode {
+        return;
+    }
+    let funcs = (*(*c).program).funcs;
+    let found = false;
+    for i: u64 in 0..(*funcs).len {
+        let f = ast_item(funcs, i);
+        if ck_names_len((*f).names) == 0 && (*f).symbol == (*c).t_main {
+            found = true;
+        }
+    }
+    if !found {
+        ck_fail_z(c, 0 as *Node, "no 'main' function defined");
+    }
+    let info = tb_get(&(*c).funcs, (*c).t_main) as *FuncInfo;
+    if (*info).params.len != 0 {
+        ck_fail_z(c, 0 as *Node, "'main' must take no parameters");
+    }
+    if (*info).ret != (*c).t_i64 {
+        ck_fail_z(c, 0 as *Node, "'main' must return int");
+    }
+}
+
+fn ck_check_test_names(c: *Ck) {
+    let tests = (*(*c).program).tests;
+    let seen = map_new();
+    for i: u64 in 0..(*tests).len {
+        let t = ast_item(tests, i);
+        if map_has(&seen, (*t).name) {
+            ck_fail_named(c, t, "test ", (*t).name, " is already defined");
+        }
+        map_put(&seen, (*t).name, 1);
+        ck_test_body(c, t);
+    }
+}
+
+fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
+        freestanding: bool, test_mode: bool, first_columns: *Map) -> Ck {
+    let c = Ck {
+        s: strings, program: program, out_path: out_path,
+        freestanding: freestanding, test_mode: test_mode, depth: 0,
+        generic_instantiations: 0,
+        work_spent: 0, work_instantiated: false, work_site: 0 as *Node,
+        current_node: 0 as *Node, current_statement: 0 as *Node,
+        first_columns: first_columns,
+        alias_cache: map_new(), valid_types: map_new(), valid_behind_pointer: map_new(),
+        aliases: tb_new(), alias_decls: tb_new(),
+        enums: tb_new(), enum_templates: tb_new(),
+        structs: tb_new(), struct_templates: tb_new(),
+        funcs: tb_new(), func_templates: tb_new(),
+        globals: tb_new(), aggregate_decls: tb_new(),
+        resource_templates: tb_new(),
+        int_types: map_new(), float_types: map_new(),
+        builtin_names: map_new(), generic_builtins: map_new(), c_keywords: map_new(),
+        resource_struct_names: map_new(), resource_struct_order: u64vec_new(),
+        destructor_symbols: map_new(), destructor_order: u64vec_new(),
+        extern_names: map_new(), extern_order: u64vec_new(),
+        t_void: intern_z(strings, "void"),
+        t_bool: intern_z(strings, "bool"),
+        t_i64: intern_z(strings, "i64"),
+        t_main: intern_z(strings, "main"),
+        t_destroy: intern_z(strings, "destroy"),
+        t_underscore: intern_z(strings, "_"),
+        t_assign: intern_z(strings, "="),
+        t_sizeof: intern_z(strings, "sizeof"),
+        k_variable: intern_z(strings, "variable"),
+        k_parameter: intern_z(strings, "parameter"),
+        k_loop: intern_z(strings, "loop variable"),
+        k_match: intern_z(strings, "match binding"),
+        bindings: ptrvec_new(), bind_map: map_new(),
+        scope_starts: u64vec_new(), scope_depth: 0,
+        current_module: NO_TEXT, current_aliases: 0 as *Map, loop_depth: 0,
+        stack_nodes: ptrvec_new(), stack_phases: u64vec_new(), stack_extras: u64vec_new(),
+        tables: buf_new(4096), tables_done: false, events: buf_new(4096),
+    };
+    ck_make_set(strings, &c.int_types,
+        "i8 i16 i32 i64 u8 u16 u32 u64 c_char c_uchar c_short c_ushort c_int c_uint c_long c_ulong c_size");
+    ck_make_set(strings, &c.float_types, "f32 f64");
+    ck_make_set(strings, &c.builtin_names,
+        "print println eprintln assert alloc free len slice sizeof volatile_read volatile_write unix_time cpu_millis file_open file_close file_read file_write file_flush arg_count arg_get thread_spawn thread_join thread_sleep_millis mutex_create mutex_destroy mutex_lock mutex_unlock atomic_i64_create atomic_i64_destroy atomic_i64_load atomic_i64_store atomic_i64_exchange atomic_i64_fetch_add atomic_i64_fetch_sub atomic_i64_compare_exchange net_tcp_connect net_tcp_listen net_tcp_accept net_udp_connect net_udp_bind net_udp_send_to net_udp_recv_from net_socket_close net_socket_send net_socket_recv net_socket_shutdown net_socket_local_port net_socket_set_nonblocking net_socket_wait net_last_error_would_block secure_random_fill tls_client_connect tls_client_connect_with_ca tls_send tls_recv tls_protocol_version tls_close outb inb outw inw outl inl");
+    ck_make_set(strings, &c.generic_builtins, "sizeof slice volatile_read volatile_write");
+    ck_make_set(strings, &c.c_keywords,
+        "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local");
+    return c;
+}
+
+fn ck_run(c: *Ck) {
+    ck_check_aliases(c);
+    ck_check_enums(c);
+    ck_check_structs(c);
+    ck_check_enum_payloads(c);
+    ck_validate_cycles(c, 0 as *U64Vec, 0 as *Node);
+    ck_check_alias_targets(c);
+    ck_check_functions(c);
+    ck_check_resources(c);
+    ck_check_globals(c);
+    ck_dump_tables(c);
+    ck_check_main(c);
+    let funcs = (*(*c).program).funcs;
+    let count = (*funcs).len;
+    for i: u64 in 0..count {
+        let f = ast_item(funcs, i);
+        if ck_names_len((*f).names) != 0 {
+            continue;
+        }
+        ck_function_body(c, f);
+    }
+    // Test blocks are checked in every mode, as `check()` does; only the `main`
+    // requirement depends on test mode.
+    ck_check_test_names(c);
+    ck_write_output(c);
+}
