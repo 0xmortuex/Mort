@@ -24,6 +24,7 @@ Commit hashes below are on branch `docs/spec`.
 | 7d | The self-hosted parser kept the old lookaheads after #1 and #2 | Bug. Both parsers now share one lookahead rule, and the Python parser stops at braces in all three lookaheads, as section 3.3 states | `4a75dd8` |
 | 7e | `B<(i64,i64)>{…}` and `E<fn(i64,i64)->i64>.N` parsed, then failed as unknown names, because `generic_parts` split type arguments on commas inside parentheses | Bug. Sections 4.2 and 23.5 state any type list, and tuple and function types are ordinary types. `generic_parts` now splits with `_split_type_list`, which tracks parentheses. Both parsers already accepted these forms, so `selfhost/parser.mx` is unchanged | `ec0acef` |
 | 7f | `fix/frontend-crashes` passed `split_shr=False` for struct literals and did not stop its lookahead table at braces, which would undo #1 and #2 | Merge kept its linear table with one rule for all three lookaheads: `>>` is two closes, and a brace stops the scan | merge of `main` |
+| 7g | The merge rejected `type B = [[u8; 3]; 2]`, which decision 5 needs for `sizeof<B>()`, because arrays of arrays have no C declaration | An alias may name one and `sizeof` may measure it. Every other use stays a diagnostic | this commit |
 
 ## Document changed
 

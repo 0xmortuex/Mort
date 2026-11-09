@@ -490,6 +490,19 @@ class Checker:
             self.valid_types.add(key)
         return valid
 
+    def _valid_sizeof_type(self, t):
+        """Like _valid_type, but an array may hold arrays.
+
+        An array of arrays has a size even though it has no C declaration, so an
+        alias may name one and sizeof may measure it. Every other use still goes
+        through _valid_type and is rejected.
+        """
+        resolved = self._resolve_alias_type(t)
+        if is_array(resolved):
+            element, length = array_parts(resolved)
+            return length > 0 and self._valid_sizeof_type(element)
+        return self._valid_type(resolved)
+
     def _check_valid_type(self, t, behind_pointer):
         t = self._resolve_alias_type(t)
         if is_ptr(t):
@@ -1040,7 +1053,7 @@ class Checker:
         self._validate_aggregate_cycles()
 
         for declaration in self.program.aliases:
-            if declaration.target == "void" or not self._valid_type(declaration.target):
+            if declaration.target == "void" or not self._valid_sizeof_type(declaration.target):
                 self._error(
                     f"type alias {declaration.name!r} has invalid target "
                     f"{declaration.target}", declaration)
@@ -2570,7 +2583,7 @@ class Checker:
             if e.args or len(e.type_args) != 1:
                 self._error("sizeof expects exactly one type argument and no values", e)
             target = e.type_args[0]
-            if target == "void" or not self._valid_type(target):
+            if target == "void" or not self._valid_sizeof_type(target):
                 self._error(f"sizeof has invalid type argument {target}", e)
             return "u64"
         if e.name in ("unix_time", "cpu_millis"):

@@ -1449,6 +1449,17 @@ def test_sizeof_accepts_array_types():
     ).stdout == "8\n6\n"
 
 
+@pytest.mark.parametrize("body", [
+    "fn main() -> int { let x: B = null; return 0; }",
+    "struct S { f: B } fn main() -> int { return 0; }",
+    "fn f(x: B) -> void {} fn main() -> int { return 0; }",
+    "fn f() -> *B { return null; } fn main() -> int { return 0; }",
+])
+def test_an_alias_of_nested_arrays_is_only_measurable(body):
+    with pytest.raises(MortError):
+        _check_program("type B = [[u8; 3]; 2]; " + body)
+
+
 def test_a_repeated_enum_variant_arm_is_rejected():
     with pytest.raises(MortError, match="more than once"):
         _check_program(
