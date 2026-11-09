@@ -11290,6 +11290,84 @@ def test_alias_expansion_is_charged_without_generics():
     assert "work units" in error.msg, error.msg
 
 
+_DEFER_REPLAY_SECONDS = 20
+
+
+def _defers_and_returns(defers, returns, deferred="print(1)"):
+    return ("fn f(b: bool) -> int {\n"
+            + f"  defer {deferred};\n" * defers
+            + "  if b { return 0; }\n" * returns
+            + "  return 0;\n}\nfn main() -> int { return f(false); }\n")
+
+
+_FIRST_RETURN_LINE = {"3000x3000": 3002, "5000x5000": 5002, "6000x2000": 6002}
+
+_CAST_CHAIN = "print(1" + " as i64" * 50 + ")"
+
+_DEFER_REPLAY_PROGRAMS = {
+    **{f"{count}x{returns}": _defers_and_returns(count, returns)
+       for count, returns in ((3000, 3000), (5000, 5000), (6000, 2000))},
+    "cast-chain-with-little-text": _defers_and_returns(450, 1500, _CAST_CHAIN),
+    "loop-breaks": ("fn f(b: bool) -> int {\n  while b {\n"
+                    + "    defer print(1);\n" * 3000
+                    + "    if b { break; }\n" * 3000
+                    + "  }\n  return 0;\n}\nfn main() -> int { return f(false); }\n"),
+    "resources": ("resource struct Res { id: i64 }\n"
+                  "fn destroy(r: *Res) -> void {}\n"
+                  "fn make() -> Res { return Res { id: 1 }; }\n"
+                  "fn f(b: bool) -> int {\n"
+                  + "".join(f"  let r{index}: Res = make();\n" for index in range(3000))
+                  + "  if b { return 0; }\n" * 3000
+                  + "  return 0;\n}\nfn main() -> int { return f(false); }\n"),
+    "finite-generic": ("fn g<T>(x: T, b: bool) -> i64 {\n"
+                       + "  defer print(1);\n" * 2000
+                       + "  if b { return 0; }\n" * 2000
+                       + "  return 0;\n}\nfn main() -> int {\n"
+                       "  g(1, false);\n  g(true, false);\n  return 0;\n}\n"),
+}
+
+
+def test_250_defers_replayed_at_250_returns_compile():
+    c = c_of(_defers_and_returns(250, 250))
+    assert c.count("mort_print(1);") == 250 * 251
+
+
+def test_1000_defers_replayed_at_100_returns_compile():
+    c = c_of(_defers_and_returns(1000, 100))
+    assert c.count("mort_print(1);") == 1000 * 101
+
+
+@pytest.mark.parametrize("source", list(_DEFER_REPLAY_PROGRAMS.values()),
+                         ids=list(_DEFER_REPLAY_PROGRAMS))
+def test_defer_replay_blowup_stops_quickly_with_its_own_message(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None, error.format()
+    assert "deferred" in error.msg, error.msg
+    assert "type processing" not in error.msg, error.msg
+    assert str(typechecker_module.MAX_DEFER_REPLAY) in error.msg, error.msg
+    assert elapsed < _DEFER_REPLAY_SECONDS
+
+
+@pytest.mark.parametrize("name", list(_FIRST_RETURN_LINE))
+def test_defer_replay_limit_is_reported_at_the_return_that_exceeds_it(name):
+    error, _ = _compile_bounded(_DEFER_REPLAY_PROGRAMS[name], _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line >= _FIRST_RETURN_LINE[name], error.format()
+    assert error.col == len("  if b { return ") + 1, error.format()
+
+
+def test_defer_replay_limit_is_reported_at_the_break_that_exceeds_it():
+    error, _ = _compile_bounded(_DEFER_REPLAY_PROGRAMS["loop-breaks"], _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert 3003 <= error.line <= 6003, error.format()
+
+
+def test_spec_states_the_defer_replay_limit():
+    assert f"{typechecker_module.MAX_DEFER_REPLAY} units of deferred" in " ".join(
+        _spec_text().split())
+
+
 def test_plain_bindings_do_not_make_branches_quadratic():
     body = ("".join(f"  let a{index}: i64 = 1;\n" for index in range(6000))
             + "  if a0 == 1 { a0; }\n" * 6000)

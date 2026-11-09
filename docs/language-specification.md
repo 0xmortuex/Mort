@@ -582,7 +582,11 @@ exceeds any of these limits:
   node, and a generic struct or enum 8 units per field or payload plus 8. Each
   operation that scans, copies, substitutes or mangles a type also costs that
   type's length in characters divided by 64 (rounded down), each time it runs,
-  and walks over dependencies, bindings and deferred code cost what they visit.
+  and walks over dependencies and bindings cost what they visit.
+- Replaying deferred statements and resource cleanup at each exit may cost at
+  most 48000000 units of deferred code in one program, separately from the
+  limit above: each replay costs one unit per character of generated C plus 32
+  units per syntax tree node.
 - A type the compiler constructs, by substitution, an expression or an alias,
   must not be longer than 65536 characters, whether or not generics are used.
 - A generic function's type argument must not be nested more than 256 type

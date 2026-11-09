@@ -13,12 +13,11 @@ from . import mort_ast as A
 from .errors import MortError
 from .typechecker import (
     BUILTIN_NAMES,
-    WORK_UNITS_PER_NODE,
+    REPLAY_UNITS_PER_NODE,
     WorkMeter,
     ast_size,
     charge_chars,
     charge_items,
-    charge_units,
     charging,
 )
 
@@ -2175,8 +2174,10 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _emit_defer_scopes(self, start=0):
+        exit_site = self.current_node  # the replay changes current_node
         for scope in reversed(getattr(self, "defer_scopes", [])[start:]):
             for expression in reversed(scope):
+                first_line = len(self.lines)
                 if isinstance(expression, tuple) and expression[0] == "resource":
                     _, name, destructor, live = expression
                     destructor_name = (
@@ -2184,13 +2185,17 @@ class CodeGen:
                         if destructor.startswith("$drop$")
                         else f"mort_{_c_symbol(destructor)}"
                     )
-                    charge_units(1)
+                    nodes = 1
                     self._emit(
                         f"if ({live}) {{ {destructor_name}(&m_{name}); }}")
                 else:
                     # Each exit path regenerates every deferred expression.
-                    charge_units(ast_size(expression) * WORK_UNITS_PER_NODE)
+                    nodes = ast_size(expression)
                     self._emit(self._gen_expr(expression) + ";")
+                self.work.spend_replay(
+                    nodes * REPLAY_UNITS_PER_NODE
+                    + sum(map(len, self.lines[first_line:])),
+                    exit_site)
 
     def _gen_scoped_statements(self, statements):
         self.defer_scopes.append([])

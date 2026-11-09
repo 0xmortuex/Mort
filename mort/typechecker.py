@@ -42,6 +42,11 @@ MAX_GENERIC_INSTANTIATIONS = 16384
 MAX_GENERIC_WORK = 1_000_000
 WORK_CHARS_PER_UNIT = 64
 WORK_UNITS_PER_NODE = 8
+# Replaying deferred code at each exit is the product of the defer and exit
+# counts by design, and it creates output as long as it costs, so it has a
+# budget of its own in units of generated C text; see WorkMeter.spend_replay.
+MAX_DEFER_REPLAY = 48_000_000
+REPLAY_UNITS_PER_NODE = 32
 # Every type the compiler builds is at most this long, generics or not: a tuple
 # of tuples doubles with each `let`, and aliases double without any statement.
 MAX_TYPE_LENGTH = 65536
@@ -134,14 +139,18 @@ class WorkMeter:
       that length a call costs a fixed amount, and such calls are a fixed number
       per node or type constructor.
     * Walks whose length depends on what is reachable rather than on one node:
-      struct dependency graphs, drop analysis, move snapshots, repeated deferred
-      statements, definition ordering and C name lookups. Each charges for the
-      items it visits.
+      struct dependency graphs, drop analysis, move snapshots, definition
+      ordering and C name lookups. Each charges for the items it visits.
+    * Replaying deferred statements at each exit. Its cost is the output itself,
+      so it spends MAX_DEFER_REPLAY instead: one unit per generated C character
+      plus REPLAY_UNITS_PER_NODE per node walked, each time it runs. Type strings
+      handled during a replay still charge the main budget.
 
     New type strings are charged when built and rejected beyond MAX_TYPE_LENGTH,
     so the remaining uncharged string operations (hashing, equality) cost at
     most MAX_TYPE_LENGTH bytes each, a fixed number per charged node. Total work
-    is therefore proportional to MAX_GENERIC_WORK, whatever the program's shape.
+    is therefore proportional to MAX_GENERIC_WORK + MAX_DEFER_REPLAY, whatever
+    the program's shape.
 
     Every program is metered from the start of checking. Types shorter than
     WORK_CHARS_PER_UNIT cost nothing, so ordinary code spends almost no units.
@@ -151,6 +160,7 @@ class WorkMeter:
 
     def __init__(self):
         self.spent = 0
+        self.replayed = 0
         self.instantiated = False
         self.locate = lambda: None
         self.site = None
@@ -164,6 +174,16 @@ class WorkMeter:
             self.fail(
                 f"{subject} exceeds the limit of {MAX_GENERIC_WORK} "
                 "work units in one program")
+
+    def spend_replay(self, units, node):
+        """Charge one replayed deferred statement to the exit at node."""
+        self.replayed += units
+        if self.replayed > MAX_DEFER_REPLAY:
+            raise MortError(
+                "replaying deferred statements at each exit exceeds the limit of "
+                f"{MAX_DEFER_REPLAY} units of generated code in one program",
+                getattr(node, "line", None), _column_of(node),
+                filename=getattr(node, "filename", None))
 
     def fail(self, message):
         """Report at the nodes on record; a position is never made up."""
