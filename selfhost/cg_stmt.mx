@@ -16,6 +16,7 @@ import check_call;
 import codegen;
 import cg_helpers;
 import cg_expr;
+import cg_cond;
 
 // `REPLAY_UNITS_PER_NODE` and `MAX_DEFER_REPLAY` in mort/typechecker.py.
 const CG_REPLAY_UNITS_PER_NODE: u64 = 32;
@@ -30,26 +31,9 @@ struct DeferItem {
     expr: *Node,
 }
 
-// `_gen_cond`: strip one outer pair of parentheses when the first closes last.
+// `_gen_cond`; the text rule is in cg_cond.mx.
 fn cg_gen_cond(g: *Cg, e: *Node) -> Span {
-    let s = cg_expr(g, e);
-    if s.len != 0 && s.data[0] == '(' && s.data[s.len - 1] == ')' {
-        let depth: u64 = 0;
-        for i: u64 in 0..s.len {
-            if s.data[i] == '(' {
-                depth += 1;
-            } else if s.data[i] == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    if i == s.len - 1 {
-                        return ts_sub(s, 1, s.len - 1);
-                    }
-                    return s;
-                }
-            }
-        }
-    }
-    return s;
+    return cg_strip_cond(cg_expr(g, e));
 }
 
 fn cg_is_signed_count(g: *Cg, t: u64) -> bool {

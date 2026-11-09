@@ -1,0 +1,27 @@
+// `_gen_cond`'s text rule: strip one outer pair of parentheses when the first closes
+// last. Kept apart from cg_stmt.mx because expression text never has the shape that
+// distinguishes the two branches (`(a)(b)`), so it is tested directly against
+// Python's real `_gen_cond` by cond_strip_main.mx.
+
+import support;
+import typestr;
+
+fn cg_strip_cond(s: Span) -> Span {
+    if s.len != 0 && s.data[0] == '(' && s.data[s.len - 1] == ')' {
+        let depth: u64 = 0;
+        for i: u64 in 0..s.len {
+            if s.data[i] == '(' {
+                depth += 1;
+            } else if s.data[i] == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    if i == s.len - 1 {
+                        return ts_sub(s, 1, s.len - 1);
+                    }
+                    return s;
+                }
+            }
+        }
+    }
+    return s;
+}

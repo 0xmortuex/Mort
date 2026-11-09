@@ -289,6 +289,34 @@ def test_string_table_comes_from_the_program(cg_exe, tmp_path):
     assert generator.strings == ["de", "abc", "z"]
 
 
+# ----- _gen_cond's text rule -----
+
+CONDITION_TEXTS = (
+    "x", "(a)", "((a))", "(a)(b)", "(a) b", "(a) && (b)", "(a)(b)(c)", "a(b)", "(a(b))",
+    "()", "(", ")", "(()", "())", "(a))(", "(a)b)", "((a)(b))", "(())", "(a)()",
+)
+
+
+def assert_condition_texts_match(exe, tmp_path):
+    from mort.codegen import CodeGen
+
+    generator = CodeGen.__new__(CodeGen)
+    expected = []
+    for text in CONDITION_TEXTS:
+        generator._gen_expr = lambda _node, value=text: value
+        expected.append(generator._gen_cond(None))
+    source = tmp_path / "conds.txt"
+    source.write_bytes(("\n".join(CONDITION_TEXTS) + "\n").encode("ascii"))
+    out = tmp_path / "stripped.txt"
+    subprocess.run([str(exe), str(source), str(out)], check=True, timeout=60)
+    actual = out.read_bytes().decode("ascii").split("\n")[:-1]
+    assert actual == expected
+
+
+def test_condition_text_rule_matches_python(tmp_path_factory, tmp_path):
+    assert_condition_texts_match(build_driver(tmp_path_factory, "cond_strip_main"), tmp_path)
+
+
 # ----- %.17g -----
 
 @pytest.fixture(scope="session")

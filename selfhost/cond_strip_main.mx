@@ -1,0 +1,52 @@
+// Test helper: applies `_gen_cond`'s text rule to each line of INPUT.
+//
+// Usage: cond_strip_main INPUT OUTPUT. Exit status 0, or 2 on a usage or I/O failure.
+
+import support;
+import typestr;
+import cg_cond;
+
+fn main() -> int {
+    if arg_count() != 3 {
+        eprintln("usage: cond_strip_main INPUT OUTPUT");
+        return 2;
+    }
+    let input = file_open(arg_get(1), "rb");
+    if input == (0 as *void) {
+        eprintln("cond_strip_main: cannot read input");
+        return 2;
+    }
+    let raw = buf_new(65536);
+    let chunk = sup_alloc(65536) as *u8;
+    loop {
+        let got = file_read(input, chunk, 65536);
+        if got == 0 {
+            break;
+        }
+        for i: u64 in 0..got {
+            buf_push(&raw, chunk[i]);
+        }
+    }
+    file_close(input);
+    let out = buf_new(65536);
+    let start: u64 = 0;
+    for i: u64 in 0..raw.len {
+        if raw.data[i] == 10 {
+            buf_push_span(&out, cg_strip_cond(ts_sub(buf_span(&raw), start, i)));
+            buf_push(&out, 10);
+            start = i + 1;
+        }
+    }
+    let output = file_open(arg_get(2), "wb");
+    if output == (0 as *void) {
+        eprintln("cond_strip_main: cannot write output");
+        return 2;
+    }
+    let written = file_write(output, out.data, out.len);
+    file_close(output);
+    if written != out.len {
+        eprintln("cond_strip_main: short write");
+        return 2;
+    }
+    return 0;
+}

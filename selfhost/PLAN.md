@@ -212,7 +212,7 @@ measured data point.
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | done |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | done (section 14; estimated 12 to 20) |
-| T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
+| T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | done (section 15; estimated 8 to 14) |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
 | | **Remaining total** | | **40 to 70** |
@@ -550,14 +550,9 @@ estimated, because the port is mechanical and the harness existed. About an hour
 that went on reconciling T5 with `main` here before `feat/selfhost-t5` did the same;
 this branch adopted T5's own reconciliation for the checker files.
 
-- **Scope of "in isolation".** Statements contain expressions, whose text is T7.
-  `cg_expr` writes a placeholder (`$Kind@line:col:type$`, shaped like the real text
-  where `_gen_cond` can tell), and `py_codegen_dump.py` runs the real `CodeGen` with
-  only `_gen_expr` replaced, so every other byte is compared. The real generator
-  runs once first to find what expressions contribute (`used_*`, integer helpers,
-  the string table); both sides receive that, so helper selection is compared on
-  what each program really uses. Correction to the plan: T7's list is now
-  `cg_expr`, its charges, and removing the forced file and `cg_apply_forced`.
+- **Scope of "in isolation", at T6.** Statements contain expressions, whose text was
+  T7. `cg_expr` wrote a placeholder and `py_codegen_dump.py` replaced only `_gen_expr`.
+  T7 removed both (section 15).
 - **Tests.** `test_codegen_differential.py`: every repo `.mx` in three modes, the
   generated corpus, stubbed kernel, compiler sources, constructs one at a time,
   every flag and integer helper alone and together, hash seeds, paths, hostile
@@ -571,6 +566,48 @@ this branch adopted T5's own reconciliation for the checker files.
   Charges count bytes where Python counts code points, as the checker does, so a
   non-ASCII type name can move a budget failure by a few units. A `KeyError` in
   Python's `c_type` is an internal-error exit (2) here.
+
+## 15. Expression generator status (T7)
+
+`selfhost/cg_expr.mx` (`_gen_expr`, helper selection, the output writer),
+`cg_float.mx` (`format(value, ".17g")`), `cg_cond.mx` (`_gen_cond`'s text rule) and
+two test helpers, `float_g17_main.mx` and `cond_strip_main.mx`. Python's `_gen_expr`
+is about 260 lines; the port is about 1200 lines of Mort, the difference being
+buffers, the explicit spine and the writer. `cg_main.mx` now takes only the program.
+`cg_forced_main.mx` and `cg_forced.mx` are test-only and reach helper combinations no
+program can (a freestanding build with threads); the compiler never reads a forced
+file, and `py_codegen_dump.reference` is the real `CodeGen` with no patches. T6's
+placeholder is gone, so section 14's "in isolation" no longer applies.
+
+- **Evaluation order.** Python's order is reproduced because it is visible in the
+  output: an `obj[index]` generates its index first, which sets `mort_str_N`
+  numbering. Helper use, charges and `current_node` follow the same sequence.
+- **Double-ended text** (`Txt`). A left-deep operator chain wraps its left operand
+  on both sides at each level; with ordinary strings that is quadratic. A chain of
+  300,000 non-constant operands takes about a second under the 500 MB guard. The left
+  spine (`Binary.left`, `Cast.expr`, `FieldAccess.obj`, `Index.obj`) uses an explicit
+  stack; everything else recurses within the parser's `MAX_NESTING`.
+- **Big array repeats.** A repeat of more than 1 MiB of text stays a short token
+  (0xFF cannot occur in UTF-8 source) in every buffer and expands when the output is
+  written, so Python's 256 MiB limit is reachable under the guard; `len(v)` and the
+  replay charge count the expanded text in code points.
+- **Temporaries** live in the node's `num` field (Python's `lowered_name`,
+  `temp_name`, `obj_temp_name` are set the same way, by the same preparation pass).
+- **Known differences, both only on runaway programs.** Python has no limit on
+  either; each is a Mort-only diagnostic. A slice operand without a prepared
+  temporary is written twice, so nesting doubles the text; the total duplicated is
+  limited to 64 MiB. `slice` and `len` of a slice generate their arguments twice, so
+  nesting doubles the work; regenerated nodes are limited to 4,000,000. No program
+  under roughly 25 nesting levels of either reaches them. See `BLOCKERS.md`.
+- **Tests.** `test_codegen_expr_differential.py`: about 110 expression constructs in
+  three modes, every `used_*` flag and every integer helper from real programs
+  asserted on the Python side too, string-table order, `.17g` on 150,000 random values
+  plus constructed values and exact ties, the whole generated corpus compiled and run
+  against its independent model, deep chains against Python and at scale, and hostile
+  programs under the guard. `test_codegen_mutants.py`: 47 planted bugs.
+- **Corrected test.** T6's `condition_strips_parens_of_call` survives on real
+  programs, since expression text never has the `(a)(b)` shape; it is kept, probed
+  through `cg_cond.mx` directly against Python's `_gen_cond`.
 
 ## 13. Generator status (T2c)
 

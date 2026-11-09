@@ -24,9 +24,12 @@ from test_codegen_differential import (  # noqa: E402,F401
     compare_with_effects,
 )
 import py_codegen_dump  # noqa: E402
-from test_codegen_expr_differential import body, expression_program  # noqa: E402
+from test_codegen_expr_differential import (  # noqa: E402
+    assert_condition_texts_match, body, expression_program,
+)
 
 MAIN = "fn main() -> int { return 0; }\n"
+CONDITION_PROBE = "condition text"
 
 
 def statement(name):
@@ -104,11 +107,12 @@ MUTANTS = {
         'span_z("&(*value)[i]")',
         [declaration("drop_array")],
     ),
+    # Expression text never has the `(a)(b)` shape, so this is probed on its text rule.
     "condition_strips_parens_of_call": (
-        "cg_stmt.mx",
+        "cg_cond.mx",
         "                    if i == s.len - 1 {\n",
         "                    if true {\n",
-        [f"fn t() -> bool {{ return true; }}\nfn main() -> int {{ if t() {{ }} return 0; }}\n"],
+        CONDITION_PROBE,
     ),
     "short_circuit_or_loses_negation": (
         "cg_stmt.mx",
@@ -169,8 +173,13 @@ def rep(text):
 EXPRESSION_MUTANTS = {
     # literals and integer helpers
     "int_above_limit_by_length_only": (
-        "cg_expr.mx", "        return digits.len > 19;\n", "        return digits.len >= 19;\n",
+        "cg_expr.mx", "            return digits.data[i] > limit[i];\n",
+        "            return digits.data[i] < limit[i];\n",
         [rep("let a: i64 = 1000000000000000000;")]),
+    "int_at_the_limit_counts_as_above": (
+        "cg_expr.mx", "            return digits.data[i] > limit[i];\n        }\n    }\n    return false;\n",
+        "            return digits.data[i] > limit[i];\n        }\n    }\n    return true;\n",
+        [rep("let a: i64 = 9223372036854775807;")]),
     "int_literal_suffix_boundary": (
         "cg_expr.mx", "        if bn_mag_cmp(value, (*g).i32_max) > 0 {\n",
         "        if bn_mag_cmp(value, (*g).i32_max) >= 0 {\n",
@@ -211,7 +220,7 @@ EXPRESSION_MUTANTS = {
         "            tx_app_txt(index, cg_gx(g, (*e).b));\n",
         [expr("index_evaluates_index_first")]),
     "unprepared_slice_index_keeps_one_object": (
-        "cg_expr.mx", "        tx_app_span(t, obj);\n", '        tx_app_z(t, "m_s");\n',
+        "cg_expr.mx", "        tx_app_span(t, obj);\n", '        tx_app_z(t, "m_other");\n',
         [expr("index_slice_while_unprepared")]),
     "prepared_slice_index_ignores_temporary": (
         "cg_expr.mx",
@@ -287,8 +296,18 @@ EXPRESSION_MUTANTS = {
 MUTANTS.update(EXPRESSION_MUTANTS)
 
 
+def condition_disagreements(exe, tmp_path):
+    try:
+        assert_condition_texts_match(exe, tmp_path)
+    except AssertionError as error:
+        return [str(error).splitlines()[0]]
+    return []
+
+
 def probe_disagreements(exe, entry, tmp_path):
     probes = entry[3]
+    if probes is CONDITION_PROBE:
+        return condition_disagreements(exe, tmp_path)
     effects = entry[4] if len(entry) > 4 else None
     failures = []
     for index, source in enumerate(probes):
@@ -323,6 +342,8 @@ def build_mutant(tmp_path, filename, old, new, driver="cg_main"):
 
 def test_probes_agree_on_the_real_generator(cg_exe, cg_forced_exe, tmp_path):
     for name, entry in MUTANTS.items():
+        if entry[3] is CONDITION_PROBE:
+            continue
         exe = cg_forced_exe if len(entry) > 4 else cg_exe
         assert not probe_disagreements(exe, entry, tmp_path), name
 
@@ -336,6 +357,8 @@ def test_there_are_enough_mutants():
 def test_mutant_is_caught(tmp_path, name):
     entry = MUTANTS[name]
     driver = "cg_forced_main" if len(entry) > 4 else "cg_main"
+    if entry[3] is CONDITION_PROBE:
+        driver = "cond_strip_main"
     exe = build_mutant(tmp_path, entry[0], entry[1], entry[2], driver)
     failures = probe_disagreements(exe, entry, tmp_path)
     assert failures, f"mutant {name} survived its probes"
