@@ -52,12 +52,16 @@ struct Parser {
 
 // ----- errors -----
 
-fn ps_fail(p: *Parser, line: u64, message: Span) {
-    diag_fatal((*p).path, line, 0, message);
+fn ps_fail(p: *Parser, line: u64, col: u64, message: Span) {
+    diag_fatal((*p).path, line, col, message);
 }
 
-fn ps_fail_z(p: *Parser, line: u64, message: *u8) {
-    ps_fail(p, line, span_z(message));
+fn ps_fail_z(p: *Parser, line: u64, col: u64, message: *u8) {
+    ps_fail(p, line, col, span_z(message));
+}
+
+fn ps_fail_at(p: *Parser, t: *Token, message: *u8) {
+    ps_fail_z(p, (*t).line, (*t).col, message);
 }
 
 // Appends Python's repr of the token's value: `tok.value!r`.
@@ -82,14 +86,14 @@ fn ps_fail_with_value(p: *Parser, prefix: *u8, what: *u8, t: *Token) {
     buf_push_z(&m, what);
     buf_push_z(&m, ", got ");
     ps_push_token_value(&m, t);
-    ps_fail(p, (*t).line, buf_span(&m));
+    ps_fail(p, (*t).line, (*t).col, buf_span(&m));
 }
 
 fn ps_fail_unexpected(p: *Parser, t: *Token) {
     let m = buf_new(64);
     buf_push_z(&m, "unexpected token ");
     ps_push_token_value(&m, t);
-    ps_fail(p, (*t).line, buf_span(&m));
+    ps_fail(p, (*t).line, (*t).col, buf_span(&m));
 }
 
 // ----- token helpers -----
@@ -138,7 +142,7 @@ fn ps_expect_name(p: *Parser, what: *u8) -> u64 {
 fn ps_enter(p: *Parser) {
     (*p).depth += 1;
     if (*p).depth > MAX_NESTING {
-        ps_fail_z(p, (*ps_peek(p)).line, "source nesting exceeds the compiler safety limit");
+        ps_fail_at(p, ps_peek(p), "source nesting exceeds the compiler safety limit");
     }
 }
 
@@ -262,12 +266,12 @@ fn ps_type_fn(p: *Parser, out: *Buf) {
 }
 
 fn ps_type_tuple(p: *Parser, out: *Buf) {
-    let line = (*ps_advance(p)).line;
+    let paren = ps_advance(p);
     buf_push(out, '(');
     ps_type_into(p);
     let count: u64 = 1;
     if !ps_at(p, Tok.COMMA) {
-        ps_fail_z(p, line, "tuple types require at least two elements");
+        ps_fail_at(p, paren, "tuple types require at least two elements");
     }
     while ps_at(p, Tok.COMMA) {
         ps_advance(p);
@@ -280,9 +284,32 @@ fn ps_type_tuple(p: *Parser, out: *Buf) {
     }
     ps_expect(p, Tok.RPAREN, "')'");
     if count < 2 {
-        ps_fail_z(p, line, "tuple types require at least two elements");
+        ps_fail_at(p, paren, "tuple types require at least two elements");
     }
     buf_push(out, ')');
+}
+
+// Whether canonical decimal digits name a value above 2^64 - 1.
+fn ps_exceeds_u64(digits: Span) -> bool {
+    let limit = span_z("18446744073709551615");
+    if digits.len != limit.len {
+        return digits.len > limit.len;
+    }
+    for i: u64 in 0..limit.len {
+        if digits.data[i] != limit.data[i] {
+            return digits.data[i] > limit.data[i];
+        }
+    }
+    return false;
+}
+
+// Reads an array length. Types spell it in decimal, so it must fit u64.
+fn ps_array_size(p: *Parser, what: *u8) -> *Token {
+    let t = ps_expect(p, Tok.INT, what);
+    if ps_exceeds_u64((*t).text) {
+        ps_fail_at(p, t, "array size does not fit in u64");
+    }
+    return t;
 }
 
 fn ps_type_array(p: *Parser, out: *Buf) {
@@ -303,7 +330,7 @@ fn ps_type_array(p: *Parser, out: *Buf) {
     buf_push(out, '[');
     ps_type_into(p);
     ps_expect(p, Tok.SEMI, "';'");
-    let size = ps_expect(p, Tok.INT, "an array size");
+    let size = ps_array_size(p, "an array size");
     ps_expect(p, Tok.RBRACKET, "']'");
     buf_push(out, ';');
     buf_push_span(out, (*size).text);
@@ -597,7 +624,9 @@ fn ps_block(p: *Parser) -> *Node {
 }
 
 fn ps_let_stmt(p: *Parser, mutable: bool) -> *Node {
-    let node = ast_new(NodeKind.LET, (*ps_advance(p)).line);
+    let keyword = ps_advance(p);
+    let node = ast_new(NodeKind.LET, (*keyword).line);
+    (*node).col = (*keyword).col;
     (*node).flag = mutable;
     (*node).name = ps_expect_name(p, "variable name");
     if ps_at(p, Tok.COLON) {
@@ -733,12 +762,14 @@ fn ps_is_lvalue(p: *Parser, e: *Node) -> bool {
 }
 
 fn ps_expr_or_assign(p: *Parser) -> *Node {
-    let line = (*ps_peek(p)).line;
+    let start = ps_peek(p);
+    let line = (*start).line;
+    let start_col = (*start).col;
     let expr = ps_expression(p);
     if ps_is_assignment(ps_kind(p)) {
         let op = ps_advance(p);
         if !ps_is_lvalue(p, expr) {
-            ps_fail_z(p, line, "invalid assignment target");
+            ps_fail_z(p, line, start_col, "invalid assignment target");
         }
         let node = ast_new(NodeKind.ASSIGN, line);
         (*node).a = expr;
@@ -836,6 +867,7 @@ fn ps_binary(p: *Parser, minimum: u64) -> *Node {
         }
         let op = ps_advance(p);
         let node = ast_new(NodeKind.BINARY, (*op).line);
+        (*node).col = (*op).col;
         (*node).name = ps_text(p, (*op).text);
         (*node).a = left;
         (*node).b = ps_binary(p, level + 1);
@@ -868,6 +900,7 @@ fn ps_unary_inner(p: *Parser) -> *Node {
             || kind == Tok.TILDE {
         let op = ps_advance(p);
         let node = ast_new(NodeKind.UNARY, (*op).line);
+        (*node).col = (*op).col;
         (*node).name = ps_text(p, (*op).text);
         (*node).a = ps_unary(p);
         return node;
@@ -924,7 +957,7 @@ fn ps_call_args(p: *Parser, call: *Node) {
 fn ps_generic_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
     let name = ps_qualified_name(p, expr);
     if name == NO_TEXT {
-        ps_fail_z(p, (*ps_peek(p)).line, "only named functions can have type arguments");
+        ps_fail_at(p, ps_peek(p), "only named functions can have type arguments");
     }
     ps_advance(p);
     let type_args = ast_new_names();
@@ -934,7 +967,9 @@ fn ps_generic_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
         u64vec_push(type_args, ps_type_name(p));
     }
     ps_type_close(p);
-    let call = ast_new(NodeKind.CALL, (*ps_expect(p, Tok.LPAREN, "'('")).line);
+    let paren = ps_expect(p, Tok.LPAREN, "'('");
+    let call = ast_new(NodeKind.CALL, (*paren).line);
+    (*call).paren_col = (*paren).col;
     (*call).name = name;
     (*call).names = type_args;
     (*call).name_line = (*start).line;
@@ -946,9 +981,11 @@ fn ps_generic_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
 fn ps_plain_call(p: *Parser, expr: *Node, start: *Token) -> *Node {
     let name = ps_qualified_name(p, expr);
     if name == NO_TEXT {
-        ps_fail_z(p, (*ps_peek(p)).line, "only named functions can be called");
+        ps_fail_at(p, ps_peek(p), "only named functions can be called");
     }
-    let call = ast_new(NodeKind.CALL, (*ps_advance(p)).line);
+    let paren = ps_advance(p);
+    let call = ast_new(NodeKind.CALL, (*paren).line);
+    (*call).paren_col = (*paren).col;
     (*call).name = name;
     (*call).names = ast_new_names();
     (*call).name_line = (*start).line;
@@ -998,6 +1035,7 @@ fn ps_postfix(p: *Parser) -> *Node {
 
 fn ps_int_lit(p: *Parser, t: *Token) -> *Node {
     let node = ast_new(NodeKind.INT_LIT, (*t).line);
+    (*node).col = (*t).col;
     (*node).name = ps_text(p, (*t).text);
     return node;
 }
@@ -1013,7 +1051,9 @@ fn ps_null(p: *Parser, t: *Token) -> *Node {
 }
 
 fn ps_paren(p: *Parser) -> *Node {
-    let line = (*ps_advance(p)).line;
+    let paren = ps_advance(p);
+    let line = (*paren).line;
+    let paren_col = (*paren).col;
     let saved = (*p).no_struct_lit;
     (*p).no_struct_lit = false;
     let first = ps_expression(p);
@@ -1030,7 +1070,7 @@ fn ps_paren(p: *Parser) -> *Node {
             ptrvec_push((*tuple).items, ps_expression(p) as *void);
         }
         if (*(*tuple).items).len < 2 {
-            ps_fail_z(p, line, "tuple literals require at least two elements");
+            ps_fail_z(p, line, paren_col, "tuple literals require at least two elements");
         }
         result = tuple;
     }
@@ -1061,16 +1101,19 @@ fn ps_struct_lit(p: *Parser) -> *Node {
 }
 
 fn ps_array_lit(p: *Parser) -> *Node {
-    let line = (*ps_advance(p)).line;
+    let bracket = ps_advance(p);
+    let line = (*bracket).line;
+    let bracket_col = (*bracket).col;
     if ps_at(p, Tok.RBRACKET) {
-        ps_fail_z(p, line, "empty array literal is not allowed");
+        ps_fail_z(p, line, bracket_col, "empty array literal is not allowed");
     }
     let first = ps_expression(p);
     if ps_at(p, Tok.SEMI) {
         ps_advance(p);
         let node = ast_new(NodeKind.ARRAY_REPEAT, line);
+        (*node).col = bracket_col;
         (*node).a = first;
-        (*node).name = ps_text(p, (*ps_expect(p, Tok.INT, "an array repeat count")).text);
+        (*node).name = ps_text(p, (*ps_array_size(p, "an array repeat count")).text);
         ps_expect(p, Tok.RBRACKET, "']'");
         return node;
     }
@@ -1118,6 +1161,9 @@ fn ps_primary(p: *Parser) -> *Node {
         }
         let node = ast_new(node_kind, (*t).line);
         (*node).num = (*t).num;
+        if kind == Tok.CHAR {
+            (*node).col = (*t).col;
+        }
         return node;
     }
     if kind == Tok.NULL {
@@ -1161,23 +1207,23 @@ fn ps_top_level(p: *Parser, program: *Program) {
     let kind = ps_kind(p);
     if kind == Tok.MODULE {
         if (*program).module_name != NO_TEXT || ps_program_has_declarations(program) {
-            ps_fail_z(p, (*ps_peek(p)).line, "module declaration must be the first declaration");
+            ps_fail_at(p, ps_peek(p), "module declaration must be the first declaration");
         }
         (*program).module_name = ps_module_decl(p);
     } else if kind == Tok.IMPORT {
         ptrvec_push((*program).imports, ps_import_decl(p) as *void);
     } else if kind == Tok.PUB {
-        let line = (*ps_advance(p)).line;
+        let keyword = ps_advance(p);
         if !ps_at(p, Tok.FN) {
-            ps_fail_z(p, line, "pub currently applies to function declarations");
+            ps_fail_at(p, keyword, "pub currently applies to function declarations");
         }
         let function = ps_fn_decl(p);
         (*function).flag = true;
         ptrvec_push((*program).funcs, function as *void);
     } else if kind == Tok.RESOURCE {
-        let line = (*ps_advance(p)).line;
+        let keyword = ps_advance(p);
         if !ps_at(p, Tok.STRUCT) {
-            ps_fail_z(p, line, "'resource' must precede a struct declaration");
+            ps_fail_at(p, keyword, "'resource' must precede a struct declaration");
         }
         ptrvec_push((*program).structs, ps_struct_decl(p, true) as *void);
     } else if kind == Tok.STRUCT {

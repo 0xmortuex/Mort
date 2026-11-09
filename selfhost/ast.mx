@@ -38,7 +38,7 @@
 //   VAR              name
 //   UNARY            name=op a=operand
 //   BINARY           name=op a=left b=right
-//   CALL             name items=args names=type_args name_line name_col
+//   CALL             name items=args names=type_args name_line name_col paren_col
 //   CAST             a=expr ty=target_type
 //   TRY, MOVE        a=expr
 //   STRUCT_LIT       name items=fields(STRUCT_LIT_FIELD)
@@ -48,6 +48,10 @@
 //   ARRAY_LIT        items=elements
 //   ARRAY_REPEAT     a=value name=count (canonical decimal digits)
 //   INDEX            a=obj b=index
+//
+// `col` is a source column where the parser records one (LET, the integer and
+// character literals, UNARY, BINARY, ARRAY_REPEAT) and 0 otherwise, as columns
+// start at 1.
 //
 // Type text uses the Python parser's canonical spelling (`i64` for `int`,
 // `*const u8`, `[u8;4]`, `fn(a,b)->c`), so later phases can compare strings as
@@ -81,6 +85,8 @@ struct Node {
     names: *U64Vec,
     name_line: u64,
     name_col: u64,
+    col: u64,
+    paren_col: u64,
 }
 
 fn ast_new(kind: NodeKind, line: u64) -> *Node {
@@ -89,6 +95,7 @@ fn ast_new(kind: NodeKind, line: u64) -> *Node {
         kind: kind, line: line, name: NO_TEXT, ty: NO_TEXT, num: 0, flag: false,
         a: 0 as *Node, b: 0 as *Node, c: 0 as *Node,
         items: 0 as *PtrVec, names: 0 as *U64Vec, name_line: 0, name_col: 0,
+        col: 0, paren_col: 0,
     };
     return node;
 }

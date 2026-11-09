@@ -28,9 +28,10 @@ Only the fields a parse can set are dumped. ``CHECKER_FIELDS`` lists what later
 phases fill in; each is asserted to still hold its initial value, so a parser
 change that sets one fails here instead of going unnoticed.
 
-Python's AST records lines, and a column only in ``Call.name_pos``, so ``line``
-and that field are the only positions dumped. Diagnostics carry a column only
-where the Python front end gives one (the lexer, at this commit).
+Positions are compared wherever the Python AST records them: ``line`` everywhere,
+``col`` on every node class (``none`` where the parser does not set it),
+``Call.paren_col`` and ``Call.name_pos``. Diagnostics carry the same line and
+column as ``MortError.format()``.
 
 Diagnostics: on bad input there is no dump, only the text of the error, which
 must equal what the Mort parser writes to stderr: ``MortError.format()`` with
@@ -55,12 +56,11 @@ sys.path.insert(0, str(HERE))
 import py_lex_dump  # noqa: E402,F401  (lifts the int-string digit limit)
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
-from mort.lexer import Lexer  # noqa: E402
+from mort.lexer import Lexer, decode_source  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 
 
 NESTING_MESSAGE = "source nesting exceeds the compiler safety limit"
-INVALID_UTF8_MESSAGE = "source is not valid UTF-8"
 
 
 @functools.cache
@@ -71,9 +71,6 @@ def max_nesting():
 
 
 BASE_NODE_FIELDS = {"type": None, "is_lit": False, "const_val": None}
-# Diagnostic columns: the Python parser records them on some nodes, the Mort
-# parser on none, and only `line` and `Call.name_pos` are compared positions.
-UNDUMPED_POSITIONS = {"col", "paren_col"}
 
 # Field -> initial value, per class. "=name" means equal to the name field.
 CHECKER_FIELDS = {
@@ -174,8 +171,6 @@ def describe(item):
             skipped.update(BASE_NODE_FIELDS)
         fields = []
         for field, value in vars(item).items():
-            if field in UNDUMPED_POSITIONS:
-                continue
             if field in skipped:
                 check_pristine(item, field, skipped[field])
             else:
@@ -208,7 +203,8 @@ class GuardedParser(Parser):
     def _guarded(self, method):
         self._nesting += 1
         if self._nesting > self._limit:
-            raise MortError(NESTING_MESSAGE, self._peek().line)
+            token = self._peek()
+            raise MortError(NESTING_MESSAGE, token.line, token.col)
         result = method()
         self._nesting -= 1
         return result
@@ -257,12 +253,12 @@ def dump_source(source, filename):
 def dump_file(path):
     """Read a file the way mortc.py does and dump it."""
     filename = str(path)
+    with open(path, "rb") as handle:
+        data = handle.read()
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            source = handle.read()
-    except UnicodeDecodeError:
-        text = f"{filename}: error: {INVALID_UTF8_MESSAGE}"
-        return Result(dump=None, diagnostic=text.encode("utf-8"))
+        source = decode_source(data, filename)
+    except MortError as error:
+        return Result(dump=None, diagnostic=error.format().encode("utf-8"))
     return dump_source(source, filename)
 
 
