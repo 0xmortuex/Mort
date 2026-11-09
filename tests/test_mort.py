@@ -11200,7 +11200,7 @@ _HOSTILE_PROGRAMS = {
 def test_hostile_generic_program_is_rejected_within_the_time_bound(source):
     error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
     assert isinstance(error, MortError), repr(error)
-    assert error.line is not None and error.col is not None, error.format()
+    assert error.line is not None, error.format()
     assert "instantiation" in error.msg or "longer than" in error.msg, error.msg
     assert elapsed < _HOSTILE_SECONDS
 
@@ -11213,7 +11213,6 @@ def test_finite_wide_annotations_keep_compiling():
 
 def test_type_primitives_charge_for_the_text_they_process():
     meter = typechecker_module.WorkMeter()
-    meter.armed = True
     long_tuple = _tuple_of("i64", 200)
     with typechecker_module.charging(meter):
         typechecker_module.tuple_parts(long_tuple)
@@ -11224,16 +11223,15 @@ def test_type_primitives_charge_for_the_text_they_process():
     assert meter.spent > scanned
 
 
-def test_charges_are_ignored_until_a_generic_is_instantiated():
+def test_charges_count_from_the_start_without_any_generic():
     meter = typechecker_module.WorkMeter()
     with typechecker_module.charging(meter):
         typechecker_module.tuple_parts(_tuple_of("i64", 200))
-    assert meter.spent == 0
+    assert meter.spent > 0
 
 
 def test_codegen_primitives_charge_the_same_meter():
     meter = typechecker_module.WorkMeter()
-    meter.armed = True
     with typechecker_module.charging(meter):
         codegen_module._split_type_list(",".join(["i64"] * 200))
     assert meter.spent >= 800 // typechecker_module.WORK_CHARS_PER_UNIT
@@ -11241,7 +11239,6 @@ def test_codegen_primitives_charge_the_same_meter():
 
 def test_exhausted_meter_raises_a_located_instantiation_error():
     meter = typechecker_module.WorkMeter()
-    meter.armed = True
     node = type("Site", (), {"line": 3, "col": 7})()
     meter.locate = lambda: node
     with pytest.raises(MortError) as caught:
@@ -11260,3 +11257,68 @@ def test_constructed_type_length_limit_is_located():
 
 def test_spec_states_the_constructed_type_limit():
     assert "65536 characters" in _spec_text()
+
+
+_ALIAS_TOWER = "type A0 = (i64, i64);\n" + "".join(
+    f"type A{index + 1} = (A{index}, A{index});\n" for index in range(12))
+
+
+@pytest.mark.parametrize("source", [
+    (_ALIAS_TOWER + "fn main() -> int {\n"
+     + "".join(f"  let z{index}: *A12 = null;\n" for index in range(1000))
+     + "  return 0;\n}\n"),
+    (_ALIAS_TOWER + "".join(f"fn f{index}(x: *A12) -> void {{}}\n" for index in range(5000))
+     + "fn main() -> int { return 0; }\n"),
+    (_ALIAS_TOWER + "".join(f"fn f{index}(x: *A12) -> void {{}}\n" for index in range(5000))
+     + "fn g<T>(x: T) -> i64 { return 1; }\n"
+     "fn main() -> int { return g(1) as int; }\n"),
+], ids=["lets", "functions", "functions-and-a-generic"])
+def test_exponential_aliases_stay_under_the_time_bound(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert error is None or isinstance(error, MortError), repr(error)
+    if error is not None:
+        assert error.line is not None, error.format()
+    assert elapsed < _HOSTILE_SECONDS
+
+
+def test_alias_expansion_is_charged_without_generics():
+    source = (_ALIAS_TOWER + "".join(
+        f"fn f{index}(x: A12) -> void {{}}\n" for index in range(5000))
+        + "fn main() -> int { return 0; }\n")
+    error, _ = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert "work units" in error.msg, error.msg
+
+
+def test_plain_bindings_do_not_make_branches_quadratic():
+    body = ("".join(f"  let a{index}: i64 = 1;\n" for index in range(6000))
+            + "  if a0 == 1 { a0; }\n" * 6000)
+    source = "fn main() -> int {\n" + body + "  return 0;\n}\n"
+    error, elapsed = _compile_bounded(source, 30)
+    assert error is None, repr(error)
+    assert elapsed < 30
+
+
+def test_a_limit_diagnostic_does_not_invent_a_column():
+    source = "type A0 = (i64, i64);\n" + "".join(
+        f"type A{index + 1} = (A{index}, A{index});\n" for index in range(40))
+    with pytest.raises(MortError) as caught:
+        c_of(source + "fn main() -> int { return 0; }\n")
+    assert "longer than 65536" in caught.value.msg
+    assert caught.value.line is not None and caught.value.col is None
+
+
+def test_branch_snapshots_skip_bindings_that_never_moved(monkeypatch):
+    sizes = []
+    original = typechecker_module.Checker._move_snapshot
+
+    def recording(self):
+        snapshot = original(self)
+        sizes.append(len(snapshot))
+        return snapshot
+
+    monkeypatch.setattr(typechecker_module.Checker, "_move_snapshot", recording)
+    c_of("fn main() -> int {\n"
+         + "".join(f"  let a{index}: i64 = 1;\n" for index in range(50))
+         + "  if a0 == 1 { a0; }\n" * 50 + "  return 0;\n}\n")
+    assert sizes and max(sizes) == 0

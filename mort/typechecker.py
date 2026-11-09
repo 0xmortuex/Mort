@@ -115,6 +115,10 @@ def _c_mod(a, b):
     return a - _c_div(a, b) * b
 
 
+def _column_of(node):
+    return getattr(node, "paren_col", None) or getattr(node, "col", None)
+
+
 class WorkMeter:
     """The total compile work of one program, in work units.
 
@@ -139,32 +143,36 @@ class WorkMeter:
     most MAX_TYPE_LENGTH bytes each, a fixed number per charged node. Total work
     is therefore proportional to MAX_GENERIC_WORK, whatever the program's shape.
 
-    Charges are ignored until the first generic instantiation, so a program
-    without generics keeps being limited only by its own size.
+    Every program is metered from the start of checking. Types shorter than
+    WORK_CHARS_PER_UNIT cost nothing, so ordinary code spends almost no units.
+    Repeated use of one huge type is interned (validity, alias expansion, C
+    spelling) so that it pays once, not once per use.
     """
 
     def __init__(self):
         self.spent = 0
-        self.armed = False
+        self.instantiated = False
         self.locate = lambda: None
         self.site = None
 
     def spend(self, units):
-        if not self.armed or not units:
+        if not units:
             return
         self.spent += units
         if self.spent > MAX_GENERIC_WORK:
+            subject = "generic instantiation" if self.instantiated else "type processing"
             self.fail(
-                f"generic instantiation exceeds the limit of {MAX_GENERIC_WORK} "
+                f"{subject} exceeds the limit of {MAX_GENERIC_WORK} "
                 "work units in one program")
 
     def fail(self, message):
-        node = self.locate() or self.site
-        line = getattr(node, "line", None)
-        col = getattr(node, "paren_col", None) or getattr(node, "col", None)
-        if line is not None and col is None:
-            col = 1
-        raise MortError(message, line, col, filename=getattr(node, "filename", None))
+        """Report at the nodes on record; a position is never made up."""
+        node = self.locate()
+        if node is None or (_column_of(node) is None and _column_of(self.site) is not None):
+            node = self.site or node
+        raise MortError(
+            message, getattr(node, "line", None), _column_of(node),
+            filename=getattr(node, "filename", None))
 
 
 class _CurrentMeter(threading.local):
@@ -412,7 +420,10 @@ class Checker:
         self.current_node = None  # where a stack overflow is reported
         self.generic_instantiations = 0
         self.work = WorkMeter()
-        self.work.locate = lambda: self.current_node
+        self.work.locate = self._work_location
+        self.current_statement = None  # the statement being checked, if it has a column
+        self.valid_types = set()
+        self.moved_bindings = []  # every binding moved so far in this body
         self.template_sizes = {}
         self.alias_cache = {}
         self.extern_names = set()
@@ -433,14 +444,33 @@ class Checker:
             filename=getattr(node, "filename", None),
         )
 
+    def _work_location(self):
+        """The most specific node being checked that has a real column."""
+        node = self.current_node
+        if _column_of(node) is None and self.current_statement is not None:
+            return self.current_statement
+        return node
+
     def _valid_type(self, t, behind_pointer=False):
         """A type is usable if its (possibly pointed-to / element) base is known.
 
         C spells arrays around the declared name, and codegen only does that
         for a variable or field. An array nested in any other type has no C
         form, except a slice of arrays behind a pointer, which is never laid out.
+
+        Only a True answer is remembered: it cannot later become False, and
+        one huge type used many times is then validated once.
         """
+        key = (t, behind_pointer)
+        if key in self.valid_types:
+            return True
         charge_chars(t)
+        valid = self._check_valid_type(t, behind_pointer)
+        if valid:
+            self.valid_types.add(key)
+        return valid
+
+    def _check_valid_type(self, t, behind_pointer):
         t = self._resolve_alias_type(t)
         if is_ptr(t):
             return pointee(t) == "void" or (
@@ -476,9 +506,10 @@ class Checker:
         Every level of a nested type re-resolves its whole inner type, so
         without the cache a deep type costs cubic time. A resolved name depends
         only on the fixed alias table; `stack` is non-empty only while tracing
-        an alias body for cycles, and those results are not cached.
+        an alias body for cycles. Alias names are cached even then, because a
+        finished expansion has no cycle and repeating it is exponential.
         """
-        if not stack and t in self.alias_cache:
+        if (not stack or t in self.aliases) and t in self.alias_cache:
             return self.alias_cache[t]
         charge_chars(t)
         if t in self.aliases:
@@ -517,7 +548,7 @@ class Checker:
             ) + ">")
         else:
             resolved = t
-        if not stack:
+        if not stack or t in self.aliases:
             self.alias_cache[t] = resolved
         return resolved
 
@@ -720,8 +751,8 @@ class Checker:
         return True
 
     def _charge_instantiation(self, nodes, site):
-        self.work.armed = True
-        if self.work.site is None:
+        self.work.instantiated = True
+        if _column_of(site) is not None:
             self.work.site = site
         self.work.spend(nodes * WORK_UNITS_PER_NODE)
 
@@ -1140,6 +1171,7 @@ class Checker:
             self.current_module = test.module
             self.current_import_aliases = test.import_aliases
             self.scopes = [{}]
+            self.moved_bindings = []
             self.binding_scopes = [{}]
             self.loop_depth = 0
             for statement in test.body.stmts:
@@ -1149,6 +1181,8 @@ class Checker:
         for instance in itertools.islice(self.program.funcs, functions_before_tests, None):
             self._check_fn(instance)
         self.program.work_meter = self.work
+        if self.work.site is None:
+            self.work.site = self.current_node
         return self.program
 
     # ----- scopes -----
@@ -1203,20 +1237,32 @@ class Checker:
                 return scope[name], bindings.get(name)
         return None, None
 
+    def _mark_moved(self, binding):
+        binding["moved"] = True
+        if not binding.get("move_recorded"):
+            binding["move_recorded"] = True
+            self.moved_bindings.append(binding)
+
     def _move_snapshot(self):
+        """Move state of every binding moved so far.
+
+        Only moved bindings can differ between branches, so plain locals cost
+        nothing here; scanning them all made each branch linear in the locals.
+        """
         snapshot = [
-            (binding, binding.get("moved", False))
-            for scope in self.binding_scopes for binding in scope.values()
+            (binding, binding.get("moved", False)) for binding in self.moved_bindings
         ]
         # Each binding is copied here, then restored and merged by the caller,
         # at about four times the cost of scanning one character.
         charge_items(len(snapshot) * 4)
         return snapshot
 
-    @staticmethod
-    def _restore_move_snapshot(snapshot):
+    def _restore_move_snapshot(self, snapshot):
         for binding, moved in snapshot:
             binding["moved"] = moved
+        # Recorded after this snapshot was taken, so unmoved when it was.
+        for binding in self.moved_bindings[len(snapshot):]:
+            binding["moved"] = False
 
     @staticmethod
     def _merge_move_snapshots(*snapshots):
@@ -1240,7 +1286,8 @@ class Checker:
         if typ in seen:
             return False
         seen.add(typ)
-        self.work.spend(1)
+        if is_array(typ) or typ.startswith("(") or typ in self.structs or typ in self.enums:
+            self.work.spend(1)  # only aggregates walk anything
         if is_array(typ):
             element, _ = array_parts(typ)
             return self._needs_drop_type(element, seen)
@@ -1390,6 +1437,7 @@ class Checker:
         self.current_module = f.module
         self.current_import_aliases = f.import_aliases
         self.scopes = [{}]
+        self.moved_bindings = []
         self.binding_scopes = [{}]
         self.loop_depth = 0
         self.block_depth = 0
@@ -1637,6 +1685,7 @@ class Checker:
     # ----- statements -----
     def _check_stmt(self, s):
         self.current_node = s
+        self.current_statement = s if _column_of(s) is not None else None
         if isinstance(s, A.Let):
             if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
@@ -2094,7 +2143,7 @@ class Checker:
                     e,
                 )
             binding["used"] = True
-            binding["moved"] = True
+            self._mark_moved(binding)
             return typ
 
         if isinstance(e, A.Cast):
@@ -3087,5 +3136,5 @@ class Checker:
                 e.destroys_binding = binding_name
                 e.deferred_destroy = self.checking_defer
                 if not self.checking_defer:
-                    binding["moved"] = True
+                    self._mark_moved(binding)
         return ret

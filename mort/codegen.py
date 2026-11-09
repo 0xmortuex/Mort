@@ -241,6 +241,7 @@ class CodeGen:
         self.current_node = None  # where a stack overflow is reported
         self.work = getattr(program, "work_meter", None) or WorkMeter()
         self.work.locate = lambda: self.current_node
+        self.c_types = {}
         with charging(self.work):
             self.slice_types = self._collect_slice_types(program)
             self.tuple_types = self._collect_tuple_types(program)
@@ -285,8 +286,13 @@ class CodeGen:
     def _collect_tuple_types(program):
         found = set()
         seen = set()
+        visited_types = set()
 
         def visit_type(value):
+            # One huge type named by many nodes is walked once.
+            if value in visited_types:
+                return
+            visited_types.add(value)
             charge_chars(value)
             tuple_type = _tuple_parts(value)
             if tuple_type:
@@ -355,8 +361,13 @@ class CodeGen:
         return sorted(found, key=lambda item: (item.count("("), item))
 
     def _ct(self, t):
-        return c_type(
-            t, self.struct_names, self.enum_names, self.payload_enum_names)
+        spelled = self.c_types.get(t)
+        if spelled is None:
+            spelled = c_type(
+                t, self.struct_names, self.enum_names, self.payload_enum_names)
+            self.c_types[t] = spelled
+        charge_chars(spelled)  # every use is written out, even when cached
+        return spelled
 
     _U64_MAX = (1 << 64) - 1
     _I64_MAX = (1 << 63) - 1
@@ -1953,6 +1964,7 @@ class CodeGen:
         return "\n".join(self.lines) + "\n"
 
     def _gen_struct(self, s):
+        self.current_node = s
         self._emit(f"struct mort_{_type_tag(s.name)} {{")
         self.indent += 1
         for fld in s.fields:
@@ -2095,6 +2107,7 @@ class CodeGen:
         return result
 
     def _gen_enum(self, enum):
+        self.current_node = enum
         type_tag = _type_tag(enum.name)
         tag_name = (f"mort_{type_tag}_tag" if enum.name in self.payload_enum_names
                     else f"mort_{type_tag}")
@@ -2119,6 +2132,7 @@ class CodeGen:
             self._emit("};")
 
     def _signature(self, f):
+        self.current_node = f
         if f.params:
             params = ", ".join(
                 self._var_decl(p.typ, "m_" + p.name) for p in f.params)

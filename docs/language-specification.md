@@ -578,8 +578,7 @@ The reference implementation reports a located diagnostic when a program
 exceeds any of these limits:
 
 - A program may create at most 16384 generic function instantiations.
-- Once a program instantiates a generic, compiling it may cost at most 1000000
-  work units in total. Instantiating a function costs 8 units per syntax tree
+- Compiling a program may cost at most 1000000 work units in total. Instantiating a function costs 8 units per syntax tree
   node, and a generic struct or enum 8 units per field or payload plus 8. Each
   operation that scans, copies, substitutes or mangles a type also costs that
   type's length in characters divided by 64 (rounded down), each time it runs,

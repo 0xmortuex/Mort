@@ -71,6 +71,9 @@ def max_nesting():
 
 
 BASE_NODE_FIELDS = {"type": None, "is_lit": False, "const_val": None}
+# Diagnostic columns: the Python parser records them on some nodes, the Mort
+# parser on none, and only `line` and `Call.name_pos` are compared positions.
+UNDUMPED_POSITIONS = {"col", "paren_col"}
 
 # Field -> initial value, per class. "=name" means equal to the name field.
 CHECKER_FIELDS = {
@@ -89,6 +92,7 @@ CHECKER_FIELDS = {
     "Match": {"exhaustive": False},
     "Var": {"resolved_function": None},
     "Binary": {"lowered_name": None},
+    "Unary": {"is_cast_operand": False},
     "Call": {
         "resolved_name": None, "enum_name": None, "enum_variant": None,
         "enum_payload_type": None, "indirect": False,
@@ -170,6 +174,8 @@ def describe(item):
             skipped.update(BASE_NODE_FIELDS)
         fields = []
         for field, value in vars(item).items():
+            if field in UNDUMPED_POSITIONS:
+                continue
             if field in skipped:
                 check_pristine(item, field, skipped[field])
             else:
