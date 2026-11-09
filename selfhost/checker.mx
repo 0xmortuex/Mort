@@ -600,12 +600,12 @@ fn ck_charge_len(c: *Ck, length: u64) {
 }
 
 fn ck_charge_text(c: *Ck, t: u64) {
-    ck_charge_len(c, intern_text((*c).s, t).len);
+    ck_charge_len(c, ts_cp_len(intern_text((*c).s, t)));
 }
 
 // `made_type`: every type the compiler builds is charged and capped.
 fn ck_made(c: *Ck, t: u64) -> u64 {
-    let length = intern_text((*c).s, t).len;
+    let length = ts_cp_len(intern_text((*c).s, t));
     ck_charge_len(c, length);
     if length > MAX_TYPE_LENGTH {
         let msg = m_new();
@@ -638,7 +638,7 @@ fn ck_generic_parts(c: *Ck, t: u64, base: *u64, args: *U64Vec) -> bool {
     let text = intern_text((*c).s, t);
     let cut = ts_find(text, '<');
     if cut != text.len && ts_ends_with(text, '>') {
-        ck_charge_len(c, text.len - cut - 2);
+        ck_charge_len(c, ts_cp_len(ts_sub(text, cut + 1, text.len - 1)));
     }
     return ts_generic_parts((*c).s, t, base, args);
 }
@@ -646,7 +646,7 @@ fn ck_generic_parts(c: *Ck, t: u64, base: *u64, args: *U64Vec) -> bool {
 fn ck_tuple_parts(c: *Ck, t: u64, out: *U64Vec) -> bool {
     let text = intern_text((*c).s, t);
     if ts_starts_with(text, "(") && ts_ends_with(text, ')') {
-        ck_charge_len(c, text.len - 2);
+        ck_charge_len(c, ts_cp_len(ts_sub(text, 1, text.len - 1)));
     }
     return ts_tuple_parts((*c).s, t, out);
 }
@@ -654,7 +654,7 @@ fn ck_tuple_parts(c: *Ck, t: u64, out: *U64Vec) -> bool {
 fn ck_list_chars(c: *Ck, list: *U64Vec) -> u64 {
     let total: u64 = 0;
     for i: u64 in 0..(*list).len {
-        total += intern_text((*c).s, u64vec_get(list, i)).len;
+        total += ts_cp_len(intern_text((*c).s, u64vec_get(list, i)));
     }
     if (*list).len != 0 {
         total += (*list).len - 1;

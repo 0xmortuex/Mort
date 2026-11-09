@@ -1,0 +1,1785 @@
+// C code generator: type text, declarations, drop helpers, the program head and
+// helper selection (PLAN.md, T6 and T7), ported from mort/codegen.py. Statements are
+// in cg_stmt.mx and expressions in cg_expr.mx.
+//
+// Output is built in byte buffers, one for the program head and one for the
+// bodies, so no list of lines is ever held. Everything that Python iterates in
+// insertion order stays in program order here, and the two sorted lists use
+// Python's own keys; no hash table is ever iterated.
+
+import support;
+import ast;
+import typestr;
+import checker;
+import check_expr;
+import check_call;
+import cg_helpers;
+import cg_stmt;
+import bignum;
+import cg_expr;
+
+// `used_*` flags, in the order mort/codegen.py sets them.
+enum CgFlag {
+    INB, OUTB, INW, OUTW, INL, OUTL, PRINTLN, EPRINTLN, PRINT, PRINT_FLOAT, ASSERT,
+    ALLOC, FREE, LEN, BOUNDS, TIME, FILE, ARGS, THREADS, MUTEXES, ATOMICS, NETWORK,
+    SECURE_RANDOM, TLS,
+}
+const CG_FLAG_COUNT: u64 = 24;
+
+// Integer helpers: the operations with one instance per fixed-width type.
+const CG_OP_WRAP: u64 = 0;
+const CG_OP_FLOAT_CAST: u64 = 1;
+const CG_OP_SHL: u64 = 2;
+const CG_OP_SHR: u64 = 3;
+const CG_OP_DIV: u64 = 4;
+const CG_OP_REM: u64 = 5;
+const CG_OP_COUNT: u64 = 6;
+const CG_FIXED_COUNT: u64 = 8;
+
+struct Cg {
+    c: *Ck,
+    s: *Interner,
+    program: *Program,
+    freestanding: bool,
+    test_mode: bool,
+    struct_names: Map,
+    enum_names: Map,
+    payload_enum_names: Map,
+    has_payload_enum: bool,
+    extern_names: Map,
+    cur: *Buf,
+    indent: u64,
+    emitted: u64,
+    c_types: Map,
+    type_tags: Map,
+    slice_types: U64Vec,
+    tuple_types: U64Vec,
+    visited_types: Map,
+    slice_found: Map,
+    tuple_found: Map,
+    flags: *bool,
+    int_helpers: *bool,
+    used_shift_count: bool,
+    strings: PtrVec,
+    match_id: u64,
+    try_id: u64,
+    return_id: u64,
+    range_id: u64,
+    assign_id: u64,
+    index_id: u64,
+    defer_scopes: PtrVec,
+    loop_defer_bases: U64Vec,
+    replayed: u64,
+    fixed_names: U64Vec,
+    t_drop_prefix: u64,
+    // Expression generation (cg_expr.mx).
+    spine: PtrVec,
+    spine_index: PtrVec,
+    live_text: PtrVec,
+    scratch: Buf,
+    array_repeat_bytes: u64,
+    big_repeats: PtrVec,
+    token_mark: *u8,
+    duplicated_text: u64,
+    regen_depth: u64,
+    regen_visits: u64,
+    i64_max: BigInt,
+    i32_max: BigInt,
+    two64: BigInt,
+}
+
+// ----- emitting -----
+
+fn cg_put_indent(g: *Cg) {
+    for i: u64 in 0..(*g).indent {
+        buf_push_z((*g).cur, "    ");
+    }
+}
+
+fn cg_end_line(g: *Cg) {
+    buf_push((*g).cur, 10);
+    (*g).emitted += 1;
+}
+
+fn cg_blank(g: *Cg) {
+    cg_end_line(g);
+}
+
+// `_emit(text)`.
+fn cg_em(g: *Cg, text: *u8) {
+    if text[0] != 0 {
+        cg_put_indent(g);
+        buf_push_z((*g).cur, text);
+    }
+    cg_end_line(g);
+}
+
+fn cg_em_span(g: *Cg, text: Span) {
+    if text.len != 0 {
+        cg_put_indent(g);
+        buf_push_span((*g).cur, text);
+    }
+    cg_end_line(g);
+}
+
+// `_emit` of a line built in a temporary buffer, which is released.
+fn cg_em_buf(g: *Cg, b: *Buf) {
+    cg_em_span(g, buf_span(b));
+    free((*b).data as *void);
+}
+
+fn cg_text(g: *Cg, h: u64) -> Span {
+    return intern_text((*g).s, h);
+}
+
+fn cg_starts(g: *Cg, h: u64, prefix: *u8) -> bool {
+    return ts_starts_with(cg_text(g, h), prefix);
+}
+
+// ----- string helpers -----
+
+// `text.replace(from, to)`, used by `_type_tag`.
+fn cg_replace_into(text: Span, from: *u8, to: *u8) -> Buf {
+    let out = buf_new(text.len + 8);
+    let n = span_z(from).len;
+    let i: u64 = 0;
+    while i < text.len {
+        if i + n <= text.len && ts_starts_with(ts_sub(text, i, text.len), from) {
+            buf_push_z(&out, to);
+            i += n;
+        } else {
+            buf_push(&out, text.data[i]);
+            i += 1;
+        }
+    }
+    return out;
+}
+
+fn cg_step(b: *Buf, from: *u8, to: *u8) -> Buf {
+    let next = cg_replace_into(buf_span(b), from, to);
+    free((*b).data as *void);
+    return next;
+}
+
+// `_type_tag`. Each use is charged; the text is cached because the same type is
+// named many times.
+fn cg_type_tag(g: *Cg, t: u64) -> u64 {
+    ck_charge_text((*g).c, t);
+    let known: u64 = 0;
+    if map_get(&(*g).type_tags, t, &known) {
+        return known;
+    }
+    let b = buf_new(32);
+    buf_push_span(&b, cg_text(g, t));
+    b = cg_step(&b, "->", "_to_");
+    b = cg_step(&b, "*const ", "const_");
+    b = cg_step(&b, "*", "ptr_");
+    b = cg_step(&b, "[]const ", "slice_const_");
+    b = cg_step(&b, "[]", "slice_");
+    b = cg_step(&b, "[", "array_");
+    b = cg_step(&b, "]", "");
+    b = cg_step(&b, ";", "_");
+    b = cg_step(&b, "<", "_");
+    b = cg_step(&b, ">", "");
+    b = cg_step(&b, ",", "_");
+    b = cg_step(&b, "fn(", "function_");
+    b = cg_step(&b, "(", "_");
+    b = cg_step(&b, ")", "");
+    b = cg_step(&b, " ", "_");
+    let tag = ts_take((*g).s, &b);
+    map_put(&(*g).type_tags, t, tag);
+    return tag;
+}
+
+fn cg_tag(g: *Cg, out: *Buf, t: u64) {
+    buf_push_span(out, cg_text(g, cg_type_tag(g, t)));
+}
+
+// `_c_symbol`.
+fn cg_c_symbol(g: *Cg, name: u64) -> u64 {
+    let b = cg_replace_into(cg_text(g, name), ".", "__");
+    let dotted = ts_take((*g).s, &b);
+    return cg_type_tag(g, dotted);
+}
+
+fn cg_sym(g: *Cg, out: *Buf, name: u64) {
+    buf_push_span(out, cg_text(g, cg_c_symbol(g, name)));
+}
+
+fn cg_slice_c_name(g: *Cg, out: *Buf, t: u64) {
+    buf_push_z(out, "struct mort_");
+    cg_tag(g, out, t);
+}
+
+fn cg_tuple_c_name(g: *Cg, out: *Buf, t: u64) {
+    buf_push_z(out, "struct mort_tuple_");
+    cg_tag(g, out, t);
+}
+
+fn cg_drop_c_name(g: *Cg, out: *Buf, t: u64) {
+    buf_push_z(out, "mort_drop_");
+    cg_tag(g, out, t);
+}
+
+// The value part after `$drop$` as an interned type, when the symbol has it.
+fn cg_symbol_is_drop(g: *Cg, symbol: u64) -> bool {
+    return cg_starts(g, symbol, "$drop$");
+}
+
+fn cg_drop_symbol_target(g: *Cg, symbol: u64) -> u64 {
+    let text = cg_text(g, symbol);
+    return ts_sub_h((*g).s, text, 6, text.len);
+}
+
+// ----- C type spelling -----
+
+fn cg_c_base(g: *Cg, t: u64) -> u64 {
+    if map_has(&(*g).struct_names, t) || map_has(&(*g).payload_enum_names, t) {
+        let b = buf_new(64);
+        buf_push_z(&b, "struct mort_");
+        cg_tag(g, &b, t);
+        return ts_take((*g).s, &b);
+    }
+    if map_has(&(*g).enum_names, t) {
+        let b = buf_new(64);
+        buf_push_z(&b, "enum mort_");
+        cg_tag(g, &b, t);
+        return ts_take((*g).s, &b);
+    }
+    let z = intern_text((*g).s, t);
+    let name = "";
+    if span_eq_z(z, "i8") { name = "int8_t"; }
+    else if span_eq_z(z, "i16") { name = "int16_t"; }
+    else if span_eq_z(z, "i32") { name = "int32_t"; }
+    else if span_eq_z(z, "i64") { name = "int64_t"; }
+    else if span_eq_z(z, "u8") { name = "uint8_t"; }
+    else if span_eq_z(z, "u16") { name = "uint16_t"; }
+    else if span_eq_z(z, "u32") { name = "uint32_t"; }
+    else if span_eq_z(z, "u64") { name = "uint64_t"; }
+    else if span_eq_z(z, "bool") { name = "bool"; }
+    else if span_eq_z(z, "void") { name = "void"; }
+    else if span_eq_z(z, "f32") { name = "float"; }
+    else if span_eq_z(z, "f64") { name = "double"; }
+    else if span_eq_z(z, "c_char") { name = "char"; }
+    else if span_eq_z(z, "c_uchar") { name = "unsigned char"; }
+    else if span_eq_z(z, "c_short") { name = "short"; }
+    else if span_eq_z(z, "c_ushort") { name = "unsigned short"; }
+    else if span_eq_z(z, "c_int") { name = "int"; }
+    else if span_eq_z(z, "c_uint") { name = "unsigned int"; }
+    else if span_eq_z(z, "c_long") { name = "long"; }
+    else if span_eq_z(z, "c_ulong") { name = "unsigned long"; }
+    else if span_eq_z(z, "c_size") { name = "size_t"; }
+    if name[0] == 0 {
+        let msg = m_new();
+        m_s(&msg, "mort: internal error: no C type for ");
+        m_t((*g).c, &msg, t);
+        buf_push(&msg, 0);
+        sup_die(msg.data);
+    }
+    return intern_z((*g).s, name);
+}
+
+fn cg_c_nonpointer(g: *Cg, t: u64) -> u64 {
+    let params = u64vec_new();
+    let result: u64 = 0;
+    if ck_function_parts((*g).c, t, &params, &result) {
+        let b = buf_new(64);
+        buf_push_span(&b, cg_text(g, cg_c_type(g, result)));
+        buf_push_z(&b, " (*)(");
+        if params.len == 0 {
+            buf_push_z(&b, "void");
+        }
+        for i: u64 in 0..params.len {
+            if i != 0 {
+                buf_push_z(&b, ", ");
+            }
+            buf_push_span(&b, cg_text(g, cg_c_type(g, u64vec_get(&params, i))));
+        }
+        buf_push(&b, ')');
+        free(params.data as *void);
+        return ts_take((*g).s, &b);
+    }
+    free(params.data as *void);
+    let tuple = u64vec_new();
+    let is_tuple = ck_tuple_parts((*g).c, t, &tuple);
+    free(tuple.data as *void);
+    if is_tuple {
+        let b = buf_new(64);
+        cg_tuple_c_name(g, &b, t);
+        return ts_take((*g).s, &b);
+    }
+    if ts_is_slice((*g).s, t) {
+        let b = buf_new(64);
+        cg_slice_c_name(g, &b, t);
+        return ts_take((*g).s, &b);
+    }
+    return cg_c_base(g, t);
+}
+
+fn cg_ends_star(g: *Cg, h: u64) -> bool {
+    let t = cg_text(g, h);
+    return t.len != 0 && t.data[t.len - 1] == '*';
+}
+
+// `c_type`. Pointer prefixes are peeled in a loop: an alias can spell thousands
+// of `*` in one type, and each level is charged as Python's recursion charges it.
+fn cg_c_type(g: *Cg, t: u64) -> u64 {
+    let c = (*g).c;
+    let prefixes = u64vec_new();
+    let cursor = t;
+    let result: u64 = 0;
+    loop {
+        ck_charge_text(c, cursor);
+        let text = cg_text(g, cursor);
+        if ts_starts_with(text, "*const ") {
+            u64vec_push(&prefixes, 1);
+            cursor = ts_sub_h((*g).s, text, 7, text.len);
+        } else if ts_starts_with(text, "*") {
+            u64vec_push(&prefixes, 2);
+            cursor = ts_sub_h((*g).s, text, 1, text.len);
+        } else {
+            result = cg_c_nonpointer(g, cursor);
+            break;
+        }
+    }
+    let i = prefixes.len;
+    while i > 0 {
+        i -= 1;
+        let b = buf_new(64);
+        if u64vec_get(&prefixes, i) == 2 {
+            buf_push_span(&b, cg_text(g, result));
+            buf_push(&b, '*');
+        } else if cg_ends_star(g, result) {
+            buf_push_span(&b, cg_text(g, result));
+            buf_push_z(&b, " const*");
+        } else {
+            buf_push_z(&b, "const ");
+            buf_push_span(&b, cg_text(g, result));
+            buf_push(&b, '*');
+        }
+        result = ts_take((*g).s, &b);
+    }
+    free(prefixes.data as *void);
+    return result;
+}
+
+// `_ct`: the spelling is cached, and every use is charged because it is written.
+fn cg_ct(g: *Cg, t: u64) -> u64 {
+    let spelled: u64 = 0;
+    if !map_get(&(*g).c_types, t, &spelled) {
+        spelled = cg_c_type(g, t);
+        map_put(&(*g).c_types, t, spelled);
+    }
+    ck_charge_text((*g).c, spelled);
+    return spelled;
+}
+
+fn cg_ct_span(g: *Cg, t: u64) -> Span {
+    return cg_text(g, cg_ct(g, t));
+}
+
+// `_var_decl`. `init` is null for a declaration with no initialiser.
+fn cg_var_decl(g: *Cg, out: *Buf, var_type: u64, cname: Span, init: *Span, binding_const: bool) {
+    let c = (*g).c;
+    let params = u64vec_new();
+    let result: u64 = 0;
+    if ck_function_parts(c, var_type, &params, &result) {
+        buf_push_span(out, cg_ct_span(g, result));
+        buf_push_z(out, " (*");
+        if binding_const {
+            buf_push_z(out, " const");
+        }
+        buf_push(out, ' ');
+        buf_push_span(out, cname);
+        buf_push_z(out, ")(");
+        if params.len == 0 {
+            buf_push_z(out, "void");
+        }
+        for i: u64 in 0..params.len {
+            if i != 0 {
+                buf_push_z(out, ", ");
+            }
+            buf_push_span(out, cg_ct_span(g, u64vec_get(&params, i)));
+        }
+        buf_push(out, ')');
+    } else if ts_is_array((*g).s, var_type) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, var_type, &elem, &count);
+        if ck_is_function(c, elem) {
+            let inner = buf_new(cname.len + 16);
+            buf_push_span(&inner, cname);
+            buf_push(&inner, '[');
+            buf_push_span(&inner, cg_text(g, count));
+            buf_push(&inner, ']');
+            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, binding_const);
+            free(inner.data as *void);
+        } else {
+            if binding_const {
+                buf_push_z(out, "const ");
+            }
+            buf_push_span(out, cg_ct_span(g, elem));
+            buf_push(out, ' ');
+            buf_push_span(out, cname);
+            buf_push(out, '[');
+            buf_push_span(out, cg_text(g, count));
+            buf_push(out, ']');
+        }
+    } else {
+        let spelled = cg_ct(g, var_type);
+        if binding_const && cg_ends_star(g, spelled) {
+            buf_push_span(out, cg_text(g, spelled));
+            buf_push_z(out, " const ");
+            buf_push_span(out, cname);
+        } else {
+            if binding_const {
+                buf_push_z(out, "const ");
+            }
+            buf_push_span(out, cg_text(g, spelled));
+            buf_push(out, ' ');
+            buf_push_span(out, cname);
+        }
+    }
+    free(params.data as *void);
+    if init != (0 as *Span) {
+        buf_push_z(out, " = ");
+        buf_push_span(out, *init);
+    }
+}
+
+fn cg_is_array_shape(g: *Cg, t: u64) -> bool {
+    let text = cg_text(g, t);
+    if !ts_ends_with(text, ']') {
+        return false;
+    }
+    let cut: u64 = 0;
+    let found = false;
+    for i: u64 in 1..text.len - 1 {
+        if text.data[i] == ';' {
+            cut = i;
+            found = true;
+        }
+    }
+    if !found || cut + 1 == text.len - 1 {
+        return false;
+    }
+    for i: u64 in cut + 1..text.len - 1 {
+        if text.data[i] < '0' || text.data[i] > '9' {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ----- slices and tuples -----
+
+// `_collect_tuple_types`' visit_type. Pointer prefixes loop so a long chain of
+// `*` does not recurse.
+fn cg_visit_type(g: *Cg, start: u64) {
+    let c = (*g).c;
+    let s = (*g).s;
+    let value = start;
+    loop {
+        if map_has(&(*g).visited_types, value) {
+            return;
+        }
+        map_put(&(*g).visited_types, value, 1);
+        ck_charge_text(c, value);
+        let tuple = u64vec_new();
+        if ck_tuple_parts(c, value, &tuple) {
+            if !map_has(&(*g).tuple_found, value) {
+                map_put(&(*g).tuple_found, value, 1);
+                u64vec_push(&(*g).tuple_types, value);
+            }
+            for i: u64 in 0..tuple.len {
+                cg_visit_type(g, u64vec_get(&tuple, i));
+            }
+            free(tuple.data as *void);
+            return;
+        }
+        free(tuple.data as *void);
+        let params = u64vec_new();
+        let result: u64 = 0;
+        if ck_function_parts(c, value, &params, &result) {
+            for i: u64 in 0..params.len {
+                cg_visit_type(g, u64vec_get(&params, i));
+            }
+            free(params.data as *void);
+            cg_visit_type(g, result);
+            return;
+        }
+        free(params.data as *void);
+        if ts_is_array(s, value) {
+            if !cg_is_array_shape(g, value) {
+                return;
+            }
+            let elem: u64 = 0;
+            let count: u64 = 0;
+            ck_array_parts(c, value, &elem, &count);
+            value = elem;
+            continue;
+        }
+        if ts_is_slice(s, value) {
+            value = ck_slice_elem(c, value);
+            continue;
+        }
+        if cg_starts(g, value, "*const ") {
+            let text = cg_text(g, value);
+            value = ts_sub_h(s, text, 7, text.len);
+            continue;
+        }
+        if cg_starts(g, value, "*") {
+            let text = cg_text(g, value);
+            value = ts_sub_h(s, text, 1, text.len);
+            continue;
+        }
+        let text = cg_text(g, value);
+        let angle = ts_find(text, '<');
+        if angle != text.len && ts_ends_with(text, '>') {
+            let inner = ts_sub(text, angle + 1, text.len - 1);
+            ck_charge_len(c, ts_cp_len(inner));
+            let items = u64vec_new();
+            ts_split_type_list(s, inner, &items);
+            for i: u64 in 0..items.len {
+                cg_visit_type(g, u64vec_get(&items, i));
+            }
+            free(items.data as *void);
+        }
+        return;
+    }
+}
+
+// `_collect_slice_types`' visit: only a string that is itself a slice counts.
+fn cg_note_slice(g: *Cg, value: u64) {
+    if ts_is_slice((*g).s, value) && !map_has(&(*g).slice_found, value) {
+        map_put(&(*g).slice_found, value, 1);
+        u64vec_push(&(*g).slice_types, value);
+    }
+}
+
+fn cg_note_type(g: *Cg, value: u64) {
+    if value != NO_TEXT {
+        cg_note_slice(g, value);
+        cg_visit_type(g, value);
+    }
+}
+
+fn cg_note_list(g: *Cg, list: *U64Vec) {
+    if list != (0 as *U64Vec) {
+        for i: u64 in 0..(*list).len {
+            cg_note_type(g, u64vec_get(list, i));
+        }
+    }
+}
+
+// `_possible_types`: every string the Python collectors can reach on one node.
+fn cg_note_strings(g: *Cg, n: *Node) {
+    let kind = (*n).kind;
+    if kind != NodeKind.STR_LIT && kind != NodeKind.ASM && kind != NodeKind.TEST_DECL
+            && kind != NodeKind.INT_LIT {
+        cg_note_type(g, (*n).name);
+    }
+    cg_note_type(g, (*n).ty);
+    cg_note_type(g, (*n).etype);
+    cg_note_type(g, (*n).mod_name);
+    cg_note_type(g, (*n).symbol);
+    cg_note_type(g, (*n).resolved_fn);
+    cg_note_list(g, (*n).names);
+    if (*n).facts == (0 as *void) {
+        return;
+    }
+    let f = (*n).facts as *Facts;
+    cg_note_type(g, (*f).var_type);
+    cg_note_type(g, (*f).destructor);
+    cg_note_type(g, (*f).resolved_name);
+    cg_note_type(g, (*f).enum_name);
+    cg_note_type(g, (*f).enum_variant);
+    cg_note_type(g, (*f).enum_payload_type);
+    cg_note_type(g, (*f).destroys_binding);
+    cg_note_type(g, (*f).move_binding);
+    cg_note_type(g, (*f).result_type);
+    cg_note_type(g, (*f).error_type);
+    cg_note_type(g, (*f).return_type);
+    cg_note_type(g, (*f).variant_name);
+    cg_note_type(g, (*f).binding_name);
+    cg_note_type(g, (*f).binding_type);
+    cg_note_list(g, (*f).binding_names);
+    cg_note_list(g, (*f).binding_types);
+    cg_note_list(g, (*f).binding_destructors);
+}
+
+fn cg_collect_from(g: *Cg, list: *PtrVec, skip_generic: bool) {
+    let stack = ptrvec_new();
+    for i: u64 in 0..(*list).len {
+        let root = ast_item(list, i);
+        if skip_generic && ck_names_len((*root).names) != 0 {
+            continue;
+        }
+        ptrvec_push(&stack, root as *void);
+    }
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        cg_note_strings(g, n);
+        ck_push_children(&stack, n);
+    }
+    free(stack.data as *void);
+}
+
+// `count("(")`, the first key of the tuple sort.
+fn cg_paren_count(text: Span) -> u64 {
+    let n: u64 = 0;
+    for i: u64 in 0..text.len {
+        if text.data[i] == '(' {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+fn cg_text_cmp(x: Span, y: Span) -> i64 {
+    let n = x.len;
+    if y.len < n {
+        n = y.len;
+    }
+    for i: u64 in 0..n {
+        if x.data[i] != y.data[i] {
+            if x.data[i] < y.data[i] {
+                return -1;
+            }
+            return 1;
+        }
+    }
+    if x.len < y.len {
+        return -1;
+    }
+    if x.len > y.len {
+        return 1;
+    }
+    return 0;
+}
+
+// Python's `sorted` over strings: by code points, which on valid UTF-8 is the
+// byte order. `by_parens` puts `(count("("), item)` first, as the tuple sort.
+fn cg_before(g: *Cg, a: u64, b: u64, by_parens: bool) -> bool {
+    let x = cg_text(g, a);
+    let y = cg_text(g, b);
+    if by_parens {
+        let px = cg_paren_count(x);
+        let py = cg_paren_count(y);
+        if px != py {
+            return px < py;
+        }
+    }
+    return cg_text_cmp(x, y) < 0;
+}
+
+// A stable merge sort: the input is program-sized.
+fn cg_sort(g: *Cg, list: *U64Vec, by_parens: bool) {
+    let count = (*list).len;
+    let scratch = u64vec_new();
+    for i: u64 in 0..count {
+        u64vec_push(&scratch, 0);
+    }
+    let width: u64 = 1;
+    while width < count {
+        let start: u64 = 0;
+        while start < count {
+            let mid = start + width;
+            if mid > count {
+                mid = count;
+            }
+            let end = start + 2 * width;
+            if end > count {
+                end = count;
+            }
+            let i = start;
+            let j = mid;
+            let at = start;
+            while i < mid || j < end {
+                if j >= end
+                        || (i < mid && !cg_before(g, u64vec_get(list, j), u64vec_get(list, i), by_parens)) {
+                    u64vec_set(&scratch, at, u64vec_get(list, i));
+                    i += 1;
+                } else {
+                    u64vec_set(&scratch, at, u64vec_get(list, j));
+                    j += 1;
+                }
+                at += 1;
+            }
+            start += 2 * width;
+        }
+        for k: u64 in 0..count {
+            u64vec_set(list, k, u64vec_get(&scratch, k));
+        }
+        width = width * 2;
+    }
+    free(scratch.data as *void);
+}
+
+fn cg_collect_aggregate_types(g: *Cg) {
+    let p = (*g).program;
+    // Python walks the two collectors separately over the same lists.
+    cg_collect_from(g, (*p).globals, false);
+    cg_collect_from(g, (*p).structs, true);
+    cg_collect_from(g, (*p).enums, true);
+    cg_collect_from(g, (*p).externs, false);
+    cg_collect_from(g, (*p).funcs, true);
+    cg_collect_from(g, (*p).tests, false);
+    cg_sort(g, &(*g).slice_types, false);
+    cg_sort(g, &(*g).tuple_types, true);
+}
+
+// ----- enums, structs, tuples -----
+
+fn cg_gen_enum(g: *Cg, decl: *Node) {
+    (*(*g).c).current_node = decl;
+    let name = (*decl).name;
+    let has_payload = map_has(&(*g).payload_enum_names, name);
+    let tag = buf_new(32);
+    buf_push_z(&tag, "mort_");
+    cg_tag(g, &tag, name);
+    if has_payload {
+        buf_push_z(&tag, "_tag");
+    }
+    let head = buf_new(64);
+    buf_push_z(&head, "enum ");
+    buf_push_span(&head, buf_span(&tag));
+    buf_push_z(&head, " {");
+    cg_em_buf(g, &head);
+    (*g).indent += 1;
+    let variants = (*decl).items;
+    for i: u64 in 0..ck_items_len(variants) {
+        let b = buf_new(64);
+        buf_push_z(&b, "MORT_");
+        cg_tag(g, &b, name);
+        buf_push(&b, '_');
+        buf_push_span(&b, cg_text(g, (*ast_item(variants, i)).name));
+        buf_push_z(&b, " = ");
+        buf_push_u64(&b, i);
+        if i + 1 < ck_items_len(variants) {
+            buf_push(&b, ',');
+        }
+        cg_em_buf(g, &b);
+    }
+    (*g).indent -= 1;
+    cg_em(g, "};");
+    if has_payload {
+        let open = buf_new(64);
+        buf_push_z(&open, "struct mort_");
+        cg_tag(g, &open, name);
+        buf_push_z(&open, " {");
+        cg_em_buf(g, &open);
+        let tag_line = buf_new(64);
+        buf_push_z(&tag_line, "    enum ");
+        buf_push_span(&tag_line, buf_span(&tag));
+        buf_push_z(&tag_line, " tag;");
+        cg_em_buf(g, &tag_line);
+        let any = false;
+        for i: u64 in 0..ck_items_len(variants) {
+            if (*ast_item(variants, i)).ty != NO_TEXT {
+                any = true;
+            }
+        }
+        if any {
+            cg_em(g, "    union {");
+            for i: u64 in 0..ck_items_len(variants) {
+                let v = ast_item(variants, i);
+                if (*v).ty == NO_TEXT {
+                    continue;
+                }
+                let cname = buf_new(32);
+                buf_push_z(&cname, "v_");
+                buf_push_span(&cname, cg_text(g, (*v).name));
+                let line = buf_new(64);
+                buf_push_z(&line, "        ");
+                cg_var_decl(g, &line, (*v).ty, buf_span(&cname), 0 as *Span, false);
+                buf_push(&line, ';');
+                free(cname.data as *void);
+                cg_em_buf(g, &line);
+            }
+            cg_em(g, "    } data;");
+        }
+        cg_em(g, "};");
+    }
+    free(tag.data as *void);
+}
+
+fn cg_gen_struct(g: *Cg, decl: *Node) {
+    (*(*g).c).current_node = decl;
+    let open = buf_new(64);
+    buf_push_z(&open, "struct mort_");
+    cg_tag(g, &open, (*decl).name);
+    buf_push_z(&open, " {");
+    cg_em_buf(g, &open);
+    (*g).indent += 1;
+    let fields = (*decl).items;
+    for i: u64 in 0..ck_items_len(fields) {
+        let field = ast_item(fields, i);
+        let cname = buf_new(32);
+        buf_push_z(&cname, "f_");
+        buf_push_span(&cname, cg_text(g, (*field).name));
+        let line = buf_new(64);
+        cg_var_decl(g, &line, (*field).ty, buf_span(&cname), 0 as *Span, false);
+        buf_push(&line, ';');
+        free(cname.data as *void);
+        cg_em_buf(g, &line);
+    }
+    (*g).indent -= 1;
+    cg_em(g, "};");
+}
+
+fn cg_gen_tuple(g: *Cg, t: u64) {
+    let open = buf_new(64);
+    cg_tuple_c_name(g, &open, t);
+    buf_push_z(&open, " {");
+    cg_em_buf(g, &open);
+    (*g).indent += 1;
+    let parts = u64vec_new();
+    ck_tuple_parts((*g).c, t, &parts);
+    for i: u64 in 0..parts.len {
+        let cname = buf_new(16);
+        buf_push_z(&cname, "f_");
+        buf_push_u64(&cname, i);
+        let line = buf_new(64);
+        cg_var_decl(g, &line, u64vec_get(&parts, i), buf_span(&cname), 0 as *Span, false);
+        buf_push(&line, ';');
+        free(cname.data as *void);
+        cg_em_buf(g, &line);
+    }
+    free(parts.data as *void);
+    (*g).indent -= 1;
+    cg_em(g, "};");
+}
+
+// ----- definition order -----
+
+enum AggKind { TUPLE, STRUCT, ENUM }
+
+struct Aggregate {
+    kind: AggKind,
+    name: u64,
+    decl: *Node,
+    deps: U64Vec,
+    emitted: bool,
+}
+
+fn cg_agg_key(kind: AggKind, name: u64) -> u64 {
+    return name * 3 + (kind as u64);
+}
+
+// `value_dependency`: at most one aggregate a by-value member names.
+fn cg_value_dep(g: *Cg, start: u64, kind_out: *AggKind) -> bool {
+    let c = (*g).c;
+    let value = start;
+    while ts_is_array((*g).s, value) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, value, &elem, &count);
+        value = elem;
+    }
+    let tuple = u64vec_new();
+    let is_tuple = ck_tuple_parts(c, value, &tuple);
+    free(tuple.data as *void);
+    let found = NO_TEXT;
+    if is_tuple {
+        *kind_out = AggKind.TUPLE;
+        found = value;
+    } else if map_has(&(*g).struct_names, value) {
+        *kind_out = AggKind.STRUCT;
+        found = value;
+    } else if map_has(&(*g).payload_enum_names, value) {
+        *kind_out = AggKind.ENUM;
+        found = value;
+    }
+    return found != NO_TEXT;
+}
+
+fn cg_add_deps(g: *Cg, a: *Aggregate, types: *U64Vec) {
+    for i: u64 in 0..(*types).len {
+        let kind = AggKind.TUPLE;
+        let value = u64vec_get(types, i);
+        let at = value;
+        let found = cg_value_dep_named(g, value, &kind, &at);
+        if found {
+            u64vec_push(&(*a).deps, cg_agg_key(kind, at));
+        }
+    }
+}
+
+fn cg_value_dep_named(g: *Cg, start: u64, kind_out: *AggKind, name_out: *u64) -> bool {
+    let c = (*g).c;
+    let value = start;
+    while ts_is_array((*g).s, value) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, value, &elem, &count);
+        value = elem;
+    }
+    if !cg_value_dep(g, value, kind_out) {
+        return false;
+    }
+    *name_out = value;
+    return true;
+}
+
+fn cg_add_decl_types(g: *Cg, a: *Aggregate, decl: *Node, enum_payloads: bool) {
+    let types = u64vec_new();
+    let items = (*decl).items;
+    for i: u64 in 0..ck_items_len(items) {
+        let v = ast_item(items, i);
+        if !enum_payloads || (*v).ty != NO_TEXT {
+            u64vec_push(&types, (*v).ty);
+        }
+    }
+    cg_add_deps(g, a, &types);
+    free(types.data as *void);
+}
+
+fn cg_new_agg(kind: AggKind, name: u64, decl: *Node) -> *Aggregate {
+    let a = sup_alloc(sizeof<Aggregate>()) as *Aggregate;
+    *a = Aggregate { kind: kind, name: name, decl: decl, deps: u64vec_new(), emitted: false };
+    return a;
+}
+
+// `_aggregate_definition_order`, emitting as it goes.
+fn cg_gen_aggregates(g: *Cg) {
+    let c = (*g).c;
+    let p = (*g).program;
+    let nodes = ptrvec_new();
+    for i: u64 in 0..(*g).tuple_types.len {
+        let t = u64vec_get(&(*g).tuple_types, i);
+        ptrvec_push(&nodes, cg_new_agg(AggKind.TUPLE, t, 0 as *Node) as *void);
+    }
+    for i: u64 in 0..ck_items_len((*p).structs) {
+        let s = ast_item((*p).structs, i);
+        if ck_names_len((*s).names) == 0 {
+            ptrvec_push(&nodes, cg_new_agg(AggKind.STRUCT, (*s).name, s) as *void);
+        }
+    }
+    for i: u64 in 0..ck_items_len((*p).enums) {
+        let e = ast_item((*p).enums, i);
+        if ck_names_len((*e).names) == 0 && map_has(&(*g).payload_enum_names, (*e).name) {
+            ptrvec_push(&nodes, cg_new_agg(AggKind.ENUM, (*e).name, e) as *void);
+        }
+    }
+    for i: u64 in 0..nodes.len {
+        let a = ptrvec_get(&nodes, i) as *Aggregate;
+        if (*a).kind == AggKind.TUPLE {
+            let parts = u64vec_new();
+            ck_tuple_parts(c, (*a).name, &parts);
+            cg_add_deps(g, a, &parts);
+            free(parts.data as *void);
+        } else if (*a).kind == AggKind.STRUCT {
+            cg_add_decl_types(g, a, (*a).decl, false);
+        } else {
+            cg_add_decl_types(g, a, (*a).decl, true);
+        }
+    }
+    let emitted = map_new();
+    let remaining = u64vec_new();
+    for i: u64 in 0..nodes.len {
+        u64vec_push(&remaining, i);
+    }
+    while remaining.len > 0 {
+        ck_charge_len(c, remaining.len);
+        let ready = u64vec_new();
+        for i: u64 in 0..remaining.len {
+            let a = ptrvec_get(&nodes, u64vec_get(&remaining, i)) as *Aggregate;
+            let all = true;
+            for j: u64 in 0..(*a).deps.len {
+                if !map_has(&emitted, u64vec_get(&(*a).deps, j)) {
+                    all = false;
+                }
+            }
+            if all {
+                u64vec_push(&ready, u64vec_get(&remaining, i));
+            }
+        }
+        if ready.len == 0 {
+            u64vec_push(&ready, u64vec_get(&remaining, 0));
+        }
+        for i: u64 in 0..ready.len {
+            let a = ptrvec_get(&nodes, u64vec_get(&ready, i)) as *Aggregate;
+            if (*a).kind == AggKind.TUPLE {
+                cg_gen_tuple(g, (*a).name);
+            } else if (*a).kind == AggKind.STRUCT {
+                cg_gen_struct(g, (*a).decl);
+            } else {
+                cg_gen_enum(g, (*a).decl);
+            }
+            cg_blank(g);
+            (*a).emitted = true;
+            map_put(&emitted, cg_agg_key((*a).kind, (*a).name), 1);
+        }
+        free(ready.data as *void);
+        let keep = u64vec_new();
+        for i: u64 in 0..remaining.len {
+            let a = ptrvec_get(&nodes, u64vec_get(&remaining, i)) as *Aggregate;
+            if !(*a).emitted {
+                u64vec_push(&keep, u64vec_get(&remaining, i));
+            }
+        }
+        free(remaining.data as *void);
+        remaining = keep;
+    }
+    free(remaining.data as *void);
+}
+
+// ----- drop helpers -----
+
+fn cg_drop_call(g: *Cg, typ: u64, address: Span) -> Buf {
+    let symbol = ck_unbox(tb_get(&(*(*g).c).drop_destructors, typ));
+    let b = buf_new(64);
+    if cg_symbol_is_drop(g, symbol) {
+        cg_drop_c_name(g, &b, typ);
+    } else {
+        buf_push_z(&b, "mort_");
+        cg_sym(g, &b, symbol);
+    }
+    buf_push(&b, '(');
+    buf_push_span(&b, address);
+    buf_push_z(&b, ");");
+    return b;
+}
+
+fn cg_drop_signature(g: *Cg, typ: u64) -> Buf {
+    let c = (*g).c;
+    let b = buf_new(64);
+    if ts_is_array((*g).s, typ) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, typ, &elem, &count);
+        buf_push_z(&b, "static void ");
+        cg_drop_c_name(g, &b, typ);
+        buf_push(&b, '(');
+        buf_push_span(&b, cg_ct_span(g, elem));
+        buf_push_z(&b, " (*value)[");
+        buf_push_span(&b, cg_text(g, count));
+        buf_push_z(&b, "])");
+        return b;
+    }
+    buf_push_z(&b, "static void ");
+    cg_drop_c_name(g, &b, typ);
+    buf_push(&b, '(');
+    buf_push_span(&b, cg_ct_span(g, typ));
+    buf_push_z(&b, "* value)");
+    return b;
+}
+
+fn cg_emit_drop_call(g: *Cg, typ: u64, address: Span) {
+    let b = cg_drop_call(g, typ, address);
+    cg_em_buf(g, &b);
+}
+
+fn cg_gen_drop_helper(g: *Cg, typ: u64) {
+    let c = (*g).c;
+    let s = (*g).s;
+    let open = cg_drop_signature(g, typ);
+    buf_push_z(&open, " {");
+    cg_em_buf(g, &open);
+    (*g).indent += 1;
+    let drops = &(*c).drop_destructors;
+    if ts_is_array(s, typ) {
+        let elem: u64 = 0;
+        let count: u64 = 0;
+        ck_array_parts(c, typ, &elem, &count);
+        let head = buf_new(64);
+        buf_push_z(&head, "for (uint64_t i = ");
+        buf_push_span(&head, cg_text(g, count));
+        buf_push_z(&head, "; i > 0; --i) {");
+        cg_em_buf(g, &head);
+        (*g).indent += 1;
+        cg_emit_drop_call(g, elem, span_z("&(*value)[i - 1]"));
+        (*g).indent -= 1;
+        cg_em(g, "}");
+    } else if cx_is_tuple(c, typ) && cx_tuple_len_ok(c, typ) {
+        let parts = u64vec_new();
+        ck_tuple_parts(c, typ, &parts);
+        let i = parts.len;
+        while i > 0 {
+            i -= 1;
+            let element = u64vec_get(&parts, i);
+            if tb_has(drops, element) {
+                let address = buf_new(32);
+                buf_push_z(&address, "&value->f_");
+                buf_push_u64(&address, i);
+                cg_emit_drop_call(g, element, buf_span(&address));
+                free(address.data as *void);
+            }
+        }
+        free(parts.data as *void);
+    } else if map_has(&(*g).struct_names, typ) {
+        ck_charge_len(c, ck_items_len((*(*g).program).structs));
+        let decl = cg_find_decl((*(*g).program).structs, typ);
+        let fields = (*decl).items;
+        let i = ck_items_len(fields);
+        while i > 0 {
+            i -= 1;
+            let field = ast_item(fields, i);
+            if tb_has(drops, (*field).ty) {
+                let address = buf_new(32);
+                buf_push_z(&address, "&value->f_");
+                buf_push_span(&address, cg_text(g, (*field).name));
+                cg_emit_drop_call(g, (*field).ty, buf_span(&address));
+                free(address.data as *void);
+            }
+        }
+    } else if map_has(&(*g).payload_enum_names, typ) {
+        ck_charge_len(c, ck_items_len((*(*g).program).enums));
+        let decl = cg_find_decl((*(*g).program).enums, typ);
+        cg_em(g, "switch (value->tag) {");
+        (*g).indent += 1;
+        let variants = (*decl).items;
+        for i: u64 in 0..ck_items_len(variants) {
+            let v = ast_item(variants, i);
+            if (*v).ty != NO_TEXT && tb_has(drops, (*v).ty) {
+                let head = buf_new(64);
+                buf_push_z(&head, "case MORT_");
+                cg_tag(g, &head, typ);
+                buf_push(&head, '_');
+                buf_push_span(&head, cg_text(g, (*v).name));
+                buf_push(&head, ':');
+                cg_em_buf(g, &head);
+                (*g).indent += 1;
+                let address = buf_new(32);
+                buf_push_z(&address, "&value->data.v_");
+                buf_push_span(&address, cg_text(g, (*v).name));
+                cg_emit_drop_call(g, (*v).ty, buf_span(&address));
+                free(address.data as *void);
+                cg_em(g, "break;");
+                (*g).indent -= 1;
+            }
+        }
+        cg_em(g, "default: break;");
+        (*g).indent -= 1;
+        cg_em(g, "}");
+    }
+    (*g).indent -= 1;
+    cg_em(g, "}");
+}
+
+fn cg_find_decl(list: *PtrVec, name: u64) -> *Node {
+    for i: u64 in 0..(*list).len {
+        let d = ast_item(list, i);
+        if (*d).name == name && ck_names_len((*d).names) == 0 {
+            return d;
+        }
+    }
+    sup_die("mort: internal error: aggregate declaration not found");
+    return 0 as *Node;
+}
+
+// ----- signatures -----
+
+fn cg_append_param(g: *Cg, out: *Buf, p: *Node, index: u64) {
+    if index != 0 {
+        buf_push_z(out, ", ");
+    }
+    let cname = buf_new(32);
+    buf_push_z(&cname, "m_");
+    buf_push_span(&cname, cg_text(g, (*p).name));
+    cg_var_decl(g, out, (*p).ty, buf_span(&cname), 0 as *Span, false);
+    free(cname.data as *void);
+}
+
+fn cg_signature(g: *Cg, f: *Node) -> Buf {
+    (*(*g).c).current_node = f;
+    let params = buf_new(128);
+    let list = (*f).items;
+    if ck_items_len(list) == 0 {
+        buf_push_z(&params, "void");
+    }
+    for i: u64 in 0..ck_items_len(list) {
+        cg_append_param(g, &params, ast_item(list, i), i);
+    }
+    let name = buf_new(128);
+    buf_push_z(&name, "mort_");
+    cg_sym(g, &name, (*f).symbol);
+    buf_push(&name, '(');
+    buf_push_span(&name, buf_span(&params));
+    buf_push(&name, ')');
+    free(params.data as *void);
+    let out = buf_new(128);
+    cg_var_decl(g, &out, (*f).ty, buf_span(&name), 0 as *Span, false);
+    free(name.data as *void);
+    return out;
+}
+
+fn cg_extern_signature(g: *Cg, f: *Node) -> Buf {
+    let params = buf_new(128);
+    let list = (*f).items;
+    if ck_items_len(list) == 0 {
+        buf_push_z(&params, "void");
+    }
+    for i: u64 in 0..ck_items_len(list) {
+        if i != 0 {
+            buf_push_z(&params, ", ");
+        }
+        buf_push_span(&params, cg_ct_span(g, (*ast_item(list, i)).ty));
+    }
+    let name = buf_new(128);
+    buf_push_span(&name, cg_text(g, (*f).name));
+    buf_push(&name, '(');
+    buf_push_span(&name, buf_span(&params));
+    buf_push(&name, ')');
+    free(params.data as *void);
+    let out = buf_new(128);
+    cg_var_decl(g, &out, (*f).ty, buf_span(&name), 0 as *Span, false);
+    free(name.data as *void);
+    return out;
+}
+
+// ----- construction -----
+
+fn cg_fixed_index(g: *Cg, t: u64) -> u64 {
+    for i: u64 in 0..(*g).fixed_names.len {
+        if u64vec_get(&(*g).fixed_names, i) == t {
+            return i;
+        }
+    }
+    return CG_FIXED_COUNT;
+}
+
+fn cg_add_name_set(list: *PtrVec, set: *Map, payload: *Map, has: *bool) {
+    for i: u64 in 0..(*list).len {
+        let d = ast_item(list, i);
+        if ck_names_len((*d).names) != 0 {
+            continue;
+        }
+        map_put(set, (*d).name, 1);
+        if payload != (0 as *Map) {
+            let variants = (*d).items;
+            for j: u64 in 0..ck_items_len(variants) {
+                if (*ast_item(variants, j)).ty != NO_TEXT {
+                    map_put(payload, (*d).name, 1);
+                    *has = true;
+                }
+            }
+        }
+    }
+}
+
+fn cg_new(c: *Ck, program: *Program, freestanding: bool, test_mode: bool) -> Cg {
+    let flags = sup_alloc_array(CG_FLAG_COUNT, sizeof<bool>()) as *bool;
+    for i: u64 in 0..CG_FLAG_COUNT {
+        flags[i] = false;
+    }
+    let ints = sup_alloc_array(CG_OP_COUNT * CG_FIXED_COUNT, sizeof<bool>()) as *bool;
+    for i: u64 in 0..CG_OP_COUNT * CG_FIXED_COUNT {
+        ints[i] = false;
+    }
+    let g = Cg {
+        c: c, s: (*c).s, program: program, freestanding: freestanding, test_mode: test_mode,
+        struct_names: map_new(), enum_names: map_new(), payload_enum_names: map_new(),
+        has_payload_enum: false, extern_names: map_new(),
+        cur: 0 as *Buf, indent: 0, emitted: 0, c_types: map_new(), type_tags: map_new(),
+        slice_types: u64vec_new(), tuple_types: u64vec_new(), visited_types: map_new(),
+        slice_found: map_new(), tuple_found: map_new(),
+        flags: flags, int_helpers: ints, used_shift_count: false, strings: ptrvec_new(),
+        match_id: 0, try_id: 0, return_id: 0, range_id: 0, assign_id: 0, index_id: 0,
+        defer_scopes: ptrvec_new(), loop_defer_bases: u64vec_new(), replayed: 0,
+        fixed_names: u64vec_new(), t_drop_prefix: intern_z((*c).s, "$drop$"),
+        spine: ptrvec_new(), spine_index: ptrvec_new(), live_text: ptrvec_new(),
+        scratch: buf_new(256), array_repeat_bytes: 0, big_repeats: ptrvec_new(),
+        token_mark: sup_alloc(1) as *u8, duplicated_text: 0, regen_depth: 0, regen_visits: 0,
+        i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFF), i32_max: bn_from_u64(0x7FFFFFFF),
+        two64: bn_add(bn_from_u64(0xFFFFFFFFFFFFFFFF), bn_from_u64(1)),
+    };
+    *g.token_mark = CG_TOKEN_BYTE;
+    let names = "i8\0i16\0i32\0i64\0u8\0u16\0u32\0u64\0";
+    let at: u64 = 0;
+    for i: u64 in 0..CG_FIXED_COUNT {
+        let start = at;
+        while names[at] != 0 {
+            at += 1;
+        }
+        u64vec_push(&g.fixed_names, intern((*c).s, Span { data: &names[start], len: at - start }));
+        at += 1;
+    }
+    let unused = false;
+    cg_add_name_set((*program).structs, &g.struct_names, 0 as *Map, &unused);
+    cg_add_name_set((*program).enums, &g.enum_names, &g.payload_enum_names, &g.has_payload_enum);
+    let externs = (*program).externs;
+    for i: u64 in 0..(*externs).len {
+        map_put(&g.extern_names, (*ast_item(externs, i)).name, 1);
+    }
+    return g;
+}
+
+// ----- the program head -----
+
+fn cg_flag(g: *Cg, f: CgFlag) -> bool {
+    return (*g).flags[f as u64];
+}
+
+fn cg_any_failure_helper(g: *Cg) -> bool {
+    if (*g).used_shift_count {
+        return true;
+    }
+    for i: u64 in 0..CG_OP_COUNT * CG_FIXED_COUNT {
+        if (*g).int_helpers[i] {
+            let op = i / CG_FIXED_COUNT;
+            if op == CG_OP_FLOAT_CAST || op == CG_OP_DIV || op == CG_OP_REM {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn cg_emit_includes(g: *Cg) {
+    let threads = cg_flag(g, CgFlag.THREADS);
+    let mutexes = cg_flag(g, CgFlag.MUTEXES);
+    let atomics = cg_flag(g, CgFlag.ATOMICS);
+    let network = cg_flag(g, CgFlag.NETWORK);
+    let secure_random = cg_flag(g, CgFlag.SECURE_RANDOM);
+    cg_em(g, "// Generated by the Mort compiler -- do not edit by hand.");
+    if !(*g).freestanding && (threads || mutexes || network) {
+        cg_em(g, "#ifndef _WIN32");
+        cg_em(g, "#define _POSIX_C_SOURCE 200809L");
+        if threads || mutexes {
+            cg_em(g, "#define MORT_REQUIRES_PTHREAD 1");
+        }
+        cg_em(g, "#endif");
+    }
+    if !(*g).freestanding {
+        cg_em(g, "#include <stdio.h>");
+        if cg_flag(g, CgFlag.ASSERT) || cg_flag(g, CgFlag.ALLOC) || cg_flag(g, CgFlag.FREE)
+                || cg_flag(g, CgFlag.BOUNDS) || cg_flag(g, CgFlag.ARGS)
+                || threads || mutexes || atomics || network
+                || cg_any_failure_helper(g) {
+            cg_em(g, "#include <stdlib.h>");
+        }
+        if cg_flag(g, CgFlag.TIME) {
+            cg_em(g, "#include <time.h>");
+        }
+        if network {
+            cg_em(g, "#ifdef _WIN32");
+            cg_em(g, "#ifndef WIN32_LEAN_AND_MEAN");
+            cg_em(g, "#define WIN32_LEAN_AND_MEAN");
+            cg_em(g, "#endif");
+            cg_em(g, "#define MORT_REQUIRES_WINSOCK 1");
+            cg_em(g, "#include <winsock2.h>");
+            cg_em(g, "#include <ws2tcpip.h>");
+            cg_em(g, "#include <windows.h>");
+            cg_em(g, "#else");
+            cg_em(g, "#include <arpa/inet.h>");
+            cg_em(g, "#include <errno.h>");
+            cg_em(g, "#include <fcntl.h>");
+            cg_em(g, "#include <netdb.h>");
+            cg_em(g, "#include <poll.h>");
+            cg_em(g, "#include <sys/socket.h>");
+            cg_em(g, "#include <unistd.h>");
+            cg_em(g, "#endif");
+        }
+        if secure_random {
+            cg_em(g, "#ifdef _WIN32");
+            cg_em(g, "#define MORT_REQUIRES_BCRYPT 1");
+            cg_em(g, "#include <windows.h>");
+            cg_em(g, "#include <bcrypt.h>");
+            cg_em(g, "#else");
+            cg_em(g, "#include <errno.h>");
+            cg_em(g, "#include <fcntl.h>");
+            cg_em(g, "#include <unistd.h>");
+            cg_em(g, "#endif");
+        }
+        if threads || mutexes {
+            cg_em(g, "#ifdef _WIN32");
+            cg_em(g, "#ifndef WIN32_LEAN_AND_MEAN");
+            cg_em(g, "#define WIN32_LEAN_AND_MEAN");
+            cg_em(g, "#endif");
+            cg_em(g, "#include <windows.h>");
+            cg_em(g, "#else");
+            cg_em(g, "#include <errno.h>");
+            cg_em(g, "#include <pthread.h>");
+            cg_em(g, "#include <time.h>");
+            cg_em(g, "#endif");
+        }
+        if atomics {
+            cg_em(g, "#include <stdatomic.h>");
+        }
+    }
+    cg_em(g, "#include <stdint.h>");
+    cg_em(g, "#include <stdbool.h>");
+    cg_em(g, "#include <stddef.h>");
+    cg_blank(g);
+}
+
+fn cg_emit_tls(g: *Cg) {
+    if !cg_flag(g, CgFlag.TLS) {
+        return;
+    }
+    cg_em(g, "#define MORT_REQUIRES_TLS 1");
+    cg_em(g, "void* mort_tls_client_connect(const uint8_t* hostname, uint16_t port);");
+    cg_em(g, "void* mort_tls_client_connect_with_ca(const uint8_t* hostname, uint16_t port, const uint8_t* ca_data, uint64_t ca_length);");
+    cg_em(g, "int64_t mort_tls_send(void* handle, const uint8_t* buffer, uint64_t length);");
+    cg_em(g, "int64_t mort_tls_recv(void* handle, uint8_t* buffer, uint64_t length);");
+    cg_em(g, "uint16_t mort_tls_protocol_version(void* handle);");
+    cg_em(g, "void mort_tls_close(void* handle);");
+    cg_blank(g);
+}
+
+fn cg_emit_slice_struct(g: *Cg, slice_type: u64) {
+    let elem = ck_slice_elem((*g).c, slice_type);
+    let open = buf_new(64);
+    cg_slice_c_name(g, &open, slice_type);
+    buf_push_z(&open, " {");
+    let field = buf_new(64);
+    buf_push_z(&field, "    ");
+    if ts_is_const_slice((*g).s, slice_type) {
+        buf_push_z(&field, "const ");
+    }
+    buf_push_span(&field, cg_ct_span(g, elem));
+    buf_push_z(&field, "* data;");
+    cg_em_buf(g, &open);
+    cg_em_buf(g, &field);
+    cg_em(g, "    uint64_t length;");
+    cg_em(g, "};");
+    cg_blank(g);
+}
+
+fn cg_emit_types(g: *Cg) {
+    let p = (*g).program;
+    let enums = (*p).enums;
+    for i: u64 in 0..ck_items_len(enums) {
+        let e = ast_item(enums, i);
+        if ck_names_len((*e).names) == 0 && !map_has(&(*g).payload_enum_names, (*e).name) {
+            cg_gen_enum(g, e);
+            cg_blank(g);
+        }
+    }
+    if ck_items_len((*p).structs) != 0 {
+        for i: u64 in 0..ck_items_len((*p).structs) {
+            let d = ast_item((*p).structs, i);
+            if ck_names_len((*d).names) == 0 {
+                let b = buf_new(64);
+                buf_push_z(&b, "struct mort_");
+                cg_tag(g, &b, (*d).name);
+                buf_push(&b, ';');
+                cg_em_buf(g, &b);
+            }
+        }
+        cg_blank(g);
+    }
+    for i: u64 in 0..ck_items_len(enums) {
+        let e = ast_item(enums, i);
+        if ck_names_len((*e).names) == 0 && map_has(&(*g).payload_enum_names, (*e).name) {
+            let b = buf_new(64);
+            buf_push_z(&b, "struct mort_");
+            cg_tag(g, &b, (*e).name);
+            buf_push(&b, ';');
+            cg_em_buf(g, &b);
+        }
+    }
+    if (*g).has_payload_enum {
+        cg_blank(g);
+    }
+    if (*g).tuple_types.len != 0 {
+        for i: u64 in 0..(*g).tuple_types.len {
+            let b = buf_new(64);
+            cg_tuple_c_name(g, &b, u64vec_get(&(*g).tuple_types, i));
+            buf_push(&b, ';');
+            cg_em_buf(g, &b);
+        }
+        cg_blank(g);
+    }
+    for i: u64 in 0..(*g).slice_types.len {
+        cg_emit_slice_struct(g, u64vec_get(&(*g).slice_types, i));
+    }
+    cg_gen_aggregates(g);
+}
+
+fn cg_emit_drops(g: *Cg) {
+    let c = (*g).c;
+    let p = (*g).program;
+    let drops = &(*c).drop_destructors;
+    let generated = u64vec_new();
+    let direct = map_new();
+    for i: u64 in 0..tb_len(drops) {
+        let symbol = ck_unbox(tb_item(drops, i));
+        if cg_symbol_is_drop(g, symbol) {
+            u64vec_push(&generated, tb_key(drops, i));
+        } else {
+            map_put(&direct, symbol, 1);
+        }
+    }
+    if generated.len == 0 {
+        free(generated.data as *void);
+        return;
+    }
+    if map_len(&direct) != 0 {
+        for i: u64 in 0..ck_items_len((*p).funcs) {
+            let f = ast_item((*p).funcs, i);
+            if ck_names_len((*f).names) == 0 && map_has(&direct, (*f).symbol) {
+                let b = cg_signature(g, f);
+                buf_push(&b, ';');
+                cg_em_buf(g, &b);
+            }
+        }
+        cg_blank(g);
+    }
+    for i: u64 in 0..generated.len {
+        let b = cg_drop_signature(g, u64vec_get(&generated, i));
+        buf_push(&b, ';');
+        cg_em_buf(g, &b);
+    }
+    cg_blank(g);
+    for i: u64 in 0..generated.len {
+        cg_gen_drop_helper(g, u64vec_get(&generated, i));
+        cg_blank(g);
+    }
+    free(generated.data as *void);
+}
+
+// String literals live in mutable static storage (their *u8 type is honest).
+fn cg_emit_strings(g: *Cg) {
+    if (*g).strings.len == 0 {
+        return;
+    }
+    // A token: the writer streams the table, which can be most of a program's text.
+    let index = cg_add_big(g, Span { data: 0 as *u8, len: 0 }, 0, 0, CG_BIG_STRINGS);
+    let b = buf_new(32);
+    cg_push_token(g, &b, index);
+    cg_em_buf(g, &b);
+    cg_blank(g);
+}
+
+fn cg_emit_port_helpers(g: *Cg) {
+    if cg_flag(g, CgFlag.OUTB) {
+        cg_em(g, "static inline void mort_outb(uint16_t port, uint8_t val) {");
+        cg_em(g, "    __asm__ volatile (\"outb %0, %1\" : : \"a\"(val), \"Nd\"(port));");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.INB) {
+        cg_em(g, "static inline uint8_t mort_inb(uint16_t port) {");
+        cg_em(g, "    uint8_t ret;");
+        cg_em(g, "    __asm__ volatile (\"inb %1, %0\" : \"=a\"(ret) : \"Nd\"(port));");
+        cg_em(g, "    return ret;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.OUTW) {
+        cg_em(g, "static inline void mort_outw(uint16_t port, uint16_t val) {");
+        cg_em(g, "    __asm__ volatile (\"outw %0, %1\" : : \"a\"(val), \"Nd\"(port));");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.INW) {
+        cg_em(g, "static inline uint16_t mort_inw(uint16_t port) {");
+        cg_em(g, "    uint16_t ret;");
+        cg_em(g, "    __asm__ volatile (\"inw %1, %0\" : \"=a\"(ret) : \"Nd\"(port));");
+        cg_em(g, "    return ret;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.OUTL) {
+        cg_em(g, "static inline void mort_outl(uint16_t port, uint32_t val) {");
+        cg_em(g, "    __asm__ volatile (\"outl %0, %1\" : : \"a\"(val), \"Nd\"(port));");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.INL) {
+        cg_em(g, "static inline uint32_t mort_inl(uint16_t port) {");
+        cg_em(g, "    uint32_t ret;");
+        cg_em(g, "    __asm__ volatile (\"inl %1, %0\" : \"=a\"(ret) : \"Nd\"(port));");
+        cg_em(g, "    return ret;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.INB) || cg_flag(g, CgFlag.OUTB) || cg_flag(g, CgFlag.INW)
+            || cg_flag(g, CgFlag.OUTW) || cg_flag(g, CgFlag.INL) || cg_flag(g, CgFlag.OUTL) {
+        cg_blank(g);
+    }
+}
+
+fn cg_emit_hosted_helpers(g: *Cg) {
+    if (*g).freestanding {
+        return;
+    }
+    if cg_flag(g, CgFlag.PRINT) {
+        cg_em(g, "static void mort_print(int64_t v) { printf(\"%lld\\n\", (long long)v); }");
+    }
+    if cg_flag(g, CgFlag.PRINT_FLOAT) {
+        cg_em(g, "static void mort_print_float(double v) { printf(\"%.17g\\n\", v); }");
+    }
+    if cg_flag(g, CgFlag.PRINTLN) {
+        cg_em(g, "static void mort_println(uint8_t* text) { puts((char*)text); }");
+    }
+    if cg_flag(g, CgFlag.EPRINTLN) {
+        cg_em(g, "static void mort_eprintln(uint8_t* text) { fprintf(stderr, \"%s\\n\", (char*)text); }");
+    }
+    if cg_flag(g, CgFlag.ASSERT) {
+        cg_em(g, "static void mort_assert(bool condition, int64_t line) {");
+        cg_em(g, "    if (!condition) { fprintf(stderr, \"assertion failed at Mort line %lld\\n\", (long long)line); exit(1); }");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.ALLOC) {
+        cg_em(g, "static void* mort_alloc(uint64_t size) { return malloc((size_t)size); }");
+    }
+    if cg_flag(g, CgFlag.FREE) {
+        cg_em(g, "static void mort_free(void* pointer) { free(pointer); }");
+    }
+    if cg_flag(g, CgFlag.LEN) {
+        cg_em(g, "static uint64_t mort_len(uint8_t* text) {");
+        cg_em(g, "    uint64_t length = 0;");
+        cg_em(g, "    while (text[length] != 0) { length++; }");
+        cg_em(g, "    return length;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.BOUNDS) {
+        cg_em(g, "static uint64_t mort_bounds(uint64_t index, uint64_t length, int64_t line) {");
+        cg_em(g, "    if (index >= length) { fprintf(stderr, \"index out of bounds at Mort line %lld\\n\", (long long)line); exit(1); }");
+        cg_em(g, "    return index;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.TIME) {
+        cg_em(g, "static int64_t mort_unix_time(void) { return (int64_t)time(NULL); }");
+        cg_em(g, "static uint64_t mort_cpu_millis(void) {");
+        cg_em(g, "    return ((uint64_t)clock() * 1000ULL) / (uint64_t)CLOCKS_PER_SEC;");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.ARGS) {
+        cg_em(g, "static int mort_argc = 0;");
+        cg_em(g, "static char** mort_argv = NULL;");
+        cg_em(g, "static uint64_t mort_arg_count(void) { return (uint64_t)mort_argc; }");
+        cg_em(g, "static uint8_t* mort_arg_get(uint64_t index, int64_t line) {");
+        cg_em(g, "    if (index >= (uint64_t)mort_argc) { fprintf(stderr, \"argument index out of bounds at Mort line %lld\\n\", (long long)line); exit(1); }");
+        cg_em(g, "    return (uint8_t*)mort_argv[index];");
+        cg_em(g, "}");
+    }
+    if cg_flag(g, CgFlag.FILE) {
+        cg_em(g, "static void* mort_file_open(uint8_t* path, uint8_t* mode) { return (void*)fopen((char*)path, (char*)mode); }");
+        cg_em(g, "static bool mort_file_close(void* handle) { return handle != NULL && fclose((FILE*)handle) == 0; }");
+        cg_em(g, "static uint64_t mort_file_read(void* handle, uint8_t* buffer, uint64_t length) { return (uint64_t)fread(buffer, 1, (size_t)length, (FILE*)handle); }");
+        cg_em(g, "static uint64_t mort_file_write(void* handle, const uint8_t* buffer, uint64_t length) { return (uint64_t)fwrite(buffer, 1, (size_t)length, (FILE*)handle); }");
+        cg_em(g, "static bool mort_file_flush(void* handle) { return handle != NULL && fflush((FILE*)handle) == 0; }");
+    }
+    cg_blank(g);
+}
+
+fn cg_emit_prototypes(g: *Cg) {
+    let p = (*g).program;
+    let externs = (*p).externs;
+    for i: u64 in 0..ck_items_len(externs) {
+        let b = buf_new(128);
+        buf_push_z(&b, "extern ");
+        let sig = cg_extern_signature(g, ast_item(externs, i));
+        buf_push_span(&b, buf_span(&sig));
+        free(sig.data as *void);
+        buf_push(&b, ';');
+        cg_em_buf(g, &b);
+    }
+    for i: u64 in 0..ck_items_len((*p).funcs) {
+        let f = ast_item((*p).funcs, i);
+        if ck_names_len((*f).names) == 0 {
+            let b = cg_signature(g, f);
+            buf_push(&b, ';');
+            cg_em_buf(g, &b);
+        }
+    }
+    cg_blank(g);
+}
+
+// The hosted `main` and the test runner.
+fn cg_emit_main(g: *Cg) {
+    if (*g).freestanding {
+        return;
+    }
+    let args = cg_flag(g, CgFlag.ARGS);
+    let signature = "int main(void)";
+    if args {
+        signature = "int main(int argc, char** argv)";
+    }
+    if (*g).test_mode {
+        let b = buf_new(64);
+        buf_push_z(&b, signature);
+        buf_push_z(&b, " {");
+        cg_em_buf(g, &b);
+        if args {
+            cg_em(g, "    mort_argc = argc; mort_argv = argv;");
+        }
+        let tests = (*(*g).program).tests;
+        for i: u64 in 0..ck_items_len(tests) {
+            let call = buf_new(32);
+            buf_push_z(&call, "    mort_test_");
+            buf_push_u64(&call, i);
+            buf_push_z(&call, "();");
+            cg_em_buf(g, &call);
+        }
+        cg_em(g, "    return 0;");
+        cg_em(g, "}");
+        return;
+    }
+    let b = buf_new(96);
+    buf_push_z(&b, signature);
+    buf_push_z(&b, " { ");
+    if args {
+        buf_push_z(&b, "mort_argc = argc; mort_argv = argv; ");
+    }
+    buf_push_z(&b, "return (int)mort_main(); }");
+    cg_em_buf(g, &b);
+}
+
+// `_generate_program`. Globals and bodies are generated first, so their strings
+// and helper uses are known when the head is written.
+fn cg_generate(g: *Cg) -> Buf {
+    let p = (*g).program;
+    let out = buf_new(65536);
+    let body = buf_new(65536);
+    let globals = ptrvec_new();
+    let global_list = (*p).globals;
+    for i: u64 in 0..ck_items_len(global_list) {
+        let decl = ast_item(global_list, i);
+        let b = buf_new(128);
+        buf_push_z(&b, "static ");
+        let cname = buf_new(32);
+        buf_push_z(&cname, "m_");
+        buf_push_span(&cname, cg_text(g, (*decl).name));
+        let init = cg_expr(g, (*decl).a);
+        cg_var_decl(g, &b, (*((*decl).facts as *Facts)).var_type, buf_span(&cname), &init,
+            !(*decl).flag);
+        buf_push(&b, ';');
+        free(cname.data as *void);
+        cg_release_text(g);
+        let stored = sup_alloc(sizeof<Buf>()) as *Buf;
+        *stored = b;
+        ptrvec_push(&globals, stored as *void);
+    }
+    (*g).cur = &body;
+    let funcs = (*p).funcs;
+    for i: u64 in 0..ck_items_len(funcs) {
+        let f = ast_item(funcs, i);
+        if ck_names_len((*f).names) != 0 {
+            continue;
+        }
+        cg_gen_fn(g, f);
+        cg_blank(g);
+    }
+    if (*g).test_mode {
+        let tests = (*p).tests;
+        for i: u64 in 0..ck_items_len(tests) {
+            cg_gen_test(g, ast_item(tests, i), i);
+            cg_blank(g);
+        }
+    }
+    (*g).cur = &out;
+    cg_emit_includes(g);
+    cg_emit_tls(g);
+    cg_emit_types(g);
+    cg_emit_drops(g);
+    cg_emit_strings(g);
+    cg_emit_port_helpers(g);
+    cg_gen_integer_helpers(g);
+    cg_gen_concurrency_helpers(g);
+    cg_gen_network_helpers(g);
+    cg_gen_secure_random_helpers(g);
+    cg_emit_hosted_helpers(g);
+    cg_emit_prototypes(g);
+    if globals.len != 0 {
+        for i: u64 in 0..globals.len {
+            let b = ptrvec_get(&globals, i) as *Buf;
+            cg_em_span(g, buf_span(b));
+        }
+        cg_blank(g);
+    }
+    // A token, like the string table: the body can be most of the program, and
+    // copying it into `out` would hold it twice.
+    cg_push_token(g, &out, cg_add_big(g, buf_span(&body), 0, 0, CG_BIG_SHARED));
+    cg_emit_main(g);
+    return out;
+}

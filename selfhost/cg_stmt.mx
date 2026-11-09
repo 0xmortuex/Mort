@@ -1,0 +1,844 @@
+// C code generator: statements, deferred cleanup and `try` lowering (PLAN.md, T6).
+// Expressions are in cg_expr.mx; both are ported from mort/codegen.py.
+// A port of mort/codegen.py's _gen_fn, _gen_stmt, _emit_defer_scopes,
+// _prepare_try_expr and _gen_cond.
+//
+// Statements nest only as deep as the parser allows, so they recurse. An
+// expression's left spine has no such bound, so `cg_prepare_try` uses an explicit
+// stack and the try search uses `ck_contains_try`, which is iterative.
+
+import support;
+import ast;
+import typestr;
+import checker;
+import check_expr;
+import check_call;
+import codegen;
+import cg_helpers;
+import cg_expr;
+import cg_cond;
+
+// `REPLAY_UNITS_PER_NODE` and `MAX_DEFER_REPLAY` in mort/typechecker.py.
+const CG_REPLAY_UNITS_PER_NODE: u64 = 32;
+const CG_MAX_DEFER_REPLAY: u64 = 48000000;
+
+// One entry of a defer scope: a resource's liveness-guarded destructor, or a
+// deferred expression.
+struct DeferItem {
+    is_resource: bool,
+    name: u64,
+    destructor: u64,
+    expr: *Node,
+}
+
+// `_gen_cond`; the text rule is in cg_cond.mx.
+fn cg_gen_cond(g: *Cg, e: *Node) -> Span {
+    return cg_strip_cond(cg_expr(g, e));
+}
+
+fn cg_is_signed_count(g: *Cg, t: u64) -> bool {
+    let z = cg_text(g, t);
+    return span_eq_z(z, "i8") || span_eq_z(z, "i16") || span_eq_z(z, "i32")
+        || span_eq_z(z, "i64") || span_eq_z(z, "c_char") || span_eq_z(z, "c_short")
+        || span_eq_z(z, "c_int") || span_eq_z(z, "c_long");
+}
+
+// ----- deferred cleanup -----
+
+fn cg_push_scope(g: *Cg) {
+    let scope = sup_alloc(sizeof<PtrVec>()) as *PtrVec;
+    *scope = ptrvec_new();
+    ptrvec_push(&(*g).defer_scopes, scope as *void);
+}
+
+fn cg_pop_scope(g: *Cg) {
+    let scope = ptrvec_pop(&(*g).defer_scopes) as *PtrVec;
+    free((*scope).data as *void);
+    free(scope as *void);
+}
+
+fn cg_top_scope(g: *Cg) -> *PtrVec {
+    return ptrvec_get(&(*g).defer_scopes, (*g).defer_scopes.len - 1) as *PtrVec;
+}
+
+fn cg_new_item(is_resource: bool, name: u64, destructor: u64, expr: *Node) -> *void {
+    let item = sup_alloc(sizeof<DeferItem>()) as *DeferItem;
+    *item = DeferItem { is_resource: is_resource, name: name, destructor: destructor, expr: expr };
+    return item as *void;
+}
+
+// `bool mort_live_m_x = true;` and the scope entry that drops the value.
+fn cg_declare_resource(g: *Cg, name: u64, destructor: u64) {
+    let b = buf_new(64);
+    buf_push_z(&b, "bool mort_live_m_");
+    buf_push_span(&b, cg_text(g, name));
+    buf_push_z(&b, " = true;");
+    cg_em_buf(g, &b);
+    ptrvec_push(cg_top_scope(g), cg_new_item(true, name, destructor, 0 as *Node));
+}
+
+fn cg_spend_replay(g: *Cg, units: u64, node: *Node) {
+    (*g).replayed += units;
+    if (*g).replayed > CG_MAX_DEFER_REPLAY {
+        let msg = m_new();
+        m_s(&msg, "replaying deferred statements at each exit exceeds the limit of ");
+        m_u(&msg, CG_MAX_DEFER_REPLAY);
+        m_s(&msg, " units of generated code in one program");
+        if node == (0 as *Node) {
+            ck_exit_diag((*g).c, 0, 0, NO_TEXT, buf_span(&msg));
+        }
+        ck_exit_diag((*g).c, (*node).line, ck_column_of(node), (*node).file, buf_span(&msg));
+    }
+}
+
+fn cg_emit_resource_drop(g: *Cg, item: *DeferItem) {
+    let b = buf_new(96);
+    buf_push_z(&b, "if (mort_live_m_");
+    buf_push_span(&b, cg_text(g, (*item).name));
+    buf_push_z(&b, ") { ");
+    let destructor = (*item).destructor;
+    if cg_symbol_is_drop(g, destructor) {
+        cg_drop_c_name(g, &b, cg_drop_symbol_target(g, destructor));
+    } else {
+        buf_push_z(&b, "mort_");
+        cg_sym(g, &b, destructor);
+    }
+    buf_push_z(&b, "(&m_");
+    buf_push_span(&b, cg_text(g, (*item).name));
+    buf_push_z(&b, "); }");
+    cg_em_buf(g, &b);
+}
+
+// `_emit_defer_scopes(start)`: innermost scope first, newest entry first.
+fn cg_emit_defers(g: *Cg, start: u64) {
+    let exit_site = (*(*g).c).current_node;
+    let i = (*g).defer_scopes.len;
+    while i > start {
+        i -= 1;
+        let scope = ptrvec_get(&(*g).defer_scopes, i) as *PtrVec;
+        let j = (*scope).len;
+        while j > 0 {
+            j -= 1;
+            let item = ptrvec_get(scope, j) as *DeferItem;
+            let first_len = (*(*g).cur).len;
+            let first_line = (*g).emitted;
+            let nodes: u64 = 1;
+            if (*item).is_resource {
+                cg_emit_resource_drop(g, item);
+            } else {
+                nodes = cc_ast_size((*item).expr);
+                let b = buf_new(96);
+                buf_push_span(&b, cg_expr(g, (*item).expr));
+                buf_push(&b, ';');
+                cg_em_buf(g, &b);
+            }
+            // Python sums the emitted lines, which do not include their newlines.
+            let text = cg_true_len(g, ts_sub(buf_span((*g).cur), first_len, (*(*g).cur).len))
+                - ((*g).emitted - first_line);
+            cg_spend_replay(g, nodes * CG_REPLAY_UNITS_PER_NODE + text, exit_site);
+        }
+    }
+}
+
+// The `Defer` statement: a deferred destroy takes the binding's cleanup over.
+fn cg_defer_stmt(g: *Cg, s: *Node) {
+    let expr = (*s).a;
+    let f = (*expr).facts as *Facts;
+    if f != (0 as *Facts) && (*expr).kind == NodeKind.CALL && (*f).destroys_binding != NO_TEXT {
+        let binding = (*f).destroys_binding;
+        for k: u64 in 0..(*g).defer_scopes.len {
+            let scope = ptrvec_get(&(*g).defer_scopes, k) as *PtrVec;
+            let kept: u64 = 0;
+            for j: u64 in 0..(*scope).len {
+                let item = ptrvec_get(scope, j) as *DeferItem;
+                if !((*item).is_resource && (*item).name == binding) {
+                    ptrvec_set(scope, kept, item as *void);
+                    kept += 1;
+                }
+            }
+            (*scope).len = kept;
+        }
+    }
+    ptrvec_push(cg_top_scope(g), cg_new_item(false, NO_TEXT, NO_TEXT, expr));
+}
+
+fn cg_block_items(g: *Cg, block: *Node) {
+    let items = (*block).items;
+    for i: u64 in 0..ck_items_len(items) {
+        cg_stmt(g, ast_item(items, i));
+    }
+}
+
+// `_gen_scoped_statements`.
+fn cg_scoped(g: *Cg, block: *Node) {
+    cg_push_scope(g);
+    cg_block_items(g, block);
+    cg_emit_defers(g, (*g).defer_scopes.len - 1);
+    cg_pop_scope(g);
+}
+
+// The body of `while` and `for`, whose scope is also the target of break/continue.
+fn cg_loop_open(g: *Cg) {
+    cg_push_scope(g);
+    u64vec_push(&(*g).loop_defer_bases, (*g).defer_scopes.len - 1);
+}
+
+fn cg_loop_close(g: *Cg) {
+    cg_emit_defers(g, (*g).defer_scopes.len - 1);
+    u64vec_pop(&(*g).loop_defer_bases);
+    cg_pop_scope(g);
+}
+
+fn cg_begin_function(g: *Cg) {
+    (*g).defer_scopes.len = 0;
+    (*g).loop_defer_bases.len = 0;
+    cg_push_scope(g);
+}
+
+fn cg_gen_fn(g: *Cg, f: *Node) {
+    cg_begin_function(g);
+    let open = cg_signature(g, f);
+    buf_push_z(&open, " {");
+    cg_em_buf(g, &open);
+    (*g).indent += 1;
+    let params = (*f).items;
+    for i: u64 in 0..ck_items_len(params) {
+        let p = ast_item(params, i);
+        if (*p).facts != (0 as *void) {
+            let destructor = (*((*p).facts as *Facts)).destructor;
+            if destructor != NO_TEXT {
+                cg_declare_resource(g, (*p).name, destructor);
+            }
+        }
+    }
+    cg_block_items(g, (*f).a);
+    if span_eq_z(cg_text(g, (*f).ty), "void") {
+        cg_emit_defers(g, 0);
+    }
+    (*g).indent -= 1;
+    cg_em(g, "}");
+    cg_pop_scope(g);
+}
+
+fn cg_gen_test(g: *Cg, t: *Node, index: u64) {
+    cg_begin_function(g);
+    let open = buf_new(48);
+    buf_push_z(&open, "static void mort_test_");
+    buf_push_u64(&open, index);
+    buf_push_z(&open, "(void) {");
+    cg_em_buf(g, &open);
+    (*g).indent += 1;
+    cg_block_items(g, (*t).a);
+    cg_emit_defers(g, 0);
+    (*g).indent -= 1;
+    cg_em(g, "}");
+    cg_pop_scope(g);
+}
+
+// ----- `try` lowering -----
+
+fn cg_emit_try_unwrap(g: *Cg, e: *Node) {
+    let f = (*e).facts as *Facts;
+    let try_id = (*g).try_id;
+    (*g).try_id += 1;
+    let temporary = buf_new(32);
+    buf_push_z(&temporary, "mort_try_");
+    buf_push_u64(&temporary, try_id);
+    let name = buf_span(&temporary);
+    let result_tag = cg_text(g, cg_type_tag(g, (*f).result_type));
+    let return_tag = cg_text(g, cg_type_tag(g, (*f).return_type));
+    let first = buf_new(96);
+    buf_push_span(&first, cg_ct_span(g, (*f).result_type));
+    buf_push(&first, ' ');
+    buf_push_span(&first, name);
+    buf_push_z(&first, " = ");
+    buf_push_span(&first, cg_expr(g, (*e).a));
+    buf_push(&first, ';');
+    cg_em_buf(g, &first);
+    let check = buf_new(96);
+    buf_push_z(&check, "if (");
+    buf_push_span(&check, name);
+    buf_push_z(&check, ".tag == MORT_");
+    buf_push_span(&check, result_tag);
+    buf_push_z(&check, "_Err) {");
+    cg_em_buf(g, &check);
+    (*g).indent += 1;
+    cg_emit_defers(g, 0);
+    let ret = buf_new(128);
+    buf_push_z(&ret, "return (struct mort_");
+    buf_push_span(&ret, return_tag);
+    buf_push_z(&ret, "){ .tag = MORT_");
+    buf_push_span(&ret, return_tag);
+    buf_push_z(&ret, "_Err, .data.v_Err = ");
+    buf_push_span(&ret, name);
+    buf_push_z(&ret, ".data.v_Err };");
+    cg_em_buf(g, &ret);
+    (*g).indent -= 1;
+    cg_em(g, "}");
+    let value = buf_new(48);
+    buf_push_z(&value, "mort_try_value_");
+    buf_push_u64(&value, try_id);
+    (*e).num = try_id + 1;
+    let init = buf_new(48);
+    buf_push_span(&init, name);
+    buf_push_z(&init, ".data.v_Ok");
+    let init_span = buf_span(&init);
+    let decl = buf_new(96);
+    cg_var_decl(g, &decl, (*e).etype, buf_span(&value), &init_span, false);
+    buf_push(&decl, ';');
+    cg_em_buf(g, &decl);
+    free(value.data as *void);
+    free(init.data as *void);
+    free(temporary.data as *void);
+}
+
+enum PrepPhase {
+    ENTER, TRY_UNWRAP, BINARY_RIGHT, SHORT_DONE, INDEX_DONE,
+}
+
+struct PrepStack {
+    nodes: PtrVec,
+    phases: U64Vec,
+    temps: U64Vec,
+}
+
+fn cg_prep_push(p: *PrepStack, n: *Node, phase: PrepPhase, temp: u64) {
+    ptrvec_push(&(*p).nodes, n as *void);
+    u64vec_push(&(*p).phases, phase as u64);
+    u64vec_push(&(*p).temps, temp);
+}
+
+fn cg_prep_list(p: *PrepStack, items: *PtrVec, field_values: bool) {
+    let i = ck_items_len(items);
+    while i > 0 {
+        i -= 1;
+        let item = ast_item(items, i);
+        if field_values {
+            item = (*item).a;
+        }
+        cg_prep_push(p, item, PrepPhase.ENTER, 0);
+    }
+}
+
+fn cg_prep_enter(g: *Cg, p: *PrepStack, e: *Node) {
+    let kind = (*e).kind;
+    if kind == NodeKind.TRY {
+        cg_prep_push(p, e, PrepPhase.TRY_UNWRAP, 0);
+        cg_prep_push(p, (*e).a, PrepPhase.ENTER, 0);
+    } else if kind == NodeKind.BINARY {
+        cg_prep_push(p, e, PrepPhase.BINARY_RIGHT, 0);
+        cg_prep_push(p, (*e).a, PrepPhase.ENTER, 0);
+    } else if kind == NodeKind.UNARY || kind == NodeKind.CAST || kind == NodeKind.FIELD_ACCESS
+            || kind == NodeKind.ARRAY_REPEAT {
+        cg_prep_push(p, (*e).a, PrepPhase.ENTER, 0);
+    } else if kind == NodeKind.CALL || kind == NodeKind.TUPLE_LIT || kind == NodeKind.ARRAY_LIT {
+        cg_prep_list(p, (*e).items, false);
+    } else if kind == NodeKind.STRUCT_LIT {
+        cg_prep_list(p, (*e).items, true);
+    } else if kind == NodeKind.INDEX {
+        cg_prep_push(p, e, PrepPhase.INDEX_DONE, 0);
+        cg_prep_push(p, (*e).b, PrepPhase.ENTER, 0);
+        cg_prep_push(p, (*e).a, PrepPhase.ENTER, 0);
+    }
+}
+
+// Once a Binary's left side is prepared: `&&`/`||` with a `try` on the right
+// evaluates it only when needed, in an `if` that assigns a lowered bool.
+fn cg_prep_binary_right(g: *Cg, p: *PrepStack, e: *Node) {
+    let c = (*g).c;
+    let op = (*e).name;
+    if (cx_op_is(c, op, "&&") || cx_op_is(c, op, "||")) && ck_contains_try((*e).b) {
+        let short_id = (*g).try_id;
+        (*g).try_id += 1;
+        (*e).num = short_id + 1;
+        let name = buf_new(32);
+        buf_push_z(&name, "mort_short_");
+        buf_push_u64(&name, short_id);
+        let decl = buf_new(64);
+        buf_push_z(&decl, "bool ");
+        buf_push_span(&decl, buf_span(&name));
+        buf_push_z(&decl, " = ");
+        buf_push_span(&decl, cg_expr(g, (*e).a));
+        buf_push(&decl, ';');
+        cg_em_buf(g, &decl);
+        let open = buf_new(64);
+        buf_push_z(&open, "if (");
+        if cx_op_is(c, op, "||") {
+            buf_push(&open, '!');
+        }
+        buf_push_span(&open, buf_span(&name));
+        buf_push_z(&open, ") {");
+        cg_em_buf(g, &open);
+        (*g).indent += 1;
+        free(name.data as *void);
+        cg_prep_push(p, e, PrepPhase.SHORT_DONE, short_id);
+        cg_prep_push(p, (*e).b, PrepPhase.ENTER, 0);
+        return;
+    }
+    cg_prep_push(p, (*e).b, PrepPhase.ENTER, 0);
+}
+
+fn cg_prep_short_done(g: *Cg, e: *Node, short_id: u64) {
+    let line = buf_new(64);
+    buf_push_z(&line, "mort_short_");
+    buf_push_u64(&line, short_id);
+    buf_push_z(&line, " = ");
+    buf_push_span(&line, cg_expr(g, (*e).b));
+    buf_push(&line, ';');
+    cg_em_buf(g, &line);
+    (*g).indent -= 1;
+    cg_em(g, "}");
+}
+
+fn cg_prep_index_done(g: *Cg, e: *Node) {
+    let obj = (*e).a;
+    if !ts_is_slice((*g).s, (*obj).etype) {
+        return;
+    }
+    let name = buf_new(32);
+    buf_push_z(&name, "mort_index_obj_");
+    buf_push_u64(&name, (*g).index_id);
+    (*e).num = (*g).index_id + 1;
+    (*g).index_id += 1;
+    let init = cg_expr(g, obj);
+    let decl = buf_new(96);
+    cg_var_decl(g, &decl, (*obj).etype, buf_span(&name), &init, false);
+    buf_push(&decl, ';');
+    cg_em_buf(g, &decl);
+    free(name.data as *void);
+}
+
+// `_prepare_try_expr`.
+fn cg_prepare_try(g: *Cg, root: *Node) {
+    let p = PrepStack { nodes: ptrvec_new(), phases: u64vec_new(), temps: u64vec_new() };
+    cg_prep_push(&p, root, PrepPhase.ENTER, 0);
+    while p.nodes.len > 0 {
+        let e = ptrvec_pop(&p.nodes) as *Node;
+        let phase = u64vec_pop(&p.phases);
+        let temp = u64vec_pop(&p.temps);
+        if phase == (PrepPhase.ENTER as u64) {
+            cg_prep_enter(g, &p, e);
+        } else if phase == (PrepPhase.TRY_UNWRAP as u64) {
+            cg_emit_try_unwrap(g, e);
+        } else if phase == (PrepPhase.BINARY_RIGHT as u64) {
+            cg_prep_binary_right(g, &p, e);
+        } else if phase == (PrepPhase.SHORT_DONE as u64) {
+            cg_prep_short_done(g, e, temp);
+        } else {
+            cg_prep_index_done(g, e);
+        }
+    }
+    free(p.nodes.data as *void);
+    free(p.phases.data as *void);
+    free(p.temps.data as *void);
+}
+
+// ----- statements -----
+
+fn cg_let(g: *Cg, s: *Node) {
+    let f = (*s).facts as *Facts;
+    cg_prepare_try(g, (*s).a);
+    let cname = buf_new(32);
+    buf_push_z(&cname, "m_");
+    buf_push_span(&cname, cg_text(g, (*s).name));
+    let init = cg_expr(g, (*s).a);
+    let line = buf_new(96);
+    cg_var_decl(g, &line, (*f).var_type, buf_span(&cname), &init,
+        !(*s).flag && (*f).destructor == NO_TEXT);
+    buf_push(&line, ';');
+    cg_em_buf(g, &line);
+    free(cname.data as *void);
+    if (*f).destructor != NO_TEXT {
+        cg_declare_resource(g, (*s).name, (*f).destructor);
+    }
+}
+
+fn cg_assign(g: *Cg, s: *Node) {
+    let target_node = (*s).a;
+    let value_node = (*s).b;
+    cg_prepare_try(g, target_node);
+    let op = cg_text(g, (*s).name);
+    if span_eq_z(op, "=") {
+        cg_prepare_try(g, value_node);
+        let target = cg_expr(g, target_node);
+        let value = cg_expr(g, value_node);
+        let line = buf_new(96);
+        buf_push_span(&line, target);
+        buf_push_z(&line, " = ");
+        buf_push_span(&line, value);
+        buf_push(&line, ';');
+        cg_em_buf(g, &line);
+        return;
+    }
+    let target = cg_expr(g, target_node);
+    let temp = buf_new(32);
+    buf_push_z(&temp, "mort_assign_");
+    buf_push_u64(&temp, (*g).assign_id);
+    (*g).assign_id += 1;
+    let temp_span = buf_span(&temp);
+    let target_type = (*target_node).etype;
+    let decl = buf_new(96);
+    buf_push_span(&decl, cg_ct_span(g, target_type));
+    buf_push_z(&decl, "* ");
+    buf_push_span(&decl, temp_span);
+    buf_push_z(&decl, " = &(");
+    buf_push_span(&decl, target);
+    buf_push_z(&decl, ");");
+    cg_em_buf(g, &decl);
+    cg_prepare_try(g, value_node);
+    let operation = ts_sub(op, 0, op.len - 1);
+    let right = cg_expr(g, value_node);
+    let star = tx_new(40);
+    tx_app_z(star, "*");
+    tx_app_span(star, temp_span);
+    let value = buf_new(96);
+    if cg_fixed_index(g, target_type) != CG_FIXED_COUNT {
+        if span_eq_z(operation, "<<") || span_eq_z(operation, ">>") {
+            cg_fixed_shift(g, target_type, operation, star, right, (*value_node).etype, (*s).line);
+        } else {
+            cg_fixed_binary(g, target_type, operation, star, right, (*s).line);
+        }
+        buf_push_span(&value, tx_span(star));
+    } else {
+        buf_push_z(&value, "(*");
+        buf_push_span(&value, temp_span);
+        buf_push(&value, ' ');
+        buf_push_span(&value, operation);
+        buf_push(&value, ' ');
+        buf_push_span(&value, right);
+        buf_push(&value, ')');
+    }
+    let line = buf_new(96);
+    buf_push(&line, '*');
+    buf_push_span(&line, temp_span);
+    buf_push_z(&line, " = ");
+    buf_push_span(&line, buf_span(&value));
+    buf_push(&line, ';');
+    cg_em_buf(g, &line);
+    free(value.data as *void);
+    tx_free(star);
+    free(temp.data as *void);
+}
+
+fn cg_return(g: *Cg, s: *Node) {
+    let expr = (*s).a;
+    if expr == (0 as *Node) {
+        cg_emit_defers(g, 0);
+        cg_em(g, "return;");
+        return;
+    }
+    cg_prepare_try(g, expr);
+    let name = buf_new(32);
+    buf_push_z(&name, "mort_return_");
+    buf_push_u64(&name, (*g).return_id);
+    (*g).return_id += 1;
+    let init = cg_expr(g, expr);
+    let decl = buf_new(96);
+    cg_var_decl(g, &decl, (*expr).etype, buf_span(&name), &init, false);
+    buf_push(&decl, ';');
+    cg_em_buf(g, &decl);
+    cg_emit_defers(g, 0);
+    let line = buf_new(48);
+    buf_push_z(&line, "return ");
+    buf_push_span(&line, buf_span(&name));
+    buf_push(&line, ';');
+    cg_em_buf(g, &line);
+    free(name.data as *void);
+}
+
+fn cg_if(g: *Cg, s: *Node) {
+    cg_prepare_try(g, (*s).a);
+    let head = buf_new(96);
+    buf_push_z(&head, "if (");
+    buf_push_span(&head, cg_gen_cond(g, (*s).a));
+    buf_push_z(&head, ") {");
+    cg_em_buf(g, &head);
+    (*g).indent += 1;
+    cg_scoped(g, (*s).b);
+    (*g).indent -= 1;
+    let els = (*s).c;
+    if els == (0 as *Node) {
+        cg_em(g, "}");
+        return;
+    }
+    cg_em(g, "} else {");
+    (*g).indent += 1;
+    if (*els).kind == NodeKind.IF {
+        cg_stmt(g, els);
+    } else {
+        cg_scoped(g, els);
+    }
+    (*g).indent -= 1;
+    cg_em(g, "}");
+}
+
+fn cg_while(g: *Cg, s: *Node) {
+    let cond = (*s).a;
+    let has_try = ck_contains_try(cond);
+    if has_try {
+        cg_em(g, "while (true) {");
+    } else {
+        let head = buf_new(96);
+        buf_push_z(&head, "while (");
+        buf_push_span(&head, cg_gen_cond(g, cond));
+        buf_push_z(&head, ") {");
+        cg_em_buf(g, &head);
+    }
+    (*g).indent += 1;
+    cg_loop_open(g);
+    if has_try {
+        cg_prepare_try(g, cond);
+        let check = buf_new(96);
+        buf_push_z(&check, "if (!(");
+        buf_push_span(&check, cg_gen_cond(g, cond));
+        buf_push_z(&check, ")) { break; }");
+        cg_em_buf(g, &check);
+    }
+    cg_block_items(g, (*s).b);
+    cg_loop_close(g);
+    (*g).indent -= 1;
+    cg_em(g, "}");
+}
+
+fn cg_push_range_name(out: *Buf, stem: *u8, id: u64) {
+    buf_push_z(out, stem);
+    buf_push_u64(out, id);
+}
+
+fn cg_for(g: *Cg, s: *Node) {
+    cg_prepare_try(g, (*s).a);
+    cg_prepare_try(g, (*s).b);
+    let var_type = (*((*s).facts as *Facts)).var_type;
+    let ct = cg_ct_span(g, var_type);
+    let v = cg_text(g, (*s).name);
+    let start = cg_expr(g, (*s).a);
+    let end = cg_expr(g, (*s).b);
+    let id = (*g).range_id;
+    (*g).range_id += 1;
+    cg_em(g, "{");
+    (*g).indent += 1;
+    let l1 = buf_new(96);
+    buf_push_span(&l1, ct);
+    buf_push(&l1, ' ');
+    cg_push_range_name(&l1, "mort_range_start_", id);
+    buf_push_z(&l1, " = ");
+    buf_push_span(&l1, start);
+    buf_push(&l1, ';');
+    cg_em_buf(g, &l1);
+    let l2 = buf_new(96);
+    buf_push_span(&l2, ct);
+    buf_push(&l2, ' ');
+    cg_push_range_name(&l2, "mort_range_end_", id);
+    buf_push_z(&l2, " = ");
+    buf_push_span(&l2, end);
+    buf_push(&l2, ';');
+    cg_em_buf(g, &l2);
+    if (*s).flag {
+        let l3 = buf_new(96);
+        buf_push_span(&l3, ct);
+        buf_push_z(&l3, " m_");
+        buf_push_span(&l3, v);
+        buf_push_z(&l3, " = ");
+        cg_push_range_name(&l3, "mort_range_start_", id);
+        buf_push(&l3, ';');
+        cg_em_buf(g, &l3);
+        let l4 = buf_new(96);
+        buf_push_z(&l4, "bool ");
+        cg_push_range_name(&l4, "mort_range_has_next_", id);
+        buf_push_z(&l4, " = m_");
+        buf_push_span(&l4, v);
+        buf_push_z(&l4, " <= ");
+        cg_push_range_name(&l4, "mort_range_end_", id);
+        buf_push(&l4, ';');
+        cg_em_buf(g, &l4);
+        let l5 = buf_new(160);
+        buf_push_z(&l5, "for (; ");
+        cg_push_range_name(&l5, "mort_range_has_next_", id);
+        buf_push_z(&l5, "; ");
+        cg_push_range_name(&l5, "mort_range_has_next_", id);
+        buf_push_z(&l5, " = m_");
+        buf_push_span(&l5, v);
+        buf_push_z(&l5, " != ");
+        cg_push_range_name(&l5, "mort_range_end_", id);
+        buf_push_z(&l5, ", m_");
+        buf_push_span(&l5, v);
+        buf_push_z(&l5, " = ");
+        cg_push_range_name(&l5, "mort_range_has_next_", id);
+        buf_push_z(&l5, " ? m_");
+        buf_push_span(&l5, v);
+        buf_push_z(&l5, " + 1 : m_");
+        buf_push_span(&l5, v);
+        buf_push_z(&l5, ") {");
+        cg_em_buf(g, &l5);
+    } else {
+        let l3 = buf_new(160);
+        buf_push_z(&l3, "for (");
+        buf_push_span(&l3, ct);
+        buf_push_z(&l3, " m_");
+        buf_push_span(&l3, v);
+        buf_push_z(&l3, " = ");
+        cg_push_range_name(&l3, "mort_range_start_", id);
+        buf_push_z(&l3, "; m_");
+        buf_push_span(&l3, v);
+        buf_push_z(&l3, " < ");
+        cg_push_range_name(&l3, "mort_range_end_", id);
+        buf_push_z(&l3, "; m_");
+        buf_push_span(&l3, v);
+        buf_push_z(&l3, " = m_");
+        buf_push_span(&l3, v);
+        buf_push_z(&l3, " + 1) {");
+        cg_em_buf(g, &l3);
+    }
+    (*g).indent += 1;
+    cg_loop_open(g);
+    cg_block_items(g, (*s).c);
+    cg_loop_close(g);
+    (*g).indent -= 1;
+    cg_em(g, "}");
+    (*g).indent -= 1;
+    cg_em(g, "}");
+}
+
+fn cg_match_arm_bindings(g: *Cg, f: *Facts, temporary: Span) {
+    if f == (0 as *Facts) || (*f).binding_names == (0 as *U64Vec) {
+        return;
+    }
+    for i: u64 in 0..(*(*f).binding_names).len {
+        let name = u64vec_get((*f).binding_names, i);
+        let payload = buf_new(64);
+        buf_push_span(&payload, temporary);
+        buf_push_z(&payload, ".data.v_");
+        buf_push_span(&payload, cg_text(g, (*f).variant_name));
+        if (*f).payload_arity > 1 {
+            buf_push_z(&payload, ".f_");
+            buf_push_u64(&payload, u64vec_get((*f).binding_indices, i));
+        }
+        let cname = buf_new(32);
+        buf_push_z(&cname, "m_");
+        buf_push_span(&cname, cg_text(g, name));
+        let init = buf_span(&payload);
+        let line = buf_new(96);
+        cg_var_decl(g, &line, u64vec_get((*f).binding_types, i), buf_span(&cname), &init, false);
+        buf_push(&line, ';');
+        cg_em_buf(g, &line);
+        free(cname.data as *void);
+        free(payload.data as *void);
+        let destructor = u64vec_get((*f).binding_destructors, i);
+        if destructor != NO_TEXT {
+            cg_declare_resource(g, name, destructor);
+        }
+    }
+}
+
+fn cg_match(g: *Cg, s: *Node) {
+    let subject = (*s).a;
+    cg_prepare_try(g, subject);
+    let id = (*g).match_id;
+    (*g).match_id += 1;
+    let temp = buf_new(32);
+    buf_push_z(&temp, "mort_match_");
+    buf_push_u64(&temp, id);
+    let temporary = buf_span(&temp);
+    cg_em(g, "{");
+    (*g).indent += 1;
+    let init = cg_expr(g, subject);
+    let head = buf_new(96);
+    cg_var_decl(g, &head, (*subject).etype, temporary, &init, false);
+    buf_push(&head, ';');
+    cg_em_buf(g, &head);
+    let exhaustive = (*((*s).facts as *Facts)).exhaustive;
+    let emitted_condition = false;
+    let arms = (*s).items;
+    let count = ck_items_len(arms);
+    for index: u64 in 0..count {
+        let arm = ast_item(arms, index);
+        let f = (*arm).facts as *Facts;
+        if (*arm).a == (0 as *Node) || (exhaustive && index == count - 1) {
+            if emitted_condition {
+                cg_em(g, "else {");
+            } else {
+                cg_em(g, "{");
+            }
+        } else {
+            let line = buf_new(96);
+            if emitted_condition {
+                buf_push_z(&line, "else if (");
+            } else {
+                buf_push_z(&line, "if (");
+            }
+            buf_push_span(&line, temporary);
+            if map_has(&(*g).payload_enum_names, (*subject).etype) {
+                buf_push_z(&line, ".tag == MORT_");
+                cg_tag(g, &line, (*subject).etype);
+                buf_push(&line, '_');
+                buf_push_span(&line, cg_text(g, (*f).variant_name));
+            } else {
+                buf_push_z(&line, " == ");
+                buf_push_span(&line, cg_expr(g, (*arm).a));
+            }
+            buf_push_z(&line, ") {");
+            cg_em_buf(g, &line);
+            emitted_condition = true;
+        }
+        (*g).indent += 1;
+        cg_push_scope(g);
+        cg_match_arm_bindings(g, f, temporary);
+        cg_block_items(g, (*arm).b);
+        cg_emit_defers(g, (*g).defer_scopes.len - 1);
+        cg_pop_scope(g);
+        (*g).indent -= 1;
+        cg_em(g, "}");
+    }
+    (*g).indent -= 1;
+    cg_em(g, "}");
+    free(temp.data as *void);
+}
+
+// `_gen_stmt`.
+fn cg_stmt(g: *Cg, s: *Node) {
+    cg_release_text(g);
+    (*(*g).c).current_node = s;
+    let kind = (*s).kind;
+    if kind == NodeKind.LET {
+        cg_let(g, s);
+    } else if kind == NodeKind.ASSIGN {
+        cg_assign(g, s);
+    } else if kind == NodeKind.ASM {
+        let line = buf_new(96);
+        buf_push_z(&line, "__asm__ volatile (\"");
+        buf_push_span(&line, cg_text(g, (*s).name));
+        buf_push_z(&line, "\");");
+        cg_em_buf(g, &line);
+    } else if kind == NodeKind.RETURN {
+        cg_return(g, s);
+    } else if kind == NodeKind.IF {
+        cg_if(g, s);
+    } else if kind == NodeKind.WHILE {
+        cg_while(g, s);
+    } else if kind == NodeKind.FOR {
+        cg_for(g, s);
+    } else if kind == NodeKind.BLOCK {
+        cg_em(g, "{");
+        (*g).indent += 1;
+        cg_scoped(g, s);
+        (*g).indent -= 1;
+        cg_em(g, "}");
+    } else if kind == NodeKind.EXPR_STMT {
+        cg_prepare_try(g, (*s).a);
+        let line = buf_new(96);
+        buf_push_span(&line, cg_expr(g, (*s).a));
+        buf_push(&line, ';');
+        cg_em_buf(g, &line);
+    } else if kind == NodeKind.BREAK || kind == NodeKind.CONTINUE {
+        cg_emit_defers(g, u64vec_get(&(*g).loop_defer_bases, (*g).loop_defer_bases.len - 1));
+        if kind == NodeKind.BREAK {
+            cg_em(g, "break;");
+        } else {
+            cg_em(g, "continue;");
+        }
+    } else if kind == NodeKind.DEFER {
+        cg_defer_stmt(g, s);
+    } else if kind == NodeKind.MATCH {
+        cg_match(g, s);
+    }
+}

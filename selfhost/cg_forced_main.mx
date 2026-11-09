@@ -1,0 +1,64 @@
+// Test-only variant of cg_main.mx: applies a FORCED file of helper use before
+// generating (see cg_forced.mx). The compiler itself never reads such a file.
+//
+// Usage: cg_forced_main MANIFEST CHECK_OUTPUT C_OUTPUT FORCED
+
+import support;
+import lexer;
+import ast;
+import parser;
+import typestr;
+import bignum;
+import checker;
+import check_expr;
+import check_call;
+import check_dump;
+import ast_dump;
+import manifest;
+import codegen;
+import cg_stmt;
+import cg_helpers;
+import cg_expr;
+import cg_forced;
+
+fn main() -> int {
+    if arg_count() != 5 {
+        eprintln("usage: cg_forced_main MANIFEST CHECK_OUTPUT C_OUTPUT FORCED");
+        return 2;
+    }
+    let strings = intern_new();
+    let manifest = cm_read_manifest(arg_get(1), &strings);
+    let program = program_new();
+    let first_columns = map_new();
+    for i: u64 in 0..manifest.files.len {
+        cm_add_file(ptrvec_get(&manifest.files, i) as *ManifestFile, &strings, &program,
+            &first_columns);
+    }
+    let freestanding = span_eq_z(manifest.mode, "freestanding");
+    let test_mode = span_eq_z(manifest.mode, "test");
+    let checker = ck_new(&strings, &program, arg_get(2), freestanding, test_mode, &first_columns);
+    ck_run(&checker);
+    // Code generation locates a spent budget at its current node alone.
+    checker.current_statement = 0 as *Node;
+    let generator = cg_new(&checker, &program, freestanding, test_mode);
+    cg_collect_aggregate_types(&generator);
+    let forced = cm_read_all(arg_get(4));
+    if forced.cap == 0 {
+        eprintln("cg_forced_main: cannot read the forced file");
+        return 2;
+    }
+    cg_apply_forced(&generator, buf_span(&forced));
+    let output = cg_generate(&generator);
+    let handle = file_open(arg_get(3), "wb");
+    if handle == (0 as *void) {
+        eprintln("cg_forced_main: cannot write the C output");
+        return 2;
+    }
+    let wrote = cg_write_output(&generator, handle, &output);
+    file_close(handle);
+    if !wrote {
+        eprintln("cg_forced_main: cannot write the C output");
+        return 2;
+    }
+    return 0;
+}

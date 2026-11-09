@@ -1,0 +1,59 @@
+// Code generator driver for the differential test (PLAN.md, T6 and T7).
+//
+// Usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT
+//
+// Checks the program as check_main does, then writes its C.
+// Exit status: 0 written, 1 a diagnostic on stderr, 2 usage or I/O failure.
+
+import support;
+import lexer;
+import ast;
+import parser;
+import typestr;
+import bignum;
+import checker;
+import check_expr;
+import check_call;
+import check_dump;
+import ast_dump;
+import manifest;
+import codegen;
+import cg_stmt;
+import cg_helpers;
+import cg_expr;
+
+fn main() -> int {
+    if arg_count() != 4 {
+        eprintln("usage: cg_main MANIFEST CHECK_OUTPUT C_OUTPUT");
+        return 2;
+    }
+    let strings = intern_new();
+    let manifest = cm_read_manifest(arg_get(1), &strings);
+    let program = program_new();
+    let first_columns = map_new();
+    for i: u64 in 0..manifest.files.len {
+        cm_add_file(ptrvec_get(&manifest.files, i) as *ManifestFile, &strings, &program,
+            &first_columns);
+    }
+    let freestanding = span_eq_z(manifest.mode, "freestanding");
+    let test_mode = span_eq_z(manifest.mode, "test");
+    let checker = ck_new(&strings, &program, arg_get(2), freestanding, test_mode, &first_columns);
+    ck_run(&checker);
+    // Code generation locates a spent budget at its current node alone.
+    checker.current_statement = 0 as *Node;
+    let generator = cg_new(&checker, &program, freestanding, test_mode);
+    cg_collect_aggregate_types(&generator);
+    let output = cg_generate(&generator);
+    let handle = file_open(arg_get(3), "wb");
+    if handle == (0 as *void) {
+        eprintln("cg_main: cannot write the C output");
+        return 2;
+    }
+    let wrote = cg_write_output(&generator, handle, &output);
+    file_close(handle);
+    if !wrote {
+        eprintln("cg_main: cannot write the C output");
+        return 2;
+    }
+    return 0;
+}

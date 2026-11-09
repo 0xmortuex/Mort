@@ -57,6 +57,15 @@ Interim: declare the exact C signature (`end: **c_char`).
   by T4, whose reference (`selfhost/py_check_dump.py`) makes that iteration
   insertion-ordered so the comparison is stable.
 
+- `mort/codegen.py` has no bound on two doublings, found while porting `_gen_expr`
+  (T7). A slice `Index` that was not prepared (inside `defer`, or an unprepared `while`
+  condition) writes its object twice, so `s[0][0]...` doubles the text per level; and
+  `slice` and `len` of a slice generate their arguments twice (once discarded), so
+  nested `slice<u8>(...)` calls double the work and the string table per level. A
+  few dozen levels exhaust memory. The Mort generator shares or reuses that text, so
+  it accepts what Python compiles at a sensible size and reports only output that
+  would be enormous (`selfhost/PLAN.md` section 15); Python is not changed here.
+
 Found by the program generator (T2c). None is fixed here; the generator stays
 clear of each one, and says so where it does:
 
