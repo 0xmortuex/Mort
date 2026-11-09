@@ -1,0 +1,299 @@
+// The checked dump (selfhost/py_check_dump.py, `checked_dump`): the whole AST
+// after checking, each node's line followed by ` |` and what the checker set on
+// it, then the drop table, the warnings and the final tables.
+
+import support;
+import ast;
+import bignum;
+import ast_dump;
+import pyrepr;
+import typestr;
+import checker;
+import check_expr;
+
+fn cd_label(out: *Buf, field: *u8) {
+    buf_push(out, ' ');
+    buf_push_z(out, field);
+    buf_push(out, '=');
+}
+
+fn cd_text(c: *Ck, out: *Buf, field: *u8, h: u64) {
+    cd_label(out, field);
+    if h == NO_TEXT {
+        buf_push_z(out, "none");
+    } else {
+        ck_q(c, out, h);
+    }
+}
+
+fn cd_bool(out: *Buf, field: *u8, value: bool) {
+    cd_label(out, field);
+    if value {
+        buf_push_z(out, "true");
+    } else {
+        buf_push_z(out, "false");
+    }
+}
+
+fn cd_names(c: *Ck, out: *Buf, field: *u8, list: *U64Vec) {
+    cd_label(out, field);
+    buf_push(out, '[');
+    if list != (0 as *U64Vec) {
+        for i: u64 in 0..(*list).len {
+            if i != 0 {
+                buf_push(out, ',');
+            }
+            let h = u64vec_get(list, i);
+            if h == NO_TEXT {
+                buf_push_z(out, "none");
+            } else {
+                ck_q(c, out, h);
+            }
+        }
+    }
+    buf_push(out, ']');
+}
+
+fn cd_indices(out: *Buf, field: *u8, list: *U64Vec) {
+    cd_label(out, field);
+    buf_push(out, '[');
+    if list != (0 as *U64Vec) {
+        for i: u64 in 0..(*list).len {
+            if i != 0 {
+                buf_push(out, ',');
+            }
+            buf_push(out, '#');
+            buf_push_u64(out, u64vec_get(list, i));
+        }
+    }
+    buf_push(out, ']');
+}
+
+// `_const_text`: decimal up to 256 bits, otherwise a digest.
+fn cd_const(out: *Buf, value: *BigInt) {
+    cd_label(out, "const_val");
+    if value == (0 as *BigInt) {
+        buf_push_z(out, "none");
+        return;
+    }
+    let bits = bn_bit_length(*value);
+    if bits <= 256 {
+        buf_push_z(out, bn_format(*value));
+        return;
+    }
+    let digest: u64 = 0xcbf29ce484222325;
+    let bytes = (bits + 7) / 8;
+    for i: u64 in 0..bytes {
+        let limb = (*value).limbs[i / 4] as u64;
+        let byte = (limb >> (8 * (i % 4))) & 0xFF;
+        digest = (digest ^ byte) * 0x100000001b3;
+    }
+    buf_push(out, '~');
+    if bn_is_negative(*value) {
+        buf_push(out, '-');
+    }
+    buf_push(out, 'b');
+    buf_push_u64(out, bits);
+    buf_push(out, ':');
+    dump_hex64(out, digest);
+}
+
+fn cd_suffix(c: *Ck, out: *Buf, n: *Node) {
+    let kind = (*n).kind;
+    buf_push_z(out, " |");
+    let is_ast_node = kind != NodeKind.PARAM && kind != NodeKind.STRUCT_FIELD
+        && kind != NodeKind.ENUM_VARIANT && kind != NodeKind.STRUCT_LIT_FIELD;
+    if is_ast_node {
+        cd_text(c, out, "type", (*n).etype);
+        cd_bool(out, "is_lit", (*n).is_lit);
+        cd_const(out, (*n).cv as *BigInt);
+    }
+    let f = (*n).facts as *Facts;
+    let has = f != (0 as *Facts);
+    if kind == NodeKind.STRUCT_DECL {
+        cd_text(c, out, "destructor_symbol", (*n).symbol);
+    } else if kind == NodeKind.FN_DECL {
+        cd_text(c, out, "module", (*n).mod_name);
+        cd_text(c, out, "symbol_name", (*n).symbol);
+    } else if kind == NodeKind.TEST_DECL {
+        cd_text(c, out, "module", (*n).mod_name);
+    } else if kind == NodeKind.PARAM {
+        if has {
+            cd_text(c, out, "destructor_symbol", (*f).destructor);
+        } else {
+            cd_text(c, out, "destructor_symbol", NO_TEXT);
+        }
+    } else if kind == NodeKind.LET {
+        if has {
+            cd_text(c, out, "var_type", (*f).var_type);
+            cd_text(c, out, "destructor_symbol", (*f).destructor);
+        } else {
+            cd_text(c, out, "var_type", NO_TEXT);
+            cd_text(c, out, "destructor_symbol", NO_TEXT);
+        }
+    } else if kind == NodeKind.FOR {
+        if has {
+            cd_text(c, out, "var_type", (*f).var_type);
+        } else {
+            cd_text(c, out, "var_type", NO_TEXT);
+        }
+    } else if kind == NodeKind.MATCH_ARM {
+        cd_arm(c, out, f);
+    } else if kind == NodeKind.MATCH {
+        cd_bool(out, "exhaustive", has && (*f).exhaustive);
+    } else if kind == NodeKind.VAR || kind == NodeKind.FIELD_ACCESS {
+        cd_text(c, out, "resolved_function", (*n).resolved_fn);
+    } else if kind == NodeKind.CALL {
+        cd_call(c, out, f);
+    } else if kind == NodeKind.TRY {
+        cd_try(c, out, f);
+    } else if kind == NodeKind.MOVE {
+        if has {
+            cd_text(c, out, "binding_name", (*f).move_binding);
+            cd_bool(out, "is_resource_move", (*f).is_resource_move);
+        } else {
+            cd_text(c, out, "binding_name", NO_TEXT);
+            cd_label(out, "is_resource_move");
+            buf_push_z(out, "none");
+        }
+    }
+}
+
+fn cd_arm(c: *Ck, out: *Buf, f: *Facts) {
+    if f == (0 as *Facts) {
+        cd_text(c, out, "variant_name", NO_TEXT);
+        cd_text(c, out, "binding_name", NO_TEXT);
+        cd_text(c, out, "binding_type", NO_TEXT);
+        cd_names(c, out, "binding_names", 0 as *U64Vec);
+        cd_names(c, out, "binding_types", 0 as *U64Vec);
+        cd_indices(out, "binding_indices", 0 as *U64Vec);
+        cd_label(out, "payload_arity");
+        buf_push_z(out, "#0");
+        cd_names(c, out, "binding_destructors", 0 as *U64Vec);
+        return;
+    }
+    cd_text(c, out, "variant_name", (*f).variant_name);
+    cd_text(c, out, "binding_name", (*f).binding_name);
+    cd_text(c, out, "binding_type", (*f).binding_type);
+    cd_names(c, out, "binding_names", (*f).binding_names);
+    cd_names(c, out, "binding_types", (*f).binding_types);
+    cd_indices(out, "binding_indices", (*f).binding_indices);
+    cd_label(out, "payload_arity");
+    buf_push(out, '#');
+    buf_push_u64(out, (*f).payload_arity);
+    cd_names(c, out, "binding_destructors", (*f).binding_destructors);
+}
+
+fn cd_call(c: *Ck, out: *Buf, f: *Facts) {
+    if f == (0 as *Facts) {
+        cd_text(c, out, "resolved_name", NO_TEXT);
+        cd_text(c, out, "enum_name", NO_TEXT);
+        cd_text(c, out, "enum_variant", NO_TEXT);
+        cd_text(c, out, "enum_payload_type", NO_TEXT);
+        cd_bool(out, "indirect", false);
+        cd_text(c, out, "destroys_binding", NO_TEXT);
+        cd_label(out, "deferred_destroy");
+        buf_push_z(out, "none");
+        return;
+    }
+    cd_text(c, out, "resolved_name", (*f).resolved_name);
+    cd_text(c, out, "enum_name", (*f).enum_name);
+    cd_text(c, out, "enum_variant", (*f).enum_variant);
+    cd_text(c, out, "enum_payload_type", (*f).enum_payload_type);
+    cd_bool(out, "indirect", (*f).indirect);
+    cd_text(c, out, "destroys_binding", (*f).destroys_binding);
+    if (*f).destroys_binding == NO_TEXT {
+        cd_label(out, "deferred_destroy");
+        buf_push_z(out, "none");
+    } else {
+        cd_bool(out, "deferred_destroy", (*f).deferred_destroy);
+    }
+}
+
+fn cd_try(c: *Ck, out: *Buf, f: *Facts) {
+    if f == (0 as *Facts) {
+        cd_text(c, out, "result_type", NO_TEXT);
+        cd_text(c, out, "error_type", NO_TEXT);
+        cd_text(c, out, "return_type", NO_TEXT);
+        return;
+    }
+    cd_text(c, out, "result_type", (*f).result_type);
+    cd_text(c, out, "error_type", (*f).error_type);
+    cd_text(c, out, "return_type", (*f).return_type);
+}
+
+// The drop table, warnings and the tables as they stand now.
+fn cd_final(c: *Ck, out: *Buf) {
+    buf_push_z(out, "--final--\n");
+    let drops = &(*c).drop_destructors;
+    for i: u64 in 0..tb_len(drops) {
+        buf_push_z(out, "drop ");
+        ck_q(c, out, tb_key(drops, i));
+        buf_push(out, ' ');
+        ck_q(c, out, ck_unbox(tb_item(drops, i)));
+        buf_push(out, 10);
+    }
+    for i: u64 in 0..(*c).warnings.len {
+        let b = ptrvec_get(&(*c).warnings, i) as *Binding;
+        buf_push_z(out, "warning ");
+        ck_q(c, out, (*c).k_warn_code);
+        buf_push(out, ' ');
+        buf_push_u64(out, (*b).bline);
+        buf_push(out, ' ');
+        if (*(*b).bnode).file != NO_TEXT {
+            ck_q(c, out, (*(*b).bnode).file);
+        } else {
+            buf_push_z(out, "\"\"");
+        }
+        buf_push(out, ' ');
+        let msg = m_new();
+        m_s(&msg, "unused ");
+        m_t(c, &msg, (*b).bkind);
+        m_s(&msg, " ");
+        m_r(c, &msg, (*b).bname);
+        let text = intern((*c).s, buf_span(&msg));
+        ck_q(c, out, text);
+        buf_push(out, 10);
+    }
+    let saved = (*c).tables;
+    (*c).tables = buf_new(4096);
+    ck_dump_tables(c);
+    buf_push_span(out, buf_span(&(*c).tables));
+    (*c).tables = saved;
+}
+
+fn cd_write(c: *Ck) {
+    let out = buf_new(65536);
+    let dumper = Dumper {
+        out: &out, strings: (*c).s, stack: ptrvec_new(), pending: ptrvec_new(),
+    };
+    let program = (*c).program;
+    ad_program_line(&dumper, program);
+    let k = dumper.pending.len;
+    while k > 0 {
+        k -= 1;
+        ptrvec_push(&dumper.stack, ptrvec_get(&dumper.pending, k));
+    }
+    buf_push_z(&out, "");
+    while dumper.stack.len > 0 {
+        let n = ptrvec_pop(&dumper.stack) as *Node;
+        dumper.pending.len = 0;
+        if !ad_decl(&dumper, n) && !ad_stmt(&dumper, n) {
+            ad_expr(&dumper, n);
+        }
+        cd_suffix(c, &out, n);
+        buf_push(&out, 10);
+        let j = dumper.pending.len;
+        while j > 0 {
+            j -= 1;
+            ptrvec_push(&dumper.stack, ptrvec_get(&dumper.pending, j));
+        }
+    }
+    cd_final(c, &out);
+    let handle = file_open((*c).checked_path, "wb");
+    if handle == (0 as *void) {
+        sup_die("check_main: cannot write the checked dump");
+    }
+    file_write(handle, out.data, out.len);
+    file_close(handle);
+}

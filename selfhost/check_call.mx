@@ -1,0 +1,1250 @@
+// Checker, part 2: calls (PLAN.md, task T5).
+//
+// _infer_call, generic inference and instantiation, and every builtin's rules,
+// grouped so that no frame on the recursive path over nested calls gets large.
+// Messages are kept word for word: they are compared with the Python checker's.
+
+import support;
+import ast;
+import pyrepr;
+import typestr;
+import bignum;
+import checker;
+import check_expr;
+
+const MAX_FUNCTION_TEMPLATE_NAME_DEPTH: u64 = 0;
+
+// ----- generic functions -----
+
+fn cc_copy_node(n: *Node) -> *Node {
+    let copy = sup_alloc(sizeof<Node>()) as *Node;
+    *copy = *n;
+    if (*n).items != (0 as *PtrVec) {
+        (*copy).items = ast_new_items();
+        for i: u64 in 0..(*(*n).items).len {
+            ptrvec_push((*copy).items, ptrvec_get((*n).items, i));
+        }
+    }
+    if (*n).names != (0 as *U64Vec) {
+        (*copy).names = ast_new_names();
+        for i: u64 in 0..(*(*n).names).len {
+            u64vec_push((*copy).names, u64vec_get((*n).names, i));
+        }
+    }
+    return copy;
+}
+
+// copy.deepcopy(template), iterative for the same reason as everything else.
+fn cc_deep_copy(root: *Node) -> *Node {
+    let result = cc_copy_node(root);
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, result as *void);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        if (*n).a != (0 as *Node) {
+            (*n).a = cc_copy_node((*n).a);
+            ptrvec_push(&stack, (*n).a as *void);
+        }
+        if (*n).b != (0 as *Node) {
+            (*n).b = cc_copy_node((*n).b);
+            ptrvec_push(&stack, (*n).b as *void);
+        }
+        if (*n).c != (0 as *Node) {
+            (*n).c = cc_copy_node((*n).c);
+            ptrvec_push(&stack, (*n).c as *void);
+        }
+        if (*n).items != (0 as *PtrVec) {
+            for i: u64 in 0..(*(*n).items).len {
+                let child = cc_copy_node(ast_item((*n).items, i));
+                ptrvec_set((*n).items, i, child as *void);
+                ptrvec_push(&stack, child as *void);
+            }
+        }
+    }
+    free(stack.data as *void);
+    return result;
+}
+
+fn cc_is_generic_text(c: *Ck, t: u64) -> bool {
+    let text = intern_text((*c).s, t);
+    return ts_find(text, '<') != text.len && ts_ends_with(text, '>');
+}
+
+// _substitute_function_types over one node.
+fn cc_substitute_node(c: *Ck, n: *Node, names: *U64Vec, values: *U64Vec) {
+    let s = (*c).s;
+    let kind = (*n).kind;
+    if kind == NodeKind.FN_DECL || kind == NodeKind.PARAM || kind == NodeKind.CAST {
+        (*n).ty = ck_substitute(c, (*n).ty, names, values);
+    } else if (kind == NodeKind.LET || kind == NodeKind.FOR) && (*n).ty != NO_TEXT {
+        (*n).ty = ck_substitute(c, (*n).ty, names, values);
+    } else if kind == NodeKind.STRUCT_LIT {
+        (*n).name = ck_substitute(c, (*n).name, names, values);
+    } else if kind == NodeKind.VAR && cc_is_generic_text(c, (*n).name) {
+        (*n).name = ck_substitute(c, (*n).name, names, values);
+    } else if kind == NodeKind.CALL {
+        let list = (*n).names;
+        if list != (0 as *U64Vec) {
+            for i: u64 in 0..(*list).len {
+                u64vec_set(list, i, ck_substitute(c, u64vec_get(list, i), names, values));
+            }
+        }
+        if ck_has_dot(c, (*n).name) {
+            let text = intern_text(s, (*n).name);
+            let cut: u64 = 0;
+            for i: u64 in 0..text.len {
+                if text.data[i] == '.' {
+                    cut = i;
+                }
+            }
+            let qualifier = ts_sub_h(s, text, 0, cut);
+            let substituted = ck_substitute(c, qualifier, names, values);
+            if substituted != qualifier {
+                let member = ts_sub_h(s, text, cut + 1, text.len);
+                (*n).name = ck_join_dot(c, substituted, member);
+            }
+        }
+    }
+}
+
+fn cc_substitute_all(c: *Ck, root: *Node, names: *U64Vec, values: *U64Vec) {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        cc_substitute_node(c, n, names, values);
+        ck_push_children(&stack, n);
+    }
+    free(stack.data as *void);
+}
+
+fn cc_fail_produced(c: *Ck, node: *Node, name: u64, what: *u8, t: u64) {
+    let msg = m_new();
+    m_s(&msg, "generic function ");
+    m_r(c, &msg, name);
+    m_s(&msg, " produced invalid ");
+    m_s(&msg, what);
+    m_t(c, &msg, t);
+    ck_fail_node(c, node, &msg);
+}
+
+// _instantiate_function. `values` runs parallel to the template's parameters;
+// NO_TEXT is a parameter that was not inferred.
+fn cc_instantiate_function(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) -> u64 {
+    let s = (*c).s;
+    let template = tb_get(&(*c).func_templates, resolved) as *Node;
+    let params = (*template).names;
+    let missing = u64vec_new();
+    for i: u64 in 0..(*params).len {
+        if u64vec_get(values, i) == NO_TEXT {
+            u64vec_push(&missing, u64vec_get(params, i));
+        }
+    }
+    if missing.len != 0 {
+        let msg = m_new();
+        m_s(&msg, "cannot infer generic parameter(s) ");
+        for i: u64 in 0..missing.len {
+            if i != 0 {
+                m_s(&msg, ", ");
+            }
+            m_t(c, &msg, u64vec_get(&missing, i));
+        }
+        m_s(&msg, " for function ");
+        m_r(c, &msg, (*template).name);
+        ck_fail_node(c, node, &msg);
+    }
+    let concrete = ck_made(c, ts_make_generic(s, resolved, values));
+    if tb_has(&(*c).funcs, concrete) {
+        return concrete;
+    }
+    ck_charge_generic(c, template, values, node);
+    let instance = cc_deep_copy(template);
+    cc_substitute_all(c, instance, params, values);
+    (*instance).names = ast_new_names();
+    (*instance).symbol = concrete;
+    let items = (*instance).items;
+    for i: u64 in 0..ck_items_len(items) {
+        let p = ast_item(items, i);
+        if (*p).ty == (*c).t_void || !ck_valid(c, (*p).ty) {
+            cc_fail_produced(c, node, (*template).name, "parameter type ", (*p).ty);
+        }
+        if ts_is_array(s, (*p).ty) {
+            ck_fail_named(c, node, "parameter ", (*p).name,
+                " cannot be an array; pass a pointer to its elements instead");
+        }
+    }
+    if (*instance).ty != (*c).t_void {
+        if !ck_valid(c, (*instance).ty) {
+            cc_fail_produced(c, node, (*template).name, "return type ", (*instance).ty);
+        }
+        if ts_is_array(s, (*instance).ty) {
+            ck_fail_named(c, node, "function ", (*template).name, " cannot return an array");
+        }
+    }
+    let info = sup_alloc(sizeof<FuncInfo>()) as *FuncInfo;
+    *info = FuncInfo { params: u64vec_new(), ret: (*instance).ty, decl: instance };
+    for i: u64 in 0..ck_items_len(items) {
+        u64vec_push(&(*info).params, (*ast_item(items, i)).ty);
+    }
+    tb_put(&(*c).funcs, concrete, info as *void);
+    ptrvec_push((*(*c).program).funcs, instance as *void);
+    return concrete;
+}
+
+// _unify_generic_type. `values` is the mapping, parallel to `params`.
+fn cc_unify_lists(c: *Ck, patterns: *U64Vec, actuals: *U64Vec, params: *U64Vec, values: *U64Vec) -> bool {
+    if (*patterns).len != (*actuals).len {
+        return false;
+    }
+    for i: u64 in 0..(*patterns).len {
+        if !cc_unify(c, u64vec_get(patterns, i), u64vec_get(actuals, i), params, values) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn cc_unify(c: *Ck, pattern: u64, actual: u64, params: *U64Vec, values: *U64Vec) -> bool {
+    let s = (*c).s;
+    ck_charge_text(c, actual);
+    let index: u64 = 0;
+    if ts_subst_index(params, pattern, &index) {
+        let previous = u64vec_get(values, index);
+        if previous == NO_TEXT {
+            u64vec_set(values, index, actual);
+            return true;
+        }
+        return previous == actual;
+    }
+    if ts_is_ptr(s, pattern) {
+        if !ts_is_ptr(s, actual) {
+            return false;
+        }
+        if ts_is_const_ptr(s, actual) && !ts_is_const_ptr(s, pattern) {
+            return false;
+        }
+        return cc_unify(c, ck_pointee(c, pattern), ck_pointee(c, actual), params, values);
+    }
+    if ts_is_slice(s, pattern) {
+        if !ts_is_slice(s, actual) || ts_is_const_slice(s, pattern) != ts_is_const_slice(s, actual) {
+            return false;
+        }
+        return cc_unify(c, ck_slice_elem(c, pattern), ck_slice_elem(c, actual), params, values);
+    }
+    if ts_is_array(s, pattern) {
+        if !ts_is_array(s, actual) {
+            return false;
+        }
+        let pat_elem: u64 = 0;
+        let pat_count: u64 = 0;
+        let act_elem: u64 = 0;
+        let act_count: u64 = 0;
+        ck_array_parts(c, pattern, &pat_elem, &pat_count);
+        ck_array_parts(c, actual, &act_elem, &act_count);
+        return pat_count == act_count && cc_unify(c, pat_elem, act_elem, params, values);
+    }
+    let pat_params = u64vec_new();
+    let pat_result: u64 = 0;
+    if ck_function_parts(c, pattern, &pat_params, &pat_result) {
+        let act_params = u64vec_new();
+        let act_result: u64 = 0;
+        if !ck_function_parts(c, actual, &act_params, &act_result) {
+            return false;
+        }
+        return pat_params.len == act_params.len
+            && cc_unify_lists(c, &pat_params, &act_params, params, values)
+            && cc_unify(c, pat_result, act_result, params, values);
+    }
+    let pat_tuple = u64vec_new();
+    if cx_tuple_elements(c, pattern, &pat_tuple) {
+        let act_tuple = u64vec_new();
+        if !cx_tuple_elements(c, actual, &act_tuple) {
+            return false;
+        }
+        return cc_unify_lists(c, &pat_tuple, &act_tuple, params, values);
+    }
+    let pat_base: u64 = 0;
+    let pat_args = u64vec_new();
+    if ck_generic_parts(c, pattern, &pat_base, &pat_args) {
+        let act_base: u64 = 0;
+        let act_args = u64vec_new();
+        if !ck_generic_parts(c, actual, &act_base, &act_args)
+                || pat_base != act_base || pat_args.len != act_args.len {
+            return false;
+        }
+        return cc_unify_lists(c, &pat_args, &act_args, params, values);
+    }
+    return true;
+}
+
+// ----- calls -----
+
+fn cc_arg(n: *Node, i: u64) -> *Node {
+    return ast_item((*n).items, i);
+}
+
+fn cc_argc(n: *Node) -> u64 {
+    return ck_items_len((*n).items);
+}
+
+fn cc_type_argc(n: *Node) -> u64 {
+    return ck_names_len((*n).names);
+}
+
+fn cc_call(c: *Ck, e: *Node) -> u64 {
+    let name = (*e).name;
+    let dotted = ck_has_dot(c, name);
+    let binding = 0 as *Binding;
+    let global = false;
+    if !dotted {
+        binding = ck_find_binding(c, name);
+        global = binding == (0 as *Binding) && tb_has(&(*c).globals, name);
+    }
+    let result = cc_infer_call(c, e, name, dotted);
+    let f = cx_facts(e);
+    ck_ev_head(c, "call", name);
+    if (*f).enum_name != NO_TEXT {
+        ck_ev_tail(c, "enum");
+    } else if map_has(&(*c).builtin_names, name) {
+        ck_ev_tail(c, "builtin");
+    } else if (*f).indirect {
+        if binding != (0 as *Binding) {
+            ck_ev_where(c, binding);
+        } else if global {
+            ck_ev_tail(c, "global");
+        } else {
+            ck_ev_tail(c, "None");
+        }
+    } else {
+        let text = intern_text((*c).s, (*f).resolved_name);
+        ck_ev_fn(c, ts_sub_h((*c).s, text, 0, ts_find(text, '<')));
+    }
+    return result;
+}
+
+fn cc_enum_call(c: *Ck, e: *Node, name: u64) -> bool {
+    let s = (*c).s;
+    let text = intern_text(s, name);
+    let cut: u64 = 0;
+    for i: u64 in 0..text.len {
+        if text.data[i] == '.' {
+            cut = i;
+        }
+    }
+    let enum_name = ts_sub_h(s, text, 0, cut);
+    let variant_name = ts_sub_h(s, text, cut + 1, text.len);
+    ck_valid(c, enum_name);
+    if !tb_has(&(*c).enums, enum_name) {
+        return false;
+    }
+    let info = tb_get(&(*c).enums, enum_name) as *EnumInfo;
+    let at: u64 = 0;
+    if !ck_variant_index(info, variant_name, &at) {
+        return false;
+    }
+    let payload_type = u64vec_get(&(*info).payload, at);
+    if payload_type == NO_TEXT {
+        ck_ft2(c, e, "variant ", enum_name, ".", variant_name, " has no payload");
+    }
+    let expected = ptrvec_get(&(*info).payloads, at) as *U64Vec;
+    if cc_argc(e) != ck_names_len(expected) {
+        let msg = m_new();
+        m_s(&msg, "variant ");
+        m_t(c, &msg, enum_name);
+        m_s(&msg, ".");
+        m_t(c, &msg, variant_name);
+        m_s(&msg, " expects ");
+        m_u(&msg, ck_names_len(expected));
+        m_s(&msg, " payloads");
+        ck_fail_node(c, e, &msg);
+    }
+    for i: u64 in 0..cc_argc(e) {
+        let argument = cc_arg(e, i);
+        let actual = ck_check_expr(c, argument);
+        let want = u64vec_get(expected, i);
+        if !cx_coerce(c, want, argument) {
+            let msg = m_new();
+            m_s(&msg, "payload ");
+            m_u(&msg, i + 1);
+            m_s(&msg, " of ");
+            m_t(c, &msg, enum_name);
+            m_s(&msg, ".");
+            m_t(c, &msg, variant_name);
+            m_s(&msg, " expects ");
+            m_t(c, &msg, want);
+            m_s(&msg, ", got ");
+            m_t(c, &msg, actual);
+            ck_fail_node(c, e, &msg);
+        }
+    }
+    let f = cx_facts(e);
+    (*f).enum_name = enum_name;
+    (*f).enum_variant = variant_name;
+    (*f).enum_payload_type = payload_type;
+    (*e).etype = enum_name;
+    return true;
+}
+
+fn cc_infer_call(c: *Ck, e: *Node, name: u64, dotted: bool) -> u64 {
+    if dotted && cc_enum_call(c, e, name) {
+        return (*e).etype;
+    }
+    if cc_type_argc(e) != 0 && map_has(&(*c).builtin_names, name)
+            && !map_has(&(*c).generic_builtins, name) {
+        ck_fail_named(c, e, "builtin ", name,
+            " is not generic and cannot take type arguments");
+    }
+    if !dotted && map_has(&(*c).builtin_names, name) {
+        return cb_builtin(c, e, name);
+    }
+    return cc_direct_call(c, e, name, dotted);
+}
+
+fn cc_indirect_call(c: *Ck, e: *Node, name: u64, callable: u64) -> u64 {
+    if cc_type_argc(e) != 0 {
+        ck_fail_z(c, e, "an indirect function call cannot take type arguments");
+    }
+    let parameter_types = u64vec_new();
+    let result: u64 = 0;
+    ck_function_parts(c, callable, &parameter_types, &result);
+    if cc_argc(e) != parameter_types.len {
+        let msg = m_new();
+        m_s(&msg, "callback ");
+        m_r(c, &msg, name);
+        m_s(&msg, " expects ");
+        m_u(&msg, parameter_types.len);
+        m_s(&msg, " argument(s), got ");
+        m_u(&msg, cc_argc(e));
+        ck_fail_node(c, e, &msg);
+    }
+    for i: u64 in 0..cc_argc(e) {
+        let argument = cc_arg(e, i);
+        let expected = u64vec_get(&parameter_types, i);
+        let actual = ck_check_expr(c, argument);
+        if !cx_coerce(c, expected, argument) {
+            let msg = m_new();
+            m_s(&msg, "argument ");
+            m_u(&msg, i + 1);
+            m_s(&msg, " of callback ");
+            m_r(c, &msg, name);
+            m_s(&msg, " expects ");
+            m_t(c, &msg, expected);
+            m_s(&msg, ", got ");
+            m_t(c, &msg, actual);
+            ck_fail_node(c, e, &msg);
+        }
+    }
+    (*cx_facts(e)).indirect = true;
+    return result;
+}
+
+fn cc_direct_call(c: *Ck, e: *Node, name: u64, dotted: bool) -> u64 {
+    let s = (*c).s;
+    if !dotted {
+        let binding_type = cx_lookup(c, name, 0 as *Node);
+        if binding_type != NO_TEXT {
+            if ck_is_function(c, binding_type) {
+                return cc_indirect_call(c, e, name, binding_type);
+            }
+            ck_frt(c, e, "value ", name, " of type ", binding_type, " is not callable");
+        }
+    }
+    let resolved = name;
+    if dotted {
+        let text = intern_text(s, name);
+        let first = ts_find(text, '.');
+        let alias = ts_sub_h(s, text, 0, first);
+        let member = ts_sub_h(s, text, first + 1, text.len);
+        let mod_name: u64 = 0;
+        if !ck_alias_module(c, alias, &mod_name) {
+            ck_fail_named(c, e, "unknown module or import alias ", alias, "");
+        }
+        resolved = ck_join_dot(c, mod_name, member);
+    } else {
+        resolved = ck_resolve_function_name(c, name);
+    }
+    if !tb_has(&(*c).funcs, resolved) && !tb_has(&(*c).func_templates, resolved) {
+        ck_fail_named(c, e, "call to undefined function ", name, "");
+    }
+    let declaration = ck_decl_of(c, resolved);
+    if ck_is_private(c, declaration) {
+        ck_fr2(c, e, "function ", name, " is private to module ", (*declaration).mod_name, "");
+    }
+    let is_template = tb_has(&(*c).func_templates, resolved);
+    if !is_template && cc_type_argc(e) != 0 {
+        ck_fail_named(c, e, "function ", name, " is not generic and cannot take type arguments");
+    }
+    let parameter_count: u64 = 0;
+    if is_template {
+        parameter_count = ck_items_len((*declaration).items);
+    } else {
+        parameter_count = (*(tb_get(&(*c).funcs, resolved) as *FuncInfo)).params.len;
+    }
+    if cc_argc(e) != parameter_count {
+        let msg = m_new();
+        m_s(&msg, "function ");
+        m_r(c, &msg, name);
+        m_s(&msg, " expects ");
+        m_u(&msg, parameter_count);
+        m_s(&msg, " argument(s), got ");
+        m_u(&msg, cc_argc(e));
+        ck_fail_node(c, e, &msg);
+    }
+    let actual_types = u64vec_new();
+    for i: u64 in 0..cc_argc(e) {
+        u64vec_push(&actual_types, ck_check_expr(c, cc_arg(e, i)));
+    }
+    let f = cx_facts(e);
+    (*f).resolved_name = resolved;
+    if is_template {
+        resolved = cc_infer_instance(c, e, name, resolved, declaration, &actual_types);
+    }
+    (*f).resolved_name = resolved;
+    let info = tb_get(&(*c).funcs, resolved) as *FuncInfo;
+    for i: u64 in 0..cc_argc(e) {
+        let argument = cc_arg(e, i);
+        let expected = u64vec_get(&(*info).params, i);
+        if !cx_coerce(c, expected, argument) {
+            let msg = m_new();
+            m_s(&msg, "argument ");
+            m_u(&msg, i + 1);
+            m_s(&msg, " of ");
+            m_r(c, &msg, name);
+            m_s(&msg, " expects ");
+            m_t(c, &msg, expected);
+            m_s(&msg, ", got ");
+            m_t(c, &msg, (*argument).etype);
+            ck_fail_node(c, e, &msg);
+        }
+    }
+    cc_track_destructor_call(c, e, resolved);
+    free(actual_types.data as *void);
+    return (*info).ret;
+}
+
+fn cc_infer_instance(c: *Ck, e: *Node, name: u64, resolved: u64, template: *Node,
+        actual_types: *U64Vec) -> u64 {
+    let params = (*template).names;
+    let type_args = (*e).names;
+    let given = ck_names_len(type_args);
+    if given != 0 && given != (*params).len {
+        let msg = m_new();
+        m_s(&msg, "generic function ");
+        m_r(c, &msg, name);
+        m_s(&msg, " expects ");
+        m_u(&msg, (*params).len);
+        m_s(&msg, " type argument(s), got ");
+        m_u(&msg, given);
+        ck_fail_node(c, e, &msg);
+    }
+    for i: u64 in 0..given {
+        let arg = u64vec_get(type_args, i);
+        if arg == (*c).t_void || !ck_valid(c, arg) {
+            ck_frt(c, e, "generic function ", name, " has invalid type argument ", arg, "");
+        }
+    }
+    let values = u64vec_new();
+    for i: u64 in 0..(*params).len {
+        if i < given {
+            u64vec_push(&values, u64vec_get(type_args, i));
+        } else {
+            u64vec_push(&values, NO_TEXT);
+        }
+    }
+    if given == 0 {
+        let patterns = (*template).items;
+        for i: u64 in 0..ck_items_len(patterns) {
+            let pattern = (*ast_item(patterns, i)).ty;
+            let actual = u64vec_get(actual_types, i);
+            if !cc_unify(c, pattern, actual, params, &values) {
+                let msg = m_new();
+                m_s(&msg, "argument ");
+                m_u(&msg, i + 1);
+                m_s(&msg, " of ");
+                m_r(c, &msg, name);
+                m_s(&msg, " cannot consistently infer generic type from ");
+                m_t(c, &msg, pattern);
+                m_s(&msg, " and ");
+                m_t(c, &msg, actual);
+                ck_fail_node(c, e, &msg);
+            }
+        }
+    }
+    let concrete = cc_instantiate_function(c, resolved, &values, e);
+    free(values.data as *void);
+    return concrete;
+}
+
+fn cc_track_destructor_call(c: *Ck, e: *Node, resolved: u64) {
+    if !map_has(&(*c).destructor_symbols, resolved) || cc_argc(e) != 1 {
+        return;
+    }
+    let argument = cc_arg(e, 0);
+    if (*argument).kind != NodeKind.UNARY || (*argument).name != (*c).t_amp
+            || (*(*argument).a).kind != NodeKind.VAR {
+        return;
+    }
+    let name = (*(*argument).a).name;
+    let b = ck_find_binding(c, name);
+    if b != (0 as *Binding) && cx_needs_drop(c, (*b).btype) {
+        let f = cx_facts(e);
+        (*f).destroys_binding = name;
+        (*f).deferred_destroy = (*c).checking_defer;
+        if !(*c).checking_defer {
+            (*b).bmoved = true;
+        }
+    }
+}
+
+// ----- builtins -----
+//
+// Helpers name the checks that recur. `cb_`-prefixed functions take the call and
+// argument positions; the literal text of each message stays at the call site.
+
+fn cb_is(c: *Ck, name: u64, text: *u8) -> bool {
+    return span_eq_z(intern_text((*c).s, name), text);
+}
+
+fn cb_hosted_only(c: *Ck, e: *Node, message: *u8) {
+    if (*c).freestanding {
+        ck_fail_z(c, e, message);
+    }
+}
+
+fn cb_hosted_named(c: *Ck, e: *Node, tail: *u8) {
+    if (*c).freestanding {
+        ck_ft1(c, e, "", (*e).name, tail);
+    }
+}
+
+fn cb_argc_is(c: *Ck, e: *Node, count: u64, message: *u8) {
+    if cc_argc(e) != count {
+        ck_fail_z(c, e, message);
+    }
+}
+
+fn cb_argc_named(c: *Ck, e: *Node, count: u64, tail: *u8) {
+    if cc_argc(e) != count {
+        ck_ft1(c, e, "", (*e).name, tail);
+    }
+}
+
+fn cb_check_arg(c: *Ck, e: *Node, index: u64) -> u64 {
+    return ck_check_expr(c, cc_arg(e, index));
+}
+
+// `_check_expr` then `_coerce`, reporting `<before><actual type>`.
+fn cb_coerce(c: *Ck, e: *Node, index: u64, expected: u64, before: *u8) {
+    let argument = cc_arg(e, index);
+    ck_check_expr(c, argument);
+    if !cx_coerce(c, expected, argument) {
+        ck_ft1(c, e, before, (*argument).etype, "");
+    }
+}
+
+// As cb_coerce, with the builtin's name in front of `middle`.
+fn cb_coerce_named(c: *Ck, e: *Node, index: u64, expected: u64, middle: *u8) {
+    let argument = cc_arg(e, index);
+    ck_check_expr(c, argument);
+    if !cx_coerce(c, expected, argument) {
+        ck_ft2(c, e, "", (*e).name, middle, (*argument).etype, "");
+    }
+}
+
+// `handle = _check_expr(...)`, which must be exactly *void.
+fn cb_handle(c: *Ck, e: *Node, index: u64, middle: *u8) {
+    let handle = cb_check_arg(c, e, index);
+    if handle != (*c).t_voidp {
+        ck_ft2(c, e, "", (*e).name, middle, handle, "");
+    }
+}
+
+fn cb_builtin(c: *Ck, e: *Node, name: u64) -> u64 {
+    if cb_is(c, name, "sizeof") {
+        return cb_sizeof(c, e);
+    }
+    if cb_is(c, name, "unix_time") || cb_is(c, name, "cpu_millis")
+            || cb_is(c, name, "arg_count") || cb_is(c, name, "arg_get") {
+        return cb_host_info(c, e, name);
+    }
+    if cb_is(c, name, "file_open") || cb_is(c, name, "file_close") || cb_is(c, name, "file_flush")
+            || cb_is(c, name, "file_read") || cb_is(c, name, "file_write") {
+        return cb_file(c, e, name);
+    }
+    if cb_is(c, name, "thread_spawn") || cb_is(c, name, "thread_join")
+            || cb_is(c, name, "thread_sleep_millis") || cb_is(c, name, "mutex_create")
+            || cb_is(c, name, "mutex_destroy") || cb_is(c, name, "mutex_lock")
+            || cb_is(c, name, "mutex_unlock") {
+        return cb_thread(c, e, name);
+    }
+    if cb_is(c, name, "atomic_i64_create") || cb_is(c, name, "atomic_i64_destroy")
+            || cb_is(c, name, "atomic_i64_load") || cb_is(c, name, "atomic_i64_store")
+            || cb_is(c, name, "atomic_i64_exchange") || cb_is(c, name, "atomic_i64_fetch_add")
+            || cb_is(c, name, "atomic_i64_fetch_sub")
+            || cb_is(c, name, "atomic_i64_compare_exchange") {
+        return cb_atomic(c, e, name);
+    }
+    if cb_is(c, name, "net_tcp_connect") || cb_is(c, name, "net_tcp_listen")
+            || cb_is(c, name, "net_udp_connect") || cb_is(c, name, "net_udp_bind")
+            || cb_is(c, name, "net_udp_send_to") || cb_is(c, name, "net_udp_recv_from") {
+        return cb_net_open(c, e, name);
+    }
+    if cb_is(c, name, "net_tcp_accept") || cb_is(c, name, "net_socket_close")
+            || cb_is(c, name, "net_socket_shutdown") || cb_is(c, name, "net_socket_local_port")
+            || cb_is(c, name, "net_socket_set_nonblocking") || cb_is(c, name, "net_socket_wait")
+            || cb_is(c, name, "net_last_error_would_block")
+            || cb_is(c, name, "net_socket_send") || cb_is(c, name, "net_socket_recv") {
+        return cb_net_socket(c, e, name);
+    }
+    if cb_is(c, name, "secure_random_fill") {
+        return cb_secure_random(c, e);
+    }
+    if cb_is(c, name, "tls_client_connect") || cb_is(c, name, "tls_client_connect_with_ca")
+            || cb_is(c, name, "tls_protocol_version") || cb_is(c, name, "tls_close")
+            || cb_is(c, name, "tls_send") || cb_is(c, name, "tls_recv") {
+        return cb_tls(c, e, name);
+    }
+    if cb_is(c, name, "print") || cb_is(c, name, "println") || cb_is(c, name, "eprintln")
+            || cb_is(c, name, "assert") || cb_is(c, name, "alloc") || cb_is(c, name, "free")
+            || cb_is(c, name, "len") || cb_is(c, name, "slice") {
+        return cb_core(c, e, name);
+    }
+    if cb_is(c, name, "volatile_read") || cb_is(c, name, "volatile_write") {
+        return cb_volatile(c, e, name);
+    }
+    return cb_ports(c, e, name);
+}
+
+fn cb_sizeof(c: *Ck, e: *Node) -> u64 {
+    if cc_argc(e) != 0 || cc_type_argc(e) != 1 {
+        ck_fail_z(c, e, "sizeof expects exactly one type argument and no values");
+    }
+    let target = u64vec_get((*e).names, 0);
+    if target == (*c).t_void || !ck_valid(c, target) {
+        ck_ft1(c, e, "sizeof has invalid type argument ", target, "");
+    }
+    return (*c).t_u64;
+}
+
+fn cb_host_info(c: *Ck, e: *Node, name: u64) -> u64 {
+    if cb_is(c, name, "unix_time") || cb_is(c, name, "cpu_millis") {
+        cb_hosted_named(c, e, " is not available in freestanding mode");
+        if cc_argc(e) != 0 || cc_type_argc(e) != 0 {
+            ck_ft1(c, e, "", name, " expects no arguments");
+        }
+        if cb_is(c, name, "unix_time") {
+            return (*c).t_i64;
+        }
+        return (*c).t_u64;
+    }
+    cb_hosted_named(c, e, " is not available in freestanding mode");
+    if cb_is(c, name, "arg_count") {
+        if cc_argc(e) != 0 || cc_type_argc(e) != 0 {
+            ck_fail_z(c, e, "arg_count expects no arguments");
+        }
+        return (*c).t_u64;
+    }
+    cb_argc_is(c, e, 1, "arg_get expects exactly 1 argument");
+    cb_coerce(c, e, 0, (*c).t_u64, "arg_get index must be u64, got ");
+    return (*c).t_str;
+}
+
+fn cb_file(c: *Ck, e: *Node, name: u64) -> u64 {
+    cb_hosted_only(c, e, "file I/O is not available in freestanding mode");
+    if cb_is(c, name, "file_open") {
+        cb_argc_is(c, e, 2, "file_open expects path and mode strings");
+        for i: u64 in 0..2 {
+            let actual = cb_check_arg(c, e, i);
+            if actual != (*c).t_str {
+                ck_ft1(c, e, "file_open expects string arguments, got ", actual, "");
+            }
+        }
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "file_close") || cb_is(c, name, "file_flush") {
+        cb_argc_named(c, e, 1, " expects one file handle");
+        let actual = cb_check_arg(c, e, 0);
+        if actual != (*c).t_voidp {
+            ck_ft2(c, e, "", name, " expects a *void file handle, got ", actual, "");
+        }
+        return (*c).t_bool;
+    }
+    cb_argc_named(c, e, 3, " expects handle, buffer, and length");
+    let handle_type = cb_check_arg(c, e, 0);
+    if handle_type != (*c).t_voidp {
+        ck_ft2(c, e, "", name, " expects a *void file handle, got ", handle_type, "");
+    }
+    let buffer = cc_arg(e, 1);
+    ck_check_expr(c, buffer);
+    let expected = (*c).t_cstr;
+    if cb_is(c, name, "file_read") {
+        expected = (*c).t_str;
+    }
+    if !cx_coerce(c, expected, buffer) {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, " expects buffer type ");
+        m_t(c, &msg, expected);
+        m_s(&msg, ", got ");
+        m_t(c, &msg, (*buffer).etype);
+        ck_fail_node(c, e, &msg);
+    }
+    cb_coerce_named(c, e, 2, (*c).t_u64, " length must be u64, got ");
+    return (*c).t_u64;
+}
+
+fn cb_thread(c: *Ck, e: *Node, name: u64) -> u64 {
+    if cb_is(c, name, "thread_spawn") || cb_is(c, name, "thread_join")
+            || cb_is(c, name, "thread_sleep_millis") {
+        cb_hosted_only(c, e, "threads are not available in freestanding mode");
+    } else {
+        cb_hosted_only(c, e, "mutexes are not available in freestanding mode");
+    }
+    if cb_is(c, name, "thread_spawn") {
+        cb_argc_is(c, e, 2, "thread_spawn expects callback and context");
+        let callback = cb_check_arg(c, e, 0);
+        let expected = intern_z((*c).s, "fn(*void)->i64");
+        if callback != expected {
+            ck_ft1(c, e, "thread_spawn callback must be fn(*void)->i64, got ", callback, "");
+        }
+        let context = cb_check_arg(c, e, 1);
+        if !cx_coerce(c, (*c).t_voidp, cc_arg(e, 1)) {
+            ck_ft1(c, e, "thread_spawn context must be *void, got ", context, "");
+        }
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "thread_join") {
+        cb_argc_is(c, e, 1, "thread_join expects one thread handle");
+        let handle = cb_check_arg(c, e, 0);
+        if handle != (*c).t_voidp {
+            ck_ft1(c, e, "thread_join handle must be *void, got ", handle, "");
+        }
+        return (*c).t_i64;
+    }
+    if cb_is(c, name, "thread_sleep_millis") {
+        cb_argc_is(c, e, 1, "thread_sleep_millis expects one duration");
+        cb_coerce(c, e, 0, (*c).t_u64, "thread_sleep_millis duration must be u64, got ");
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "mutex_create") {
+        if cc_argc(e) != 0 || cc_type_argc(e) != 0 {
+            ck_fail_z(c, e, "mutex_create expects no arguments");
+        }
+        return (*c).t_voidp;
+    }
+    cb_argc_named(c, e, 1, " expects one mutex handle");
+    cb_handle(c, e, 0, " handle must be *void, got ");
+    if cb_is(c, name, "mutex_destroy") {
+        return (*c).t_void;
+    }
+    return (*c).t_bool;
+}
+
+fn cb_atomic(c: *Ck, e: *Node, name: u64) -> u64 {
+    cb_hosted_only(c, e, "atomics are not available in freestanding mode");
+    if cb_is(c, name, "atomic_i64_create") {
+        cb_argc_is(c, e, 1, "atomic_i64_create expects one initial value");
+        cb_coerce(c, e, 0, (*c).t_i64, "atomic_i64_create value must be i64, got ");
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "atomic_i64_destroy") || cb_is(c, name, "atomic_i64_load") {
+        cb_argc_named(c, e, 1, " expects one atomic handle");
+        cb_handle(c, e, 0, " handle must be *void, got ");
+        if cb_is(c, name, "atomic_i64_destroy") {
+            return (*c).t_void;
+        }
+        return (*c).t_i64;
+    }
+    if cb_is(c, name, "atomic_i64_compare_exchange") {
+        cb_argc_is(c, e, 3, "atomic_i64_compare_exchange expects handle, expected, and desired");
+        let handle = cb_check_arg(c, e, 0);
+        if handle != (*c).t_voidp {
+            ck_ft1(c, e, "atomic_i64_compare_exchange handle must be *void, got ", handle, "");
+        }
+        for i: u64 in 1..3 {
+            ck_check_expr(c, cc_arg(e, i));
+            if !cx_coerce(c, (*c).t_i64, cc_arg(e, i)) {
+                ck_fail_z(c, e, "atomic_i64_compare_exchange values must be i64");
+            }
+        }
+        return (*c).t_bool;
+    }
+    cb_argc_named(c, e, 2, " expects handle and value");
+    cb_handle(c, e, 0, " handle must be *void, got ");
+    cb_coerce_named(c, e, 1, (*c).t_i64, " value must be i64, got ");
+    if cb_is(c, name, "atomic_i64_store") {
+        return (*c).t_void;
+    }
+    return (*c).t_i64;
+}
+
+fn cb_host_arg(c: *Ck, e: *Node, name: u64, index: u64) {
+    let host = cb_check_arg(c, e, index);
+    if host != (*c).t_str {
+        ck_ft2(c, e, "", name, " host must be *u8, got ", host, "");
+    }
+}
+
+fn cb_net_open(c: *Ck, e: *Node, name: u64) -> u64 {
+    cb_hosted_only(c, e, "networking is not available in freestanding mode");
+    if cb_is(c, name, "net_tcp_connect") || cb_is(c, name, "net_tcp_listen") {
+        let connect = cb_is(c, name, "net_tcp_connect");
+        if connect {
+            cb_argc_named(c, e, 2, " expects host and port");
+        } else {
+            cb_argc_named(c, e, 3, " expects host, port, and backlog");
+        }
+        cb_host_arg(c, e, name, 0);
+        cb_coerce_named(c, e, 1, (*c).t_u16, " port must be u16, got ");
+        if !connect {
+            cb_coerce_named(c, e, 2, (*c).t_u32, " backlog must be u32, got ");
+        }
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "net_udp_connect") || cb_is(c, name, "net_udp_bind") {
+        cb_argc_named(c, e, 2, " expects host and port");
+        cb_host_arg(c, e, name, 0);
+        cb_coerce_named(c, e, 1, (*c).t_u16, " port must be u16, got ");
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "net_udp_send_to") {
+        cb_argc_is(c, e, 5, "net_udp_send_to expects handle, host, port, buffer, and length");
+        let handle = cb_check_arg(c, e, 0);
+        if handle != (*c).t_voidp {
+            ck_ft1(c, e, "net_udp_send_to handle must be *void, got ", handle, "");
+        }
+        let host = cb_check_arg(c, e, 1);
+        if host != (*c).t_str {
+            ck_ft1(c, e, "net_udp_send_to host must be *u8, got ", host, "");
+        }
+        cb_coerce(c, e, 2, (*c).t_u16, "net_udp_send_to port must be u16, got ");
+        cb_coerce(c, e, 3, (*c).t_cstr, "net_udp_send_to buffer must be *const u8, got ");
+        cb_coerce(c, e, 4, (*c).t_u64, "net_udp_send_to length must be u64, got ");
+        return (*c).t_i64;
+    }
+    cb_argc_is(c, e, 6, "net_udp_recv_from expects handle, buffer, length, source host buffer, source host capacity, and source port");
+    cb_coerce(c, e, 0, (*c).t_voidp, "net_udp_recv_from handle must be *void, got ");
+    cb_coerce(c, e, 1, (*c).t_str, "net_udp_recv_from buffer must be *u8, got ");
+    cb_coerce(c, e, 2, (*c).t_u64, "net_udp_recv_from length must be u64, got ");
+    cb_coerce(c, e, 3, (*c).t_str, "net_udp_recv_from source host buffer must be *u8, got ");
+    cb_coerce(c, e, 4, (*c).t_u64, "net_udp_recv_from source host capacity must be u64, got ");
+    cb_coerce(c, e, 5, intern_z((*c).s, "*u16"), "net_udp_recv_from source port must be *u16, got ");
+    return (*c).t_i64;
+}
+
+fn cb_net_socket(c: *Ck, e: *Node, name: u64) -> u64 {
+    cb_hosted_only(c, e, "networking is not available in freestanding mode");
+    if cb_is(c, name, "net_tcp_accept") || cb_is(c, name, "net_socket_close")
+            || cb_is(c, name, "net_socket_shutdown") || cb_is(c, name, "net_socket_local_port") {
+        cb_argc_named(c, e, 1, " expects one socket handle");
+        cb_handle(c, e, 0, " handle must be *void, got ");
+        if cb_is(c, name, "net_tcp_accept") {
+            return (*c).t_voidp;
+        }
+        if cb_is(c, name, "net_socket_close") {
+            return (*c).t_void;
+        }
+        if cb_is(c, name, "net_socket_shutdown") {
+            return (*c).t_bool;
+        }
+        return (*c).t_u16;
+    }
+    if cb_is(c, name, "net_socket_set_nonblocking") {
+        cb_argc_is(c, e, 2, "net_socket_set_nonblocking expects handle and enabled");
+        let handle = cb_check_arg(c, e, 0);
+        if handle != (*c).t_voidp {
+            ck_ft1(c, e, "net_socket_set_nonblocking handle must be *void, got ", handle, "");
+        }
+        let enabled = cb_check_arg(c, e, 1);
+        if enabled != (*c).t_bool {
+            ck_ft1(c, e, "net_socket_set_nonblocking enabled must be bool, got ", enabled, "");
+        }
+        return (*c).t_bool;
+    }
+    if cb_is(c, name, "net_socket_wait") {
+        cb_argc_is(c, e, 3, "net_socket_wait expects handle, events, and timeout");
+        let handle = cb_check_arg(c, e, 0);
+        if handle != (*c).t_voidp {
+            ck_ft1(c, e, "net_socket_wait handle must be *void, got ", handle, "");
+        }
+        cb_coerce(c, e, 1, (*c).t_u32, "net_socket_wait events must be u32, got ");
+        let timeout = cb_check_arg(c, e, 2);
+        if timeout != (*c).t_i64 {
+            ck_ft1(c, e, "net_socket_wait timeout must be i64, got ", timeout, "");
+        }
+        return (*c).t_i32;
+    }
+    if cb_is(c, name, "net_last_error_would_block") {
+        if cc_argc(e) != 0 {
+            ck_fail_z(c, e, "net_last_error_would_block expects no arguments");
+        }
+        return (*c).t_bool;
+    }
+    cb_argc_named(c, e, 3, " expects handle, buffer, and length");
+    cb_handle(c, e, 0, " handle must be *void, got ");
+    cb_send_buffer(c, e, name, cb_is(c, name, "net_socket_send"));
+    cb_coerce_named(c, e, 2, (*c).t_u64, " length must be u64, got ");
+    return (*c).t_i64;
+}
+
+fn cb_send_buffer(c: *Ck, e: *Node, name: u64, sending: bool) {
+    let buffer = cc_arg(e, 1);
+    ck_check_expr(c, buffer);
+    let expected = (*c).t_str;
+    if sending {
+        expected = (*c).t_cstr;
+    }
+    if !cx_coerce(c, expected, buffer) {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, " buffer must be ");
+        m_t(c, &msg, expected);
+        m_s(&msg, ", got ");
+        m_t(c, &msg, (*buffer).etype);
+        ck_fail_node(c, e, &msg);
+    }
+}
+
+fn cb_secure_random(c: *Ck, e: *Node) -> u64 {
+    cb_hosted_only(c, e, "secure random is not available in freestanding mode");
+    cb_argc_is(c, e, 2, "secure_random_fill expects buffer and length");
+    cb_coerce(c, e, 0, (*c).t_str, "secure_random_fill buffer must be *u8, got ");
+    cb_coerce(c, e, 1, (*c).t_u64, "secure_random_fill length must be u64, got ");
+    return (*c).t_bool;
+}
+
+fn cb_tls(c: *Ck, e: *Node, name: u64) -> u64 {
+    cb_hosted_only(c, e, "TLS is not available in freestanding mode");
+    if cb_is(c, name, "tls_client_connect") {
+        cb_argc_is(c, e, 2, "tls_client_connect expects hostname and port");
+        cb_coerce(c, e, 0, (*c).t_str, "tls_client_connect hostname must be *u8, got ");
+        cb_coerce(c, e, 1, (*c).t_u16, "tls_client_connect port must be u16, got ");
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "tls_client_connect_with_ca") {
+        cb_argc_is(c, e, 4, "tls_client_connect_with_ca expects hostname, port, CA buffer, and CA length");
+        cb_coerce(c, e, 0, (*c).t_str, "tls_client_connect_with_ca hostname must be *u8, got ");
+        cb_coerce(c, e, 1, (*c).t_u16, "tls_client_connect_with_ca port must be u16, got ");
+        cb_coerce(c, e, 2, (*c).t_cstr, "tls_client_connect_with_ca CA buffer must be *const u8, got ");
+        cb_coerce(c, e, 3, (*c).t_u64, "tls_client_connect_with_ca CA length must be u64, got ");
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "tls_protocol_version") || cb_is(c, name, "tls_close") {
+        cb_argc_named(c, e, 1, " expects one TLS handle");
+        cb_handle(c, e, 0, " handle must be *void, got ");
+        if cb_is(c, name, "tls_protocol_version") {
+            return (*c).t_u16;
+        }
+        return (*c).t_void;
+    }
+    cb_argc_named(c, e, 3, " expects handle, buffer, and length");
+    cb_handle(c, e, 0, " handle must be *void, got ");
+    cb_send_buffer(c, e, name, cb_is(c, name, "tls_send"));
+    cb_coerce_named(c, e, 2, (*c).t_u64, " length must be u64, got ");
+    return (*c).t_i64;
+}
+
+fn cb_core(c: *Ck, e: *Node, name: u64) -> u64 {
+    if cb_is(c, name, "print") {
+        cb_hosted_only(c, e, "print is not available in freestanding mode; write to hardware directly (e.g. the VGA buffer)");
+        cb_argc_is(c, e, 1, "print expects exactly 1 argument");
+        let at = cb_check_arg(c, e, 0);
+        if !ck_is_int(c, at) && !ck_is_float(c, at) {
+            ck_ft1(c, e, "print expects an integer or float, got ", at, "");
+        }
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "println") || cb_is(c, name, "eprintln") {
+        cb_hosted_named(c, e, " is not available in freestanding mode");
+        cb_argc_named(c, e, 1, " expects exactly 1 argument");
+        let at = cb_check_arg(c, e, 0);
+        if at != (*c).t_str {
+            ck_ft2(c, e, "", name, " expects a string (*u8), got ", at, "");
+        }
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "assert") {
+        cb_hosted_only(c, e, "assert is not available in freestanding mode");
+        cb_argc_is(c, e, 1, "assert expects exactly 1 argument");
+        if cb_check_arg(c, e, 0) != (*c).t_bool {
+            ck_fail_z(c, e, "assert expects a bool");
+        }
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "alloc") {
+        cb_hosted_only(c, e, "alloc is not available in freestanding mode");
+        cb_argc_is(c, e, 1, "alloc expects exactly 1 argument");
+        cb_coerce(c, e, 0, (*c).t_u64, "alloc size must be u64, got ");
+        return (*c).t_voidp;
+    }
+    if cb_is(c, name, "free") {
+        cb_hosted_only(c, e, "free is not available in freestanding mode");
+        cb_argc_is(c, e, 1, "free expects exactly 1 argument");
+        let at = cb_check_arg(c, e, 0);
+        if !cx_is_ptr(c, at) {
+            ck_ft1(c, e, "free expects a pointer, got ", at, "");
+        }
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "len") {
+        cb_argc_is(c, e, 1, "len expects exactly 1 argument");
+        let at = cb_check_arg(c, e, 0);
+        if !cx_is_array(c, at) && !cx_is_slice(c, at) && at != (*c).t_str {
+            ck_ft1(c, e, "len expects an array, slice, or string, got ", at, "");
+        }
+        return (*c).t_u64;
+    }
+    // slice
+    cb_argc_is(c, e, 2, "slice expects 2 arguments (pointer, length)");
+    let pointer_type = cb_check_arg(c, e, 0);
+    if !cx_is_ptr(c, pointer_type) || ck_pointee(c, pointer_type) == (*c).t_void {
+        ck_fail_z(c, e, "slice expects a typed pointer as its first argument");
+    }
+    cb_coerce(c, e, 1, (*c).t_u64, "slice length must be u64, got ");
+    return ck_made(c, ts_make_slice((*c).s, ts_is_const_ptr((*c).s, pointer_type),
+        ck_pointee(c, pointer_type)));
+}
+
+// A located error at the callee's name, as `MortError(msg, line, col)`.
+fn cb_fail_at_name(c: *Ck, e: *Node, message: *Buf) {
+    ck_exit_diag_col(c, (*e).name_line, (*e).name_col, (*e).file, buf_span(message));
+}
+
+fn cb_fail_vt(c: *Ck, e: *Node, tail: *u8) {
+    let msg = m_new();
+    m_t(c, &msg, (*e).name);
+    m_s(&msg, tail);
+    cb_fail_at_name(c, e, &msg);
+}
+
+fn cb_volatile(c: *Ck, e: *Node, name: u64) -> u64 {
+    let s = (*c).s;
+    if cc_type_argc(e) != 1 {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, " expects exactly one type argument, e.g. ");
+        m_t(c, &msg, name);
+        m_s(&msg, "<u32>");
+        cb_fail_at_name(c, e, &msg);
+    }
+    let target = ck_resolve_alias(c, u64vec_get((*e).names, 0));
+    if !cb_volatile_width(c, target) {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, " width must be one of u8, u16, u32, u64, i8, i16, i32, i64, got ");
+        m_t(c, &msg, target);
+        cb_fail_at_name(c, e, &msg);
+    }
+    u64vec_set((*e).names, 0, target);
+    let is_write = cb_is(c, name, "volatile_write");
+    if is_write {
+        if cc_argc(e) != 2 {
+            cb_fail_vt(c, e, " expects 2 arguments (pointer, value)");
+        }
+    } else if cc_argc(e) != 1 {
+        cb_fail_vt(c, e, " expects 1 argument (pointer)");
+    }
+    let pointer_type = ck_resolve_alias(c, cb_check_arg(c, e, 0));
+    if !cx_is_ptr(c, pointer_type) {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, " expects a pointer, got ");
+        m_t(c, &msg, pointer_type);
+        cb_fail_at_name(c, e, &msg);
+    }
+    if ck_pointee(c, pointer_type) != target {
+        let msg = m_new();
+        m_t(c, &msg, name);
+        m_s(&msg, "<");
+        m_t(c, &msg, target);
+        m_s(&msg, "> pointer must point to ");
+        m_t(c, &msg, target);
+        m_s(&msg, ", got ");
+        m_t(c, &msg, pointer_type);
+        cb_fail_at_name(c, e, &msg);
+    }
+    if !is_write {
+        return target;
+    }
+    if ts_is_const_ptr(s, pointer_type) {
+        let msg = m_new();
+        m_s(&msg, "volatile_write cannot write through ");
+        m_t(c, &msg, pointer_type);
+        cb_fail_at_name(c, e, &msg);
+    }
+    let value = cc_arg(e, 1);
+    ck_check_expr(c, value);
+    if (*value).is_lit && (*value).cv != (0 as *void) {
+        cb_volatile_range(c, e, target, *cx_big(value));
+    }
+    if !cx_coerce(c, target, value) {
+        let msg = m_new();
+        m_s(&msg, "volatile_write value must be ");
+        m_t(c, &msg, target);
+        m_s(&msg, ", got ");
+        m_t(c, &msg, (*value).etype);
+        cb_fail_at_name(c, e, &msg);
+    }
+    return (*c).t_void;
+}
+
+fn cb_volatile_range(c: *Ck, e: *Node, target: u64, literal: BigInt) {
+    let range = tb_get(&(*c).int_ranges, target) as *IntRange;
+    if bn_cmp(literal, (*range).low) < 0 || bn_cmp(literal, (*range).high) > 0 {
+        let msg = m_new();
+        m_s(&msg, "integer literal ");
+        cx_value_text(&msg, literal);
+        m_s(&msg, " does not fit in ");
+        m_t(c, &msg, target);
+        m_s(&msg, " (range ");
+        m_t(c, &msg, (*range).low_text);
+        m_s(&msg, "..");
+        m_t(c, &msg, (*range).high_text);
+        m_s(&msg, ")");
+        cb_fail_at_name(c, e, &msg);
+    }
+}
+
+fn cb_volatile_width(c: *Ck, t: u64) -> bool {
+    return cb_is(c, t, "u8") || cb_is(c, t, "u16") || cb_is(c, t, "u32") || cb_is(c, t, "u64")
+        || cb_is(c, t, "i8") || cb_is(c, t, "i16") || cb_is(c, t, "i32") || cb_is(c, t, "i64");
+}
+
+fn cb_ports(c: *Ck, e: *Node, name: u64) -> u64 {
+    let u16_type = (*c).t_u16;
+    if cb_is(c, name, "outb") {
+        cb_argc_is(c, e, 2, "outb expects 2 arguments (port, value)");
+        cb_coerce(c, e, 0, u16_type, "outb port must be u16, got ");
+        cb_coerce(c, e, 1, (*c).t_u8, "outb value must be u8, got ");
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "inb") {
+        cb_argc_is(c, e, 1, "inb expects 1 argument (port)");
+        cb_coerce(c, e, 0, u16_type, "inb port must be u16, got ");
+        return (*c).t_u8;
+    }
+    if cb_is(c, name, "outw") {
+        cb_argc_is(c, e, 2, "outw expects 2 arguments (port, value)");
+        cb_coerce(c, e, 0, u16_type, "outw port must be u16, got ");
+        cb_coerce(c, e, 1, u16_type, "outw value must be u16, got ");
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "inw") {
+        cb_argc_is(c, e, 1, "inw expects 1 argument (port)");
+        cb_coerce(c, e, 0, u16_type, "inw port must be u16, got ");
+        return u16_type;
+    }
+    if cb_is(c, name, "outl") {
+        cb_argc_is(c, e, 2, "outl expects 2 arguments (port, value)");
+        cb_coerce(c, e, 0, u16_type, "outl port must be u16, got ");
+        cb_coerce(c, e, 1, (*c).t_u32, "outl value must be u32, got ");
+        return (*c).t_void;
+    }
+    if cb_is(c, name, "inl") {
+        cb_argc_is(c, e, 1, "inl expects 1 argument (port)");
+        cb_coerce(c, e, 0, u16_type, "inl port must be u16, got ");
+        return (*c).t_u32;
+    }
+    ck_ft1(c, e, "mort: internal error: unhandled builtin ", name, "");
+    return (*c).t_void;
+}

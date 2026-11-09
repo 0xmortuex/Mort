@@ -15,7 +15,12 @@ import lexer;
 import ast;
 import parser;
 import typestr;
+import bignum;
 import checker;
+import check_expr;
+import check_call;
+import check_dump;
+import ast_dump;
 
 fn cm_read_all(path: *u8) -> Buf {
     let handle = file_open(path, "rb");
@@ -191,8 +196,8 @@ fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program) {
 }
 
 fn main() -> int {
-    if arg_count() != 3 {
-        eprintln("usage: check_main MANIFEST OUTPUT");
+    if arg_count() != 3 && arg_count() != 4 {
+        eprintln("usage: check_main MANIFEST OUTPUT [CHECKED_OUTPUT]");
         return 2;
     }
     let strings = intern_new();
@@ -203,6 +208,9 @@ fn main() -> int {
     }
     let checker = ck_new(&strings, &program, arg_get(2),
         span_eq_z(manifest.mode, "freestanding"), span_eq_z(manifest.mode, "test"));
+    if arg_count() == 4 {
+        checker.checked_path = arg_get(3);
+    }
     ck_run(&checker);
     return 0;
 }
