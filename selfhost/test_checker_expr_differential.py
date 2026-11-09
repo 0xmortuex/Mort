@@ -362,7 +362,8 @@ EXPR_CASES = {
     "b_assert_bad": "assert(1);",
     "b_len_kinds": 'let a: [u8; 3] = [1, 2, 3]; let n = len(a); let m = len("x"); let p: *u8 = null; let s = slice<u8>(p, 1); let k = len(s);',
     "b_len_bad": "let n = len(1);",
-    "b_sizeof_types": "let a = sizeof<u8>(); let b = sizeof<*u8>(); let c = sizeof<(u8, i64)>(); let d = sizeof<[u8; 3]>(); let e = sizeof<G<i64>>(); let f = sizeof<E>();",
+    "b_sizeof_types": "let a = sizeof<u8>(); let b = sizeof<*u8>(); let c = sizeof<(u8, i64)>(); let d = sizeof<AArr>(); let e = sizeof<G<i64>>(); let f = sizeof<E>();",
+    "b_sizeof_array_syntax_is_a_parse_error": "let d = sizeof<[u8; 3]>();",
     "b_slice": "let p: *u8 = null; let s = slice<u8>(p, 3); let c: *const u8 = null; let d = slice<u8>(c, 1);",
     "b_slice_bad_ptr": "let s = slice<u8>(1, 3);",
     "b_slice_void": "let p: *void = null; let s = slice<u8>(p, 3);",
@@ -510,7 +511,8 @@ EXPR_CASES = {
     "gen_array_param": "let a: [u8; 2] = [1, 2]; let b = id2(a);",
     "gen_void_arg": "let a = id2(g4());",
     "gen_null_arg": "let a = id2(null);",
-    "gen_recursive_generic": "let b = Gbox<G<u8>> { v: G<u8> { x: 1 } }; let c = b.v.x;",
+    "gen_recursive_generic": "let b = Gbox<G<u8> > { v: G<u8> { x: 1 } }; let c = b.v.x; let d = Gbox<GA> { v: GA { x: 1 } };",
+    "gen_shift_token_in_literal_is_a_parse_error": "let b = Gbox<G<u8>> { v: G<u8> { x: 1 } };",
     "gen_body_error": "let a = bad_body(1);",
     "gen_body_error_instance_only": "let a = bad_struct_only<i64>(1); let b = bad_struct_only<G<u8>>(G<u8> { x: 1 });",
     "gen_same_instance_twice": "let a = id2(1); let b = id2(2); let c = id2<i64>(3);",
@@ -527,6 +529,29 @@ EXPR_CASES = {
     "try_wrong_error_type": "let v = wrong_err<i64>();",
     "try_value_type": "let v = try_u();",
     "try_in_generic": "let v = try_in_generic<i64>();",
+    # boundaries
+    "shift_count_64": "let a: u64 = 1 << 64;",
+    "shift_count_65": "let a: u64 = 1 << 65;",
+    "shift_count_66": "let a: u64 = 1 << 66;",
+    "shift_cap_observable": "let a: u64 = (3 << 70) >> 62; let b: u64 = (3 << 64) >> 62; let c: u64 = (3 << 63) >> 62; let d: u64 = (3 << 65) >> 64;",
+    "shift_zero_left_huge": "let a: u8 = 0 << 1000;",
+    "range_c_long": "let a: c_long = 2147483647; let b: c_long = -2147483648;",
+    "range_c_long_over": "let a: c_long = 2147483648;",
+    "range_c_long_under": "let a: c_long = -2147483649;",
+    "range_c_ulong_over": "let a: c_ulong = 4294967296;",
+    "range_c_ulong_max": "let a: c_ulong = 4294967295;",
+    "range_c_size_over": "let a: c_size = 18446744073709551616;",
+    "range_c_char_over": "let a: c_char = 128;",
+    "range_c_short_over": "let a: c_short = 32768;",
+    "range_c_uint_over": "let a: c_uint = 4294967296;",
+    "f32_max_fits": "let a: f32 = 3.4028234663852886e38;",
+    "f32_next_double_over": "let a: f32 = 3.4028234663852890e38;",
+    "f32_negative_max_fits": "let a: f32 = 1.0; let b = a + 3.4028234663852886e38;",
+    "f32_infinity": "let a: f32 = 1e400;",
+    # generic statements
+    "gen_for_typed": "let a = for_gen<u8>(); let b = for_gen<i64>();",
+    "gen_for_typed_bad": "let a = for_gen<bool>();",
+    "gen_for_typed_range": "let a = for_gen_range<u8>();",
     # moves, resources, defer
     "move_basic": "let r = make_r(); take_r(move r);",
     "move_use_after": "let r = make_r(); take_r(move r); use_r(&r);",
@@ -652,6 +677,9 @@ FN_ONLY_CASES = {
     "ret_after_return": "fn f() -> i64 { return 1; let a = 2; }",
     "ret_match_all": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { return 2; } } }",
     "ret_match_wildcard": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } _ => { return 2; } } }",
+    "ret_match_first_arm_only": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { } } }",
+    "ret_match_last_arm_only": "enum E2 { A, B }\nfn f(a: E2) -> i64 { match a { E2.A => { } E2.B => { return 2; } } }",
+    "ret_match_middle_arm_open": "enum E2 { A, B, C }\nfn f(a: E2) -> i64 { match a { E2.A => { return 1; } E2.B => { } E2.C => { return 3; } } }",
     "ret_match_open": "fn f(a: i64) -> i64 { match a { 1 => { return 1; } } }",
     "ret_match_payload": "enum E2 { A(i64) }\nfn f(a: E2) -> i64 { match a { E2.A(v) => { return v; } } }",
     "ret_void_value": "fn f() { return 1; }",
@@ -695,6 +723,8 @@ FN_ONLY_CASES = {
 
 T5_MAIN_HELPERS = """
 fn g4() { }
+fn for_gen<T>() -> u64 { for i: T in 0..3 { let j: T = i; } return 1; }
+fn for_gen_range<T>() -> u64 { for i: T in 0..300 { let j = i; } return 1; }
 fn narrow(a: u8) -> u8 { return a; }
 fn tcb(ctx: *void) -> i64 { return 0; }
 fn bad_body<T>(a: T) -> T { let x: u8 = true; return a; }
@@ -982,6 +1012,8 @@ MODULE_CASES = {
     "generic": "import lib as u;\nfn main() -> int { let a = u.same(1); let b = u.same(true); return a; }\n",
     "private": "import lib as u;\nfn main() -> int { return u.hidden(1); }\n",
     "private_generic": "import lib as u;\nfn main() -> int { return u.secret(1); }\n",
+    "private_value": "import lib as u;\nfn main() -> int { let f = u.hidden; return 0; }\n",
+    "private_generic_value": "import lib as u;\nfn main() -> int { let f = u.secret; return 0; }\n",
     "fn_value": "import lib as u;\nfn main() -> int { let f = u.add; return f(1, 2); }\n",
     "arg_mismatch": "import lib as u;\nfn main() -> int { return u.add(true, 2); }\n",
     "unknown_member": "import lib as u;\nfn main() -> int { return u.nothing(); }\n",

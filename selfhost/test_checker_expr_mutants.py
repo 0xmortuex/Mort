@@ -20,7 +20,9 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
 from test_checker_decl_differential import OK_MAIN, check_exe  # noqa: E402,F401
-from test_checker_expr_differential import EXPR_CASES, FN_ONLY_CASES, compare, full_body  # noqa: E402
+from test_checker_expr_differential import (  # noqa: E402
+    EXPR_CASES, FN_ONLY_CASES, LIBRARY, MODULE_CASES, compare, full_body,
+)
 
 
 def named(*names):
@@ -31,7 +33,66 @@ def fn_level(*names):
     return [FN_ONLY_CASES[name] + "\n" + OK_MAIN for name in names]
 
 
+def module(*names):
+    """A probe of two files: (library source, root source)."""
+    return [(LIBRARY, MODULE_CASES[name]) for name in names]
+
+
 MUTANTS = {
+    "generics_for_annotation_not_substituted": (
+        "check_call.mx",
+        "    } else if (kind == NodeKind.LET || kind == NodeKind.FOR) && (*n).ty != NO_TEXT {\n        (*n).ty = ck_substitute",
+        "    } else if kind == NodeKind.LET && (*n).ty != NO_TEXT {\n        (*n).ty = ck_substitute",
+        named("gen_for_typed", "gen_for_typed_bad", "gen_for_typed_range"),
+    ),
+    "modules_private_function_usable_as_value": (
+        "check_expr.mx",
+        "            if !(*decl).flag || (*decl).kind == NodeKind.EXTERN_FN_DECL {",
+        "            if false {",
+        module("private_value"),
+    ),
+    "returns_match_counted_from_first_arm": (
+        "check_expr.mx",
+        "            for j: u64 in 0..ck_items_len(arms) {\n                if !ck_block_always_returns",
+        "            for j: u64 in 0..1 {\n                if !ck_block_always_returns",
+        fn_level("ret_match_first_arm_only", "ret_match_middle_arm_open"),
+    ),
+    "folding_shift_cap_starts_at_64": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 || bn_mag_u64(b) >= 64 {",
+        named("shift_count_64", "shift_cap_observable"),
+    ),
+    "folding_shift_cap_starts_at_66": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 || bn_mag_u64(b) > 65 {",
+        named("shift_cap_observable", "shift_count_65"),
+    ),
+    "folding_shift_cap_removed": (
+        "bignum.mx",
+        "    if b.len > 1 || bn_mag_u64(b) > 64 {",
+        "    if b.len > 1 {",
+        named("shift_cap_observable", "shift_count_66"),
+    ),
+    "ranges_c_long_is_64_bit": (
+        "check_expr.mx",
+        '    cx_add_range(c, "c_long", "-2147483648", "2147483647");',
+        '    cx_add_range(c, "c_long", "-9223372036854775808", "9223372036854775807");',
+        named("range_c_long_over", "range_c_long_under"),
+    ),
+    "floats_f32_boundary_excluded": (
+        "check_expr.mx",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000000",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) >= 0x47EFFFFFE0000000",
+        named("f32_max_fits"),
+    ),
+    "floats_f32_limit_one_step_up": (
+        "check_expr.mx",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000000",
+        "((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000001",
+        named("f32_next_double_over"),
+    ),
     "inference_literal_operand_not_retagged": (
         "check_expr.mx",
         "        cx_retag_literal(c, right, lt);\n        return lt;",
@@ -148,6 +209,9 @@ def probe_disagreements(exe, probes, tmp_path):
     failures = []
     for index, source in enumerate(probes):
         path = tmp_path / f"probe{index}.mx"
+        if isinstance(source, tuple):
+            (tmp_path / "lib.mx").write_bytes(source[0].encode("utf-8"))
+            source = source[1]
         path.write_bytes(source.encode("utf-8"))
         try:
             compare(exe, path, "hosted", tmp_path)
