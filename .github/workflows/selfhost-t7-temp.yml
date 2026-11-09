@@ -1,0 +1,35 @@
+name: Selfhost T7 per-file (temporary)
+
+on:
+  push:
+    branches: [feat/selfhost-t7]
+
+jobs:
+  file:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - selfhost/test_codegen_expr_differential.py
+          - selfhost/test_codegen_differential.py
+          - selfhost/test_codegen_mutants.py
+          - selfhost/test_generated_corpus.py
+          - selfhost/test_checker_expr_differential.py
+          - selfhost/test_checker_expr_mutants.py
+          - selfhost/test_checker_decl_differential.py
+          - selfhost/test_parser_differential.py
+          - selfhost/test_lexer_differential.py
+          - selfhost/test_support.py selfhost/test_bignum.py
+          - tests
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest ${{ matrix.target }} -q --tb=short --durations=8
