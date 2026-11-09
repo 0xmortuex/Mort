@@ -41,7 +41,7 @@ MUTANTS = {
         "codegen.mx",
         '    b = cg_step(&b, "->", "_to_");\n',
         "",
-        [declaration("struct_fields")],
+        [declaration("tag_of_function_type")],
     ),
     "const_pointer_spelled_wrong": (
         "codegen.mx",
@@ -119,7 +119,10 @@ MUTANTS = {
         "            cg_use_int(g, CG_OP_WRAP, at);\n"
         "        }\n",
         "",
-        [f"fn main() -> int {{\nlet a: i32 = 1;\na <<= 1;\nreturn 0;\n}}\n"],
+        # The real generator's effects are already closed over shifts, so the
+        # request must come from a set holding only the shift.
+        [MAIN],
+        py_codegen_dump.Effects(ints=[("shl", "i32")]),
     ),
     "slice_found_only_in_declared_types": (
         "codegen.mx",

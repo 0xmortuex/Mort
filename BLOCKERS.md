@@ -57,6 +57,10 @@ Interim: declare the exact C signature (`end: **c_char`).
   by T4, whose reference (`selfhost/py_check_dump.py`) makes that iteration
   insertion-ordered so the comparison is stable.
 
+- `_split_type_list` counts the `>` of `->` as a closing angle, so a comma after a
+  function type is not a separator: `fn h(a: (fn(i64) -> i64, u8)) -> void { }` is
+  "unknown type (fn(i64)->i64,u8)". Found by T6. The Mort port reproduces it.
+
 Found by the program generator (T2c). None is fixed here; the generator stays
 clear of each one, and says so where it does:
 

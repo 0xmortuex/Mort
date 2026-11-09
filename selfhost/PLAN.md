@@ -211,7 +211,7 @@ measured data point.
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | done |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
-| T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
+| T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | done (section 14; estimated 12 to 20) |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
@@ -610,6 +610,37 @@ each query here charges the first walk's cost (the walk stops at the first
 resource, visits each type once and is preorder). `test_recursion_at_the_parser_limit`
 caught that the T5 port queried drops only for variables; the charge now agrees
 and the nested-tuple shape runs out of budget as Python does.
+
+## 14. C generator status (T6)
+
+`selfhost/codegen.mx` (types, declarations, drop helpers, the program head),
+`cg_stmt.mx` (statements, defers, `try` lowering), `cg_helpers.mx` (helper
+selection and the integer helpers), the generated `cg_helper_text.mx` (constant
+concurrency, network and random text, from `tools/gen_helper_text.py`, a test
+keeps it current), `manifest.mx` (split out of `check_main.mx`) and `cg_main.mx`
+(the driver). Time: about 70 minutes by commit timestamps, against 12 to 20 estimated, most of it the
+merge reconciliation in section 12.
+
+- **Scope of "in isolation".** Statements contain expressions, whose text is T7.
+  `cg_expr` writes a placeholder (`$Kind@line:col:type$`, shaped like the real text
+  where `_gen_cond` can tell), and `py_codegen_dump.py` runs the real `CodeGen` with
+  only `_gen_expr` replaced, so every other byte is compared. The real generator
+  runs once first to find what expressions contribute (`used_*`, integer helpers,
+  the string table); both sides receive that, so helper selection is compared on
+  what each program really uses. Correction to the plan: T7's list is now
+  `cg_expr`, its charges, and removing the forced file and `cg_apply_forced`.
+- **Tests.** `test_codegen_differential.py`: every repo `.mx` in three modes, the
+  generated corpus, stubbed kernel, compiler sources, constructs one at a time,
+  every flag and integer helper alone and together, hash seeds, paths, hostile
+  programs under the 500 MB guard. `test_codegen_mutants.py`: 17 planted bugs.
+- **Recursion.** `cg_prepare_try`, `ck_contains_try` and the collectors are
+  iterative on the unbounded left spine; pointer prefixes in `c_type` and
+  `visit_type` loop, because aliases can spell tens of thousands of `*`. Statements
+  and other type constructors recurse within the parser and alias limits.
+- **Known limits.** `--coverage` output is not ported (not needed to bootstrap).
+  Charges count bytes where Python counts code points, as the checker does, so a
+  non-ASCII type name can move a budget failure by a few units. A `KeyError` in
+  Python's `c_type` is an internal-error exit (2) here.
 
 ## 13. Generator status (T2c)
 
