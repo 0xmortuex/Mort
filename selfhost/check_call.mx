@@ -12,7 +12,7 @@ import bignum;
 import checker;
 import check_expr;
 
-const MAX_FUNCTION_TEMPLATE_NAME_DEPTH: u64 = 0;
+const WORK_UNITS_PER_NODE: u64 = 8;
 
 // ----- generic functions -----
 
@@ -128,6 +128,67 @@ fn cc_fail_produced(c: *Ck, node: *Node, name: u64, what: *u8, t: u64) {
     ck_fail_node(c, node, &msg);
 }
 
+// `ast_size`: the nodes of a template, as Python's walk counts them. Parameters
+// are plain objects and a struct literal's fields are tuples, so it stops at both.
+fn cc_ast_size(root: *Node) -> u64 {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    let count: u64 = 0;
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        if (*n).kind == NodeKind.PARAM || (*n).kind == NodeKind.STRUCT_LIT_FIELD {
+            continue;
+        }
+        count += 1;
+        ck_push_children(&stack, n);
+    }
+    free(stack.data as *void);
+    return count;
+}
+
+// The limits of `_instantiate_function` on main, reported at the call. A
+// template's `num` caches its size, plus one so that zero means unset.
+fn cc_charge_instance(c: *Ck, template: *Node, values: *U64Vec, node: *Node) {
+    (*c).generic_instantiations += 1;
+    if (*template).num == 0 {
+        (*template).num = cc_ast_size(template) + 1;
+    }
+    (*c).current_node = node;
+    (*c).work_instantiated = true;
+    ck_spend(c, ((*template).num - 1) * WORK_UNITS_PER_NODE);
+    let too_long = false;
+    let too_deep = false;
+    for i: u64 in 0..(*values).len {
+        let text = intern_text((*c).s, u64vec_get(values, i));
+        if text.len > MAX_TYPE_ARGUMENT_LENGTH {
+            too_long = true;
+        }
+        if ts_type_nesting(text) > MAX_TYPE_ARGUMENT_NESTING {
+            too_deep = true;
+        }
+    }
+    if (*c).generic_instantiations <= MAX_GENERIC_INSTANTIATIONS && !too_long && !too_deep {
+        return;
+    }
+    let msg = m_new();
+    m_s(&msg, "generic instantiation of ");
+    m_r(c, &msg, (*template).name);
+    if (*c).generic_instantiations > MAX_GENERIC_INSTANTIATIONS {
+        m_s(&msg, " exceeds the limit of ");
+        m_u(&msg, MAX_GENERIC_INSTANTIATIONS);
+        m_s(&msg, " in one program");
+    } else if too_long {
+        m_s(&msg, " has a type argument longer than ");
+        m_u(&msg, MAX_TYPE_ARGUMENT_LENGTH);
+        m_s(&msg, " characters");
+    } else {
+        m_s(&msg, " has a type argument nested more than ");
+        m_u(&msg, MAX_TYPE_ARGUMENT_NESTING);
+        m_s(&msg, " levels deep");
+    }
+    ck_fail_node(c, node, &msg);
+}
+
 // _instantiate_function. `values` runs parallel to the template's parameters;
 // NO_TEXT is a parameter that was not inferred.
 fn cc_instantiate_function(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) -> u64 {
@@ -157,7 +218,7 @@ fn cc_instantiate_function(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) 
     if tb_has(&(*c).funcs, concrete) {
         return concrete;
     }
-    ck_charge_generic(c, template, values, node);
+    cc_charge_instance(c, template, values, node);
     let instance = cc_deep_copy(template);
     cc_substitute_all(c, instance, params, values);
     (*instance).names = ast_new_names();
@@ -591,7 +652,7 @@ fn cc_track_destructor_call(c: *Ck, e: *Node, resolved: u64) {
         (*f).destroys_binding = name;
         (*f).deferred_destroy = (*c).checking_defer;
         if !(*c).checking_defer {
-            (*b).bmoved = true;
+            cx_mark_moved(c, b);
         }
     }
 }

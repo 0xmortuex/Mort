@@ -10,6 +10,7 @@ the drop table and the warnings. When the Python checker reports an error, the
 message and location must be equal and the walk up to that point the same.
 """
 import ast
+import collections
 import os
 import subprocess
 import sys
@@ -112,8 +113,6 @@ fn destroy(value: *R) -> void { }
 fn make_r() -> R { return R { v: 1 }; }
 fn use_r(r: *R) -> i64 { return (*r).v; }
 fn take_r(r: R) -> void { }
-resource struct RG<T> { v: T }
-fn destroy<T>(value: *RG<T>) -> void { }
 struct Holder { r: R, n: i64 }
 enum Owns { Has(R), Empty }
 enum Result<V, E> { Ok(V), Err(E) }
@@ -517,8 +516,6 @@ EXPR_CASES = {
     "gen_nested_instantiation": "let a = outer_gen(1);",
     "gen_enum_ctor_inside": "let a = wrap_enum(1); let b = wrap_enum(true);",
     "gen_match_inside": "let a = unwrap_gen(O<u8>.Some(1), 2);",
-    "gen_resource": "let r = RG<u8> { v: 1 }; let s = RG<u8> { v: 2 }; use_rg(&r); take_rg(move s);",
-    "gen_resource_destroy_call": "let r = RG<u8> { v: 1 }; destroy(&r);",
     "gen_alias_args": "let a = id2<AU32>(1);",
     "gen_return_mismatch": "let a = id2<bool>(true); let b: u8 = id2(true);",
     "gen_private_template": "let a = hidden_gen();",
@@ -526,7 +523,7 @@ EXPR_CASES = {
     "try_ok": "let v = propagates();",
     "try_outside_result": "let v = try may_i();",
     "try_non_result": "let v = try g();",
-    "try_wrong_error_type": "let v = wrong_err();",
+    "try_wrong_error_type": "let v = wrong_err<i64>();",
     "try_value_type": "let v = try_u();",
     "try_in_generic": "let v = try_in_generic<i64>();",
     # moves, resources, defer
@@ -630,6 +627,10 @@ EXPR_CASES = {
     "alias_fn": "let f: AFn = add_one; let v = f(1);",
 }
 
+GENERIC_RESOURCE = (
+    "resource struct RG<T> { v: T }\nfn destroy<T>(value: *RG<T>) -> void { }\n"
+    "fn use_rg<T>(r: *RG<T>) -> void { }\nfn take_rg<T>(r: RG<T>) -> void { }\n")
+
 FN_ONLY_CASES = {
     "ret_missing_int": "fn f() -> i64 { }",
     "ret_ok_if_both": "fn f(a: bool) -> i64 { if a { return 1; } else { return 2; } }",
@@ -683,6 +684,10 @@ FN_ONLY_CASES = {
     "destructor_drop_order": "resource struct R2 { x: i64 }\nfn destroy(v: *R2) -> void { }\nstruct H1 { r: R2 }\nstruct H2 { h: H1, r: R2 }\nfn f(h: H2) { }\nfn g(a: (R2, i64)) { }",
     "destructor_drop_enum": "resource struct R2 { x: i64 }\nfn destroy(v: *R2) -> void { }\nenum E2 { A(R2), B(*R2) }\nfn f(e: E2) { match move e { E2.A(r) => { } E2.B(p) => { } } }",
     "destructor_generic_instance": "resource struct R2<T> { x: T }\nfn destroy<T>(v: *R2<T>) -> void { }\nfn f(a: R2<u8>, b: R2<i64>) { }",
+    "generic_resource_flow": GENERIC_RESOURCE + "fn main2() { let r = RG<u8> { v: 1 }; let s = RG<u8> { v: 2 }; use_rg(&r); take_rg(move s); destroy(&r); }",
+    "generic_resource_use_after_destroy": GENERIC_RESOURCE + "fn main2() { let r = RG<u8> { v: 1 }; destroy(&r); use_rg(&r); }",
+    "generic_resource_two_instances": GENERIC_RESOURCE + "fn main2() { let r = RG<u8> { v: 1 }; let s = RG<i64> { v: 2 }; take_rg(move r); take_rg(move s); }",
+    "generic_resource_deferred": GENERIC_RESOURCE + "fn main2() { let r = RG<u8> { v: 1 }; defer destroy(&r); use_rg(&r); }",
     "destructor_generic_nested": "resource struct R2<T> { x: T }\nfn destroy<T>(v: *R2<T>) -> void { }\nstruct H<T> { r: R2<T> }\nfn f(a: H<u8>) { }",
 }
 
@@ -697,9 +702,7 @@ fn outer_gen<T>(a: T) -> T { return inner_gen(a); }
 fn inner_gen<T>(a: T) -> T { let b: T = a; return b; }
 fn wrap_enum<T>(a: T) -> O<T> { return O<T>.Some(a); }
 fn unwrap_gen<T>(o: O<T>, d: T) -> T { match o { O<T>.Some(v) => { return v; } O<T>.None => { return d; } } }
-fn use_rg<T>(r: *RG<T>) -> void { }
-fn take_rg<T>(r: RG<T>) -> void { }
-fn wrong_err() -> Result<i64, u8> { let v = try may_i(); return Result<i64, u8>.Ok(v); }
+fn wrong_err<T>() -> Result<i64, u8> { let v = try may_i(); return Result<i64, u8>.Ok(v); }
 fn try_u() -> Result<i64, i64> { let v = try may_u(); return Result<i64, i64>.Ok(v as i64); }
 fn try_in_generic<T>() -> Result<i64, i64> { let v = try may_i(); return Result<i64, i64>.Ok(v); }
 fn destroy_param(r: R) -> void { }
@@ -726,6 +729,23 @@ def test_case_counts():
 
 def test_corpus_is_not_empty():
     assert len(REPO_FILES) >= 100
+
+
+def test_cases_exercise_the_checker(tmp_path):
+    """A prelude that does not compile makes every case agree on one error and
+    prove nothing, which is exactly how this suite first passed."""
+    outcomes = collections.Counter()
+    errors = collections.Counter()
+    path = tmp_path / "input.mx"
+    for text in EXPR_CASES.values():
+        path.write_bytes(full_body(text).encode("utf-8"))
+        result = py_check_dump.run_reference(path, "hosted", exact=True)
+        outcomes[result.outcome] += 1
+        if result.error is not None:
+            errors[result.error.split("error: ", 1)[-1]] += 1
+    assert outcomes["ok"] >= 150, outcomes
+    assert outcomes["error"] >= 200, outcomes
+    assert errors.most_common(1)[0][1] <= len(EXPR_CASES) // 10, errors.most_common(3)
 
 
 def test_dump_covers_every_field_the_checker_assigns():

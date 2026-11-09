@@ -182,7 +182,6 @@ fn cx_needs_drop(c: *Ck, root: u64) -> bool {
     if map_get(memo, root, &known) {
         return known == 1;
     }
-    ck_spend(c, 1);
     let work = u64vec_new();
     u64vec_push(&work, root);
     while work.len > 0 {
@@ -206,11 +205,11 @@ fn cx_needs_drop(c: *Ck, root: u64) -> bool {
             free(children.data as *void);
             continue;
         }
+        ck_spend(c, 1);
         let pending = false;
         let result = false;
         for i: u64 in 0..children.len {
             let child = u64vec_get(&children, i);
-            ck_spend(c, 1);
             let value: u64 = 0;
             if map_get(memo, child, &value) {
                 if value == 1 {
@@ -371,54 +370,71 @@ fn cx_finish_scope(c: *Ck) {
     }
 }
 
-// A copy of every live binding's moved flag; the caller frees it. Snapshots of
-// one statement see the same bindings, so they can be merged by position.
-fn cx_move_snapshot(c: *Ck) -> *u8 {
-    let count = (*c).bindings.len;
+// Move state as on main: only bindings that have been moved can differ between
+// branches, so a snapshot covers those and plain locals cost nothing. Bindings
+// are recorded in the order they are first moved, so an earlier snapshot is a
+// prefix of a later one.
+struct MoveSnap {
+    flags: *u8,
+    count: u64,
+}
+
+fn cx_mark_moved(c: *Ck, b: *Binding) {
+    (*b).bmoved = true;
+    if !(*b).brecorded {
+        (*b).brecorded = true;
+        ptrvec_push(&(*c).moved_bindings, b as *void);
+    }
+}
+
+fn cx_move_snapshot(c: *Ck) -> *MoveSnap {
+    let count = (*c).moved_bindings.len;
+    ck_spend(c, (count * 4) / WORK_CHARS_PER_UNIT);
     let flags = sup_alloc(count + 1) as *u8;
     for i: u64 in 0..count {
-        let b = ptrvec_get(&(*c).bindings, i) as *Binding;
+        let b = ptrvec_get(&(*c).moved_bindings, i) as *Binding;
         if (*b).bmoved {
             flags[i] = 1;
         } else {
             flags[i] = 0;
         }
     }
-    return flags;
+    let snap = sup_alloc(sizeof<MoveSnap>()) as *MoveSnap;
+    *snap = MoveSnap { flags: flags, count: count };
+    return snap;
 }
 
-fn cx_restore_moves(c: *Ck, flags: *u8) {
-    for i: u64 in 0..(*c).bindings.len {
-        let b = ptrvec_get(&(*c).bindings, i) as *Binding;
-        (*b).bmoved = flags[i] == 1;
+fn cx_free_snapshot(snap: *MoveSnap) {
+    free((*snap).flags as *void);
+    free(snap as *void);
+}
+
+fn cx_restore_moves(c: *Ck, snap: *MoveSnap) {
+    for i: u64 in 0..(*c).moved_bindings.len {
+        let b = ptrvec_get(&(*c).moved_bindings, i) as *Binding;
+        (*b).bmoved = i < (*snap).count && (*snap).flags[i] == 1;
     }
 }
 
-fn cx_merge_moves(c: *Ck, a: *u8, b: *u8) {
-    let count = (*c).bindings.len;
-    for i: u64 in 0..count {
-        let moved = a[i] == 1;
-        if b != (0 as *u8) && b[i] == 1 {
-            moved = true;
-        }
-        let item = ptrvec_get(&(*c).bindings, i) as *Binding;
-        (*item).bmoved = moved;
-    }
-}
-
-// _merge_move_snapshots over any number of snapshots, as flags-or.
+// _merge_move_snapshots: a binding is moved if any snapshot has it moved.
+// Bindings outside every snapshot were restored as unmoved and stay so.
 fn cx_or_moves(c: *Ck, states: *PtrVec) {
-    let count = (*c).bindings.len;
-    for i: u64 in 0..count {
+    for i: u64 in 0..(*c).moved_bindings.len {
+        let known = false;
         let moved = false;
         for j: u64 in 0..(*states).len {
-            let flags = ptrvec_get(states, j) as *u8;
-            if flags[i] == 1 {
-                moved = true;
+            let snap = ptrvec_get(states, j) as *MoveSnap;
+            if i < (*snap).count {
+                known = true;
+                if (*snap).flags[i] == 1 {
+                    moved = true;
+                }
             }
         }
-        let item = ptrvec_get(&(*c).bindings, i) as *Binding;
-        (*item).bmoved = moved;
+        if known {
+            let b = ptrvec_get(&(*c).moved_bindings, i) as *Binding;
+            (*b).bmoved = moved;
+        }
     }
 }
 
@@ -650,6 +666,7 @@ fn cx_is_spine(n: *Node) -> bool {
 
 fn ck_check_expr(c: *Ck, e: *Node) -> u64 {
     if !cx_is_spine(e) {
+        (*c).current_node = e;
         cx_check_leaf(c, e);
         return (*e).etype;
     }
@@ -660,6 +677,7 @@ fn ck_check_expr(c: *Ck, e: *Node) -> u64 {
         ptrvec_push(stack, cursor as *void);
         cursor = (*cursor).a;
     }
+    (*c).current_node = cursor;
     cx_check_leaf(c, cursor);
     while (*stack).len > base {
         let n = ptrvec_pop(stack) as *Node;
@@ -802,7 +820,7 @@ fn cx_move(c: *Ck, e: *Node) {
             ck_fail_z(c, e, "cannot move a resource declared outside a repeating loop");
         }
         (*b).bused = true;
-        (*b).bmoved = true;
+        cx_mark_moved(c, b);
     }
     ck_ev_head(c, "move", name);
     ck_ev_where(c, b);
@@ -1719,18 +1737,22 @@ fn ck_if(c: *Ck, s: *Node) {
         after_else = cx_move_snapshot(c);
     }
     cx_restore_moves(c, before);
-    if !then_returns && !else_returns {
-        cx_merge_moves(c, after_then, after_else);
-    } else if !then_returns {
-        cx_merge_moves(c, after_then, 0 as *u8);
-    } else if !else_returns {
-        cx_merge_moves(c, after_else, 0 as *u8);
+    let live = ptrvec_new();
+    if !then_returns {
+        ptrvec_push(&live, after_then as *void);
     }
-    free(after_then as *void);
+    if !else_returns {
+        ptrvec_push(&live, after_else as *void);
+    }
+    if live.len > 0 {
+        cx_or_moves(c, &live);
+    }
+    free(live.data as *void);
+    cx_free_snapshot(after_then);
     if after_else != before {
-        free(after_else as *void);
+        cx_free_snapshot(after_else);
     }
-    free(before as *void);
+    cx_free_snapshot(before);
 }
 
 fn ck_for(c: *Ck, s: *Node) {
@@ -2004,10 +2026,10 @@ fn ck_match(c: *Ck, s: *Node) {
         cx_or_moves(c, &states);
     }
     for i: u64 in 0..states.len {
-        free(ptrvec_get(&states, i));
+        cx_free_snapshot(ptrvec_get(&states, i) as *MoveSnap);
     }
     free(states.data as *void);
-    free(before as *void);
+    cx_free_snapshot(before);
     let facts = cx_facts(s);
     if tb_has(&(*c).enums, subject_type) {
         let info = tb_get(&(*c).enums, subject_type) as *EnumInfo;
@@ -2040,9 +2062,7 @@ fn ck_match(c: *Ck, s: *Node) {
 
 fn ck_stmt(c: *Ck, s: *Node) {
     let kind = (*s).kind;
-    if (*s).line != 0 {
-        (*c).current_node = s;
-    }
+    (*c).current_node = s;
     if kind == NodeKind.LET {
         ck_let(c, s);
     } else if kind == NodeKind.ASSIGN {
@@ -2126,6 +2146,7 @@ fn ck_function_body(c: *Ck, f: *Node) {
     (*c).current_aliases = (*f).import_aliases;
     (*c).current_ret = (*f).ty;
     (*c).loop_depth = 0;
+    (*c).moved_bindings.len = 0;
     ck_reset_scopes(c);
     let params = (*f).items;
     for i: u64 in 0..ck_items_len(params) {
@@ -2151,6 +2172,7 @@ fn ck_test_body(c: *Ck, t: *Node) {
     (*c).current_aliases = (*t).import_aliases;
     (*c).current_ret = (*c).t_void;
     (*c).loop_depth = 0;
+    (*c).moved_bindings.len = 0;
     ck_reset_scopes(c);
     ck_block_stmts(c, (*t).a);
     cx_finish_scope(c);

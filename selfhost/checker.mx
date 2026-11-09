@@ -134,6 +134,7 @@ struct Binding {
     btype: u64,
     bused: bool,
     bmoved: bool,
+    brecorded: bool,
     bloop: u64,
     bnode: *Node,
 }
@@ -271,6 +272,7 @@ struct Ck {
     stack_nodes: PtrVec,
 
     warnings: PtrVec,
+    moved_bindings: PtrVec,
     checked_path: *u8,
 
     tables: Buf,
@@ -359,7 +361,7 @@ fn ck_fail_node(c: *Ck, node: *Node, message: *Buf) {
     if node == (0 as *Node) {
         ck_exit_diag(c, 0, NO_TEXT, buf_span(message));
     }
-    ck_exit_diag(c, (*node).line, (*node).file, buf_span(message));
+    ck_exit_diag_col(c, (*node).line, (*node).col, (*node).file, buf_span(message));
 }
 
 fn ck_fail_z(c: *Ck, node: *Node, text: *u8) {
@@ -1037,7 +1039,7 @@ fn ck_node_count(root: *Node) -> u64 {
 // `_instantiate_function`'s limits on fix/frontend-crashes, applied here before
 // the arguments are validated, because validating them is what recurses. A
 // template's `num` caches its node count, plus one so that zero means unset.
-fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec, site: *Node) {
+fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
     if (*template).num == 0 {
         (*template).num = ck_node_count(template) + 1;
     }
@@ -1057,20 +1059,20 @@ fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec, site: *Node) {
         m_s(&msg, "exceeds the limit of ");
         m_u(&msg, MAX_GENERIC_INSTANTIATIONS);
         m_s(&msg, " in one program");
-        ck_fail_node(c, site, &msg);
+        ck_fail_node(c, template, &msg);
     }
     if (*c).generic_work > MAX_GENERIC_WORK {
         m_s(&msg, "exceeds the limit of ");
         m_u(&msg, MAX_GENERIC_WORK);
         m_s(&msg, " work units in one program");
-        ck_fail_node(c, site, &msg);
+        ck_fail_node(c, template, &msg);
     }
     for i: u64 in 0..(*args).len {
         if intern_text((*c).s, u64vec_get(args, i)).len > MAX_TYPE_ARGUMENT_LENGTH {
             m_s(&msg, "has a type argument longer than ");
             m_u(&msg, MAX_TYPE_ARGUMENT_LENGTH);
             m_s(&msg, " characters");
-            ck_fail_node(c, site, &msg);
+            ck_fail_node(c, template, &msg);
         }
     }
     for i: u64 in 0..(*args).len {
@@ -1078,7 +1080,7 @@ fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec, site: *Node) {
             m_s(&msg, "has a type argument nested more than ");
             m_u(&msg, MAX_TYPE_ARGUMENT_NESTING);
             m_s(&msg, " levels deep");
-            ck_fail_node(c, site, &msg);
+            ck_fail_node(c, template, &msg);
         }
     }
     free(msg.data as *void);
@@ -1099,7 +1101,7 @@ fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
     if args.len != ck_names_len((*template).names) {
         return false;
     }
-    ck_charge_generic(c, template, &args, template);
+    ck_charge_generic(c, template, &args);
     if !ck_all_valid(c, &args) {
         return false;
     }
@@ -1166,7 +1168,7 @@ fn ck_instantiate_enum(c: *Ck, concrete: u64) -> bool {
     if args.len != ck_names_len((*template).names) {
         return false;
     }
-    ck_charge_generic(c, template, &args, template);
+    ck_charge_generic(c, template, &args);
     if !ck_all_valid(c, &args) {
         return false;
     }
@@ -1747,7 +1749,7 @@ fn ck_new_binding(c: *Ck, name: u64, kind: u64, node: *Node, mutable: bool, btyp
     *b = Binding {
         bname: name, depth: (*c).scope_depth, bline: (*node).line, bkind: kind,
         bmutable: mutable, bprev: previous, btype: btype, bused: false,
-        bmoved: false, bloop: (*c).loop_depth, bnode: node,
+        bmoved: false, brecorded: false, bloop: (*c).loop_depth, bnode: node,
     };
     ptrvec_push(&(*c).bindings, b as *void);
     map_put(&(*c).bind_map, name, (*c).bindings.len);
@@ -2077,7 +2079,7 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         scope_starts: u64vec_new(), scope_depth: 0,
         current_module: NO_TEXT, current_aliases: 0 as *Map, loop_depth: 0,
         current_ret: NO_TEXT, checking_defer: false, suppress_events: false, events_mark: 0,
-        stack_nodes: ptrvec_new(), warnings: ptrvec_new(), checked_path: 0 as *u8,
+        stack_nodes: ptrvec_new(), warnings: ptrvec_new(), moved_bindings: ptrvec_new(), checked_path: 0 as *u8,
         tables: buf_new(4096), tables_done: false, events: buf_new(4096),
     };
     ck_make_set(strings, &c.int_types,

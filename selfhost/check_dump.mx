@@ -100,6 +100,9 @@ fn cd_const(out: *Buf, value: *BigInt) {
 
 fn cd_suffix(c: *Ck, out: *Buf, n: *Node) {
     let kind = (*n).kind;
+    if kind == NodeKind.STRUCT_LIT_FIELD {
+        return;
+    }
     buf_push_z(out, " |");
     let is_ast_node = kind != NodeKind.PARAM && kind != NodeKind.STRUCT_FIELD
         && kind != NodeKind.ENUM_VARIANT && kind != NodeKind.STRUCT_LIT_FIELD;
@@ -269,12 +272,14 @@ fn cd_write(c: *Ck) {
     };
     let program = (*c).program;
     ad_program_line(&dumper, program);
+    out.len -= 1;
+    buf_push_z(&out, " | type=none is_lit=false const_val=none");
+    buf_push(&out, 10);
     let k = dumper.pending.len;
     while k > 0 {
         k -= 1;
         ptrvec_push(&dumper.stack, ptrvec_get(&dumper.pending, k));
     }
-    buf_push_z(&out, "");
     while dumper.stack.len > 0 {
         let n = ptrvec_pop(&dumper.stack) as *Node;
         dumper.pending.len = 0;

@@ -524,6 +524,7 @@ def _describe(item):
     skipped.update(dict.fromkeys(CHECKED_SUFFIX.get(name, ()), None))
     skipped.update(dict.fromkeys(DYNAMIC_FIELDS, None))
     skipped["filename"] = None
+    skipped["drop_destructors"] = None  # dumped after --final--
     if isinstance(item, A.Node):
         skipped.update(py_ast_dump.BASE_NODE_FIELDS)
     children = []
