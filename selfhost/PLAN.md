@@ -210,7 +210,7 @@ measured data point.
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | done |
-| T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 3 hours of agent time, see section 12; estimated 14 to 24) |
+| T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
@@ -561,7 +561,8 @@ When that branch lands, T4 must also:
 `selfhost/check_expr.mx` (expressions, coercion, folding, statements, moves),
 `check_call.mx` (calls, generics, every builtin) and `check_dump.mx` (the checked
 dump). T4's walk in `checker.mx` is gone; declarations stay there. Time: about
-three hours of agent time against 14 to 24 estimated, for the reason T4 gave: the
+two hours elapsed by commit timestamps, including a pause for a usage limit,
+against 14 to 24 estimated, for the reason T4 gave: the
 checker ports line by line and the harness was already there. Most of the time
 went on the tests, not the port.
 
