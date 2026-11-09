@@ -14,15 +14,6 @@ jobs:
       matrix:
         target:
           - selfhost/test_codegen_expr_differential.py
-          - selfhost/test_codegen_differential.py
-          - selfhost/test_codegen_mutants.py
-          - selfhost/test_generated_corpus.py
-          - selfhost/test_checker_expr_differential.py
-          - selfhost/test_checker_expr_mutants.py
-          - selfhost/test_checker_decl_differential.py
-          - selfhost/test_parser_differential.py
-          - selfhost/test_lexer_differential.py
-          - selfhost/test_support.py selfhost/test_bignum.py
           - tests
     env:
       PYTHONUTF8: "1"
