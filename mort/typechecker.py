@@ -1150,6 +1150,17 @@ class Checker:
 
         if isinstance(expr, A.ArrayRepeat):
             self._check_expr(expr.value)
+            # The value is evaluated once per element, so it can name or move
+            # one resource only by duplicating it.
+            self._require_explicit_move(expr.value.type, expr.value)
+            if self._any_subexpression(
+                    expr.value,
+                    lambda n: isinstance(n, A.Move) and n.is_resource_move):
+                self._error(
+                    "an array repeat evaluates its value once per element, so "
+                    "it cannot move a resource",
+                    node,
+                )
             if elem is None:
                 elem, size = expr.value.type, expr.count
             else:
