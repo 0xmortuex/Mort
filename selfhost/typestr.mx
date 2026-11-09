@@ -6,6 +6,17 @@
 
 import support;
 
+// Length in code points: Python's `len` of a type string.
+fn ts_cp_len(t: Span) -> u64 {
+    let n: u64 = 0;
+    for i: u64 in 0..t.len {
+        if (t.data[i] & 0xC0) != 0x80 {
+            n += 1;
+        }
+    }
+    return n;
+}
+
 fn ts_text(s: *Interner, h: u64) -> Span {
     return intern_text(s, h);
 }

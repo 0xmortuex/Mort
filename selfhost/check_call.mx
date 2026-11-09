@@ -161,7 +161,7 @@ fn cc_charge_instance(c: *Ck, template: *Node, values: *U64Vec, node: *Node) {
     let too_deep = false;
     for i: u64 in 0..(*values).len {
         let text = intern_text((*c).s, u64vec_get(values, i));
-        if text.len > MAX_TYPE_ARGUMENT_LENGTH {
+        if ts_cp_len(text) > MAX_TYPE_ARGUMENT_LENGTH {
             too_long = true;
         }
         if ts_type_nesting(text) > MAX_TYPE_ARGUMENT_NESTING {
