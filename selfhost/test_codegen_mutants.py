@@ -302,6 +302,23 @@ EXPRESSION_MUTANTS = {
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, binding_const);\n",
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, false);\n",
         [statement("const_array_of_fn"), declaration("global_const_array_of_fn")]),
+    # What an independent mutation pass found the probes did not reach.
+    "try_runs_only_its_own_scope_defers": (
+        "cg_stmt.mx",
+        "    (*g).indent += 1;\n    cg_emit_defers(g, 0);\n    let ret = buf_new(128);\n",
+        "    (*g).indent += 1;\n    cg_emit_defers(g, (*g).defer_scopes.len - 1);\n    let ret = buf_new(128);\n",
+        [declaration("try_in_nested_scope_runs_outer_defers")]),
+    "wildcard_binding_uses_position": (
+        "cg_stmt.mx", "            buf_push_u64(&payload, u64vec_get((*f).binding_indices, i));\n",
+        "            buf_push_u64(&payload, i);\n", [expr("enum_wildcard_binding")]),
+    "folded_i32_max_gets_ll": (
+        "codegen.mx", "bn_from_u64(0x7FFFFFFF)", "bn_from_u64(0x7FFFFFFE)", [expr("int_fold_edges")]),
+    "folded_i64_max_gets_ull": (
+        "codegen.mx", "i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFF)", "i64_max: bn_from_u64(0x7FFFFFFFFFFFFFFE)",
+        [expr("int_fold_edges")]),
+    "folded_i64_min_keeps_ll": (
+        "cg_expr.mx", "        if bn_is_negative(value) {\n            let pattern",
+        "        if false {\n            let pattern", [expr("int_fold_edges")]),
     # Helper marks reached only from a compound assignment: real-run flags no longer
     # hide them, because nothing tells the generator which helpers a program uses.
     "compound_assign_loses_wrap_mark": (

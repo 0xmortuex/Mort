@@ -51,6 +51,11 @@ EXPRESSIONS = {
     "int_folds": "let a: i64 = 1 + 2 * 3; let b: i64 = 1 << 40; let c: u64 = (1 << 63) - 1 + (1 << 63); "
                  "let d: i64 = -9223372036854775807 - 1; let e: i64 = -2147483649; let f: i32 = -2147483648; "
                  "let g: i64 = ~0; let h: u8 = ~0 & 255;",
+    "int_fold_edges": "let a: i64 = 2147483646 + 1; let b: i64 = 2147483647 + 1; let c: i64 = -2147483646 - 1; "
+                      "let d: i64 = -2147483647 - 1; let e: i64 = -2147483647 - 2; let f: i32 = 2147483646 + 1; "
+                      "let g2: u64 = 9223372036854775806 + 1; let h: u64 = 9223372036854775807 + 1; "
+                      "let i: i64 = 9223372036854775806 + 1; let j: i64 = -9223372036854775806 - 1; "
+                      "let k: u64 = 18446744073709551614 + 1; let l: i64 = -9223372036854775807 - 1;",
     "char_lits": "let a = 'a'; let b: u8 = '\\n'; let c = '\\x7f'; let d: i64 = 'z';",
     "bool_null": "let p: *u8 = null; let q = true; let r = false; let s = !q;",
     "strings": 'let s = "hi"; let t = "a\\nb\\"c"; println(s); println(t); println("");',
@@ -120,6 +125,8 @@ EXPRESSIONS = {
     "enum_units": "let a = E.A; let b = Owns.Empty; match move b { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_payloads": "let o = Owns.Has(make_r()); match move o { Owns.Has(r) => { destroy(&r); } Owns.Empty => { } }",
     "enum_tuple_payload": "let m = Two.P(1, 2); match m { Two.P(a, b) => { let c = a + b; } Two.Q => { } }",
+    "enum_wildcard_binding": "let m = Two.P(1, 2); match m { Two.P(_, b) => { let c = b; } Two.Q => { } } "
+                             "let n = Two.P(3, 4); match n { Two.P(a, _) => { let c = a; } Two.Q => { } }",
     "generic_values": "let b = Box<i64> { v: 1 }; let a = b.v; let o = Opt<i64>.Some(1); let n = Opt<i64>.None; "
                       "let c = identity(1); let d = identity<u8>(2); let e = identity(true);",
     "generic_payload_match": "let o = Opt<i64>.Some(1); match o { Opt<i64>.Some(v) => { let a = v; } Opt<i64>.None => { } }",
@@ -559,6 +566,45 @@ def test_doubled_slice_text_is_bounded(cg_exe, tmp_path):
     assert b"duplicated slice operands" in stderr
 
 
+def test_doubled_slice_text_agrees_at_python_sizes(cg_exe, tmp_path):
+    """Python writes about 13 MB here; Mort must not reject it."""
+    assert agree(cg_exe, tmp_path, slice_chain(18)) == "ok"
+
+
+def test_doubled_slice_text_is_exact_beyond_the_inline_threshold(cg_exe, tmp_path):
+    """21 levels is about 109 MB of C: Python compiles it, so Mort must, in bounded memory.
+
+    Size follows the recurrence from depth 18, which test_..._at_python_sizes compared."""
+    sizes = []
+    for depth in (18, 19, 21):
+        code, stderr, c_out = bounded(cg_exe, tmp_path, slice_chain(depth))
+        assert code == 0, stderr
+        sizes.append(c_out.stat().st_size)
+    per_level = sizes[1] - sizes[0]
+    assert sizes[2] == sizes[0] + per_level * 7  # 2 + 4 = (2^3 - 1) more doublings
+    tail = c_out.read_bytes()[-200:]
+    assert b"\xff" not in tail
+
+
+def nested_len_slice(depth):
+    expression = "1"
+    for _ in range(depth):
+        expression = f"len(slice<u8>(u, {expression}))"
+    return body(f"let u: *u8 = null;\nlet n = {expression};")
+
+
+def test_nested_len_of_slice_agrees(cg_exe, tmp_path):
+    """Python's work is 4^11 nodes for 1,090 bytes of text: nothing should reject it."""
+    assert agree(cg_exe, tmp_path, nested_len_slice(11)) == "ok"
+
+
+def test_nested_len_of_slice_is_linear(cg_exe, tmp_path):
+    """Without string literals the second generation repeats nothing, so reuse the first."""
+    code, stderr, c_out = bounded(cg_exe, tmp_path, nested_len_slice(40))
+    assert code == 0, stderr
+    assert c_out.read_bytes().count(b"mort_bounds") == 0
+
+
 def regenerated_chain(depth):
     expression = '"s"'
     for _ in range(depth):
@@ -574,7 +620,38 @@ def test_regeneration_is_bounded(cg_exe, tmp_path):
     """Each `slice` or `len` of a slice generates its arguments twice."""
     code, stderr, _ = bounded(cg_exe, tmp_path, regenerated_chain(60))
     assert code == 1, stderr
-    assert b"generated too many times" in stderr
+    assert b"string table" in stderr
+
+
+# ----- type text is charged and limited in code points, as Python measures it -----
+
+CJK = "漢"
+
+
+def test_long_cjk_struct_name_within_python_limits_agrees(cg_exe, tmp_path):
+    """30,000 characters is under MAX_TYPE_LENGTH; its 90,000 UTF-8 bytes are not."""
+    name = CJK * 30000
+    source = (
+        f"struct {name} {{ x: i64 }}\nfn f(a: *{name}) -> *{name} {{ return a; }}\n"
+        f"fn main() -> int {{ let a: *{name} = null; let b = f(a); return 0; }}\n")
+    assert agree(cg_exe, tmp_path, source) == "ok"
+
+
+def test_cjk_generic_argument_within_python_limit_agrees(cg_exe, tmp_path):
+    """Instantiation allows 4096 characters of type argument, not 4096 bytes."""
+    name = CJK * 2000
+    source = (
+        f"struct {name} {{ x: i64 }}\nfn id<T>(x: T) -> T {{ return x; }}\n"
+        f"fn main() -> int {{ let a = id({name} {{ x: 1 }}); return 0; }}\n")
+    assert agree(cg_exe, tmp_path, source) == "ok"
+
+
+def test_cjk_type_charges_are_free_below_the_threshold(cg_exe, tmp_path):
+    """A 63-character name is free to Python; in bytes it would spend the budget."""
+    name = CJK * 63
+    lets = "".join(f"let a{i}: {name} = {name} {{ x: 1 }};\n" for i in range(50000))
+    source = f"struct {name} {{ x: i64 }}\nfn main() -> int {{\n{lets}return 0;\n}}\n"
+    assert agree(cg_exe, tmp_path, source) == "ok"
 
 
 def test_deterministic_over_runs(cg_exe, tmp_path):
