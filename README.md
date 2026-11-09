@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-1070%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-1098%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, with no parser or compiler libraries. (The one runtime dependency, `cryptography`, verifies package-registry signatures.)
@@ -451,9 +451,9 @@ uv sync --extra dev
 uv run pytest tests/ -q
 ```
 
-Measured on Windows with the Zig backend at this revision: 1070 tests in `tests/`
-passed, 2108 in `selfhost/` passed and 1 skipped, and 31 of 31 conformance cases
-passed.
+Measured in CI: 1098 tests in `tests/` and 31 of 31 conformance cases passed at
+commit `1e080c0` (run 42714102377). 5571 tests in `selfhost/` passed on the
+`feat/selfhost-t8` pull request (run 42710235479).
 
 Front-end tests (type checking, error messages, codegen) always run. The
 end-to-end tests compile each example to a real binary and check its output;
