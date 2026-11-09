@@ -1036,9 +1036,7 @@ def test_diagnostic_past_the_limit_matches_mortc(check_exe, tmp_path, shape, dep
     python_code, python_error = mortc_check(tmp_path, source)
     assert python_code != 0, python_error
     path = tmp_path / "input.mx"
-    code, stderr, _dump = run_mort(check_exe, f"MODE hosted
-FILE {path}
-", tmp_path)
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
     assert code == 1, stderr
     assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
 
