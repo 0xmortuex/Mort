@@ -586,6 +586,19 @@ def test_deterministic_over_runs(cg_exe, tmp_path):
     first_difference(text, text)
 
 
+def replay_cjk_program():
+    """Fits Python's replay budget in code points, not in UTF-8 bytes (3 per character)."""
+    count = 780
+    name = "函" * 20
+    defers = f"defer {name}();\n" * count
+    exits = "if true { return 1; }\n" * count
+    return f"fn {name}() -> i64 {{ return 1; }}\nfn main() -> int {{\n{defers}{exits}return 0;\n}}\n"
+
+
+def test_replay_budget_counts_code_points(cg_exe, tmp_path):
+    assert agree(cg_exe, tmp_path, replay_cjk_program()) == "ok"
+
+
 def test_driver_takes_no_effects_input(tmp_path):
     source = (HERE / "cg_main.mx").read_text(encoding="utf-8")
     assert "forced" not in source.lower()

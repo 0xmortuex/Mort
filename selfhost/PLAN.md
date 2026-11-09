@@ -563,8 +563,11 @@ this branch adopted T5's own reconciliation for the checker files.
   `visit_type` loop, because aliases can spell tens of thousands of `*`. Statements
   and other type constructors recurse within the parser and alias limits.
 - **Known limits.** `--coverage` output is not ported (not needed to bootstrap).
-  Charges count bytes where Python counts code points, as the checker does, so a
-  non-ASCII type name can move a budget failure by a few units. A `KeyError` in
+  Type-text charges count UTF-8 bytes where Python counts code points, as the
+  checker does, so an all-non-ASCII type name is charged up to 3 to 4 times what
+  Python charges and can hit a budget that far early (an open difference). The
+  replay budget was the same until T7 and rejected a valid CJK program at about 44%
+  of the limit; it now counts code points. A `KeyError` in
   Python's `c_type` is an internal-error exit (2) here.
 
 ## 15. Expression generator status (T7)
@@ -572,7 +575,7 @@ this branch adopted T5's own reconciliation for the checker files.
 `selfhost/cg_expr.mx` (`_gen_expr`, helper selection, the output writer),
 `cg_float.mx` (`format(value, ".17g")`), `cg_cond.mx` (`_gen_cond`'s text rule) and
 two test helpers, `float_g17_main.mx` and `cond_strip_main.mx`. Python's `_gen_expr`
-is about 260 lines; the port is about 1200 lines of Mort, the difference being
+is about 260 lines; the port is about 1550 lines of Mort, the difference being
 buffers, the explicit spine and the writer. `cg_main.mx` now takes only the program.
 `cg_forced_main.mx` and `cg_forced.mx` are test-only and reach helper combinations no
 program can (a freestanding build with threads); the compiler never reads a forced
@@ -598,13 +601,13 @@ placeholder is gone, so section 14's "in isolation" no longer applies.
   temporary is written twice, so nesting doubles the text; the total duplicated is
   limited to 64 MiB. `slice` and `len` of a slice generate their arguments twice, so
   nesting doubles the work; regenerated nodes are limited to 4,000,000. No program
-  under roughly 25 nesting levels of either reaches them. See `BLOCKERS.md`.
+  under roughly 20 nesting levels of either reaches them. See `BLOCKERS.md`.
 - **Tests.** `test_codegen_expr_differential.py`: about 110 expression constructs in
   three modes, every `used_*` flag and every integer helper from real programs
   asserted on the Python side too, string-table order, `.17g` on 150,000 random values
   plus constructed values and exact ties, the whole generated corpus compiled and run
   against its independent model, deep chains against Python and at scale, and hostile
-  programs under the guard. `test_codegen_mutants.py`: 47 planted bugs.
+  programs under the guard. `test_codegen_mutants.py`: 55 planted bugs.
 - **Corrected test.** T6's `condition_strips_parens_of_call` survives on real
   programs, since expression text never has the `(a)(b)` shape; it is kept, probed
   through `cg_cond.mx` directly against Python's `_gen_cond`.
