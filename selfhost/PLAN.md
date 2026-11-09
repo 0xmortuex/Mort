@@ -206,7 +206,7 @@ measured data point.
 | --- | --- | --- | ---: |
 | T1 | Lexer with differential test | none | done |
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
-| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
+| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | done (about 1 hour; estimated 4 to 8) |
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | done |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
@@ -215,7 +215,9 @@ measured data point.
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
-| | **Remaining total** | | **70 to 120** |
+| | **Remaining total** | | **50 to 86** |
+
+T3 lists T2c as a dependency but was completed first. T2c does not reopen T3: it only extends the corpus T3's differential test runs over.
 
 Not included: fixing gap G3 in section 8 if something comes to need it, and any
 Python compiler bugs the differential tests expose.
@@ -313,6 +315,28 @@ Test: `python -m pytest selfhost -q` runs against every `.mx` in the repo,
 time bound, token-level mutation (at least 75% of cases must carry 10 or more
 dump lines), a separate invalid-bytes mutation class, the Unicode check, and the
 subset gate with a negative test per excluded construct.
+
+## 7b. Bignum status (T2b)
+
+- `selfhost/bignum.mx` (765 lines), driver `selfhost/bignum_test_main.mx`, test
+  `selfhost/test_bignum.py`. It does not share lexer_float's `Big`: both are the
+  same limb layout, but flat-namespace names stay apart (`bn_`, `BigInt`), and a
+  test links the two together.
+- Covers everything `Checker._fold_binary` and `_const_value` need, through
+  `bn_fold_binary` (Python's `_c_div`/`_c_mod` for `/` and `%`, the `1 << 65` cap),
+  plus Python's flooring `//` and `%`, `bn_not`, `bn_neg`, `bn_bit_length` and
+  `bn_cmp`. Parsing takes bases 2 to 36 and decimal formatting matches `str`.
+- `bn_parse` must accept more than 4300 digits: a maximal 4300-digit hex literal
+  reaches the checker as 5178 canonical decimal digits.
+- The checker owns `MAX_CONSTANT_BITS` (2^18), checked after the fold as Python
+  does, so a product can reach 2^19 bits. Library hard limit: `BN_MAX_BITS`, 2^20
+  bits, an internal-error exit that a checked program cannot reach.
+- Uses `sup_die` and `sup_alloc_array` from `support.mx`.
+- Test: 300,000 seeded operations per run against Python `int` and the real
+  checker fold (fresh driver build), a boundary cross product, all bases, diagnostics
+  and 18 seeded mutants, plus fixed zero-negation cases that catch a 19th directly. Allocation failure is a real `malloc` null: the size comes
+  from input and the pointer escapes, because clang otherwise deletes the unused
+  `malloc` and its check.
 
 ## 8. Language and stdlib gaps
 
@@ -422,3 +446,15 @@ stdout, stderr and exit status never come from the compiler under test.
   `test_checker_decl_differential.compare` once that file is on the branch; until
   T4 merges those tests skip with that reason. On a trial merge with T4, 32 of 35
   passed; the other 3 hit the unchecked-test-body divergence in `BLOCKERS.md`.
+
+**Follow-up for T4 and T5: the corpus is thin outside the subset.** Generics,
+payload enums and cross-file modules (`module`, `pub`, `import ... as`) appear only
+in the `full` profile, whose default size is 10 programs and 2,088 lines. Measured
+at the default scale: 16 generic declarations, 9 payload enums, 3 module files, and
+each comes from a fixed template with random values, not from random shapes. The
+8000-line floor says nothing about these features, because the `subset` profile
+cannot contain them. A pass over this corpus is weak evidence for generic
+instantiation, payload binding and module visibility. T4 and T5 should keep their
+own targeted cases there, and widen these generator sections (or run with a larger
+`MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
+before relying on them.
