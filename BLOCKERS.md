@@ -50,3 +50,36 @@ Interim: declare the exact C signature (`end: **c_char`).
   `KeyError: ''` at `codegen.py:179`. Found writing `selfhost/parser.mx`, which
   emits the two characters with separate pushes instead. T6 and T7 reproduce this
   scan's output, so fixing it changes what they must match.
+
+Found by the program generator (T2c). None is fixed here; the generator stays
+clear of each one, and says so where it does:
+
+- All-literal comparisons do not range-check, and the value wraps at run time.
+  Spec 2.3 and 7.1 make an out-of-range literal expression a compile-time error;
+  the checker's `_unify_ints` returns `i64` for two literals with no check.
+  `fn main() -> int { if 11981946837996067700 > 5 { print(1); } else { print(2); } return 0; }`
+  prints 2, and `18446744073709551615 == 0 - 1` is true.
+- A unary operator on a bare character literal is narrowed to `u8` when nothing
+  gives it a type, though spec 2.3 calls the literal untyped: `print(~'\xab');`
+  prints 84 and `print(-'\xab');` prints 85, while `print(~171);` and
+  `let x: i64 = ~'\xab'; print(x);` print -172.
+- `print` takes `int64_t` (`mort_print`, `mort/codegen.py`), so a `u64` above 2^63
+  prints as negative: `let x: u64 = 18446744073709551615; print(x);` prints -1.
+  The spec says `print` prints an integer.
+- `mort/parser.py` `_looks_like_struct_lit` counts `>` but not `>>`, so
+  `let b = Box<Box<u8>> { inner: Box<u8> { inner: 1 } };` is "unexpected token
+  '{'". `Box<Box<u8> > { ... }` parses; the grammar allows both. The generic call
+  and qualifier lookaheads do handle `>>`.
+- Spec section 7.3 says `print` accepts a bool; the checker rejects it ("print
+  expects an integer or float, got bool").
+- Spec section 9 says `try` requires an enum with `Ok` and `Err` variants; the
+  checker insists the enum is named exactly `Result` with two type arguments.
+- `let z: f32 = -37.5;` is "annotated f32 but the value is f64": only a bare
+  literal adopts f32, and `-37.5` is a unary f64 expression.
+- `selfhost/checker.mx` on `feat/selfhost-t4` (seen only when T4 and T2c are merged
+  together): `check_main` in hosted mode does not check `test` block bodies, though
+  the Python checker does. For
+  `fn main() -> int { return 0; } test "t" { let x: u8 = 1; assert(x == 1); }`
+  Python's events include the test's `bind`, `var` and `call`; Mort's stop after
+  `fn "main"`. It fails the three generated full programs with a test block
+  (`full6`, `full7`, `full8`) in the declaration-checker differential.
