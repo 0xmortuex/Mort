@@ -79,7 +79,7 @@ jobs:
           mortc doctor
 
       - name: Run Python static checks
-        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tools/build_release.py tools/registry_admin.py tests/test_mort.py tests/test_spec_conformance.py tests/test_registry_security.py tests/test_release_compatibility.py tests/differential_backends.py tests/release_compatibility.py tests/reproducible_builds.py
+        run: ruff check mort mortc.py conformance/run.py fuzz/atheris_frontend.py tools/build_release.py tools/registry_admin.py tests/test_mort.py tests/test_conformance_runner.py tests/test_tour.py tests/test_spec_conformance.py tests/test_registry_security.py tests/test_release_compatibility.py tests/differential_backends.py tests/release_compatibility.py tests/reproducible_builds.py
 
       - name: Verify authenticated registry
         run: python tools/registry_admin.py verify --index registry/index.json --trusted-key "mort-registry-2026-1:ulXWv5WgFfK+NnIOYEAjACtMzTXfMZ7z3SfNM8hp/SI="
@@ -95,6 +95,28 @@ jobs:
 
       - name: Build the MORT OS kernel
         run: python kernel/build.py check
+
+  selfhost:
+    # The Mort-written compiler components must keep agreeing with the Python
+    # compiler. Python 3.14 matches the Unicode version of the lexer's tables,
+    # so the table check runs instead of skipping.
+    name: Self-hosting components
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Mort and the Zig C toolchain
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run the selfhost tests
+        run: python -m pytest selfhost -q
 
   differential:
     name: Differential C backends and optimization levels

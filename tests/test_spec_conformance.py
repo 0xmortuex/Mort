@@ -25,6 +25,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2190,13 +2192,25 @@ def undetected_triples():
     return total, missed
 
 
-def test_every_rule_reference_alternative_triple_is_load_bearing():
+def with_deep_recursion(frames, work):
+    """Run work() with this recursion limit, on a thread with C stack to match.
+
+    Before Python 3.11 every Python frame also uses C stack, and these limits
+    overflow the default 1 MB stack on Windows.
+    """
     limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(limit, 5000))
+    sys.setrecursionlimit(max(limit, frames))
+    stack = threading.stack_size(128 * 1024 * 1024)
     try:
-        total, missed = undetected_triples()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(work).result()
     finally:
+        threading.stack_size(stack)
         sys.setrecursionlimit(limit)
+
+
+def test_every_rule_reference_alternative_triple_is_load_bearing():
+    total, missed = with_deep_recursion(5000, undetected_triples)
     assert total > 1000
     assert set(missed) == set(EQUIVALENT_NARROWINGS), missed[:40]
 
@@ -2244,12 +2258,7 @@ def undetected_repetitions():
 
 
 def test_every_repetition_is_exercised_beyond_small_counts():
-    limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(limit, 8000))
-    try:
-        total, missed = undetected_repetitions()
-    finally:
-        sys.setrecursionlimit(limit)
+    total, missed = with_deep_recursion(8000, undetected_repetitions)
     assert total > 40
     assert missed == []
 
@@ -2338,12 +2347,7 @@ def undetected_lexical_narrowings():
 
 
 def test_every_character_and_repetition_of_the_lexical_grammar_is_load_bearing():
-    limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(limit, 8000))
-    try:
-        total, missed = undetected_lexical_narrowings()
-    finally:
-        sys.setrecursionlimit(limit)
+    total, missed = with_deep_recursion(8000, undetected_lexical_narrowings)
     assert total > 1000
     assert missed == [], (len(missed), missed[:60])
 

@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
 import base64
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -4668,6 +4669,68 @@ fn main() -> i64 {
         with open(source, "w", encoding="utf-8") as fh:
             fh.write(program)
         exe = os.path.join(d, "mapkeysvalues.exe" if os.name == "nt" else "mapkeysvalues")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
+def test_std_map_clone_copies_entries_independently_of_the_original():
+    program = r'''import std.map;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let original: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&original);
+    map.insert(&original, 1, 10);
+    map.insert(&original, 2, 20);
+    map.insert(&original, 3, 30);
+
+    let copy: Map<i64, i64> = map.clone(&original);
+    defer map.destroy(&copy);
+    let ok: i64 = 0;
+
+    if copy.length == 3 { ok += 1; }
+    if unwrap(map.get(&copy, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&copy, 3)) == 30 { ok += 1; }
+
+    // Mutating either map after cloning must not affect the other.
+    map.insert(&original, 1, 999);
+    map.insert(&original, 4, 40);
+    map.insert(&copy, 5, 50);
+    if unwrap(map.get(&copy, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&copy, 4)) == -1 { ok += 1; }
+    if unwrap(map.get(&original, 5)) == -1 { ok += 1; }
+    if original.length == 4 { ok += 1; }
+    if copy.length == 4 { ok += 1; }
+
+    let empty: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&empty);
+    let empty_copy: Map<i64, i64> = map.clone(&empty);
+    defer map.destroy(&empty_copy);
+    if empty_copy.length == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapclone.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapclone.exe" if os.name == "nt" else "mapclone")
         result = subprocess.run(
             [sys.executable, os.path.join(ROOT, "mortc.py"), source,
              "--run", "-o", exe],
@@ -10232,6 +10295,41 @@ def test_examples_run(name, expected):
     assert result.stdout == expected
 
 
+# Examples covered by their own test, because they need extra link flags, a
+# bundled module, or a freestanding target instead of the EXPECTED loop above.
+EXAMPLES_TESTED_ELSEWHERE = {
+    "async_io.mx": "test_cross_platform_nonblocking_readiness_runs",
+    "concurrency.mx": "test_cross_platform_threads_mutexes_and_atomics_run",
+    "http_loopback.mx": "test_bounded_http11_loopback_and_framing_validation",
+    "https_client.mx": "test_https_client_example_type_checks",
+    "kernel.mx": "test_freestanding_object_builds",
+    "secure_random.mx": "test_os_secure_random_runs_under_strict_c",
+    "stdlib.mx": "test_std_cli_module_runs",
+    "tasks.mx": "test_structured_task_group_cancels_and_joins",
+    "tcp_loopback.mx": "test_cross_platform_tcp_dns_loopback_runs",
+    "udp_loopback.mx": "test_cross_platform_udp_dns_loopback_runs",
+    "websocket_loopback.mx": "test_websocket_rfc6455_loopback_and_frame_validation",
+}
+
+
+def test_every_example_is_listed_with_a_test():
+    on_disk = {name for name in os.listdir(os.path.join(ROOT, "examples"))
+               if name.endswith(".mx")}
+    listed = set(EXPECTED) | set(EXAMPLES_TESTED_ELSEWHERE)
+    assert on_disk - listed == set(), "examples without a test"
+    assert listed - on_disk == set(), "listed examples that do not exist"
+    assert not set(EXPECTED) & set(EXAMPLES_TESTED_ELSEWHERE)
+    for name, test_name in EXAMPLES_TESTED_ELSEWHERE.items():
+        assert name in inspect.getsource(globals()[test_name])
+
+
+def test_https_client_example_type_checks():
+    # It connects to example.com, so a test can only check it, not run it. The
+    # TLS stack itself runs in test_verified_tls_loopback_and_fail_closed_validation.
+    source = os.path.join(ROOT, "examples", "https_client.mx")
+    assert mortc._compile_main([source, "--check"]) == 0
+
+
 # ---------- process builtins: eprintln, arg_count, arg_get ----------
 
 def _build_and_run(source, arguments=()):
@@ -10762,6 +10860,93 @@ def test_cli_compiles_every_depth_main_compiled(tmp_path, name, body):
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr[:300]
+
+
+def _deep_sum_program(terms):
+    return ("fn main() -> int { let a: i64 = 1; let x = "
+            + " + ".join(["a"] * terms) + "; return 0; }")
+
+
+def test_depth_limit_does_not_depend_on_the_callers_stack():
+    source = _deep_sum_program(495)
+
+    def compile_from_depth(frames):
+        return mortc.compile_to_c(source) if frames == 0 else compile_from_depth(frames - 1)
+
+    assert "mort_main" in compile_from_depth(300)
+
+
+# The exact deepest program of each shape, the same on every supported Python.
+# A compiler change that adds a frame per level moves these on purpose: update
+# the table with it. A difference between Python versions here is a real bug.
+_DEEPEST_ACCEPTED = {
+    "sum": (497, lambda n: "let x = " + " + ".join(["a"] * n) + ";"),
+    "if": (327, lambda n: "if b { " * n + "}" * n),
+    "else-if": (978, lambda n: "if b { } " + "else if b { } " * n),
+    "blocks": (494, lambda n: "{ " * n + "}" * n),
+    "unary": (496, lambda n: "let x = " + "-" * n + "a;"),
+    "paren": (65, lambda n: "let x = " + "(" * n + "a" + ")" * n + ";"),
+}
+
+
+def _nested_main(body):
+    return f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}"
+
+
+@pytest.mark.parametrize("shape", list(_DEEPEST_ACCEPTED))
+def test_nesting_limit_is_exact_on_every_python_version(shape):
+    deepest, build = _DEEPEST_ACCEPTED[shape]
+    assert "mort_main" in mortc.compile_to_c(_nested_main(build(deepest)))
+    with pytest.raises(MortError, match="safety limit"):
+        mortc.compile_to_c(_nested_main(build(deepest + 1)))
+
+
+def _function_type(n):
+    return "fn(" * n + "i64" + ")->i64" * n
+
+
+def _left_tuple_type(n):
+    return "(" * n + "i64" + ",i64)" * n
+
+
+def _in_main(body):
+    return f"fn main() -> int {{ {body} return 0; }}"
+
+
+_WRAPPER = "struct W<T> { v: T }\n"
+_PAIR = "struct P<A, B> { a: A, b: *B }\n"
+_DEEPEST_TYPE_ACCEPTED = {
+    "function-type": (330, lambda n: _in_main(f"let x: {_function_type(n)} = null;")),
+    "function-result": (496, lambda n: _in_main("let x: " + "fn()->" * n + "i64 = null;")),
+    "left-tuple": (330, lambda n: _in_main(f"let x: *{_left_tuple_type(n)} = null;")),
+    "right-tuple": (330, lambda n: _in_main("let x: *" + "(i64," * n + "i64" + ")" * n + " = null;")),
+    "pointer": (495, lambda n: _in_main("let x: " + "*" * n + "i64 = null;")),
+    "slice": (495, lambda n: _in_main("let x: *" + "[]" * n + "i64 = null;")),
+    "generic-struct": (246, lambda n: _WRAPPER + _in_main(
+        "let x: *" + "W<" * n + "i64" + ">" * n + " = null;")),
+    "generic-pair": (246, lambda n: _PAIR + _in_main(
+        "let x: *" + "P<i64," * n + "i64" + ">" * n + " = null;")),
+    "parameter": (330, lambda n: f"fn f(x: {_function_type(n)}) -> void {{}}\n" + _in_main("")),
+    "return-type": (330, lambda n: f"fn f() -> {_function_type(n)} {{ return null; }}\n"
+                    + _in_main("")),
+    "struct-field": (330, lambda n: f"struct Q {{ f: {_function_type(n)} }}\n" + _in_main("")),
+    "alias": (330, lambda n: f"type A = {_function_type(n)};\n" + _in_main("let x: A = null;")),
+    "sizeof": (329, lambda n: _in_main(f"let x = sizeof<{_left_tuple_type(n)}>();")),
+}
+
+
+@pytest.mark.parametrize("shape", list(_DEEPEST_TYPE_ACCEPTED))
+def test_type_nesting_limit_is_exact_on_every_python_version(shape):
+    deepest, build = _DEEPEST_TYPE_ACCEPTED[shape]
+    assert "mort_main" in mortc.compile_to_c(build(deepest))
+    with pytest.raises(MortError, match="safety limit"):
+        mortc.compile_to_c(build(deepest + 1))
+
+
+def test_compiling_restores_the_recursion_limit():
+    before = sys.getrecursionlimit()
+    mortc.compile_to_c(_deep_sum_program(3))
+    assert sys.getrecursionlimit() == before
 
 
 _TYPE_LIKE_TEXT = [

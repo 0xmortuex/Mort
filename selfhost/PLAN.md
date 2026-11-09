@@ -700,10 +700,10 @@ went on the tests, not the port.
   prelude declared `destroy` twice, so all of them agreed on that one error.
   `test_cases_exercise_the_checker` now requires at least 150 accepted programs,
   200 rejections and no message on more than a tenth of the cases.
-- **Tests.** `test_checker_expr_differential.py` (1311 cases: every repo `.mx` in
+- **Tests.** `test_checker_expr_differential.py` (1437 cases: every repo `.mx` in
   three modes, the generated corpus, stubbed kernel, the compiler's own sources,
-  about 530 expression cases, function-level, modules, chains, hostile programs,
-  250 seeded source mutations). `test_checker_expr_mutants.py`: 18 planted bugs,
+  about 590 expression cases, function-level, modules, chains, hostile programs,
+  250 seeded source mutations). `test_checker_expr_mutants.py`: 43 planted bugs,
   all caught.
 
 ### Reconciled with `main`
