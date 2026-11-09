@@ -4,10 +4,11 @@ Run from the repository root:
 
     python -m pytest selfhost/test_codegen_differential.py -q
 
-Every expected byte comes from the real CodeGen, with only `_gen_expr` replaced
-by the placeholder cg_stmt.mx writes (py_codegen_dump.py). Expression text is
-task T7. Helper selection is compared on what each program really uses, because
-the reference runs the unmodified generator once to find out.
+Every expected byte comes from the real, unmodified CodeGen. The compiler driver
+cg_main.mx is given nothing but the program. Helper combinations no real program
+can reach (threads in a freestanding build) are exercised through the test-only
+driver cg_forced_main.mx; test_codegen_expr_differential.py drives every helper
+from real programs through cg_main.
 """
 import os
 import subprocess
@@ -34,31 +35,41 @@ from test_checker_expr_differential import (  # noqa: E402
 )
 
 
-@pytest.fixture(scope="session")
-def cg_exe(tmp_path_factory):
-    build = tmp_path_factory.mktemp("selfhost-cg-build")
-    exe = build / ("cg_main.exe" if os.name == "nt" else "cg_main")
+def build_driver(tmp_path_factory, name):
+    build = tmp_path_factory.mktemp(f"selfhost-{name}-build")
+    exe = build / (f"{name}.exe" if os.name == "nt" else name)
     result = subprocess.run(
         [sys.executable, str(ROOT / "mortc.py"),
-         str(HERE / "cg_main.mx"), "-o", str(exe)],
+         str(HERE / f"{name}.mx"), "-o", str(exe)],
         capture_output=True, text=True, cwd=build)
     assert result.returncode == 0, (
-        f"compiling cg_main.mx failed:\n{result.stdout}\n{result.stderr}")
+        f"compiling {name}.mx failed:\n{result.stdout}\n{result.stderr}")
     return exe
 
 
-def run_mort(exe, manifest_text, forced_text, tmp_path, timeout=120):
+@pytest.fixture(scope="session")
+def cg_exe(tmp_path_factory):
+    return build_driver(tmp_path_factory, "cg_main")
+
+
+@pytest.fixture(scope="session")
+def cg_forced_exe(tmp_path_factory):
+    return build_driver(tmp_path_factory, "cg_forced_main")
+
+
+def run_mort(exe, manifest_text, tmp_path, forced_text=None, timeout=120):
     manifest = tmp_path / "manifest.txt"
     manifest.write_bytes(manifest_text.encode("utf-8"))
-    forced = tmp_path / "forced.txt"
-    forced.write_bytes(forced_text.encode("ascii"))
     check_out = tmp_path / "check.txt"
     c_out = tmp_path / "out.c"
     if c_out.exists():
         c_out.unlink()
-    result = subprocess.run(
-        [str(exe), str(manifest), str(check_out), str(c_out), str(forced)],
-        capture_output=True, timeout=timeout)
+    command = [str(exe), str(manifest), str(check_out), str(c_out)]
+    if forced_text is not None:
+        forced = tmp_path / "forced.txt"
+        forced.write_bytes(forced_text.encode("ascii"))
+        command.append(str(forced))
+    result = subprocess.run(command, capture_output=True, timeout=timeout)
     text = c_out.read_bytes() if c_out.exists() else None
     return result.returncode, result.stderr.replace(b"\r\n", b"\n").rstrip(b"\n"), text
 
@@ -73,17 +84,17 @@ def assert_same_c(expected_text, produced, label):
 
 def compare(exe, path, mode, tmp_path):
     """Run both generators on one root file and assert they agree."""
-    result, text, forced, generator_error = py_codegen_dump.reference(path, mode)
+    result, text, generator_error = py_codegen_dump.reference(path, mode)
     label = f"{path} ({mode})"
     if result.outcome == "load":
         return "load"
     assert result.outcome != "crash", f"{label}: Python crash"
     if result.outcome == "parse":
-        code, stderr, _ = run_mort(exe, f"MODE {mode}\nFILE {result.failing_file}\n", "", tmp_path)
+        code, stderr, _ = run_mort(exe, f"MODE {mode}\nFILE {result.failing_file}\n", tmp_path)
         assert code == 1, f"{label}: {stderr!r}"
         assert stderr.decode("utf-8") == result.error, label
         return "parse"
-    code, stderr, produced = run_mort(exe, result.manifest, forced or "", tmp_path)
+    code, stderr, produced = run_mort(exe, result.manifest, tmp_path)
     assert code in (0, 1), f"{label}: exit {code}: {stderr!r}"
     if result.outcome == "error":
         assert code == 1, f"{label}: Mort accepted; python: {result.error}"
@@ -246,13 +257,14 @@ def test_statement_cases_are_valid_programs(cg_exe, tmp_path):
     assert not rejected, rejected
 
 
-def test_placeholder_reaches_every_statement(cg_exe, tmp_path):
+def test_comparison_reaches_every_statement(cg_exe, tmp_path):
     """The comparison must see the statement text, not just agree on nothing."""
     source = f"{PRELUDE}\nfn main() -> int {{\nlet a = 1;\nreturn a;\n}}\n"
     path = tmp_path / "input.mx"
     path.write_bytes(source.encode("utf-8"))
-    _, text, _, _ = py_codegen_dump.reference(path, "hosted")
-    assert "$IntLit@" in text and "= $Var@" in text and "return mort_return_" in text
+    _, text, _ = py_codegen_dump.reference(path, "hosted")
+    assert "int64_t m_a = 1;" in text and "= m_a;" in text and "return mort_return_" in text
+    assert "$" not in text
 
 
 # ----- helper selection -----
@@ -268,41 +280,41 @@ def compare_with_effects(exe, tmp_path, effects, mode):
     result = py_check_dump.run_reference(path, mode, exact=True)
     assert result.outcome == "ok"
     program = py_check_dump.LAST[0].program
-    text = py_codegen_dump.PlaceholderCodeGen(
+    text = py_codegen_dump.ForcedCodeGen(
         program, effects, freestanding=mode == "freestanding",
         test_mode=mode == "test").generate()
     code, stderr, produced = run_mort(
-        exe, result.manifest, py_codegen_dump.forced_text(effects), tmp_path)
+        exe, result.manifest, tmp_path, forced_text=py_codegen_dump.forced_text(effects))
     assert code == 0, stderr
     assert_same_c(text, produced, f"effects {effects.flags} {effects.ints} ({mode})")
 
 
 @pytest.mark.parametrize("flag", py_codegen_dump.FLAG_NAMES)
 @pytest.mark.parametrize("mode", MODES)
-def test_every_flag_alone(cg_exe, tmp_path, flag, mode):
-    compare_with_effects(cg_exe, tmp_path, py_codegen_dump.Effects(flags=[flag]), mode)
+def test_every_flag_alone(cg_forced_exe, tmp_path, flag, mode):
+    compare_with_effects(cg_forced_exe, tmp_path, py_codegen_dump.Effects(flags=[flag]), mode)
 
 
 @pytest.mark.parametrize("operation", INT_OPERATIONS)
 @pytest.mark.parametrize("typ", FIXED_TYPES)
 @pytest.mark.parametrize("mode", ("hosted", "freestanding"))
-def test_every_integer_helper_alone(cg_exe, tmp_path, operation, typ, mode):
+def test_every_integer_helper_alone(cg_forced_exe, tmp_path, operation, typ, mode):
     compare_with_effects(
-        cg_exe, tmp_path, py_codegen_dump.Effects(ints=[(operation, typ)]), mode)
+        cg_forced_exe, tmp_path, py_codegen_dump.Effects(ints=[(operation, typ)]), mode)
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_all_helpers_together(cg_exe, tmp_path, mode):
+def test_all_helpers_together(cg_forced_exe, tmp_path, mode):
     ints = [(operation, typ) for operation in INT_OPERATIONS for typ in FIXED_TYPES]
     ints.append(("shift_count", "signed"))
-    compare_with_effects(cg_exe, tmp_path, py_codegen_dump.Effects(
+    compare_with_effects(cg_forced_exe, tmp_path, py_codegen_dump.Effects(
         flags=py_codegen_dump.FLAG_NAMES, ints=ints,
         strings=["first", 'with \\"escape\\"', "\\n", ""]), mode)
 
 
-def test_signed_shift_requests_its_wrap_helper(cg_exe, tmp_path):
+def test_signed_shift_requests_its_wrap_helper(cg_forced_exe, tmp_path):
     compare_with_effects(
-        cg_exe, tmp_path, py_codegen_dump.Effects(ints=[("shl", "i32")]), "hosted")
+        cg_forced_exe, tmp_path, py_codegen_dump.Effects(ints=[("shl", "i32")]), "hosted")
 
 
 # ----- the corpus -----
@@ -383,16 +395,16 @@ def test_output_does_not_depend_on_hash_seed_or_run(cg_exe, tmp_path):
             capture_output=True, env=environment, check=True)
         outputs.add(result.stdout)
     assert len(outputs) == 1
-    result, text, forced, _ = py_codegen_dump.reference(path, "hosted")
-    first = run_mort(cg_exe, result.manifest, forced, tmp_path)[2]
-    second = run_mort(cg_exe, result.manifest, forced, tmp_path)[2]
+    result, text, _ = py_codegen_dump.reference(path, "hosted")
+    first = run_mort(cg_exe, result.manifest, tmp_path)[2]
+    second = run_mort(cg_exe, result.manifest, tmp_path)[2]
     assert first == second == text.encode("ascii")
 
 
 def test_slices_and_tuples_are_sorted(cg_exe, tmp_path):
     path = tmp_path / "input.mx"
     path.write_bytes(ORDERING_PROGRAM.encode("ascii"))
-    _, text, _, _ = py_codegen_dump.reference(path, "hosted")
+    _, text, _ = py_codegen_dump.reference(path, "hosted")
     assert text.index("struct mort_slice_bool {") < text.index("struct mort_slice_const_i64 {")
     assert text.index("struct mort_tuple__u8_u8;") < text.index("struct mort_tuple__i64__u8_bool;")
 
@@ -400,23 +412,21 @@ def test_slices_and_tuples_are_sorted(cg_exe, tmp_path):
 def test_no_paths_in_the_output(cg_exe, tmp_path):
     path = tmp_path / "input.mx"
     path.write_bytes(f"{PRELUDE}\nfn main() -> int {{ return 0; }}\n".encode("ascii"))
-    result, text, forced, _ = py_codegen_dump.reference(path, "hosted")
-    produced = run_mort(cg_exe, result.manifest, forced, tmp_path)[2]
+    result, text, _ = py_codegen_dump.reference(path, "hosted")
+    produced = run_mort(cg_exe, result.manifest, tmp_path)[2]
     assert str(tmp_path).encode("utf-8") not in produced
     assert produced == text.encode("ascii")
 
 
 # ----- hostile programs -----
 
-def bounded(exe, tmp_path, source, forced=""):
+def bounded(exe, tmp_path, source):
     """Run Mort alone under the 500 MB guard."""
     path = tmp_path / "input.mx"
     path.write_bytes(source.encode("utf-8"))
     c_out = tmp_path / "out.c"
-    forced_path = tmp_path / "forced.txt"
-    forced_path.write_bytes(forced.encode("ascii"))
     code, stderr = run_mort_bounded(
-        exe, f"MODE hosted\nFILE {path}\n", tmp_path, extra=(c_out, forced_path))
+        exe, f"MODE hosted\nFILE {path}\n", tmp_path, extra=(c_out,))
     return code, stderr, c_out
 
 

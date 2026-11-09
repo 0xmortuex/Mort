@@ -20,7 +20,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
 from test_codegen_differential import (  # noqa: E402,F401
-    DECLARATIONS, PRELUDE, STATEMENTS, cg_exe, compare, compare_with_effects,
+    DECLARATIONS, PRELUDE, STATEMENTS, cg_exe, cg_forced_exe, compare,
+    compare_with_effects,
 )
 import py_codegen_dump  # noqa: E402
 
@@ -35,7 +36,8 @@ def declaration(name):
     return f"{DECLARATIONS[name]}\n{MAIN}"
 
 
-# Name: (file, old text, new text, probe programs, forced effects or None).
+# Name: (file, old text, new text, probe programs, forced effects or None). An
+# entry with forced effects is built and run through the test-only forced driver.
 MUTANTS = {
     "type_tag_keeps_arrow": (
         "codegen.mx",
@@ -171,7 +173,7 @@ def probe_disagreements(exe, entry, tmp_path):
     return failures
 
 
-def build_mutant(tmp_path, filename, old, new):
+def build_mutant(tmp_path, filename, old, new, driver="cg_main"):
     source = tmp_path / "src"
     source.mkdir()
     for path in HERE.glob("*.mx"):
@@ -182,15 +184,16 @@ def build_mutant(tmp_path, filename, old, new):
     target.write_bytes(text.replace(old, new).encode("utf-8"))
     exe = tmp_path / "mutant.exe"
     result = subprocess.run(
-        [sys.executable, str(ROOT / "mortc.py"), str(source / "cg_main.mx"), "-o", str(exe)],
+        [sys.executable, str(ROOT / "mortc.py"), str(source / f"{driver}.mx"), "-o", str(exe)],
         capture_output=True, text=True, cwd=tmp_path)
     assert result.returncode == 0, f"mutant does not compile:\n{result.stdout}\n{result.stderr}"
     return exe
 
 
-def test_probes_agree_on_the_real_generator(cg_exe, tmp_path):
+def test_probes_agree_on_the_real_generator(cg_exe, cg_forced_exe, tmp_path):
     for name, entry in MUTANTS.items():
-        assert not probe_disagreements(cg_exe, entry, tmp_path), name
+        exe = cg_forced_exe if len(entry) > 4 else cg_exe
+        assert not probe_disagreements(exe, entry, tmp_path), name
 
 
 def test_there_are_enough_mutants():
@@ -200,6 +203,7 @@ def test_there_are_enough_mutants():
 @pytest.mark.parametrize("name", sorted(MUTANTS))
 def test_mutant_is_caught(tmp_path, name):
     entry = MUTANTS[name]
-    exe = build_mutant(tmp_path, entry[0], entry[1], entry[2])
+    driver = "cg_forced_main" if len(entry) > 4 else "cg_main"
+    exe = build_mutant(tmp_path, entry[0], entry[1], entry[2], driver)
     failures = probe_disagreements(exe, entry, tmp_path)
     assert failures, f"mutant {name} survived its probes"

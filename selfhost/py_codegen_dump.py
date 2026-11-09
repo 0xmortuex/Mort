@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""Reference for T6: the real CodeGen with expressions replaced by placeholders.
+"""Reference for the Mort C generator: the real, unmodified mort.codegen.CodeGen.
 
-The Mort generator (selfhost/codegen.mx, cg_stmt.mx, cg_helpers.mx) writes
-declarations, statements and helpers now; expression text is task T7. To compare
-everything else byte for byte, ``PlaceholderCodeGen`` is the unmodified
-``mort.codegen.CodeGen`` with one method replaced: ``_gen_expr`` returns the same
-placeholder ``cg_expr`` writes.
+``reference`` returns exactly the bytes ``CodeGen.generate()`` writes for a file.
+Since T7 nothing is handed to the Mort side: the compiler driver cg_main.mx takes
+no effects input and computes helper use and the string table itself.
 
-Expressions also have effects the program head depends on: which helpers are
-used and the string table. A second, unmodified CodeGen runs first to find them,
-and they are handed to both sides (``forced_text``), so helper selection is
-compared on what each program really uses. T7 drops this file's forcing: its real
-expression generator produces those effects itself.
+``ForcedCodeGen`` and ``forced_text`` remain only for the test-only driver
+cg_forced_main.mx. They reach helper combinations no real program can (threads in
+a freestanding build), so the head text is still compared for those.
 
 Forced file (ASCII, LF):
 
@@ -27,7 +23,6 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
 import py_check_dump  # noqa: E402
-from mort import mort_ast as A  # noqa: E402
 from mort.codegen import CodeGen  # noqa: E402
 from mort.errors import MortError  # noqa: E402
 
@@ -39,9 +34,12 @@ FLAG_NAMES = (
     "used_secure_random", "used_tls",
 )
 
+# Deep left spines are compared with Python, whose generator recurses on them.
+RECURSION_LIMIT = 1_000_000
+
 
 class Effects:
-    """What expressions contribute to the program head."""
+    """What the test-only driver is told to pretend expressions contributed."""
 
     def __init__(self, flags=(), ints=(), strings=()):
         self.flags = tuple(flags)
@@ -49,16 +47,9 @@ class Effects:
         self.strings = tuple(strings)
 
 
-def placeholder(node):
-    text = f"${type(node).__name__}@{node.line}:{node.col or 0}:{node.type or 'none'}$"
-    if isinstance(node, (A.Binary, A.Unary, A.Cast)):
-        return f"({text})"
-    if isinstance(node, A.Call):
-        return f"({text})({text})"
-    return text
+class ForcedCodeGen(CodeGen):
+    """The real generator with extra helper use installed before the first line."""
 
-
-class PlaceholderCodeGen(CodeGen):
     def __init__(self, program, effects, freestanding=False, test_mode=False):
         super().__init__(program, freestanding=freestanding, test_mode=test_mode)
         self._effects = effects
@@ -74,29 +65,6 @@ class PlaceholderCodeGen(CodeGen):
             self.strings.extend(effects.strings)
         super()._emit(s)
 
-    def _gen_expr(self, e):
-        self.current_node = e
-        return placeholder(e)
-
-
-def real_effects(program, freestanding, test_mode):
-    """Run the real generator once. Returns (Effects, error text or None)."""
-    meter = program.work_meter
-    spent, replayed = meter.spent, meter.replayed
-    generator = None
-    try:
-        generator = CodeGen(program, freestanding=freestanding, test_mode=test_mode)
-        generator.generate()
-    except MortError as error:
-        return Effects(), error.format()
-    finally:
-        meter.spent, meter.replayed = spent, replayed
-    return Effects(
-        (name for name in FLAG_NAMES if getattr(generator, name)),
-        sorted(generator.used_int_helpers),
-        generator.strings,
-    ), None
-
 
 def forced_text(effects):
     lines = [f"FLAG {name}\n" for name in effects.flags]
@@ -105,33 +73,47 @@ def forced_text(effects):
     return "".join(lines)
 
 
-def reference(path, mode):
-    """The check outcome plus, for a valid program, the placeholder C.
+def generate(program, freestanding, test_mode):
+    """(C text or None, error text or None, the generator)."""
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(RECURSION_LIMIT)
+    generator = CodeGen(program, freestanding=freestanding, test_mode=test_mode)
+    try:
+        return generator.generate(), None, generator
+    except MortError as error:
+        return None, error.format(), generator
+    finally:
+        sys.setrecursionlimit(limit)
 
-    Returns (check Result, C text or None, forced text or None, error text from
-    the placeholder generator or None).
+
+def reference(path, mode):
+    """The check outcome plus, for a valid program, the C.
+
+    Returns (check Result, C text or None, generator error text or None).
     """
     result = py_check_dump.run_reference(path, mode, exact=True)
     if result.outcome != "ok":
-        return result, None, None, None
-    checker = py_check_dump.LAST[0]
-    program = checker.program
-    freestanding = mode == "freestanding"
-    test_mode = mode == "test"
-    effects, _ = real_effects(program, freestanding, test_mode)
-    try:
-        text = PlaceholderCodeGen(
-            program, effects, freestanding=freestanding, test_mode=test_mode).generate()
-    except MortError as error:
-        return result, None, forced_text(effects), error.format()
-    return result, text, forced_text(effects), None
+        return result, None, None
+    program = py_check_dump.LAST[0].program
+    text, error, _ = generate(program, mode == "freestanding", mode == "test")
+    return result, text, error
+
+
+def effects_of(path, mode):
+    """What the real generator's expressions used, for tests that must not be vacuous."""
+    result = py_check_dump.run_reference(path, mode, exact=True)
+    assert result.outcome == "ok", result.error
+    program = py_check_dump.LAST[0].program
+    _, error, generator = generate(program, mode == "freestanding", mode == "test")
+    assert error is None, error
+    return generator
 
 
 def main(argv):
     if len(argv) != 3 or argv[2] not in ("hosted", "test", "freestanding"):
         print("usage: py_codegen_dump.py FILE hosted|test|freestanding", file=sys.stderr)
         return 2
-    _, text, _, error = reference(Path(argv[1]).resolve(), argv[2])
+    _, text, error = reference(Path(argv[1]).resolve(), argv[2])
     if error:
         print(error, file=sys.stderr)
         return 1
