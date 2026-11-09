@@ -519,12 +519,10 @@ When that branch lands, T4 must also:
 - Drop `CK_MAX_DEPTH`'s frame-count derivation if the branch's located overflow
   diagnostic and alias cache change where Python gives up; the cache already makes
   Mort accept reversed alias chains that `main` rejects.
-- Re-mirror the meter from what actually lands. The work and length limits above
-  follow the uncommitted working tree of `fix/frontend-crashes` read on
-  2026-11-09 (the tip was `4b65338`, whose committed `WorkMeter` still arms at the
-  first instantiation and has no `type processing` text). Compare against the
-  merged `mort/typechecker.py` and move these cases to the differential, keeping
-  the pinned lines only if they still hold.
+- Re-check the meter against what lands. The work and length limits above follow
+  `mort/typechecker.py` as of `fd72ac1` on `fix/frontend-crashes` (unchanged at
+  `d5b4198`). Compare against the merged file and move these cases to the
+  differential, keeping the pinned lines only if they still hold.
 - **Instance charge sites and costs.** Two counters exist today. `ck_charge_generic`
   charges a struct or enum instance before its arguments are validated, as
   `nodes x (1 + type_argument_chars / 64)` into `generic_work`, and reports
