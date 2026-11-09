@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -260,14 +261,17 @@ def hostile_env(tmp_path):
 
 def test_stage2_output_does_not_depend_on_cwd_env_or_invocation(stages, stage2, tmp_path):
     expected = stage_c(stages, "C2")
-    other_cwd = tmp_path / "some where else"
-    other_cwd.mkdir()
-    relative = os.path.relpath(COMPILER_ROOT, other_cwd)
-    output = other_cwd / "again.c"
-    code, _, stderr = run_stage(
-        stage2, "-o", output, relative, cwd=other_cwd, env=hostile_env(tmp_path))
-    assert code == 0, stderr
-    assert output.read_bytes() == expected
+    # A relative path needs the sources' drive, and tmp_path can be on another one
+    # on Windows; so this directory sits next to the checkout, outside the tree.
+    with tempfile.TemporaryDirectory(prefix="some where else ", dir=ROOT.parent) as scratch:
+        other_cwd = Path(scratch)
+        relative = os.path.relpath(COMPILER_ROOT, other_cwd)
+        assert not os.path.isabs(relative)
+        output = other_cwd / "again.c"
+        code, _, stderr = run_stage(
+            stage2, "-o", output, relative, cwd=other_cwd, env=hostile_env(tmp_path))
+        assert code == 0, stderr
+        assert output.read_bytes() == expected
 
 
 def test_compiler_sources_at_a_path_with_spaces_and_crlf_endings_give_the_same_c(
