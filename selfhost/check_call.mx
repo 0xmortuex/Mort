@@ -109,15 +109,91 @@ fn cc_substitute_node(c: *Ck, n: *Node, names: *U64Vec, values: *U64Vec) {
     }
 }
 
+// Python's `visit`, in `_substitute_function_types`, frame by frame.
 fn cc_substitute_all(c: *Ck, root: *Node, names: *U64Vec, values: *U64Vec) {
     let stack = ptrvec_new();
+    let frames = u64vec_new();
+    let saved = (*c).frames;
     ptrvec_push(&stack, root as *void);
+    u64vec_push(&frames, saved + 2);
     while stack.len > 0 {
         let n = ptrvec_pop(&stack) as *Node;
+        let at = u64vec_pop(&frames);
+        if n == (0 as *Node) {
+            ck_fail_nesting(c);
+        }
+        (*c).frames = at;
+        ck_site(c);
         cc_substitute_node(c, n, names, values);
-        ck_push_children(&stack, n);
+        if ck_visit_exhausts(n, at) {
+            ck_fail_nesting(c);
+        }
+        ck_push_visit_children(&stack, &frames, n, at);
+    }
+    (*c).frames = saved;
+    free(stack.data as *void);
+    free(frames.data as *void);
+}
+
+// `copy_frames`: the frames copy.deepcopy needs for a template. A node costs
+// four and a list two; a parameter or a struct literal's field tuple is copied
+// without one, so it stops there, and an attribute's own value is one more level.
+fn cc_copy_frames(root: *Node) -> u64 {
+    let stack = ptrvec_new();
+    let frames = u64vec_new();
+    let deepest: u64 = 0;
+    ptrvec_push(&stack, root as *void);
+    u64vec_push(&frames, 1);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        let at = u64vec_pop(&frames);
+        if at > deepest {
+            deepest = at;
+        }
+        if (*n).kind == NodeKind.PARAM || (*n).kind == NodeKind.STRUCT_LIT_FIELD {
+            continue;
+        }
+        let attribute = at + 4;
+        if attribute > deepest {
+            deepest = attribute;
+        }
+        if (*n).names != (0 as *U64Vec) && (*(*n).names).len != 0 && attribute + 2 > deepest {
+            deepest = attribute + 2;
+        }
+        if (*n).a != (0 as *Node) {
+            ptrvec_push(&stack, (*n).a as *void);
+            u64vec_push(&frames, attribute);
+        }
+        if (*n).b != (0 as *Node) {
+            ptrvec_push(&stack, (*n).b as *void);
+            u64vec_push(&frames, attribute);
+        }
+        if (*n).c != (0 as *Node) {
+            ptrvec_push(&stack, (*n).c as *void);
+            u64vec_push(&frames, attribute);
+        }
+        if (*n).items != (0 as *PtrVec) {
+            for i: u64 in 0..(*(*n).items).len {
+                ptrvec_push(&stack, ptrvec_get((*n).items, i));
+                u64vec_push(&frames, attribute + 2);
+            }
+        }
     }
     free(stack.data as *void);
+    free(frames.data as *void);
+    return deepest;
+}
+
+// `check_frames(copy_frames(template))`, with the frames for the template cached.
+fn cc_require_copy_frames(c: *Ck, resolved: u64, template: *Node) {
+    let extra: u64 = 0;
+    if !map_get(&(*c).copy_frames, resolved, &extra) {
+        extra = cc_copy_frames(template);
+        map_put(&(*c).copy_frames, resolved, extra);
+    }
+    if (*c).frames + extra >= COMPILE_FRAME_BUDGET {
+        ck_fail_nesting(c);
+    }
 }
 
 fn cc_fail_produced(c: *Ck, node: *Node, name: u64, what: *u8, t: u64) {
@@ -193,6 +269,13 @@ fn cc_charge_instance(c: *Ck, template: *Node, values: *U64Vec, node: *Node) {
 // _instantiate_function. `values` runs parallel to the template's parameters;
 // NO_TEXT is a parameter that was not inferred.
 fn cc_instantiate_function(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) -> u64 {
+    ck_frame(c);
+    let result = cc_instantiate_body(c, resolved, values, node);
+    ck_leave(c);
+    return result;
+}
+
+fn cc_instantiate_body(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) -> u64 {
     let s = (*c).s;
     let template = tb_get(&(*c).func_templates, resolved) as *Node;
     let params = (*template).names;
@@ -220,6 +303,7 @@ fn cc_instantiate_function(c: *Ck, resolved: u64, values: *U64Vec, node: *Node) 
         return concrete;
     }
     cc_charge_instance(c, template, values, node);
+    cc_require_copy_frames(c, resolved, template);
     let instance = cc_deep_copy(template);
     cc_substitute_all(c, instance, params, values);
     (*instance).names = ast_new_names();
@@ -258,15 +342,25 @@ fn cc_unify_lists(c: *Ck, patterns: *U64Vec, actuals: *U64Vec, params: *U64Vec, 
     if (*patterns).len != (*actuals).len {
         return false;
     }
+    ck_frame(c);
     for i: u64 in 0..(*patterns).len {
         if !cc_unify(c, u64vec_get(patterns, i), u64vec_get(actuals, i), params, values) {
+            ck_leave(c);
             return false;
         }
     }
+    ck_leave(c);
     return true;
 }
 
 fn cc_unify(c: *Ck, pattern: u64, actual: u64, params: *U64Vec, values: *U64Vec) -> bool {
+    ck_enter(c);
+    let result = cc_unify_body(c, pattern, actual, params, values);
+    ck_leave(c);
+    return result;
+}
+
+fn cc_unify_body(c: *Ck, pattern: u64, actual: u64, params: *U64Vec, values: *U64Vec) -> bool {
     let s = (*c).s;
     ck_charge_text(c, actual);
     let index: u64 = 0;
@@ -362,7 +456,9 @@ fn cc_call(c: *Ck, e: *Node) -> u64 {
         binding = ck_find_binding(c, name);
         global = binding == (0 as *Binding) && tb_has(&(*c).globals, name);
     }
+    ck_frame(c);
     let result = cc_infer_call(c, e, name, dotted);
+    ck_leave(c);
     let f = cx_facts(e);
     ck_ev_head(c, "call", name);
     if (*f).enum_name != NO_TEXT {
@@ -773,7 +869,10 @@ fn cb_builtin(c: *Ck, e: *Node, name: u64) -> u64 {
         return cb_core(c, e, name);
     }
     if cb_is(c, name, "volatile_read") || cb_is(c, name, "volatile_write") {
-        return cb_volatile(c, e, name);
+        ck_frame(c);
+        let result = cb_volatile(c, e, name);
+        ck_leave(c);
+        return result;
     }
     return cb_ports(c, e, name);
 }

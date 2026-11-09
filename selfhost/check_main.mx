@@ -4,7 +4,8 @@
 //
 // The manifest lists the program's files in the order the Python loader visits
 // them, one `FILE <path>` per file, each followed by `ALIAS <name> <mod_name>`
-// lines, and starts with `MODE hosted|test|freestanding`. Import resolution
+// lines and, for a file reached through imports, `DEPTH <imports>` lines, and
+// starts with `MODE hosted|test|freestanding`. Import resolution
 // itself is T8; `selfhost/py_check_dump.py` writes this file from the real loader.
 //
 // Exit status: 0 checked, 1 a diagnostic on stderr (the tables and events so far
@@ -46,6 +47,7 @@ fn cm_read_all(path: *u8) -> Buf {
 // One `FILE` entry of the manifest and its aliases.
 struct ManifestFile {
     path: Span,
+    import_depth: u64,
     alias_names: U64Vec,
     alias_modules: U64Vec,
 }
@@ -82,10 +84,22 @@ fn cm_read_manifest(path: *u8, strings: *Interner) -> Manifest {
             let copy = intern(strings, raw_path);
             *entry = ManifestFile {
                 path: intern_text(strings, copy),
+                import_depth: 0,
                 alias_names: u64vec_new(),
                 alias_modules: u64vec_new(),
             };
             ptrvec_push(&result.files, entry as *void);
+        } else if ts_starts_with(line, "DEPTH ") {
+            if result.files.len == 0 {
+                sup_die("check_main: malformed DEPTH line");
+            }
+            let entry = ptrvec_get(&result.files, result.files.len - 1) as *ManifestFile;
+            let digits = ts_sub(line, 6, line.len);
+            let depth: u64 = 0;
+            for j: u64 in 0..digits.len {
+                depth = depth * 10 + ((digits.data[j] - '0') as u64);
+            }
+            (*entry).import_depth = depth;
         } else if ts_starts_with(line, "ALIAS ") {
             let rest = ts_sub(line, 6, line.len);
             let cut = ts_find(rest, ' ');
@@ -155,7 +169,7 @@ fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program, first_co
     if !lx_tokenize(lexer) {
         diag_fatal(path.data, (*lexer).err_line, (*lexer).err_col, (*lexer).err_message);
     }
-    let program = parse_program(&(*lexer).tokens, strings, path.data);
+    let program = parse_program(&(*lexer).tokens, strings, path.data, (*entry).import_depth);
     let file = intern(strings, path);
     for i: u64 in 0..(*lexer).tokens.len {
         let key = ck_line_key(file, (*lexer).tokens.data[i].line);

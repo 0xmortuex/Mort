@@ -74,7 +74,7 @@ def compare(exe, path, mode, tmp_path):
         return "load"  # import resolution is T8's; nothing here can be compared
     assert expected.outcome != "crash", f"{path}: Python crash"
     if expected.outcome == "parse":
-        manifest = f"MODE {mode}\nFILE {expected.failing_file}\n"
+        manifest = py_check_dump.failing_manifest(mode, expected)
         code, stderr, _dump = run_mort(exe, manifest, tmp_path)
         assert code == 1, f"{path}: {stderr!r}"
         assert stderr.decode("utf-8") == expected.error, path
@@ -659,25 +659,23 @@ def assert_generic_limit(exe, tmp_path, source, line, template, problem):
 NESTED_TOO_DEEP = "has a type argument nested more than 256 levels deep"
 
 
+# These expansions reach the frame budget first, in both compilers, before the
+# nesting limit on type arguments Mort also applies.
 def test_unbounded_generic_struct_expansion_is_rejected(check_exe, tmp_path):
-    assert_generic_limit(
-        check_exe, tmp_path, "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n" + OK_MAIN,
-        1, "G", NESTED_TOO_DEEP)
+    source = "struct G<T> { n: *G<*T> }\nstruct S { g: G<u8> }\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_unbounded_generic_enum_expansion_is_rejected(check_exe, tmp_path):
-    assert_generic_limit(
-        check_exe, tmp_path, "enum O<T> { S(*O<*T>), N }\nstruct S { g: O<u8> }\n" + OK_MAIN,
-        1, "O", NESTED_TOO_DEEP)
+    source = "enum O<T> { S(*O<*T>), N }\nstruct S { g: O<u8> }\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_deeply_nested_generic_arguments_are_rejected(check_exe, tmp_path):
     depth = 900
     nested = "G<" * depth + "u8" + ">" * depth
-    assert_generic_limit(
-        check_exe, tmp_path,
-        f"struct G<T> {{ x: T }}\nstruct S {{ a: {nested} }}\n" + OK_MAIN,
-        1, "G", NESTED_TOO_DEEP)
+    source = f"struct G<T> {{ x: T }}\nstruct S {{ a: {nested} }}\n" + OK_MAIN
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_doubling_generic_arguments_are_rejected(check_exe, tmp_path):
@@ -757,7 +755,7 @@ def test_deep_pointer_types_are_resolved_once(check_exe, tmp_path):
     """Re-resolving a deep type at each level costs cubic time; the guard's
     timeout turns that into a failure. Python on main has the same cost, so
     only the Mort side runs."""
-    field_type = "*" * 900 + "u8"
+    field_type = "*" * 480 + "u8"  # 2 frames per level: the budget allows 490
     fields = ", ".join(f"f{i}: {field_type}" for i in range(400))
     path = _written(tmp_path, f"struct S {{ {fields} }}\n" + OK_MAIN)
     code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
@@ -920,7 +918,7 @@ def mortc_check(tmp_path, source):
 
 
 @pytest.mark.parametrize(
-    "star,accepted", [("", 987), ("*", 493)], ids=["direct", "pointer"])
+    "star,accepted", [("", 993), ("*", 495)], ids=["direct", "pointer"])
 def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
     def chain(count):
         links = "".join(f"type A{i} = {star}A{i + 1};\n" for i in range(count))
@@ -935,9 +933,9 @@ def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
             check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
         if rejected:
             assert code == 1, stderr
-            expected = f"{path}:1:1: error: source nesting exceeds the compiler safety limit"
-            assert python_error.splitlines()[0] == f"mortc: {expected}"
-            assert stderr.decode("utf-8") == expected
+            assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
+            assert stderr.decode("utf-8").endswith(
+                ": error: source nesting exceeds the compiler safety limit")
         else:
             assert code == 0, stderr
 
@@ -975,10 +973,11 @@ def test_shadowing_events_are_compared(check_exe, tmp_path):
 
 
 def test_deep_left_chain_is_iterative(check_exe, tmp_path):
+    """Past the frame budget: both compilers stop in _apply_type_aliases."""
     chain = " + 1" * 4000
     source = f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n"
     outcome = assert_source_agrees(check_exe, tmp_path, source)
-    assert outcome == "ok"
+    assert outcome == "error"
 
 
 def test_deep_field_chain_is_iterative(check_exe, tmp_path):
@@ -995,19 +994,19 @@ def test_undefined_at_the_end_of_a_deep_chain(check_exe, tmp_path):
     assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
-def test_very_deep_chain_does_not_use_the_c_stack(check_exe, tmp_path):
-    """Beyond what the Python reference can run in reasonable time, so the
-    expected count comes from the source: one reference per operand."""
+def test_very_deep_chain_is_rejected_without_the_c_stack(check_exe, tmp_path):
+    """Far past the frame budget, and beyond what the Python reference runs in
+    reasonable time: located, without recursing over the chain."""
     operands = 300_000
     path = tmp_path / "input.mx"
     path.write_text(
         "fn main() -> int {\nlet a = 1;\nlet x = a" + " + a" * (operands - 1)
         + ";\nreturn 0;\n}\n", encoding="utf-8")
-    code, stderr, text = run_mort(
+    code, stderr, _text = run_mort(
         check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
-    assert code == 0, stderr
-    _tables, events = split_dump(text)
-    assert events.count('var "a" local d1 L2\n') == operands
+    assert code == 1
+    assert b":3:" in stderr
+    assert b"error: source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_multi_file_module_program(check_exe, tmp_path):
@@ -1148,9 +1147,10 @@ def test_alias_chain_past_the_depth_limit_is_a_clean_diagnostic(check_exe, tmp_p
 
 
 def test_long_struct_chain_by_value(check_exe, tmp_path):
+    """Long enough to pass the frame budget of the aggregate walk."""
     decls = "".join(f"struct S{i} {{ next: S{i + 1} }}\n" for i in range(3000))
     source = decls + "struct S3000 { x: u8 }\n" + OK_MAIN
-    assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
 
 
 def test_long_cycle_by_value(check_exe, tmp_path):

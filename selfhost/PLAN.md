@@ -397,19 +397,21 @@ carries over: the checker's logic is far less mechanical.
   `decode_source`, the array size limit, and Python's `repr` of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
   (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
   The first error exits 1 with no dump.
-- Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
-  expressions, unary, blocks, `if`). Python's own limit is a side effect of its
-  frame count, so the reference is the Python parser plus the same counter
-  (`GuardedParser`). Message, line and column match, the column being the one
-  `mortc.py` reports when the Python parser runs out of stack. Measured limits of the
-  unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
-  975 unary operators, all within 1000 units, so this rejects nothing it accepts.
-  Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
-  `-O0`.
+- Depth: `mort/depth.py` gives a compile a budget of `COMPILE_FRAME_BUDGET` (1000)
+  Python frames of its own, the same on every version, and it is the language's
+  limit. The parser's `frames` is the Python parser's frame depth for the rule
+  being parsed: `ps_enter` is `check_frames` at the five recursive rules (types,
+  expressions, unary, blocks, `if`), `ps_call` a rule with a frame and no check,
+  and the rule-per-level `_logic_or` to `_cast` Python uses are counted together
+  in `ps_expression`. The reference is the unmodified Python parser under the real
+  budget. Message, line and column match, the column being the one `mortc.py`
+  reports when the budget runs out. Limits: 65 nested parentheses, 497 blocks,
+  993 pointer stars, 978 unary operators.
 - `<` lookahead is one precomputed pass over the tokens, not a scan per `<`. The
   tokens a scan can see are never yet split by a type close, so the answers match.
-- Tree depth is not bounded by `MAX_NESTING`: operator, postfix and cast chains
-  are built by loops. The parser and dump never recurse over the tree.
+- Tree depth is not bounded by the parser: operator, postfix and cast chains
+  are built by loops. The parser and dump never recurse over the tree. The checker
+  bounds them instead, where Python's frames run out.
 
 For T4: **chains make left-deep trees of any depth, so a recursive checker over
 the AST will overflow the C stack.** It needs an AST-depth check or iteration.
@@ -417,8 +419,7 @@ the AST will overflow the C stack.** It needs an AST-depth check or iteration.
 Reconciled with `fix/frontend-crashes`: the Mort parser now records the same
 columns on diagnostics and nodes as the Python parser and enforces the array size
 limit. That branch's AST-depth check (`_check_nesting`) did not survive to its
-merge: nesting there is the located `RecursionError` path in `mortc.py`, so
-`GuardedParser` stays as the fixed limit and only gained the column.
+merge: nesting there is the located `RecursionError` path in `mortc.py`.
 
 ## 11. Declaration checker status (T4)
 
@@ -478,16 +479,23 @@ where the Python checker's behaviour stops being mechanical.
   These diagnostics are in `T4_MESSAGES`, so the differential compares them when
   they arise in the declaration phase; the hostile tests also compare them with
   Python under the 500 MB guard.
-- **Depth.** Expressions use an explicit work stack. Type and alias recursion
-  counts `CK_MAX_DEPTH` (989), which is the real `mortc.py --check` boundary for
-  alias chains (987 direct and 493 pointer links accepted, one more rejected,
-  pinned by a test against the real compiler), and reports Python's located
-  `source nesting exceeds ...` text at the node reached, using the first token's
-  column on that line when the node has none; statement recursion is bounded by
-  the parser's `MAX_NESTING`. Long
-  by-value struct chains and cycles are iterative. The Python reference is
-  quadratic on deep chains, so differential cases stop at 4000 operands, and one
-  300,000-operand case runs the Mort checker alone.
+- **Depth.** The checker's `frames` is the Python checker's frame depth (see
+  `mort/depth.py`): `ck_enter` is a function that calls `check_frames` and
+  `ck_frame` one that does not, and a generator expression counts as a frame.
+  The walks that are recursive in Python (`_apply_type_aliases`, the aggregate
+  visit, drop analysis, `_substitute_function_types`, `check_frames(copy_frames)`)
+  are iterative here and carry the frame count, so a limit is reported at the
+  node Python's `current_node` holds, using the first token's column on that line
+  when the node has none. Expressions use an explicit work stack and advance two
+  frames per spine level. The reference strips its own instrumentation from the
+  count (`_check_compiler_frames`) and writes a file's import depth to the
+  manifest, so `mortc.py --check` and the differential agree (993 direct and 495
+  pointer alias links accepted, one more rejected, pinned by a test against the
+  real compiler). `test_nesting_boundary_matches_python` compares every shape at
+  the first depth Python rejects and on either side of it. Long by-value struct
+  chains and cycles are iterative. The Python reference is quadratic on deep
+  chains, so differential cases stop at 4000 operands, and one 300,000-operand
+  case runs the Mort checker alone, which rejects it at the budget.
 - **Bignum.** Not needed at T4: there is no constant folding here, and array
   sizes are compared as the parser's canonical decimal text. T5's folding depends
   on the bignum task (T2b) being tracked on `feat/selfhost-plan`.
@@ -511,10 +519,10 @@ Still open:
 - **Known difference: Mort-only limits.** The 256-level, 4096-character and 16384
   instance checks are, in Python, function-instantiation limits; `ck_charge_generic`
   applies them to struct and enum arguments too. Landing `fix/frontend-crashes` did
-  not remove this: `mortc.py --check` on `main` accepts a struct argument 257 levels
-  deep or 5000 characters long, which Mort rejects, and reports `struct G<T> { n:
-  *G<*T> }` as `source nesting exceeds the compiler safety limit` where Mort reports
-  the 256-level limit. `struct D<T> { a: *D<(T, T)> }` hits Mort's 4096 limit and
+  not remove this: `mortc.py --check` on `main` accepts a struct argument 257
+  pointer levels deep or 5000 characters long, which Mort rejects. An argument
+  built by recursion (`struct G<T> { n: *G<*T> }`) reaches the frame budget in both,
+  which are compared. `struct D<T> { a: *D<(T, T)> }` hits Mort's 4096 limit and
   Python's 65536 cap; `test_known_difference_doubling_tuple_argument` pins both
   sides. To close it, decide one rule: either Python's `_instantiate_struct` and
   `_instantiate_enum` apply the limits before validating arguments, and the
@@ -527,11 +535,6 @@ Still open:
   `spend_replay` happen in bodies. Until T5, a budget reached in a body is not
   compared (`BUDGET_MESSAGE` in `py_check_dump.py`): 2000 fields of a pointer to a
   40,000-character alias pass here and exhaust the budget in Python.
-- **Validity depth.** `_valid_type` now takes two Python frames per level, so
-  `mortc.py --check` rejects a pointer field beyond 494 levels, where Mort, which
-  counts one level, accepts up to `CK_MAX_DEPTH`. `CK_MAX_DEPTH` is pinned on alias
-  chains only; the differential's reference runs with a higher recursion limit and
-  does not see this. T5 should recount frames when it ports `_check_expr`.
 - **Walk order.** The apply-aliases walk matches Python's preorder at the level of
   program lists and of the children's `a`, `b`, `c`, `items` slots, but Python uses
   each node's field order; if the differential finds a limit reported at a different
