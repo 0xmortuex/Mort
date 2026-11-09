@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parent
 
 
 def _command(value):
-    parts = shlex.split(value, posix=os.name != "nt")
+    # An existing file is one path even if it contains spaces; only anything
+    # else is a command line to split.
+    if Path(value).is_file():
+        parts = [value]
+    else:
+        parts = shlex.split(value, posix=os.name != "nt")
     if len(parts) == 1 and parts[0].lower().endswith(".py"):
         return [sys.executable, parts[0]]
     return parts
