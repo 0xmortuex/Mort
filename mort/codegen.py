@@ -10,7 +10,23 @@ Design choices:
 import base64
 
 from . import mort_ast as A
-from .typechecker import BUILTIN_NAMES
+from .errors import MortError
+from .typechecker import (
+    BUILTIN_NAMES,
+    REPLAY_UNITS_PER_NODE,
+    WorkMeter,
+    ast_size,
+    charge_chars,
+    charge_items,
+    charging,
+)
+
+# [value; n] is written out element by element in the generated C, so a short
+# source line can demand gigabytes. This bounds that C text across the program.
+# Zero-filled arrays above _ZERO_REPEAT_MIN are emitted as {0} and cost nothing.
+MAX_ARRAY_REPEAT_BYTES = 256 * 1024 * 1024
+_ZERO_REPEAT_MIN = 256
+_ZERO_ELEMENTS = frozenset(("0", "0.0", "0.0f", "false", "NULL"))
 
 # Runtime-backed builtin families. Membership must be exact: a user function
 # such as a kernel's own `net_send` shares the prefix but is not a builtin,
@@ -57,10 +73,12 @@ def _is_const_slice(t):
 
 
 def _slice_elem(t):
+    charge_chars(t)
     return t[8:] if _is_const_slice(t) else t[2:]
 
 
 def _type_tag(t):
+    charge_chars(t)
     return (t.replace("->", "_to_")
             .replace("*const ", "const_").replace("*", "ptr_")
             .replace("[]const ", "slice_const_").replace("[]", "slice_")
@@ -75,6 +93,7 @@ def _slice_c_name(t):
 
 
 def _array_parts(t):
+    charge_chars(t)
     inner = t[1:-1]
     cut = inner.rfind(";")
     return inner[:cut], int(inner[cut + 1:])
@@ -83,6 +102,7 @@ def _array_parts(t):
 def _split_type_list(inner):
     if not inner:
         return []
+    charge_chars(inner)
     result = []
     start = 0
     angle = paren = bracket = 0
@@ -109,6 +129,7 @@ def _split_type_list(inner):
 def _function_parts(t):
     if not isinstance(t, str) or not t.startswith("fn("):
         return None
+    charge_chars(t)
     depth = 0
     close = None
     for index in range(2, len(t)):
@@ -145,12 +166,31 @@ def _c_symbol(name):
     return _type_tag(name.replace(".", "__"))
 
 
+def _possible_types(node):
+    """Attribute values of an AST node that can hold type strings.
+
+    The slice and tuple collectors look at every string they reach, so text
+    from the source must be excluded: only its form can resemble a type.
+    """
+    for name, value in vars(node).items():
+        if name == "filename":
+            continue
+        if isinstance(node, A.StrLit) and name == "value":
+            continue
+        if isinstance(node, A.Asm) and name == "text":
+            continue
+        if isinstance(node, A.TestDecl) and name == "name":
+            continue
+        yield value
+
+
 def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
            payload_enum_names=frozenset()):
     """Map a Mort type string to its C spelling.
 
     '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
     """
+    charge_chars(t)
     callable_type = _function_parts(t)
     if callable_type:
         parameters, result = callable_type
@@ -197,9 +237,15 @@ class CodeGen:
         self.extern_names = {f.name for f in program.externs}
         self.lines = []
         self.indent = 0
-        self.slice_types = self._collect_slice_types(program)
-        self.tuple_types = self._collect_tuple_types(program)
+        self.current_node = None  # where a stack overflow is reported
+        self.work = getattr(program, "work_meter", None) or WorkMeter()
+        self.work.locate = lambda: self.current_node
+        self.c_types = {}
+        with charging(self.work):
+            self.slice_types = self._collect_slice_types(program)
+            self.tuple_types = self._collect_tuple_types(program)
         self.drop_destructors = getattr(program, "drop_destructors", {})
+        self.array_repeat_bytes = 0
 
     @staticmethod
     def _collect_slice_types(program):
@@ -224,7 +270,7 @@ class CodeGen:
                 return
             if hasattr(value, "__dict__") and id(value) not in seen:
                 seen.add(id(value))
-                for item in vars(value).values():
+                for item in _possible_types(value):
                     visit(item)
 
         visit(program.globals)
@@ -239,8 +285,14 @@ class CodeGen:
     def _collect_tuple_types(program):
         found = set()
         seen = set()
+        visited_types = set()
 
         def visit_type(value):
+            # One huge type named by many nodes is walked once.
+            if value in visited_types:
+                return
+            visited_types.add(value)
+            charge_chars(value)
             tuple_type = _tuple_parts(value)
             if tuple_type:
                 found.add(value)
@@ -296,7 +348,7 @@ class CodeGen:
                 return
             if hasattr(value, "__dict__") and id(value) not in seen:
                 seen.add(id(value))
-                for item in vars(value).values():
+                for item in _possible_types(value):
                     visit(item)
 
         visit(program.globals)
@@ -308,8 +360,13 @@ class CodeGen:
         return sorted(found, key=lambda item: (item.count("("), item))
 
     def _ct(self, t):
-        return c_type(
-            t, self.struct_names, self.enum_names, self.payload_enum_names)
+        spelled = self.c_types.get(t)
+        if spelled is None:
+            spelled = c_type(
+                t, self.struct_names, self.enum_names, self.payload_enum_names)
+            self.c_types[t] = spelled
+        charge_chars(spelled)  # every use is written out, even when cached
+        return spelled
 
     _U64_MAX = (1 << 64) - 1
     _I64_MAX = (1 << 63) - 1
@@ -1520,6 +1577,10 @@ class CodeGen:
         self._emit()
 
     def generate(self):
+        with charging(self.work):
+            return self._generate_program()
+
+    def _generate_program(self):
         self.strings = []       # raw string-literal values, index = id
         self.used_inb = False   # set if a port-I/O builtin is generated, per helper
         self.used_outb = False
@@ -1902,6 +1963,7 @@ class CodeGen:
         return "\n".join(self.lines) + "\n"
 
     def _gen_struct(self, s):
+        self.current_node = s
         self._emit(f"struct mort_{_type_tag(s.name)} {{")
         self.indent += 1
         for fld in s.fields:
@@ -1943,6 +2005,7 @@ class CodeGen:
                 if element in self.drop_destructors:
                     self._emit(self._drop_call(element, f"&value->f_{index}"))
         elif typ in self.struct_names:
+            charge_items(len(self.program.structs))
             declaration = next(
                 item for item in self.program.structs
                 if item.name == typ and not item.generic_params
@@ -1952,6 +2015,7 @@ class CodeGen:
                     self._emit(self._drop_call(
                         field.typ, f"&value->f_{field.name}"))
         elif typ in self.payload_enum_names:
+            charge_items(len(self.program.enums))
             declaration = next(
                 item for item in self.program.enums
                 if item.name == typ and not item.generic_params
@@ -2025,6 +2089,7 @@ class CodeGen:
         result = []
         remaining = list(nodes)
         while remaining:
+            charge_items(len(remaining))
             ready = [
                 key for key in remaining
                 if dependencies[key].issubset(emitted)
@@ -2037,10 +2102,11 @@ class CodeGen:
             for key in ready:
                 result.append((key[0], nodes[key]))
                 emitted.add(key)
-                remaining.remove(key)
+            remaining = [key for key in remaining if key not in emitted]
         return result
 
     def _gen_enum(self, enum):
+        self.current_node = enum
         type_tag = _type_tag(enum.name)
         tag_name = (f"mort_{type_tag}_tag" if enum.name in self.payload_enum_names
                     else f"mort_{type_tag}")
@@ -2065,6 +2131,7 @@ class CodeGen:
             self._emit("};")
 
     def _signature(self, f):
+        self.current_node = f
         if f.params:
             params = ", ".join(
                 self._var_decl(p.typ, "m_" + p.name) for p in f.params)
@@ -2107,8 +2174,10 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _emit_defer_scopes(self, start=0):
+        exit_site = self.current_node  # the replay changes current_node
         for scope in reversed(getattr(self, "defer_scopes", [])[start:]):
             for expression in reversed(scope):
+                first_line = len(self.lines)
                 if isinstance(expression, tuple) and expression[0] == "resource":
                     _, name, destructor, live = expression
                     destructor_name = (
@@ -2116,10 +2185,17 @@ class CodeGen:
                         if destructor.startswith("$drop$")
                         else f"mort_{_c_symbol(destructor)}"
                     )
+                    nodes = 1
                     self._emit(
                         f"if ({live}) {{ {destructor_name}(&m_{name}); }}")
                 else:
+                    # Each exit path regenerates every deferred expression.
+                    nodes = ast_size(expression)
                     self._emit(self._gen_expr(expression) + ";")
+                self.work.spend_replay(
+                    nodes * REPLAY_UNITS_PER_NODE
+                    + sum(map(len, self.lines[first_line:])),
+                    exit_site)
 
     def _gen_scoped_statements(self, statements):
         self.defer_scopes.append([])
@@ -2144,6 +2220,7 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _gen_stmt(self, s):
+        self.current_node = s
         self._coverage_point(s)
         if isinstance(s, A.Let):
             self._prepare_try_expr(s.expr)
@@ -2489,6 +2566,7 @@ class CodeGen:
         return s
 
     def _gen_expr(self, e):
+        self.current_node = e
         if isinstance(e, A.IntLit):
             if e.value > self._I64_MAX:
                 return self._c_int_literal(e.value, e.type)
@@ -2577,7 +2655,15 @@ class CodeGen:
             return "{" + ", ".join(self._gen_expr(el) for el in e.elements) + "}"
         if isinstance(e, A.ArrayRepeat):
             v = self._gen_expr(e.value)
-            return "{" + ", ".join([v] * e.count) + "}"
+            if e.count > _ZERO_REPEAT_MIN and v in _ZERO_ELEMENTS:
+                return "{0}"
+            self.array_repeat_bytes += e.count * (len(v) + 2)
+            if self.array_repeat_bytes > MAX_ARRAY_REPEAT_BYTES:
+                raise MortError(
+                    f"array repeat of {e.count} elements pushes the generated "
+                    f"initialisers over the {MAX_ARRAY_REPEAT_BYTES}-byte limit",
+                    e.line, e.col, getattr(e, "filename", None))
+            return "{" + ((", " + v) * e.count)[2:] + "}"
         if isinstance(e, A.Unary):
             # A constant '-'/'~' folds to its value (const_val is set only for
             # those two int unaries; '*'/'&'/'!' leave it None).

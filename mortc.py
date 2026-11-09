@@ -33,7 +33,7 @@ from mort import __language_version__, __version__
 from mort.codegen import CodeGen
 from mort.errors import MortError
 from mort.formatter import format_file
-from mort.lexer import Lexer
+from mort.lexer import Lexer, decode_source
 from mort.mort_ast import Node, Program
 from mort.parser import Parser
 from mort.project import (
@@ -74,39 +74,46 @@ def compile_to_c(src, freestanding=False):
 
 def _parse_source(src, filename=None):
     try:
-        program = Parser(Lexer(src).tokenize()).parse()
-        if filename:
-            _tag_source(program, filename)
+        parser = Parser(Lexer(src).tokenize())
     except MortError as error:
         error.filename = filename
         raise
-    except RecursionError as error:
+    try:
+        program = parser.parse()
+    except MortError as error:
+        error.filename = filename
+        raise
+    except RecursionError:
+        token = parser._peek()
         raise MortError(
             "source nesting exceeds the compiler safety limit",
-            filename=filename,
-        ) from error
+            token.line, token.col, filename,
+        ) from None
+    program.tokens = parser.toks
+    if filename:
+        _tag_source(program, filename)
     return program
 
 
-def _tag_source(node, filename, seen=None):
+def _tag_source(root, filename):
     """Attach a source filename to every AST node for checker diagnostics."""
-    if seen is None:
-        seen = set()
-    if not isinstance(node, Node) or id(node) in seen:
-        return
-    seen.add(id(node))
-    node.filename = filename
-    for value in vars(node).values():
-        if isinstance(value, Node):
-            _tag_source(value, filename, seen)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                if isinstance(item, Node):
-                    _tag_source(item, filename, seen)
-                elif isinstance(item, tuple):
-                    for part in item:
-                        if isinstance(part, Node):
-                            _tag_source(part, filename, seen)
+    seen = set()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, Node) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        node.filename = filename
+        for value in vars(node).values():
+            if isinstance(value, Node):
+                stack.append(value)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, Node):
+                        stack.append(item)
+                    elif isinstance(item, tuple):
+                        stack.extend(part for part in item if isinstance(part, Node))
 
 
 def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=None):
@@ -162,12 +169,39 @@ def _compile_programs(
         aliases=[a for p in programs for a in p.aliases],
     )
     checker = Checker(program, freestanding=freestanding, test_mode=test_mode)
-    checker.check()
-    if warnings is not None:
-        warnings.extend(checker.warnings)
-    return CodeGen(
-        program, freestanding=freestanding, test_mode=test_mode,
-        coverage=coverage).generate()
+    generator = None
+    try:
+        checker.check()
+        if warnings is not None:
+            warnings.extend(checker.warnings)
+        generator = CodeGen(
+            program, freestanding=freestanding, test_mode=test_mode,
+            coverage=coverage)
+        return generator.generate()
+    except RecursionError:
+        raise _nesting_error(programs, generator, checker) from None
+
+
+def _nesting_error(programs, *phases):
+    """Report running out of stack at the node the compiler had reached."""
+    node = next(
+        (phase.current_node for phase in phases
+         if phase is not None and phase.current_node is not None),
+        None,
+    )
+    line = getattr(node, "line", None)
+    col = getattr(node, "col", None)
+    filename = getattr(node, "filename", None)
+    tokens = next(
+        (p.tokens for p in programs if getattr(p, "filename", None) == filename),
+        programs[0].tokens,
+    )
+    if line is None:
+        line, col = tokens[0].line, tokens[0].col
+    elif col is None:
+        col = next((token.col for token in tokens if token.line == line), 1)
+    return MortError(
+        "source nesting exceeds the compiler safety limit", line, col, filename)
 
 
 def compile_files_to_c(
@@ -193,10 +227,11 @@ def compile_files_to_c(
             source = source_overrides[key]
         else:
             try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    source = handle.read()
+                with open(path, "rb") as handle:
+                    data = handle.read()
             except OSError as error:
                 raise MortError(f"cannot read imported source: {error}", filename=path)
+            source = decode_source(data, path)
         program = _parse_source(source, path)
         programs.append(program)
         program_by_path[key] = program
@@ -881,8 +916,8 @@ def _package_api(start):
     modules = []
     for path in project["sources"]:
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                program = _parse_source(handle.read(), path)
+            with open(path, "rb") as handle:
+                program = _parse_source(decode_source(handle.read(), path), path)
         except (OSError, MortError) as error:
             print(f"mortc: documentation failed: {error}", file=sys.stderr)
             return None
@@ -1019,7 +1054,7 @@ def _format_command(paths, check=False):
         for path in files:
             if format_file(path, check=check):
                 changed.append(path)
-    except OSError as error:
+    except (OSError, MortError) as error:
         print(f"mortc: formatter failed: {error}", file=sys.stderr)
         return 1
     if check and changed:

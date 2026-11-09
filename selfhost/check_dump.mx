@@ -144,6 +144,8 @@ fn cd_suffix(c: *Ck, out: *Buf, n: *Node) {
         cd_arm(c, out, f);
     } else if kind == NodeKind.MATCH {
         cd_bool(out, "exhaustive", has && (*f).exhaustive);
+    } else if kind == NodeKind.UNARY {
+        cd_bool(out, "is_cast_operand", (*n).flag);
     } else if kind == NodeKind.VAR || kind == NodeKind.FIELD_ACCESS {
         cd_text(c, out, "resolved_function", (*n).resolved_fn);
     } else if kind == NodeKind.CALL {

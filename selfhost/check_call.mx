@@ -12,7 +12,6 @@ import bignum;
 import checker;
 import check_expr;
 
-const WORK_UNITS_PER_NODE: u64 = 8;
 
 // ----- generic functions -----
 
@@ -154,8 +153,7 @@ fn cc_charge_instance(c: *Ck, template: *Node, values: *U64Vec, node: *Node) {
         (*template).num = cc_ast_size(template) + 1;
     }
     (*c).current_node = node;
-    (*c).work_instantiated = true;
-    ck_spend(c, ((*template).num - 1) * WORK_UNITS_PER_NODE);
+    ck_charge_instantiation(c, (*template).num - 1, node);
     let too_long = false;
     let too_deep = false;
     for i: u64 in 0..(*values).len {
@@ -186,7 +184,7 @@ fn cc_charge_instance(c: *Ck, template: *Node, values: *U64Vec, node: *Node) {
         m_u(&msg, MAX_TYPE_ARGUMENT_NESTING);
         m_s(&msg, " levels deep");
     }
-    ck_fail_node(c, node, &msg);
+    ck_exit_diag(c, (*node).line, ck_column_of(node), (*node).file, buf_span(&msg));
 }
 
 // _instantiate_function. `values` runs parallel to the template's parameters;
@@ -1168,7 +1166,7 @@ fn cb_core(c: *Ck, e: *Node, name: u64) -> u64 {
 
 // A located error at the callee's name, as `MortError(msg, line, col)`.
 fn cb_fail_at_name(c: *Ck, e: *Node, message: *Buf) {
-    ck_exit_diag_col(c, (*e).name_line, (*e).name_col, (*e).file, buf_span(message));
+    ck_exit_diag(c, (*e).name_line, (*e).name_col, (*e).file, buf_span(message));
 }
 
 fn cb_fail_vt(c: *Ck, e: *Node, tail: *u8) {

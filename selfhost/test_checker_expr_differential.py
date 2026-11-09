@@ -766,7 +766,7 @@ def test_dump_covers_every_field_the_checker_assigns():
             for item in items:
                 if (isinstance(item, ast.Attribute)
                         and isinstance(item.value, ast.Name)
-                        and item.value.id != "self"):
+                        and item.value.id not in ("self", "_current")):
                     written.add(item.attr)
     dumped = set(py_check_dump.DYNAMIC_FIELDS)
     for fields in py_check_dump.CHECKED_SUFFIX.values():
@@ -1053,7 +1053,7 @@ def test_constant_width_is_bounded(expr_exe, tmp_path):
     assert_rejected_within_limits(
         expr_exe, tmp_path,
         f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n",
-        f":2: error: constant expression needs more than {2 ** 18} bits")
+        f":2:{11 + 6 * 4095}: error: constant expression needs more than {2 ** 18} bits")
 
 
 def test_retained_constants_are_bounded(expr_exe, tmp_path):

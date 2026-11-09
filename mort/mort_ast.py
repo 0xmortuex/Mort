@@ -10,6 +10,7 @@ class Node:
         self.type = None      # resolved by the checker for expressions
         self.is_lit = False   # True for untyped integer-literal expressions
         self.const_val = None  # folded value for a constant integer expression
+        self.col = None       # source column, where the parser records one
 
 
 # ----- top level -----
@@ -129,12 +130,13 @@ class TestDecl(Node):
 
 # ----- statements -----
 class Let(Node):
-    def __init__(self, name, decl_type, expr, line, mutable=True):
+    def __init__(self, name, decl_type, expr, line, mutable=True, col=None):
         super().__init__()
         self.name = name
         self.decl_type = decl_type  # explicit annotation or None
         self.expr = expr
         self.line = line
+        self.col = col
         self.var_type = None  # filled in by the checker
         self.mutable = mutable
 
@@ -252,10 +254,11 @@ class Match(Node):
 
 # ----- expressions -----
 class IntLit(Node):
-    def __init__(self, value, line):
+    def __init__(self, value, line, col=None):
         super().__init__()
         self.value = value
         self.line = line
+        self.col = col
 
 
 class FloatLit(Node):
@@ -266,10 +269,11 @@ class FloatLit(Node):
 
 
 class CharLit(Node):
-    def __init__(self, value, line):
+    def __init__(self, value, line, col=None):
         super().__init__()
         self.value = value
         self.line = line
+        self.col = col
 
 
 class NullLit(Node):
@@ -301,29 +305,33 @@ class Var(Node):
 
 
 class Unary(Node):
-    def __init__(self, op, operand, line):
+    def __init__(self, op, operand, line, col=None):
         super().__init__()
         self.op = op
         self.operand = operand
         self.line = line
+        self.col = col
+        self.is_cast_operand = False  # set by the checker for `&a as T`
 
 
 class Binary(Node):
-    def __init__(self, op, left, right, line):
+    def __init__(self, op, left, right, line, col=None):
         super().__init__()
         self.op = op
         self.left = left
         self.right = right
         self.line = line
+        self.col = col
         self.lowered_name = None
 
 
 class Call(Node):
-    def __init__(self, name, args, line, type_args=None):
+    def __init__(self, name, args, line, type_args=None, paren_col=None):
         super().__init__()
         self.name = name
         self.args = args
         self.line = line
+        self.paren_col = paren_col
         self.resolved_name = None
         self.enum_name = None
         self.enum_variant = None
@@ -392,11 +400,12 @@ class ArrayLit(Node):
 
 
 class ArrayRepeat(Node):
-    def __init__(self, value, count, line):
+    def __init__(self, value, count, line, col=None):
         super().__init__()
         self.value = value  # expression
         self.count = count  # int literal count
         self.line = line
+        self.col = col
 
 
 class Index(Node):

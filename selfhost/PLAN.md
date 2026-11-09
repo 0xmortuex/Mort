@@ -177,7 +177,7 @@ the thresholds so that a shrinking corpus fails:
 | Class | Content | Required size |
 | --- | --- | --- |
 | Self | Every `selfhost/*.mx` | Grows to the whole compiler |
-| Existing subset | The 17 repo files, including the 9 conformance programs | All 17 |
+| Existing subset | The 17 repo files, including the 9 conformance programs (the 6 conformance `reject` cases among them count as compiler-rejected and add nothing to the accepted-line floor) | All 17 |
 | Stubbed kernel | `kernel/kmain.mx` with `outb`/`outw`/`inb`/`inw` calls redirected to stub functions, `asm` statements removed and `u16` changed to `u32` | At least 1500 lines. Measured: 1905 lines, 0 gate violations, compiles to 1986 lines of C |
 | Generated | A seeded generator (`selfhost/tools/gen_subset_programs.py`, task T2c) producing valid subset programs that use every node kind and every binary operator on each integer type pair, including literal coercion and overflow edges | At least 20 programs totalling at least 6000 lines; at least 3 of 1500 lines or more |
 | Rejected | Every other repo `.mx`: the rest of `conformance/` (29 files in all), `std/` (5204 lines) and the original kernel; 88 files, 9242 lines today | Clean located diagnostic on all; never a crash and never accepted |
@@ -207,7 +207,7 @@ measured data point.
 | T1 | Lexer with differential test | none | done |
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
 | T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | done (about 1 hour; estimated 4 to 8) |
-| T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
+| T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | done |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | done |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
@@ -215,7 +215,7 @@ measured data point.
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
-| | **Remaining total** | | **43 to 75** |
+| | **Remaining total** | | **40 to 70** |
 
 T3 lists T2c as a dependency but was completed first. T2c does not reopen T3: it only extends the corpus T3's differential test runs over.
 
@@ -389,16 +389,19 @@ carries over: the checker's logic is far less mechanical.
 - Dump format: defined at the top of `py_ast_dump.py`. One line per node with no
   indentation, so a deep tree stays linear in size. Fields the checker fills in
   are excluded, and the dumper asserts they still hold their initial values.
-- Positions: `line`, plus `Call.name_pos` (line and column of the callee), because
-  that is all the Python AST records.
-- Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
-  of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
+- Positions are compared wherever the Python AST has them: `line`, `col` (on
+  every node class, `none` unless the parser set it: `Let`, `IntLit`, `CharLit`,
+  `Unary`, `Binary`, `ArrayRepeat`), `Call.paren_col` and `Call.name_pos`.
+- Diagnostics equal `MortError.format()` byte for byte, including the line and
+  column of every parse error, the invalid UTF-8 byte and position from
+  `decode_source`, the array size limit, and Python's `repr` of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
   (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
   The first error exits 1 with no dump.
 - Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
   expressions, unary, blocks, `if`). Python's own limit is a side effect of its
-  frame count, so the reference is the unmodified Python parser plus the same
-  counter (`GuardedParser`). Message and line match. Measured limits of the
+  frame count, so the reference is the Python parser plus the same counter
+  (`GuardedParser`). Message, line and column match, the column being the one
+  `mortc.py` reports when the Python parser runs out of stack. Measured limits of the
   unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
   975 unary operators, all within 1000 units, so this rejects nothing it accepts.
   Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
@@ -411,11 +414,11 @@ carries over: the checker's logic is far less mechanical.
 For T4: **chains make left-deep trees of any depth, so a recursive checker over
 the AST will overflow the C stack.** It needs an AST-depth check or iteration.
 
-Reconciling with `fix/frontend-crashes` (not merged here): it adds a `col` to
-parser diagnostics and to some nodes, an AST-depth rejection (`_check_nesting`,
-cost 800) and a located nesting error. On merge, the Mort parser must add
-columns and that check, and `GuardedParser` should be dropped or reduced. The
-dump's reflection will flag the new fields by itself, as a mismatch.
+Reconciled with `fix/frontend-crashes`: the Mort parser now records the same
+columns on diagnostics and nodes as the Python parser and enforces the array size
+limit. That branch's AST-depth check (`_check_nesting`) did not survive to its
+merge: nesting there is the located `RecursionError` path in `mortc.py`, so
+`GuardedParser` stays as the fixed limit and only gained the column.
 
 ## 11. Declaration checker status (T4)
 
@@ -455,33 +458,32 @@ where the Python checker's behaviour stops being mechanical.
 - **Tables** also list `program.structs` (with the resource flag and destructor)
   and `program.enums` in order, so instance order is compared.
 - **Generic limits.** Unbounded struct and enum expansion used over 1.5 GB in
-  seconds. `ck_charge_generic` applies `fix/frontend-crashes`' limits (16384
-  instantiations, 1,000,000 work units, type arguments of at most 4096 characters
-  and 256 levels) and its message, `generic instantiation of 'X' ...`, at the
-  template's line, before validating arguments. Alias resolution is cached, as on
-  that branch. Python on `main` has no such limits and cannot finish these
-  inputs, so these tests run Mort alone, under a 500 MB limit, with the expected
-  text built from the rule.
+  seconds. `ck_charge_generic` applies the limits Python has for generic functions
+  (16384 instantiations, type arguments of at most 4096 characters and 256 levels)
+  to struct and enum instances too, with the message `generic instantiation of 'X'
+  ...` at the template's line, before validating arguments. See the known
+  difference below. These tests run Mort alone, under a 500 MB limit.
 - **Type work and length limits.** `checker.mx` ports `WorkMeter`: every program
   is metered from the start of checking, types shorter than 64 characters cost
   nothing, and each primitive charges its length divided by 64 (`ck_pointee`,
   `ck_slice_elem`, `ck_array_parts`, `ck_generic_parts`, `ck_tuple_parts`,
   `ck_function_parts`, `ck_substitute`, `ck_resolve`, `ck_valid`), so nothing is
-  charged per case. Every type built goes through `ck_made`, which charges it and
-  rejects more than 65536 characters (`type is longer than 65536 characters`).
-  Spending past 1,000,000 units reports `type processing exceeds the limit of
-  1000000 work units in one program`, or `generic instantiation exceeds ...` once
-  a generic has been instantiated. Alias names are cached during cycle tracing,
-  valid answers are remembered, and the failure is located at the node on record
-  (`current_node`), as Python's `_work_location` does. Python on `main` has none
-  of this, so these tests run Mort alone under the 500 MB guard, with the lines
-  measured from that branch. The old `ts_substitute` and `ts_is_function` moved
-  here as charged primitives.
+  charged per case. Instances charge `_charge_instantiation`'s `8 x (1 + fields)`
+  (enums, `8` per variant and payload plus `8`) after their arguments validate.
+  Every type built goes through `ck_made`, which charges it and rejects more than
+  65536 characters. Spending past 1,000,000 units reports `type processing exceeds
+  the limit of 1000000 work units in one program`, or `generic instantiation
+  exceeds ...` once a generic has been instantiated, at `_work_location`'s node.
+  Alias names are cached during cycle tracing and valid answers are remembered.
+  These diagnostics are in `T4_MESSAGES`, so the differential compares them when
+  they arise in the declaration phase; the hostile tests also compare them with
+  Python under the 500 MB guard.
 - **Depth.** Expressions use an explicit work stack. Type and alias recursion
-  counts `CK_MAX_DEPTH` (993), which is the real `mortc.py --check` boundary for
-  alias chains (991 direct and 495 pointer links accepted, one more rejected,
-  pinned by a test against the real compiler), and reports Python's
-  `RecursionError` text, without a location; statement recursion is bounded by
+  counts `CK_MAX_DEPTH` (989), which is the real `mortc.py --check` boundary for
+  alias chains (987 direct and 493 pointer links accepted, one more rejected,
+  pinned by a test against the real compiler), and reports Python's located
+  `source nesting exceeds ...` text at the node reached, using the first token's
+  column on that line when the node has none; statement recursion is bounded by
   the parser's `MAX_NESTING`. Long
   by-value struct chains and cycles are iterative. The Python reference is
   quadratic on deep chains, so differential cases stop at 4000 operands, and one
@@ -498,63 +500,44 @@ where the Python checker's behaviour stops being mechanical.
   moves and belong with T5). Import-resolution errors are counted but compared
   only when they are parse errors; the corpus has none of the other kind.
 
-Reconciling with `fix/frontend-crashes` (not merged here): `_error` gains a
-column, so check diagnostics will need the columns the parser adds; the
-`_check_nesting` depth rejection replaces part of this file's depth story;
-`_coerce`'s literal path and `_require_representable` are T5's to port, and neither
-changes a T4 message. `T4_MESSAGES` must be re-read against that branch's checker.
+Reconciled with `fix/frontend-crashes` (in `main` at `c7e1a20`): columns on
+diagnostics, `_valid_type(t, behind_pointer)`, `generic_parts` splitting through
+`_split_type_list`, `_charge_instantiation`'s sites and costs with one meter, the
+meter's messages and locations (`work_site`, `current_statement`,
+`_work_location`), and the alias boundary with its located overflow.
 
-When that branch lands, T4 must also:
+Still open:
 
-- Port `_valid_type(t, behind_pointer)`. It newly rejects a pointer to an array,
-  an array of arrays, an array as a function-type parameter or result, and a slice
-  of arrays unless that slice is behind a pointer. `ck_valid` accepts all of these
-  today, and the corpus differential will flag it.
-- Reconcile the generic limits. The branch's committed limits cover function
-  instantiation only; its work-charged budget for primitive sites is in progress.
-  `ck_charge_generic` charges struct and enum instances with the function rule,
-  using a template's node count and the template's line. Adopt the branch's final
-  charge sites, costs and diagnostic location, share one counter with T5's function
-  instantiation, and move these cases from Mort-only to differential.
-- Drop `CK_MAX_DEPTH`'s frame-count derivation if the branch's located overflow
-  diagnostic and alias cache change where Python gives up; the cache already makes
-  Mort accept reversed alias chains that `main` rejects.
-- Re-check the meter against what lands. The work and length limits above follow
-  `mort/typechecker.py` as of `fd72ac1` on `fix/frontend-crashes` (unchanged at
-  `d5b4198`). Compare against the merged file and move these cases to the
-  differential, keeping the pinned lines only if they still hold.
-- **Instance charge sites and costs.** Two counters exist today. `ck_charge_generic`
-  charges a struct or enum instance before its arguments are validated, as
-  `nodes x (1 + type_argument_chars / 64)` into `generic_work`, and reports
-  `generic instantiation of 'X' exceeds ...`. Python's `_charge_instantiation`
-  runs after validation, charges `8 x (1 + fields)` (enums, `8` per variant and
-  payload plus `8`) into the one meter, and reports the unnamed `generic
-  instantiation exceeds ...`. `work_instantiated` is set before validation here
-  and after it there. Adopt Python's site, costs and text, and share the counter
-  with T5's function instantiation; the budget-exhausted test then changes its
-  expected text.
-- **Location.** Mort has no columns: where Python reports `16:3` Mort reports `16`.
-  `work.site`, `current_statement` and the column-based choice in `fail` are not
-  ported (they need the parser's columns and T5). The apply-aliases walk now
-  matches Python's preorder at the level of program lists and of the children's
-  `a`, `b`, `c`, `items` slots, but Python uses each node's field order; if the
-  differential finds a node reported differently, it is this.
-- **Mort-only limits.** The 256-level and 4096-character checks are, in Python,
-  function-instantiation limits; `ck_charge_generic` applies them to struct and
-  enum arguments too. Mort therefore rejects some programs Python accepts (a
-  struct argument over 4096 characters). 256 nesting stays Mort-only until Python's
-  depth rejection replaces what it guards against, at the same time as the
-  `CK_MAX_DEPTH` item above.
-- **Charges not mirrored.** `ck_valid` charges a pointer's pointee once and has no
-  `behind_pointer` in its memo key (Python's `_valid_type` calls `pointee` up to
-  three times and keys on the pair), so port `_valid_type` first and then re-check
-  unit counts. Body-phase charges (drop analysis, statements) are T5's: 2000
-  fields of a pointer to a 40,000-character alias pass here and exhaust the budget
-  in Python.
-- **`generic_parts`.** That branch splits generic arguments with
-  `_split_type_list`; `ts_generic_parts` still counts only angle brackets, as
-  `main` does, so a tuple argument such as `G<u8,(a,b)>` is rejected here and on
-  `main` and accepted there. Port the split with the rest.
+- **Known difference: Mort-only limits.** The 256-level, 4096-character and 16384
+  instance checks are, in Python, function-instantiation limits; `ck_charge_generic`
+  applies them to struct and enum arguments too. Landing `fix/frontend-crashes` did
+  not remove this: `mortc.py --check` on `main` accepts a struct argument 257 levels
+  deep or 5000 characters long, which Mort rejects, and reports `struct G<T> { n:
+  *G<*T> }` as `source nesting exceeds the compiler safety limit` where Mort reports
+  the 256-level limit. `struct D<T> { a: *D<(T, T)> }` hits Mort's 4096 limit and
+  Python's 65536 cap; `test_known_difference_doubling_tuple_argument` pins both
+  sides. To close it, decide one rule: either Python's `_instantiate_struct` and
+  `_instantiate_enum` apply the limits before validating arguments, and the
+  specification says so (it now names only generic functions), or
+  `ck_charge_generic` drops them for structs and enums and Mort relies on the meter
+  and a depth limit that matches Python's. The second changes what the Mort-only
+  limit tests expect; move those cases to the differential when it is done.
+- **T5's half of the budget.** Function instantiation (with its shared counter and
+  `work_site`), type inference charges, drop analysis, move snapshots and
+  `spend_replay` happen in bodies. Until T5, a budget reached in a body is not
+  compared (`BUDGET_MESSAGE` in `py_check_dump.py`): 2000 fields of a pointer to a
+  40,000-character alias pass here and exhaust the budget in Python.
+- **Validity depth.** `_valid_type` now takes two Python frames per level, so
+  `mortc.py --check` rejects a pointer field beyond 494 levels, where Mort, which
+  counts one level, accepts up to `CK_MAX_DEPTH`. `CK_MAX_DEPTH` is pinned on alias
+  chains only; the differential's reference runs with a higher recursion limit and
+  does not see this. T5 should recount frames when it ports `_check_expr`.
+- **Walk order.** The apply-aliases walk matches Python's preorder at the level of
+  program lists and of the children's `a`, `b`, `c`, `items` slots, but Python uses
+  each node's field order; if the differential finds a limit reported at a different
+  node, it is this.
+- `_coerce`'s literal path and `_require_representable` are T5's to port, and
+  neither changes a T4 message.
 
 ## 12. Type checker status (T5)
 
@@ -608,22 +591,64 @@ went on the tests, not the port.
   250 seeded source mutations). `test_checker_expr_mutants.py`: 18 planted bugs,
   all caught.
 
-### To reconcile when T4 merges `main` (`fix/frontend-crashes`)
+### Reconciled with `main` (in T6's merge)
 
-`main` checks differently, and these are not done here because the base's Python
-is the reference until that merge. Each will show up in the differential.
+`main` checks differently, and the T5 base's Python is no longer the reference.
+All of it is ported and compared: parser columns on nodes and `paren_col` on
+calls; `_check_expr(e, literal_operand)` and `_require_representable` (an operand
+of a folding Binary, or of `-`/`~`, or a `let`/global with a declared type, is not
+checked until the whole literal is finished), with `Let` re-coercing a literal
+against its own type; `_coerce` checking the literal case first; `_unify_ints`
+checking literal adoption before `lt == rt`; shift and index messages through
+`_value_str`; the address-of-array, cast-to-invalid-type and `void` comparison
+rejections; `is_cast_operand`, dumped, set when a cast's operand is `&`;
+`made_type` on the `$drop$` symbol; `current_statement` for locating a spent
+budget; instances created by `test` bodies are now checked (Python's `check()`
+does that on `main`, so the earlier BLOCKERS note is resolved).
+`_needs_drop_type` is charged exactly: it re-walks a type per query in Python and
+each query here charges the first walk's cost (the walk stops at the first
+resource, visits each type once and is preorder). `test_recursion_at_the_parser_limit`
+caught that the T5 port queried drops only for variables; the charge now agrees
+and the nested-tuple shape runs out of budget as Python does.
 
-- **Columns.** `ck_fail_node` already passes `Node.col`, always 0 today. The parser
-  must set it for the kinds `mort_ast` gives a `col` (Let, FloatLit, Unary,
-  Binary, ArrayRepeat and others) and `paren_col` on Call; instantiation limits
-  report `paren_col` or `col`.
-- **Literals.** `_check_expr(e, literal_operand)` and `_require_representable`
-  ("does not fit in any integer type"), and `Let` re-coercing a literal against
-  its own type. The order in `_coerce` moves the literal case above the tuple and
-  pointer cases.
-- **Messages.** `shift count` and `array index` diagnostics use `_value_str`.
-- **New rejections.** Address of an array unless it is a cast operand
-  (`is_cast_operand`), `void` in `==` and `!=`, `_valid_type(tgt)` on a cast.
-- **Work meter.** `make_type` on the `$drop$` symbol, `current_statement` for
-  locating a spent budget, and the struct and enum charges T4 is already taking.
-  Function instantiation and move snapshots already follow `main`.
+## 13. Generator status (T2c)
+
+`selfhost/tools/gen_subset_programs.py` builds each construct as Mort text plus a
+Python closure for its meaning, written from the language spec, so the expected
+stdout, stderr and exit status never come from the compiler under test.
+`selfhost/corpus.py` holds the 5.1 classes and floors, and
+`selfhost/test_generated_corpus.py` enforces them. Run with
+`MORT_SELFHOST_CORPUS_SCALE=n` for a larger corpus.
+
+- `subset` profile: 25 programs, about 10,400 lines, three of them over 1500
+  lines. A `matrix` program runs every integer operator on every ordered pair of
+  subset integer types, and on literals, at their edges; `trap` programs end in
+  each defined runtime failure. All pass the gate and match the model.
+- `full` profile: generics (`>>` closers, inferred and explicit), payload enums,
+  `match` bindings, tuples, slices, local arrays, function pointers (the language
+  has no closures or traits), `try`, `defer`, `resource`/`move`, floats, modules
+  across files, aliases, `asm`, `volatile`, every integer width. Not counted
+  towards the floor, and only parser/checker-relevant, but every program also runs
+  and is checked.
+- The header of the generator states exactly what is not independently modelled
+  (target-defined `c_*` behaviour, `test` block bodies, float format, `sizeof` of
+  enums).
+- Six planted defects in a copy of `parser.mx` (precedence swap, right-associative
+  binary operators, lost `..=`, chained casts, operator line, `%` level) are all
+  caught by the corpus, in the default test run; the real parser is not.
+- The test wires the corpus into T4's declaration-checker differential through
+  `test_checker_decl_differential.compare`. An early trial merge with T4 passed
+  32 of 35, the other 3 hitting the unchecked-test-body divergence in
+  `BLOCKERS.md`; with T4's test-block checking, all 35 run and pass.
+
+**Follow-up for T4 and T5: the corpus is thin outside the subset.** Generics,
+payload enums and cross-file modules (`module`, `pub`, `import ... as`) appear only
+in the `full` profile, whose default size is 10 programs and 2,088 lines. Measured
+at the default scale: 16 generic declarations, 9 payload enums, 3 module files, and
+each comes from a fixed template with random values, not from random shapes. The
+8000-line floor says nothing about these features, because the `subset` profile
+cannot contain them. A pass over this corpus is weak evidence for generic
+instantiation, payload binding and module visibility. T4 and T5 should keep their
+own targeted cases there, and widen these generator sections (or run with a larger
+`MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
+before relying on them.

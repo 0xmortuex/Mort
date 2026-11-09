@@ -2,9 +2,7 @@
 //
 // A type is an interner handle of its canonical text (PLAN.md, section 5: the
 // strings are the model until after bootstrap). Each function here corresponds
-// to the Python helper of the same name; the quirks are deliberate. For example
-// `generic_parts` counts only angle brackets, so a comma inside an `fn(...)`
-// argument splits there, exactly as Python's does.
+// to the Python helper of the same name; the quirks are deliberate.
 
 import support;
 
@@ -117,21 +115,7 @@ fn ts_generic_parts(s: *Interner, h: u64, base: *u64, args: *U64Vec) -> bool {
     }
     let cut = ts_find(t, '<');
     *base = ts_sub_h(s, t, 0, cut);
-    let inner = ts_sub(t, cut + 1, t.len - 1);
-    let start: u64 = 0;
-    let depth: i64 = 0;
-    for i: u64 in 0..inner.len {
-        let c = inner.data[i];
-        if c == '<' {
-            depth += 1;
-        } else if c == '>' {
-            depth -= 1;
-        } else if c == ',' && depth == 0 {
-            u64vec_push(args, ts_sub_h(s, inner, start, i));
-            start = i + 1;
-        }
-    }
-    u64vec_push(args, ts_sub_h(s, inner, start, inner.len));
+    ts_split_type_list(s, ts_sub(t, cut + 1, t.len - 1), args);
     return true;
 }
 
@@ -197,8 +181,7 @@ fn ts_function_parts(s: *Interner, h: u64, params: *U64Vec, result: *u64) -> boo
 // How many type constructors deep a type string goes; `type_nesting` on
 // fix/frontend-crashes. Pointers, slices and function results are prefixes with
 // nothing closing them, so they deepen everything up to the enclosing separator.
-// `generic_parts` can hand this an unbalanced piece of an `fn(..)` argument,
-// where Python's list would raise: an empty stack here reads as depth zero.
+// An unbalanced piece, where Python's list would raise, reads as depth zero.
 fn ts_type_nesting(t: Span) -> u64 {
     let deepest: u64 = 0;
     let depth: u64 = 0;

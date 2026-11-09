@@ -10,10 +10,16 @@ sys.path.insert(0, ROOT)
 
 with atheris.instrument_imports():
     from mort.errors import MortError
+    from mort.lexer import decode_source
     from mortc import compile_to_c
 
 
 def test_one_input(data):
+    # The file-reading path has its own decoder; a MortError is its clean failure.
+    try:
+        decode_source(data)
+    except MortError:
+        pass
     # Replacement decoding lets arbitrary bytes reach the lexer while keeping
     # compiler input in its public text API. Keep individual cases bounded so
     # one generated input cannot monopolize the scheduled fuzz worker.
