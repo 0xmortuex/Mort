@@ -395,7 +395,7 @@ def build_mutant(tmp_path, filename, old, new, driver="cg_main"):
     target.write_bytes(text.replace(old, new).encode("utf-8"))
     exe = tmp_path / "mutant.exe"
     result = subprocess.run(
-        [sys.executable, str(ROOT / "mortc.py"), str(source / f"{driver}.mx"), "-o", str(exe)],
+        [sys.executable, str(ROOT / "mortc.py"), str(source / f"{driver}.mx"), "-O", "0", "-o", str(exe)],
         capture_output=True, text=True, cwd=tmp_path)
     assert result.returncode == 0, f"mutant does not compile:\n{result.stdout}\n{result.stderr}"
     return exe

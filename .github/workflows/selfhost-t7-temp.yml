@@ -13,8 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - selfhost/test_codegen_expr_differential.py
-          - tests
+          - selfhost/test_codegen_mutants.py
     env:
       PYTHONUTF8: "1"
     steps:
