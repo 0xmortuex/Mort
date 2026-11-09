@@ -79,6 +79,10 @@ fn cc_substitute_node(c: *Ck, n: *Node, names: *U64Vec, values: *U64Vec) {
     } else if kind == NodeKind.STRUCT_LIT {
         (*n).name = ck_substitute(c, (*n).name, names, values);
     } else if kind == NodeKind.VAR && cc_is_generic_text(c, (*n).name) {
+        let base: u64 = 0;
+        let args = u64vec_new();
+        ck_generic_parts(c, (*n).name, &base, &args);
+        free(args.data as *void);
         (*n).name = ck_substitute(c, (*n).name, names, values);
     } else if kind == NodeKind.CALL {
         let list = (*n).names;
@@ -458,13 +462,11 @@ fn cc_infer_call(c: *Ck, e: *Node, name: u64, dotted: bool) -> u64 {
     return cc_direct_call(c, e, name, dotted);
 }
 
-fn cc_indirect_call(c: *Ck, e: *Node, name: u64, callable: u64) -> u64 {
+fn cc_indirect_call(c: *Ck, e: *Node, name: u64, parameter_types_in: *U64Vec, result: u64) -> u64 {
     if cc_type_argc(e) != 0 {
         ck_fail_z(c, e, "an indirect function call cannot take type arguments");
     }
-    let parameter_types = u64vec_new();
-    let result: u64 = 0;
-    ck_function_parts(c, callable, &parameter_types, &result);
+    let parameter_types = *parameter_types_in;
     if cc_argc(e) != parameter_types.len {
         let msg = m_new();
         m_s(&msg, "callback ");
@@ -501,9 +503,12 @@ fn cc_direct_call(c: *Ck, e: *Node, name: u64, dotted: bool) -> u64 {
     if !dotted {
         let binding_type = cx_lookup(c, name, 0 as *Node);
         if binding_type != NO_TEXT {
-            if ck_is_function(c, binding_type) {
-                return cc_indirect_call(c, e, name, binding_type);
+            let parameters = u64vec_new();
+            let callable_result: u64 = 0;
+            if ck_function_parts(c, binding_type, &parameters, &callable_result) {
+                return cc_indirect_call(c, e, name, &parameters, callable_result);
             }
+            free(parameters.data as *void);
             ck_frt(c, e, "value ", name, " of type ", binding_type, " is not callable");
         }
     }

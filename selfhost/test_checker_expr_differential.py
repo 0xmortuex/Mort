@@ -1147,10 +1147,12 @@ def test_instantiation_work_budget(expr_exe, tmp_path):
 
 def test_constant_width_is_bounded(expr_exe, tmp_path):
     chain = " << 64" * 10000
-    assert_rejected_within_limits(
-        expr_exe, tmp_path,
-        f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n",
-        f":2: error: constant expression needs more than {2 ** 18} bits")
+    source = f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n"
+    assert assert_source_agrees(expr_exe, tmp_path, source) == "error"
+    path = tmp_path / "input.mx"
+    code, stderr = run_mort_bounded(expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    assert f"error: constant expression needs more than {2 ** 18} bits".encode() in stderr
 
 
 def test_retained_constants_are_bounded(expr_exe, tmp_path):

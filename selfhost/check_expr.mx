@@ -139,102 +139,104 @@ fn cx_is_resource_type(c: *Ck, t: u64) -> bool {
 }
 
 // The types whose values are held by value inside `t`, and so can need a drop.
-fn cx_drop_children(c: *Ck, t: u64, out: *U64Vec) -> bool {
+fn cx_drop_children(c: *Ck, t: u64, out: *U64Vec) {
     if cx_is_array(c, t) {
         let elem: u64 = 0;
         let count: u64 = 0;
         ck_array_parts(c, t, &elem, &count);
         u64vec_push(out, elem);
-        return true;
+        return;
     }
     if cx_tuple_elements(c, t, out) {
-        return true;
+        return;
     }
     if tb_has(&(*c).structs, t) {
         let info = ck_struct_info(c, t);
-        for i: u64 in 0..(*info).ftypes.len {
-            u64vec_push(out, u64vec_get(&(*info).ftypes, i));
+        if (*info).done {
+            for i: u64 in 0..(*info).ftypes.len {
+                u64vec_push(out, u64vec_get(&(*info).ftypes, i));
+            }
         }
-        return true;
+        return;
     }
     if tb_has(&(*c).enums, t) {
         let info = tb_get(&(*c).enums, t) as *EnumInfo;
-        for i: u64 in 0..(*info).payload.len {
-            let payload = u64vec_get(&(*info).payload, i);
-            if payload != NO_TEXT {
-                u64vec_push(out, payload);
+        if (*info).done {
+            for i: u64 in 0..(*info).payload.len {
+                let payload = u64vec_get(&(*info).payload, i);
+                if payload != NO_TEXT {
+                    u64vec_push(out, payload);
+                }
             }
         }
-        return true;
     }
-    return false;
 }
 
 fn ck_struct_info(c: *Ck, name: u64) -> *StructInfo {
     return tb_get(&(*c).structs, name) as *StructInfo;
 }
 
-// _needs_drop_type. Depth-first with an explicit stack and a cache: by-value
-// aggregate graphs are acyclic and can be long and heavily shared.
+fn cx_is_aggregate(c: *Ck, t: u64) -> bool {
+    let text = intern_text((*c).s, t);
+    return cx_is_array(c, t) || (text.len != 0 && text.data[0] == '(')
+        || tb_has(&(*c).structs, t) || tb_has(&(*c).enums, t);
+}
+
+// One `_needs_drop_type(root)`, charged as Python charges it: pre-order, stopping
+// at the first resource, with a `seen` set of its own. Iterative, because by-value
+// aggregate chains can be long.
+fn cx_drop_walk(c: *Ck, root: u64) -> bool {
+    let seen = map_new();
+    let work = u64vec_new();
+    u64vec_push(&work, root);
+    while work.len > 0 {
+        let t = u64vec_pop(&work);
+        if cx_is_resource_type(c, t) {
+            free(work.data as *void);
+            return true;
+        }
+        if map_has(&seen, t) {
+            continue;
+        }
+        map_put(&seen, t, 1);
+        if cx_is_aggregate(c, t) {
+            ck_spend(c, 1);
+        }
+        let children = u64vec_new();
+        cx_drop_children(c, t, &children);
+        let k = children.len;
+        while k > 0 {
+            k -= 1;
+            u64vec_push(&work, u64vec_get(&children, k));
+        }
+        free(children.data as *void);
+    }
+    free(work.data as *void);
+    return false;
+}
+
+// A walk from a given root always costs the same and gives the same answer once
+// its types are complete, so it runs once and later calls pay what it paid.
 fn cx_needs_drop(c: *Ck, root: u64) -> bool {
     let memo = &(*c).drop_memo;
     let known: u64 = 0;
     if map_get(memo, root, &known) {
-        return known == 1;
+        ck_spend(c, known / 2);
+        return (known & 1) == 1;
     }
-    let work = u64vec_new();
-    u64vec_push(&work, root);
-    while work.len > 0 {
-        let t = u64vec_get(&work, work.len - 1);
-        if map_has(memo, t) {
-            u64vec_pop(&work);
-            continue;
+    let before = (*c).work_spent;
+    let result = cx_drop_walk(c, root);
+    let text = intern_text((*c).s, root);
+    let incomplete = ts_find(text, '<') != text.len && ts_ends_with(text, '>')
+        && !tb_has(&(*c).structs, root) && !tb_has(&(*c).enums, root);
+    if !incomplete {
+        let flag: u64 = 0;
+        if result {
+            flag = 1;
         }
-        if cx_is_resource_type(c, t) {
-            map_put(memo, t, 1);
-            u64vec_pop(&work);
-            continue;
-        }
-        let children = u64vec_new();
-        if !cx_drop_children(c, t, &children) {
-            u64vec_pop(&work);
-            let shape = intern_text((*c).s, t);
-            if ts_find(shape, '<') == shape.len || !ts_ends_with(shape, '>') {
-                map_put(memo, t, 0);
-            }
-            free(children.data as *void);
-            continue;
-        }
-        ck_spend(c, 1);
-        let pending = false;
-        let result = false;
-        for i: u64 in 0..children.len {
-            let child = u64vec_get(&children, i);
-            let value: u64 = 0;
-            if map_get(memo, child, &value) {
-                if value == 1 {
-                    result = true;
-                }
-            } else {
-                u64vec_push(&work, child);
-                pending = true;
-            }
-        }
-        free(children.data as *void);
-        if !pending {
-            if result {
-                map_put(memo, t, 1);
-            } else {
-                map_put(memo, t, 0);
-            }
-            u64vec_pop(&work);
-        }
+        map_put(memo, root, ((*c).work_spent - before) * 2 + flag);
     }
-    free(work.data as *void);
-    if !map_get(memo, root, &known) {
-        return false;
-    }
-    return known == 1;
+    return result;
 }
 
 fn cx_drop_symbol(c: *Ck, t: u64, node: *Node) -> u64 {
@@ -270,55 +272,56 @@ fn ck_add_destructor(c: *Ck, symbol: u64) {
     }
 }
 
-// _resource_destructor and _register_nested_drop_types: pre-order over the
-// aggregate, recording each type once in insertion order.
-fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
-    let s = (*c).s;
-    let table = &(*c).drop_destructors;
-    let result: u64 = NO_TEXT;
-    let work = u64vec_new();
-    u64vec_push(&work, root);
-    let first = true;
-    while work.len > 0 {
-        let t = u64vec_pop(&work);
-        if tb_has(table, t) {
-            if first {
-                result = ck_unbox(tb_get(table, t));
-                first = false;
-            }
-            continue;
-        }
-        let is_res = cx_is_resource_type(c, t);
-        let symbol: u64 = NO_TEXT;
-        if is_res {
-            symbol = cx_drop_symbol(c, t, node);
-        } else {
-            let b = buf_new(32);
-            buf_push_z(&b, "$drop$");
-            m_t(c, &b, t);
-            symbol = ck_made(c, ts_take(s, &b));
-        }
-        tb_put(table, t, ck_box(symbol));
-        if first {
-            result = symbol;
-            first = false;
-        }
-        if is_res {
-            continue;
-        }
-        let children = u64vec_new();
-        cx_drop_children(c, t, &children);
-        let k = children.len;
-        while k > 0 {
-            k -= 1;
-            let child = u64vec_get(&children, k);
-            if cx_needs_drop(c, child) {
-                u64vec_push(&work, child);
-            }
-        }
-        free(children.data as *void);
+// The start of `_resource_destructor(t)`. A plain aggregate gets a frame for its
+// children, which `_register_nested_drop_types` walks.
+fn cx_destructor_enter(c: *Ck, t: u64, node: *Node, frames: *PtrVec, positions: *U64Vec) -> u64 {
+    if cx_is_resource_type(c, t) {
+        let symbol = cx_drop_symbol(c, t, node);
+        tb_put(&(*c).drop_destructors, t, ck_box(symbol));
+        return symbol;
     }
-    free(work.data as *void);
+    let b = buf_new(32);
+    buf_push_z(&b, "$drop$");
+    m_t(c, &b, t);
+    let symbol = ck_made(c, ts_take((*c).s, &b));
+    tb_put(&(*c).drop_destructors, t, ck_box(symbol));
+    let children = sup_alloc(sizeof<U64Vec>()) as *U64Vec;
+    *children = u64vec_new();
+    cx_drop_children(c, t, children);
+    // `elif tuple_parts(typ): children = tuple_parts(typ)` splits a tuple twice.
+    if !cx_is_array(c, t) && cx_is_tuple(c, t) && cx_tuple_len_ok(c, t) {
+        cx_tuple_len_ok(c, t);
+    }
+    ptrvec_push(frames, children as *void);
+    u64vec_push(positions, 0);
+    return symbol;
+}
+
+// _resource_destructor and _register_nested_drop_types: pre-order, with an
+// explicit stack because aggregate chains can be long.
+fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
+    let frames = ptrvec_new();
+    let positions = u64vec_new();
+    let result = cx_destructor_enter(c, root, node, &frames, &positions);
+    while frames.len > 0 {
+        let top = frames.len - 1;
+        let children = ptrvec_get(&frames, top) as *U64Vec;
+        let at = u64vec_get(&positions, top);
+        if at >= (*children).len {
+            ptrvec_pop(&frames);
+            u64vec_pop(&positions);
+            free((*children).data as *void);
+            free(children as *void);
+            continue;
+        }
+        u64vec_set(&positions, top, at + 1);
+        let child = u64vec_get(children, at);
+        if cx_needs_drop(c, child) {
+            cx_destructor_enter(c, child, node, &frames, &positions);
+        }
+    }
+    free(frames.data as *void);
+    free(positions.data as *void);
     return result;
 }
 
@@ -644,14 +647,16 @@ fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
         cx_require_explicit_move(c, expected, e);
         return true;
     }
-    if et == (*c).t_null && (cx_is_ptr(c, expected) || ck_is_function(c, expected)) {
+    if (cx_is_ptr(c, expected) || ck_is_function(c, expected)) && et == (*c).t_null {
         (*e).etype = expected;
         return true;
     }
-    if (*e).kind == NodeKind.TUPLE_LIT && cx_is_tuple(c, expected) && cx_is_tuple(c, et) {
+    if cx_is_tuple(c, expected) || cx_is_tuple(c, et) {
         let want = u64vec_new();
         let have = u64vec_new();
-        if ck_tuple_parts(c, expected, &want) && ck_tuple_parts(c, et, &have) {
+        let want_ok = cx_tuple_elements(c, expected, &want);
+        let have_ok = cx_tuple_elements(c, et, &have);
+        if want_ok && have_ok && (*e).kind == NodeKind.TUPLE_LIT {
             if want.len != ck_items_len((*e).items) {
                 return false;
             }
@@ -663,6 +668,8 @@ fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
             (*e).etype = expected;
             return true;
         }
+        free(want.data as *void);
+        free(have.data as *void);
     }
     if (*e).kind == NodeKind.FLOAT_LIT && ck_is_float(c, expected) {
         if expected == (*c).t_f32 && ((*e).num & 0x7FFFFFFFFFFFFFFF) > 0x47EFFFFFE0000000 {
@@ -1532,7 +1539,7 @@ fn ck_array_expr(c: *Ck, expr: *Node, decl_type: u64, node: *Node) -> u64 {
             }
         }
     }
-    (*expr).etype = ck_made(c, ts_make_array(s, elem, size));
+    (*expr).etype = ts_make_array(s, elem, size);
     return (*expr).etype;
 }
 
@@ -2046,7 +2053,7 @@ fn cx_payload_arm(c: *Ck, arm: *Node, pattern: *Node, subject: u64, variant: u64
     }
     for i: u64 in 0..count {
         let payload = u64vec_get(expected, i);
-        if (*ast_item(args, i)).name == (*c).t_underscore && cx_needs_drop(c, payload) {
+        if cx_needs_drop(c, payload) && (*ast_item(args, i)).name == (*c).t_underscore {
             ck_fail_z(c, arm, "an owning payload cannot be ignored with '_'; bind it so it can be destroyed");
         }
     }
