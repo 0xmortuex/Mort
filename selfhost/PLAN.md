@@ -539,12 +539,19 @@ When that branch lands, T4 must also:
   matches Python's preorder at the level of program lists and of the children's
   `a`, `b`, `c`, `items` slots, but Python uses each node's field order; if the
   differential finds a node reported differently, it is this.
-- **Mort-only limits.** The 256-level and 4096-character checks are, in Python,
-  function-instantiation limits; `ck_charge_generic` applies them to struct and
-  enum arguments too. Mort therefore rejects some programs Python accepts (a
-  struct argument over 4096 characters). 256 nesting stays Mort-only until Python's
-  depth rejection replaces what it guards against, at the same time as the
-  `CK_MAX_DEPTH` item above.
+- **Known difference: Mort-only limits.** The 256-level and 4096-character checks
+  are, in Python, function-instantiation limits; `ck_charge_generic` applies them
+  to struct and enum arguments too. Landing `fix/frontend-crashes` does not remove
+  this: `mortc.py --check` on `main` and on that branch both accept a struct
+  argument 257 levels deep or 5000 characters long, which Mort rejects, and both
+  report `struct G<T> { n: *G<*T> }` as `source nesting exceeds the compiler safety
+  limit` where Mort reports the 256-level limit. To close it, decide one rule:
+  either Python's `_instantiate_struct` and `_instantiate_enum` apply both limits
+  before validating arguments, and the specification says so (it now names only
+  generic functions), or `ck_charge_generic` drops them for structs and enums and
+  Mort relies on the meter and on a depth limit that matches Python's. The second
+  changes what the Mort-only limit tests expect. Then move those cases to the
+  differential.
 - **Charges not mirrored.** `ck_valid` charges a pointer's pointee once and has no
   `behind_pointer` in its memo key (Python's `_valid_type` calls `pointee` up to
   three times and keys on the pair), so port `_valid_type` first and then re-check

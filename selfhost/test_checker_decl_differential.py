@@ -837,6 +837,14 @@ def test_repeated_use_of_a_large_pointer_type_is_validated_once(check_exe, tmp_p
     assert code == 0, stderr
 
 
+def test_failed_validation_is_not_remembered_as_valid(check_exe, tmp_path):
+    """Only a true answer may be kept: `q.a` asks whether `q` is a type, and a
+    remembered "no" must not make `q` usable afterwards."""
+    source = ("struct P { a: i64 }\nfn main() -> int {\n  let q = P { a: 1 };\n  let v = q.a;\n"
+              "  let r: *q = 0 as *q;\n  return 0;\n}\n")
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
+
+
 def test_alias_chain_below_the_type_limit_agrees_with_python(check_exe, tmp_path):
     source = alias_chain(13, "({a}, {a})") + OK_MAIN
     assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
