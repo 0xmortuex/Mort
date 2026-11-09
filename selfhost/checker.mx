@@ -42,7 +42,7 @@ const MAX_TYPE_ARGUMENT_NESTING: u64 = 256;
 
 // Constants the checker folds, retained on nodes, are charged as work so that a
 // chain carrying a huge value cannot store a huge value at every node.
-const WORK_CONST_BITS_PER_UNIT: u64 = 512;
+const WORK_CONST_BITS_PER_UNIT: u64 = 1024;
 const MAX_CONSTANT_BITS: u64 = 262144;
 
 // ----- ordered table: a Python dict -----

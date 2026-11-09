@@ -566,13 +566,13 @@ def test_invalid_test_block_is_rejected_when_hosted(check_exe, tmp_path):
     assert assert_source_agrees(check_exe, tmp_path, source, mode="freestanding") == "error"
 
 
-def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024):
+def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024, extra=()):
     """Run the Mort checker under a hard memory limit: past it, allocation
     fails and the checker exits 2 instead of taking the machine down."""
     manifest = tmp_path / "manifest.txt"
     manifest.write_bytes(manifest_text.encode("utf-8"))
     out = tmp_path / "out.txt"
-    command = [str(exe), str(manifest), str(out)]
+    command = [str(exe), str(manifest), str(out), *map(str, extra)]
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes

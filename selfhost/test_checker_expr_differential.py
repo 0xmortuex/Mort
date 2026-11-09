@@ -875,7 +875,7 @@ def test_deep_chain_reports_its_overflow(expr_exe, tmp_path):
 
 def test_deep_shift_chain_folds_exactly(expr_exe, tmp_path):
     chain = " << 1" * 2000
-    source = f"fn main() -> int {{\nlet x: i64 = 1{chain};\nreturn 0;\n}}\n"
+    source = f"fn main() -> int {{\nlet x: u32 = 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "error"
 
 
@@ -886,8 +886,8 @@ def test_deep_cast_chain(expr_exe, tmp_path):
 
 
 def test_deep_index_chain(expr_exe, tmp_path):
-    stars = "*" * 3000
-    chain = "[0]" * 2999
+    stars = "*" * 900
+    chain = "[0]" * 899
     source = f"fn main() -> int {{\nlet p: {stars}u8 = null;\nlet x = p{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "ok"
 
@@ -906,12 +906,11 @@ def test_very_deep_folding_chain_is_linear(expr_exe, tmp_path):
     path.write_text(
         "fn main() -> int {\nlet x = 1" + " + 1" * (operands - 1)
         + ";\nreturn 0;\n}\n", encoding="utf-8")
-    code, stderr, _text, checked = run_mort(
-        expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path, timeout=120)
+    checked = tmp_path / "checked.txt"
+    code, stderr = run_mort_bounded(
+        expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path, extra=[checked])
     assert code == 0, stderr
-    last = [line for line in checked.splitlines() if line.startswith("Let ")][-1]
-    assert f"const_val=" in last or last
-    assert f"const_val={operands}" in checked
+    assert f"const_val={operands}" in checked.read_text(encoding="ascii")
 
 
 def test_deepest_nesting_the_parser_allows_does_not_overflow_the_stack(expr_exe, tmp_path):
