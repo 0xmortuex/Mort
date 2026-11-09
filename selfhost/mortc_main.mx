@@ -1,0 +1,156 @@
+// The Mort-written compiler's driver (PLAN.md, T8). The compiler stages are this
+// file compiled: it reads a program from the filesystem, resolves its imports and
+// writes one C file. Diagnostics are mortc.py's, byte for byte, plus the subset
+// gate of T9 on programs the compiler would otherwise accept.
+//
+// Usage: mortc_main [--check] [--emit-c] [--freestanding] [--std-dir DIR] -o OUTPUT FILE...
+//
+// Exit status: 0 success, 1 a diagnostic, 2 usage or I/O failure.
+
+import support;
+import lexer;
+import ast;
+import parser;
+import typestr;
+import bignum;
+import checker;
+import check_expr;
+import check_call;
+import check_dump;
+import ast_dump;
+import manifest;
+import codegen;
+import cg_stmt;
+import cg_helpers;
+import cg_expr;
+import pyrepr;
+import driver;
+import subset;
+
+fn main_usage() -> int {
+    eprintln("usage: mortc_main [--check] [--emit-c] [--freestanding] [--std-dir DIR] -o OUTPUT FILE...");
+    return 2;
+}
+
+fn main_is_option(text: *u8) -> bool {
+    return text[0] == '-' && text[1] != 0;
+}
+
+fn main_unknown_option(text: *u8) -> int {
+    let message = buf_new(64);
+    buf_push_z(&message, "mortc_main: unknown option ");
+    pr_push_str_repr(&message, span_z(text));
+    buf_push(&message, 0);
+    eprintln(message.data);
+    return 2;
+}
+
+fn main_cannot_find(path: *u8) -> int {
+    let message = buf_new(128);
+    buf_push_z(&message, "mortc: cannot find file ");
+    pr_push_str_repr(&message, span_z(path));
+    buf_push(&message, 0);
+    eprintln(message.data);
+    return 1;
+}
+
+fn main_cannot_write(path: *u8) -> int {
+    let message = buf_new(128);
+    buf_push_z(&message, "mortc: cannot write ");
+    buf_push_z(&message, path);
+    buf_push(&message, 0);
+    eprintln(message.data);
+    return 2;
+}
+
+fn main() -> int {
+    let output = 0 as *u8;
+    let check_only = false;
+    let freestanding = false;
+    let std_dir = span_z("");
+    let files = ptrvec_new();
+    let i: u64 = 1;
+    while i < arg_count() {
+        let text = arg_get(i);
+        if span_eq_z(span_z(text), "-o") || span_eq_z(span_z(text), "--output") {
+            i += 1;
+            if i >= arg_count() {
+                return main_usage();
+            }
+            output = arg_get(i);
+        } else if span_eq_z(span_z(text), "--std-dir") {
+            i += 1;
+            if i >= arg_count() {
+                return main_usage();
+            }
+            std_dir = span_z(arg_get(i));
+        } else if span_eq_z(span_z(text), "--check") {
+            check_only = true;
+        } else if span_eq_z(span_z(text), "--freestanding") {
+            freestanding = true;
+        } else if span_eq_z(span_z(text), "--emit-c") {
+            // The driver only ever produces C; accepted for mortc.py's spelling.
+        } else if main_is_option(text) {
+            return main_unknown_option(text);
+        } else {
+            ptrvec_push(&files, text as *void);
+        }
+        i += 1;
+    }
+    if files.len == 0 || (output == (0 as *u8) && !check_only) {
+        return main_usage();
+    }
+    DIAG_RENDER = true;
+    for k: u64 in 0..files.len {
+        let path = ptrvec_get(&files, k) as *u8;
+        let handle = file_open(path, "rb");
+        if handle == (0 as *void) {
+            return main_cannot_find(path);
+        }
+        file_close(handle);
+    }
+    let strings = intern_new();
+    let first_columns = map_new();
+    let d = dr_new(&strings, std_dir, &first_columns);
+    for k: u64 in 0..files.len {
+        dr_load(&d, span_z(ptrvec_get(&files, k) as *u8), 0);
+    }
+    let program = program_new();
+    dr_finish(&d, &program);
+    let checker = ck_new(&strings, &program, 0 as *u8, freestanding, false, &first_columns);
+    // The gate reads the parsed tree, before checking changes it.
+    let gate = sb_new(&strings, &checker.builtin_names);
+    for k: u64 in 0..d.files.len {
+        let loaded = ptrvec_get(&d.files, k) as *LoadedFile;
+        sb_collect_names(&gate, &(*loaded).program);
+    }
+    for k: u64 in 0..d.files.len {
+        let loaded = ptrvec_get(&d.files, k) as *LoadedFile;
+        gate.file = (*loaded).path;
+        sb_check_file(&gate, &(*loaded).program);
+    }
+    ck_run(&checker);
+    // Code generation locates a spent budget at its current node alone.
+    checker.current_statement = 0 as *Node;
+    let generator = cg_new(&checker, &program, freestanding, false);
+    cg_collect_aggregate_types(&generator);
+    let generated = cg_generate(&generator);
+    if gate.found {
+        diag_fatal(intern_text(&strings, gate.found_file).data, gate.found_line, 0,
+            gate.found_message);
+    }
+    if check_only {
+        println("mortc: check passed");
+        return 0;
+    }
+    let handle = file_open(output, "wb");
+    if handle == (0 as *void) {
+        return main_cannot_write(output);
+    }
+    let wrote = cg_write_output(&generator, handle, &generated);
+    file_close(handle);
+    if !wrote {
+        return main_cannot_write(output);
+    }
+    return 0;
+}

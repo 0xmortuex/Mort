@@ -319,6 +319,9 @@ fn m_u(b: *Buf, value: u64) {
 }
 
 fn ck_write_output(c: *Ck) {
+    if (*c).out_path == (0 as *u8) {
+        return;
+    }
     if (*c).suppress_events {
         (*c).events.len = (*c).events_mark;
     }
@@ -350,8 +353,11 @@ fn ck_exit_diag(c: *Ck, line: u64, col: u64, file: u64, message: Span) {
             buf_push(&text, message.data[i]);
         }
     }
-    buf_push(&text, 0);
-    eprintln(text.data);
+    if file != NO_TEXT {
+        diag_emit(&text, intern_text((*c).s, file).data, line, col);
+    } else {
+        diag_emit(&text, "", line, col);
+    }
     exit(EXIT_DIAGNOSTIC);
 }
 
