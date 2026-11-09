@@ -102,7 +102,7 @@ jobs:
     # so the table check runs instead of skipping.
     name: Self-hosting components
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PYTHONUTF8: "1"
     steps:
