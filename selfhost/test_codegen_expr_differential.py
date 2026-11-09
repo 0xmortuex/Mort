@@ -428,7 +428,7 @@ def test_generated_c_runs_and_matches_the_model(cg_exe, tmp_path, spec):
 
 # ----- left-deep expressions, against Python, then Mort alone at scale -----
 
-DEEP = 1500
+DEEP = 480  # inside the 1000-frame budget of mort/depth.py
 
 
 def deep_spines():
@@ -467,34 +467,45 @@ def test_deep_index_chain_agrees_with_python(cg_exe, tmp_path):
     assert agree(cg_exe, tmp_path, source) == "ok"
 
 
-LARGE = 300000
+NEAR_BUDGET = 490  # just inside the 1000-frame budget of mort/depth.py
+PAST_BUDGET = 300000
+NESTING = b"source nesting exceeds the compiler safety limit"
 
 
 def test_long_non_constant_chain_within_memory(cg_exe, tmp_path):
-    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * LARGE};")
+    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * NEAR_BUDGET};")
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
     text = c_out.read_bytes()
-    assert text.count(b"mort_wrap_i64(") == LARGE + 1  # the helper's definition is one
+    assert text.count(b"mort_wrap_i64(") == NEAR_BUDGET + 1  # the helper's definition is one
+    source = body(f"let x: i64 = 1;\nlet y = x{' + x' * PAST_BUDGET};")
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_long_cast_chain_within_memory(cg_exe, tmp_path):
-    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (LARGE // 2)};")
+    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (NEAR_BUDGET // 2)};")
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
-    assert c_out.stat().st_size > LARGE
+    assert c_out.stat().st_size > NEAR_BUDGET
+    source = body(f"let x: i64 = 1;\nlet y = x{' as u64 as i64' * (PAST_BUDGET // 2)};")
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_long_index_chain_within_memory(cg_exe, tmp_path):
-    """A pointer type 900 deep, indexed all the way: as deep as the type allows."""
-    depth = 900
-    stars = "*" * depth
-    source = (
-        f"type A0 = {stars}u8;\nfn f(p: A0, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
-        "fn main() -> int { return 0; }\n")
-    code, stderr, c_out = bounded(cg_exe, tmp_path, source)
+    """A pointer type near the budget, indexed all the way; past it, a located error."""
+    def chain(depth):
+        stars = "*" * depth
+        return (
+            f"type A0 = {stars}u8;\nfn f(p: A0, i: u64) -> u8 {{ return p{'[i]' * depth}; }}\n"
+            "fn main() -> int { return 0; }\n")
+
+    code, stderr, c_out = bounded(cg_exe, tmp_path, chain(NEAR_BUDGET))
     assert code == 0, stderr
-    assert c_out.read_bytes().count(b"[m_i]") == depth
+    assert c_out.read_bytes().count(b"[m_i]") == NEAR_BUDGET
+    code, stderr, _ = bounded(cg_exe, tmp_path, chain(900))
+    assert code == 1 and NESTING in stderr, stderr
 
 
 def test_nesting_at_the_parser_limit_does_not_overflow(cg_exe, tmp_path):
@@ -612,7 +623,7 @@ def test_nested_len_of_slice_agrees(cg_exe, tmp_path):
 
 def test_nested_len_of_slice_is_linear(cg_exe, tmp_path):
     """Without string literals the second generation repeats nothing, so reuse the first."""
-    code, stderr, c_out = bounded(cg_exe, tmp_path, nested_len_slice(40))
+    code, stderr, c_out = bounded(cg_exe, tmp_path, nested_len_slice(30))
     assert code == 0, stderr
     assert c_out.read_bytes().count(b"mort_bounds") == 0
 
@@ -686,6 +697,21 @@ def replay_cjk_program():
 
 def test_replay_budget_counts_code_points(cg_exe, tmp_path):
     assert agree(cg_exe, tmp_path, replay_cjk_program()) == "ok"
+
+
+def replay_cjk_at_the_limit():
+    """A long deferred name replayed to about the replay budget: charged in code
+    points, so its UTF-8 is three times the budget and must never be held twice."""
+    name = CJK * 9000
+    defers = f"defer {name}();\n" * 29
+    exits = "if true { return 1; }\n" * 180
+    return f"fn {name}() -> i64 {{ return 1; }}\nfn main() -> int {{\n{defers}{exits}return 0;\n}}\n"
+
+
+def test_replay_text_stays_within_memory(cg_exe, tmp_path):
+    code, stderr, c_out = bounded(cg_exe, tmp_path, replay_cjk_at_the_limit())
+    assert code == 0, stderr
+    assert c_out.stat().st_size > 100_000_000
 
 
 def test_driver_takes_no_effects_input(tmp_path):

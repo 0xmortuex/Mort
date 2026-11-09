@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mort import __language_version__, __version__
 from mort.codegen import CodeGen
+from mort.depth import with_frame_budget
 from mort.errors import MortError
 from mort.formatter import format_file
 from mort.lexer import Lexer, decode_source
@@ -116,6 +117,7 @@ def _tag_source(root, filename):
                         stack.extend(part for part in item if isinstance(part, Node))
 
 
+@with_frame_budget
 def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=None):
     """Compile one or more Mort source strings as a single program.
 
@@ -129,8 +131,11 @@ def compile_sources_to_c(sources, freestanding=False, filenames=None, warnings=N
         filenames = list(filenames)
         if len(filenames) != len(sources):
             raise ValueError("filenames must have the same length as sources")
-    programs = [_parse_source(src, filename)
-                for src, filename in zip(sources, filenames)]
+    # A loop, because Python 3.12 stopped giving comprehensions a frame of
+    # their own, which would make the parser's nesting limit differ by version.
+    programs = []
+    for src, filename in zip(sources, filenames):
+        programs.append(_parse_source(src, filename))
     for program in programs:
         if program.imports:
             node = program.imports[0]
@@ -204,6 +209,7 @@ def _nesting_error(programs, *phases):
         "source nesting exceeds the compiler safety limit", line, col, filename)
 
 
+@with_frame_budget
 def compile_files_to_c(
         paths, freestanding=False, test_mode=False, packages=None, warnings=None,
         source_overrides=None, coverage=False):

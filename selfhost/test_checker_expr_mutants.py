@@ -95,8 +95,8 @@ MUTANTS = {
     ),
     "reconcile_owned_place_copy_allowed": (
         "check_expr.mx",
-        "            && cx_is_owned_place(c, e) {",
-        "            && false {",
+        "        let owned = cx_is_owned_place(c, e);",
+        "        let owned = false;",
         named("owned_field_copied", "owned_array_element", "owned_tuple_element"),
     ),
     "reconcile_owned_place_ignores_pointers": (

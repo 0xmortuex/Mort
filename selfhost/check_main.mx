@@ -4,7 +4,8 @@
 //
 // The manifest lists the program's files in the order the Python loader visits
 // them, one `FILE <path>` per file, each followed by `ALIAS <name> <mod_name>`
-// lines, and starts with `MODE hosted|test|freestanding`. Import resolution
+// lines and, for a file reached through imports, `DEPTH <imports>` lines, and
+// starts with `MODE hosted|test|freestanding`. Import resolution
 // itself is T8; `selfhost/py_check_dump.py` writes this file from the real loader.
 //
 // Exit status: 0 checked, 1 a diagnostic on stderr (the tables and events so far

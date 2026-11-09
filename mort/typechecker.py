@@ -15,6 +15,7 @@ import threading
 from contextlib import contextmanager
 
 from . import mort_ast as A
+from .depth import check_frames
 from .errors import MortError, MortWarning
 
 INT_TYPES = {
@@ -384,7 +385,26 @@ def ast_size(root):
     return size
 
 
+def copy_frames(root):
+    """The Python frames copy.deepcopy needs to copy root, counted without recursing.
+
+    A node costs four frames (deepcopy, _reconstruct, deepcopy of its state,
+    _deepcopy_dict) and a list two (deepcopy, _deepcopy_list).
+    """
+    deepest = 0
+    pending = [(root, 1)]
+    while pending:
+        value, frames = pending.pop()
+        deepest = max(deepest, frames)
+        if isinstance(value, list):
+            pending.extend((item, frames + 2) for item in value)
+        elif isinstance(value, A.Node):
+            pending.extend((item, frames + 4) for item in vars(value).values())
+    return deepest
+
+
 def substitute_type(t, mapping):
+    check_frames()
     charge_chars(t)
     if t in mapping:
         return mapping[t]
@@ -445,6 +465,7 @@ class Checker:
         self.valid_types = set()
         self.moved_bindings = []  # every binding moved so far in this body
         self.template_sizes = {}
+        self.template_copy_frames = {}
         self.alias_cache = {}
         self.extern_names = set()
         self.loop_depth = 0
@@ -481,6 +502,7 @@ class Checker:
         Only a True answer is remembered: it cannot later become False, and
         one huge type used many times is then validated once.
         """
+        check_frames()
         key = (t, behind_pointer)
         if key in self.valid_types:
             return True
@@ -542,6 +564,7 @@ class Checker:
         an alias body for cycles. Alias names are cached even then, because a
         finished expansion has no cycle and repeating it is exponential.
         """
+        check_frames()
         if (not stack or t in self.aliases) and t in self.alias_cache:
             return self.alias_cache[t]
         charge_chars(t)
@@ -589,6 +612,7 @@ class Checker:
         seen = set()
 
         def visit(value):
+            check_frames()
             if value is None or isinstance(value, (str, int, bool, float)):
                 return
             if isinstance(value, (list, tuple)):
@@ -607,9 +631,10 @@ class Checker:
             elif isinstance(value, (A.Param, A.StructField)):
                 value.typ = self._resolve_alias_type(value.typ)
             elif isinstance(value, A.EnumVariant) and value.payload_types:
-                value.payload_types = [
-                    self._resolve_alias_type(item) for item in value.payload_types
-                ]
+                resolved_payloads = []
+                for item in value.payload_types:
+                    resolved_payloads.append(self._resolve_alias_type(item))
+                value.payload_types = resolved_payloads
                 value.payload_type = (
                     value.payload_types[0] if len(value.payload_types) == 1
                     else made_type("(" + ",".join(value.payload_types) + ")")
@@ -624,9 +649,10 @@ class Checker:
                 if isinstance(value.obj, A.Var) and value.obj.name in self.aliases:
                     value.obj.name = self._resolve_alias_type(value.obj.name)
             elif isinstance(value, A.Call):
-                value.type_args = [
-                    self._resolve_alias_type(argument) for argument in value.type_args
-                ]
+                resolved_arguments = []
+                for argument in value.type_args:
+                    resolved_arguments.append(self._resolve_alias_type(argument))
+                value.type_args = resolved_arguments
                 if "." in value.name:
                     qualifier, member = value.name.rsplit(".", 1)
                     resolved = self._resolve_alias_type(qualifier)
@@ -640,6 +666,7 @@ class Checker:
 
     def _aggregate_value_dependencies(self, value_type):
         """Nominal aggregates that must be complete to store value_type."""
+        check_frames()
         value_type = self._resolve_alias_type(value_type)
         if is_array(value_type):
             element, _ = array_parts(value_type)
@@ -678,6 +705,7 @@ class Checker:
         complete = set()
 
         def visit(name):
+            check_frames()
             if name in complete:
                 return
             self.work.spend(1)
@@ -711,10 +739,9 @@ class Checker:
             return False
         self._charge_instantiation(1 + len(template.fields), template)
         mapping = dict(zip(template.generic_params, args))
-        fields = [
-            A.StructField(field.name, substitute_type(field.typ, mapping))
-            for field in template.fields
-        ]
+        fields = []
+        for field in template.fields:
+            fields.append(A.StructField(field.name, substitute_type(field.typ, mapping)))
         self.structs[concrete_type] = None
         resolved = {}
         for field in fields:
@@ -746,16 +773,12 @@ class Checker:
             1 + sum(1 + len(variant.payload_types) for variant in template.variants),
             template)
         mapping = dict(zip(template.generic_params, args))
-        variants = [
-            A.EnumVariant(
-                variant.name,
-                payload_types=[
-                    substitute_type(item, mapping)
-                    for item in variant.payload_types
-                ],
-            )
-            for variant in template.variants
-        ]
+        variants = []
+        for variant in template.variants:
+            payload_types = []
+            for item in variant.payload_types:
+                payload_types.append(substitute_type(item, mapping))
+            variants.append(A.EnumVariant(variant.name, payload_types=payload_types))
         self.enums[concrete_type] = None
         resolved = {}
         for variant in variants:
@@ -790,6 +813,7 @@ class Checker:
         self.work.spend(nodes * WORK_UNITS_PER_NODE)
 
     def _unify_generic_type(self, pattern, actual, generic_params, mapping):
+        check_frames()
         charge_chars(actual)
         if pattern in generic_params:
             previous = mapping.get(pattern)
@@ -861,6 +885,7 @@ class Checker:
     @staticmethod
     def _substitute_function_types(function, mapping):
         def visit(value):
+            check_frames()
             if value is None or isinstance(value, (str, int, bool)):
                 return
             if isinstance(value, list):
@@ -882,9 +907,10 @@ class Checker:
             elif isinstance(value, A.StructLit) or isinstance(value, A.Var) and generic_parts(value.name):
                 value.name = substitute_type(value.name, mapping)
             elif isinstance(value, A.Call):
-                value.type_args = [
-                    substitute_type(argument, mapping) for argument in value.type_args
-                ]
+                substituted_arguments = []
+                for argument in value.type_args:
+                    substituted_arguments.append(substitute_type(argument, mapping))
+                value.type_args = substituted_arguments
                 if "." in value.name:
                     qualifier, member = value.name.rsplit(".", 1)
                     substituted = substitute_type(qualifier, mapping)
@@ -912,6 +938,7 @@ class Checker:
         self.generic_instantiations += 1
         if resolved not in self.template_sizes:
             self.template_sizes[resolved] = ast_size(template)
+            self.template_copy_frames[resolved] = copy_frames(template)
         self.current_node = node
         self._charge_instantiation(self.template_sizes[resolved], node)
         problem = None
@@ -929,6 +956,7 @@ class Checker:
                 node.line, getattr(node, "paren_col", None) or getattr(node, "col", None),
                 filename=getattr(node, "filename", None),
             )
+        check_frames(self.template_copy_frames[resolved])
         instance = copy.deepcopy(template)
         self._substitute_function_types(instance, mapping)
         instance.generic_params = []
@@ -1313,6 +1341,7 @@ class Checker:
         return base in self.resource_struct_names
 
     def _needs_drop_type(self, typ, seen=None):
+        check_frames()
         if self._is_resource_type(typ):
             return True
         seen = set() if seen is None else seen
@@ -1358,6 +1387,7 @@ class Checker:
         return symbol
 
     def _register_nested_drop_types(self, typ, node):
+        check_frames()
         children = []
         if is_array(typ):
             children = [array_parts(typ)[0]]
@@ -1750,6 +1780,7 @@ class Checker:
 
     # ----- statements -----
     def _check_stmt(self, s):
+        check_frames()
         self.current_node = s
         self.current_statement = s if _column_of(s) is not None else None
         if isinstance(s, A.Let):
@@ -1999,11 +2030,11 @@ class Checker:
                         arm.binding_types = binding_types
                         arm.binding_indices = binding_indices
                         arm.payload_arity = len(expected_payloads)
-                        arm.binding_destructors = [
-                            self._resource_destructor(binding_type, arm)
-                            if self._needs_drop_type(binding_type) else None
-                            for binding_type in binding_types
-                        ]
+                        arm.binding_destructors = []
+                        for binding_type in binding_types:
+                            arm.binding_destructors.append(
+                                self._resource_destructor(binding_type, arm)
+                                if self._needs_drop_type(binding_type) else None)
                         if len(binding_names) == 1:
                             arm.binding_name = binding_names[0]
                             arm.binding_type = binding_types[0]
@@ -2118,6 +2149,7 @@ class Checker:
         return False
 
     def _check_expr(self, e, literal_operand=False):
+        check_frames()
         self.current_node = e
         e.is_lit = False
         t = self._infer(e)
@@ -2164,7 +2196,9 @@ class Checker:
         if isinstance(e, A.StrLit):
             return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.TupleLit):
-            element_types = [self._check_expr(element) for element in e.elements]
+            element_types = []
+            for element in e.elements:
+                element_types.append(self._check_expr(element))
             for element_type, element in zip(element_types, e.elements):
                 self._require_explicit_move(element_type, element)
             return made_type("(" + ",".join(element_types) + ")")
@@ -3170,7 +3204,9 @@ class Checker:
             self._error(
                 f"function {e.name!r} expects {len(ptypes)} argument(s), "
                 f"got {len(e.args)}", e)
-        actual_types = [self._check_expr(argument) for argument in e.args]
+        actual_types = []
+        for argument in e.args:
+            actual_types.append(self._check_expr(argument))
         if template is not None:
             if e.type_args and len(e.type_args) != len(template.generic_params):
                 self._error(

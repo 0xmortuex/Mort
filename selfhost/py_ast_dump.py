@@ -37,15 +37,16 @@ Diagnostics: on bad input there is no dump, only the text of the error, which
 must equal what the Mort parser writes to stderr: ``MortError.format()`` with
 the file name set.
 
-Depth: the Mort parser has an explicit limit, while Python's limit is a side
-effect of its frame count and differs from version to version. So this reference
-applies the same limit by counting entries to the same five recursive parser
-methods (GuardedParser). Parsing is otherwise the unmodified Python parser.
+Depth: both parsers apply the frame budget of mort/depth.py. This reference
+runs the unmodified Python parser under the real budget, from the same frames
+`mortc.compile_files_to_c` calls it from, and the Mort parser counts the frames
+the Python one would be using.
 """
 import functools
 import re
 import struct
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -56,6 +57,7 @@ sys.path.insert(0, str(HERE))
 import py_lex_dump  # noqa: E402,F401  (lifts the int-string digit limit)
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
+from mort.depth import with_frame_budget  # noqa: E402
 from mort.lexer import Lexer, decode_source  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 
@@ -64,10 +66,10 @@ NESTING_MESSAGE = "source nesting exceeds the compiler safety limit"
 
 
 @functools.cache
-def max_nesting():
-    """The Mort parser's limit, so that the two can never drift apart."""
-    text = (HERE / "parser.mx").read_text(encoding="ascii")
-    return int(re.search(r"const MAX_NESTING: u64 = (\d+);", text).group(1))
+def frame_budget():
+    """The Mort compiler's frame budget, so the two can never drift apart."""
+    text = (HERE / "ast.mx").read_text(encoding="ascii")
+    return int(re.search(r"const COMPILE_FRAME_BUDGET: u64 = (\d+);", text).group(1))
 
 
 BASE_NODE_FIELDS = {"type": None, "is_lit": False, "const_val": None}
@@ -192,49 +194,63 @@ def dump_program(program):
     return "".join(out)
 
 
-class GuardedParser(Parser):
-    """The Python parser plus the Mort parser's explicit nesting limit."""
-
-    def __init__(self, tokens, limit):
-        super().__init__(tokens)
-        self._nesting = 0
-        self._limit = limit
-
-    def _guarded(self, method):
-        self._nesting += 1
-        if self._nesting > self._limit:
-            token = self._peek()
-            raise MortError(NESTING_MESSAGE, token.line, token.col)
-        result = method()
-        self._nesting -= 1
-        return result
-
-    def _expression(self):
-        return self._guarded(super()._expression)
-
-    def _unary(self):
-        return self._guarded(super()._unary)
-
-    def _type_name(self):
-        return self._guarded(super()._type_name)
-
-    def _block(self):
-        return self._guarded(super()._block)
-
-    def _if_stmt(self):
-        return self._guarded(super()._if_stmt)
+# Before Python 3.11 every Python frame also uses C stack, so the reference
+# parses on a thread with room.
+REFERENCE_STACK_BYTES = 128 * 1024 * 1024
 
 
-def parse_source(source, limit=None):
-    """Parse decoded source with the nesting limit and a large frame budget."""
-    tokens = Lexer(source).tokenize()
-    parser = GuardedParser(tokens, max_nesting() if limit is None else limit)
-    saved = sys.getrecursionlimit()
-    sys.setrecursionlimit(1_000_000)
+def _on_large_stack(work):
+    """Run work() on a thread with a large C stack, re-raising what it raises."""
+    outcome = []
+
+    def run():
+        try:
+            outcome.append((work(), None))
+        except (MortError, RecursionError) as error:
+            outcome.append((None, error))
+
+    saved_size = threading.stack_size(REFERENCE_STACK_BYTES)
+    try:
+        thread = threading.Thread(target=run)
+        thread.start()
+    finally:
+        threading.stack_size(saved_size)
+    thread.join()
+    result, error = outcome[0]
+    if error is not None:
+        raise error
+    return result
+
+
+def _parsed_as_source_file(parser):
+    """`_parse_source`: the nesting error, at the token the parser had reached."""
     try:
         return parser.parse()
-    finally:
-        sys.setrecursionlimit(saved)
+    except RecursionError:
+        token = parser._peek()
+        raise MortError(NESTING_MESSAGE, token.line, token.col) from None
+
+
+def _loaded(parser):
+    """`load`."""
+    return _parsed_as_source_file(parser)
+
+
+@with_frame_budget
+def _budgeted(parser):
+    """`compile_files_to_c`, so the parser starts in the frame it starts in there."""
+    return _loaded(parser)
+
+
+def parse_source(source):
+    """Parse decoded source under the real compiler's frame budget.
+
+    Three frames separate the budget from `Parser.parse`, as in `mortc.py`; only
+    the budget decides nesting, so the real parser is the reference unmodified.
+    """
+    tokens = Lexer(source).tokenize()
+    parser = Parser(tokens)
+    return _on_large_stack(lambda: _budgeted(parser))
 
 
 class Result(types.SimpleNamespace):

@@ -462,16 +462,22 @@ def test_long_reversed_chain_stays_within_memory(cg_exe, tmp_path):
     source = f"{decls}struct S{count} {{ x: i64 }}\nfn main() -> int {{ return 0; }}\n"
     code, stderr, _ = bounded(cg_exe, tmp_path, source)
     assert code == 1, stderr
-    assert b"exceeds the limit of 1000000 work units" in stderr
+    assert b"source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_long_operator_chain_does_not_recurse(cg_exe, tmp_path):
-    """`_prepare_try_expr` must walk a left spine of any depth."""
-    chain = " + 1" * 300000
+    """`_prepare_try_expr` must walk a left spine at the frame budget, and a chain
+    far past it must be a located error rather than a crash."""
+    chain = " + 1" * 490
     source = f"fn main() -> int {{\nlet x: i64 = 1{chain};\nreturn 0;\n}}\n"
     code, stderr, c_out = bounded(cg_exe, tmp_path, source)
     assert code == 0, stderr
     assert c_out.read_bytes().count(b"int64_t m_x = ") == 1
+    chain = " + 1" * 300000
+    source = f"fn main() -> int {{\nlet x: i64 = 1{chain};\nreturn 0;\n}}\n"
+    code, stderr, _ = bounded(cg_exe, tmp_path, source)
+    assert code == 1, stderr
+    assert b"source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_deep_pointer_alias_does_not_overflow_the_stack(cg_exe, tmp_path):

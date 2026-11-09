@@ -16,8 +16,11 @@
 // Errors are fatal: the first one is reported through diag_fatal and the process
 // exits 1, so no parse function ever returns a partial result.
 //
-// Depth: MAX_NESTING bounds C stack use. ps_enter counts entries to the five
-// mutually recursive rules, the ones py_ast_dump.GuardedParser counts. Loops
+// Depth: `frames` is the depth of the Python parser's frame for the rule being
+// parsed, counted from `with_frame_budget`, and ps_enter is mort/depth.py's
+// check_frames at the five rules that call it. ps_call and ps_ret count a rule
+// that has a frame but no check. The Mort rules can be flatter than Python's, so
+// the frames of a level they fold together are added where it is entered. Loops
 // produce the operator and postfix chains, so tree depth is unlimited even
 // though parser recursion is not; nothing here walks a tree recursively.
 
@@ -26,7 +29,10 @@ import lexer;
 import ast;
 import pyrepr;
 
-const MAX_NESTING: u64 = 1000;
+// mort/depth.py: the interpreter's limit, the budget and its headroom together.
+// `_qualified_name` is the Python parser's only recursion without check_frames, so
+// a `a.b.c()` chain, which no rule bounds, runs out against this instead.
+const INTERPRETER_FRAME_LIMIT: u64 = 3000;
 
 const NO_CLOSE: u64 = 0xFFFFFFFFFFFFFFFF;
 const FIXED_TYPE_COUNT: u64 = 19;
@@ -42,7 +48,7 @@ struct Parser {
     count: u64,
     i: u64,
     no_struct_lit: bool,
-    depth: u64,
+    frames: u64,
     strings: *Interner,
     path: *u8,
     close_angle: *u64,
@@ -137,16 +143,25 @@ fn ps_expect_name(p: *Parser, what: *u8) -> u64 {
     return ps_text(p, (*ps_expect(p, Tok.IDENT, what)).text);
 }
 
-// Counts one level of recursion; pairs with ps_leave.
+// A rule that calls check_frames; pairs with ps_leave.
 fn ps_enter(p: *Parser) {
-    (*p).depth += 1;
-    if (*p).depth > MAX_NESTING {
+    (*p).frames += 1;
+    if (*p).frames >= COMPILE_FRAME_BUDGET {
         ps_fail_at(p, ps_peek(p), "source nesting exceeds the compiler safety limit");
     }
 }
 
 fn ps_leave(p: *Parser) {
-    (*p).depth -= 1;
+    (*p).frames -= 1;
+}
+
+// A rule with a frame and no check; pairs with ps_ret.
+fn ps_call(p: *Parser) {
+    (*p).frames += 1;
+}
+
+fn ps_ret(p: *Parser) {
+    (*p).frames -= 1;
 }
 
 // ----- angle-bracket matching -----
@@ -448,9 +463,11 @@ fn ps_module_decl(p: *Parser) -> u64 {
 }
 
 fn ps_test_decl(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.TEST_DECL, (*ps_advance(p)).line);
     (*node).name = ps_text(p, (*ps_expect(p, Tok.STRING, "test name")).text);
     (*node).a = ps_block(p);
+    ps_ret(p);
     return node;
 }
 
@@ -467,6 +484,7 @@ fn ps_import_decl(p: *Parser) -> *Node {
 }
 
 fn ps_struct_decl(p: *Parser, is_resource: bool) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.STRUCT_DECL, (*ps_peek(p)).line);
     ps_expect(p, Tok.STRUCT, "'struct'");
     (*node).flag = is_resource;
@@ -488,15 +506,18 @@ fn ps_struct_decl(p: *Parser, is_resource: bool) -> *Node {
         }
     }
     ps_expect(p, Tok.RBRACE, "'}'");
+    ps_ret(p);
     return node;
 }
 
 fn ps_type_alias_decl(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.TYPE_ALIAS_DECL, (*ps_advance(p)).line);
     (*node).name = ps_expect_name(p, "type alias name");
     ps_expect(p, Tok.ASSIGN, "'='");
     (*node).ty = ps_type_name(p);
     ps_expect(p, Tok.SEMI, "';'");
+    ps_ret(p);
     return node;
 }
 
@@ -521,6 +542,7 @@ fn ps_payload_type(p: *Parser, payload: *U64Vec) -> u64 {
 }
 
 fn ps_enum_decl(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.ENUM_DECL, (*ps_advance(p)).line);
     (*node).name = ps_expect_name(p, "enum name");
     (*node).names = ast_new_names();
@@ -549,6 +571,7 @@ fn ps_enum_decl(p: *Parser) -> *Node {
         }
     }
     ps_expect(p, Tok.RBRACE, "'}'");
+    ps_ret(p);
     return node;
 }
 
@@ -562,10 +585,12 @@ fn ps_function_name(p: *Parser) -> u64 {
 }
 
 fn ps_param(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.PARAM, 0);
     (*node).name = ps_expect_name(p, "parameter name");
     ps_expect(p, Tok.COLON, "':'");
     (*node).ty = ps_type_name(p);
+    ps_ret(p);
     return node;
 }
 
@@ -589,6 +614,7 @@ fn ps_signature(p: *Parser, node: *Node) {
 }
 
 fn ps_fn_decl(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.FN_DECL, (*ps_peek(p)).line);
     ps_expect(p, Tok.FN, "'fn'");
     (*node).name = ps_function_name(p);
@@ -596,15 +622,18 @@ fn ps_fn_decl(p: *Parser) -> *Node {
     ps_generic_params(p, (*node).names);
     ps_signature(p, node);
     (*node).a = ps_block(p);
+    ps_ret(p);
     return node;
 }
 
 fn ps_extern_fn_decl(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.EXTERN_FN_DECL, (*ps_advance(p)).line);
     ps_expect(p, Tok.FN, "'fn'");
     (*node).name = ps_function_name(p);
     ps_signature(p, node);
     ps_expect(p, Tok.SEMI, "';'");
+    ps_ret(p);
     return node;
 }
 
@@ -616,7 +645,9 @@ fn ps_block(p: *Parser) -> *Node {
     ps_expect(p, Tok.LBRACE, "'{'");
     (*node).items = ast_new_items();
     while !ps_at(p, Tok.RBRACE) && !ps_at(p, Tok.EOF) {
+        ps_call(p);
         ptrvec_push((*node).items, ps_stmt(p) as *void);
+        ps_ret(p);
     }
     ps_expect(p, Tok.RBRACE, "'}'");
     ps_leave(p);
@@ -624,6 +655,7 @@ fn ps_block(p: *Parser) -> *Node {
 }
 
 fn ps_let_stmt(p: *Parser, mutable: bool) -> *Node {
+    ps_call(p);
     let keyword = ps_advance(p);
     let node = ast_new(NodeKind.LET, (*keyword).line);
     (*node).col = (*keyword).col;
@@ -636,23 +668,28 @@ fn ps_let_stmt(p: *Parser, mutable: bool) -> *Node {
     ps_expect(p, Tok.ASSIGN, "'='");
     (*node).a = ps_expression(p);
     ps_expect(p, Tok.SEMI, "';'");
+    ps_ret(p);
     return node;
 }
 
 fn ps_return_stmt(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.RETURN, (*ps_advance(p)).line);
     if !ps_at(p, Tok.SEMI) {
         (*node).a = ps_expression(p);
     }
     ps_expect(p, Tok.SEMI, "';'");
+    ps_ret(p);
     return node;
 }
 
 fn ps_condition(p: *Parser) -> *Node {
+    ps_call(p);
     let saved = (*p).no_struct_lit;
     (*p).no_struct_lit = true;
     let expr = ps_expression(p);
     (*p).no_struct_lit = saved;
+    ps_ret(p);
     return expr;
 }
 
@@ -674,9 +711,11 @@ fn ps_if_stmt(p: *Parser) -> *Node {
 }
 
 fn ps_while_stmt(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.WHILE, (*ps_advance(p)).line);
     (*node).a = ps_condition(p);
     (*node).b = ps_block(p);
+    ps_ret(p);
     return node;
 }
 
@@ -691,6 +730,7 @@ fn ps_loop_stmt(p: *Parser) -> *Node {
 }
 
 fn ps_for_stmt(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.FOR, (*ps_advance(p)).line);
     (*node).name = ps_expect_name(p, "a loop variable");
     if ps_at(p, Tok.COLON) {
@@ -710,10 +750,12 @@ fn ps_for_stmt(p: *Parser) -> *Node {
     (*node).b = ps_expression(p);
     (*p).no_struct_lit = saved;
     (*node).c = ps_block(p);
+    ps_ret(p);
     return node;
 }
 
 fn ps_match_stmt(p: *Parser) -> *Node {
+    ps_call(p);
     let node = ast_new(NodeKind.MATCH, (*ps_advance(p)).line);
     (*node).a = ps_condition(p);
     ps_expect(p, Tok.LBRACE, "'{'");
@@ -733,6 +775,7 @@ fn ps_match_stmt(p: *Parser) -> *Node {
         }
     }
     ps_expect(p, Tok.RBRACE, "'}'");
+    ps_ret(p);
     return node;
 }
 
@@ -831,14 +874,21 @@ fn ps_stmt(p: *Parser) -> *Node {
     if kind == Tok.LBRACE {
         return ps_block(p);
     }
-    return ps_expr_or_assign(p);
+    ps_call(p);
+    let statement = ps_expr_or_assign(p);
+    ps_ret(p);
+    return statement;
 }
 
 // ----- expressions -----
 
+// One flat rule for what Python spreads over `_logic_or` to `_cast`, eleven
+// frames, so ps_cast always runs in the frame of `_cast`.
 fn ps_expression(p: *Parser) -> *Node {
     ps_enter(p);
+    (*p).frames += 11;
     let expr = ps_binary(p, 1);
+    (*p).frames -= 11;
     ps_leave(p);
     return expr;
 }
@@ -915,7 +965,10 @@ fn ps_unary_inner(p: *Parser) -> *Node {
         (*node).a = ps_unary(p);
         return node;
     }
-    return ps_postfix(p);
+    ps_call(p);
+    let postfix = ps_postfix(p);
+    ps_ret(p);
+    return postfix;
 }
 
 // `a.b.c` as its dotted text, or NO_TEXT if `expr` is anything else. A loop,
@@ -926,6 +979,10 @@ fn ps_qualified_name(p: *Parser, expr: *Node) -> u64 {
     while (*at).kind == NodeKind.FIELD_ACCESS {
         u64vec_push(&chain, (*at).name);
         at = (*at).a;
+    }
+    // One Python frame per link, called from `_postfix`.
+    if (*p).frames + 1 + chain.len > INTERPRETER_FRAME_LIMIT {
+        ps_fail_at(p, ps_peek(p), "source nesting exceeds the compiler safety limit");
     }
     if (*at).kind != NodeKind.VAR {
         return NO_TEXT;
@@ -1015,7 +1072,9 @@ fn ps_index(p: *Parser, expr: *Node) -> *Node {
 
 fn ps_postfix(p: *Parser) -> *Node {
     let start = ps_peek(p);
+    ps_call(p);
     let expr = ps_primary(p);
+    ps_ret(p);
     loop {
         let kind = ps_kind(p);
         if kind == Tok.LT && ps_looks_like_call_type_args(p) {
@@ -1080,6 +1139,7 @@ fn ps_paren(p: *Parser) -> *Node {
 }
 
 fn ps_struct_lit(p: *Parser) -> *Node {
+    ps_call(p);
     let name = ps_type_name(p);
     let node = ast_new(NodeKind.STRUCT_LIT, (*ps_expect(p, Tok.LBRACE, "'{'")).line);
     (*node).name = name;
@@ -1097,6 +1157,7 @@ fn ps_struct_lit(p: *Parser) -> *Node {
         }
     }
     ps_expect(p, Tok.RBRACE, "'}'");
+    ps_ret(p);
     return node;
 }
 
@@ -1182,7 +1243,10 @@ fn ps_primary(p: *Parser) -> *Node {
         return node;
     }
     if kind == Tok.LBRACKET {
-        return ps_array_lit(p);
+        ps_call(p);
+        let array = ps_array_lit(p);
+        ps_ret(p);
+        return array;
     }
     if kind == Tok.IDENT {
         return ps_ident_expr(p, t);
@@ -1246,11 +1310,13 @@ fn ps_top_level(p: *Parser, program: *Program) {
 }
 
 // `tokens` comes from a successful lx_tokenize and ends in EOF. Token types are
-// mutated in place when a closing angle is split.
-fn parse_program(tokens: *TokenVec, strings: *Interner, path: *u8) -> Program {
+// mutated in place when a closing angle is split. `import_depth` is how many
+// imports led here, and with mortc's `compile_files_to_c`, `load` and
+// `_parse_source` frames it places `parse`, the rules' first frame.
+fn parse_program(tokens: *TokenVec, strings: *Interner, path: *u8, import_depth: u64) -> Program {
     let parser = Parser {
         toks: (*tokens).data, count: (*tokens).len, i: 0, no_struct_lit: false,
-        depth: 0, strings: strings, path: path,
+        frames: 4 + import_depth, strings: strings, path: path,
         close_angle: ps_compute_closes((*tokens).data, (*tokens).len),
         ty: buf_new(64),
     };

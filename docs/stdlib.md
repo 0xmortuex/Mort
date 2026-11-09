@@ -163,7 +163,11 @@ insertion order, into a freshly allocated `std.vec.Vec<Key>` /
 `Vec<Value>` (built on the same `key_at`/`value_at` loop, so the same
 aliasing-copy caveat applies — not resource-safe for a resource `Key`/`Value`)
 — useful for e.g. sorting a map's keys or handing them to a function that
-wants a `Vec`/slice; `reserve` grows capacity ahead of time; `is_empty`
+wants a `Vec`/slice; `clone(map)` returns a new `Map<Key, Value>` holding a
+copy of every entry, in order, built from `with_capacity` plus a direct
+array copy — like `Vec.clone`, it is **not** safe for a resource `Key` or
+`Value` (entries are copied, not moved, so a resource would end up aliased
+between the original and the copy); `reserve` grows capacity ahead of time; `is_empty`
 checks whether the length is zero; `clear` resets the length without freeing
 backing storage; `destroy` frees both backing arrays. **`Key = []const u8`
 does not work**: `insert`/`get`/`contains`/`remove` all look up an existing

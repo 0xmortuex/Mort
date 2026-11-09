@@ -434,6 +434,12 @@ fn cg_share_text(g: *Cg, t: *Txt) {
     tx_app_token(g, t, index);
 }
 
+fn cg_push_token(g: *Cg, b: *Buf, index: u64) {
+    buf_push_span(b, Span { data: &(*g).token_mark[0], len: 1 });
+    buf_push_u64(b, index);
+    buf_push_span(b, Span { data: &(*g).token_mark[0], len: 1 });
+}
+
 fn tx_app_token(g: *Cg, t: *Txt, index: u64) {
     tx_app_span(t, Span { data: &(*g).token_mark[0], len: 1 });
     tx_app_u64(g, t, index);

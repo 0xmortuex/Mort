@@ -20,6 +20,7 @@ Precedence (low -> high):
     || , && , == != , < > <= >= , + - , * / % , unary ! - , call , primary
 """
 from . import mort_ast as A
+from .depth import check_frames
 from .errors import MortError
 from .tokens import T, Token
 
@@ -253,6 +254,7 @@ class Parser:
         return A.EnumDecl(name, variants, line, generic_params)
 
     def _type_name(self):
+        check_frames()
         # first-class function pointer: fn(T, U) -> R
         if self._at(T.FN):
             self._advance()
@@ -392,6 +394,7 @@ class Parser:
         return A.Param(name, self._type_name())
 
     def _block(self):
+        check_frames()
         line = self._peek().line
         self._expect(T.LBRACE, "'{'")
         stmts = []
@@ -499,6 +502,7 @@ class Parser:
             self._no_struct_lit = saved
 
     def _if_stmt(self):
+        check_frames()
         line = self._advance().line
         cond = self._condition()
         then = self._block()
@@ -564,6 +568,7 @@ class Parser:
 
     # ----- expressions -----
     def _expression(self):
+        check_frames()
         return self._logic_or()
 
     def _logic_or(self):
@@ -644,6 +649,7 @@ class Parser:
         return expr
 
     def _unary(self):
+        check_frames()
         # '&' address-of, '*' deref, '~' bitwise-not join '!' and '-' as prefixes
         if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR, T.TILDE):
             op = self._advance()

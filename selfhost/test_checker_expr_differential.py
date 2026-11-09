@@ -11,10 +11,13 @@ message and location must be equal and the walk up to that point the same.
 """
 import ast
 import collections
+import functools
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -62,7 +65,7 @@ def compare(exe, path, mode, tmp_path):
     assert expected.outcome != "crash", f"{path}: Python crash"
     if expected.outcome == "parse":
         code, stderr, _text, _checked = run_mort(
-            exe, f"MODE {mode}\nFILE {expected.failing_file}\n", tmp_path)
+            exe, py_check_dump.failing_manifest(mode, expected), tmp_path)
         assert code == 1, f"{path}: {stderr!r}"
         assert stderr.decode("utf-8") == expected.error, path
         return "parse"
@@ -956,47 +959,50 @@ def test_selfhost_sources_check_as_themselves(expr_exe, tmp_path):
 
 
 # ----- long chains -----
+#
+# `_check_expr` and `_infer` are two frames per level, so 480 levels is close to
+# the limit; the boundary itself is in test_nesting_boundary_matches_python.
 
 def test_deep_left_chain_folds(expr_exe, tmp_path):
-    chain = " + 1" * 4000
+    chain = " + 1" * 480
     source = f"fn main() -> int {{\nlet x: u16 = 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "ok"
 
 
 def test_deep_chain_reports_its_overflow(expr_exe, tmp_path):
-    chain = " + 100" * 4000
+    chain = " + 100" * 480
     source = f"fn main() -> int {{\nlet x: u8 = 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "error"
 
 
 def test_deep_shift_chain_folds_exactly(expr_exe, tmp_path):
-    chain = " << 1" * 2000
+    chain = " << 1" * 480
     source = f"fn main() -> int {{\nlet x: u32 = 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "error"
 
 
 def test_deep_cast_chain(expr_exe, tmp_path):
-    chain = " as u32" * 3000
+    chain = " as u32" * 480
     source = f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "ok"
 
 
 def test_deep_index_chain(expr_exe, tmp_path):
-    stars = "*" * 900
-    chain = "[0]" * 899
+    stars = "*" * 480
+    chain = "[0]" * 479
     source = f"fn main() -> int {{\nlet p: {stars}u8 = null;\nlet x = p{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "ok"
 
 
 def test_deep_compound_chain_in_right_side(expr_exe, tmp_path):
-    chain = " + 1" * 3000
+    chain = " + 1" * 480
     source = f"fn main() -> int {{\nlet x = 1;\nx += 1{chain};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "ok"
 
 
-def test_very_deep_folding_chain_is_linear(expr_exe, tmp_path):
-    """A 300,000 operand constant chain, beyond what Python runs in reasonable
-    time: the Mort checker must finish and fold it without using the C stack."""
+def test_very_deep_folding_chain_is_rejected_quickly(expr_exe, tmp_path):
+    """A 300,000 operand constant chain is far past the frame budget and beyond
+    what Python runs in reasonable time: located, and without the C stack."""
     operands = 300_000
     path = tmp_path / "input.mx"
     path.write_text(
@@ -1005,14 +1011,14 @@ def test_very_deep_folding_chain_is_linear(expr_exe, tmp_path):
     checked = tmp_path / "checked.txt"
     code, stderr = run_mort_bounded(
         expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path, extra=[checked])
-    assert code == 0, stderr
-    assert f"const_val={operands}" in checked.read_text(encoding="ascii")
+    assert code == 1
+    assert b"source nesting exceeds the compiler safety limit" in stderr
 
 
 def test_deepest_nesting_the_parser_allows_does_not_overflow_the_stack(expr_exe, tmp_path):
     """Mixed expression nesting at the parser's limit, on the checker's
     largest recursive frames (calls with array and tuple arguments)."""
-    depth = 200
+    depth = 30  # 29 frames a level: the call's argument and the parentheses
     expr = "1"
     for _ in range(depth):
         expr = f"id2(({expr}, 1).0)"
@@ -1057,6 +1063,114 @@ LIMIT_PRELUDE = (
 def test_recursion_at_the_parser_limit(expr_exe, tmp_path, shape):
     source = f"{LIMIT_PRELUDE}fn main() -> int {{\n{LIMIT_SHAPES[shape]}\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) in ("ok", "error", "parse")
+
+
+# The shapes with a boundary to find: the deepest nesting the Python compiler
+# accepts, and the first it rejects, depend on the frames its path through the
+# checker takes, so each is found from the reference and compared on both sides.
+def _in_main(body):
+    return f"{LIMIT_PRELUDE}fn main() -> int {{\n{body}\nreturn 0;\n}}\n"
+
+
+def _expr_shape(wrap, seed="1"):
+    return lambda n: _in_main("let x = " + _nest(n, wrap, seed) + ";")
+
+
+def _chain_shape(link):
+    return lambda n: _in_main("let x = 1" + link * n + ";")
+
+
+def _body_shape(wrap):
+    return lambda n: _in_main(_nest(n, wrap, "let y = 1;"))
+
+
+def _struct_chain(n):
+    links = "".join(f"struct S{i} {{ a: S{i + 1} }}\n" for i in range(n))
+    return links + f"struct S{n} {{ a: u8 }}\n" + _in_main("")
+
+
+BOUNDARY_SHAPES = {
+    "binary_chain": _chain_shape(" + 1"),
+    "shift_chain": _chain_shape(" << 1"),
+    "cast_chain": _chain_shape(" as i64"),
+    "index_chain": lambda n: _in_main("let a = [1, 2];\nlet x = a" + "[0]" * n + ";"),
+    "paren": _expr_shape("({})"),
+    "unary": _expr_shape("-{}"),
+    "call": _expr_shape("f({})"),
+    "builtin": _expr_shape("alloc({})"),
+    "generic_call": _expr_shape("id({})"),
+    "enum_ctor": _expr_shape("B.N({})", "1"),
+    "tuple": _expr_shape("({}, 1)"),
+    "struct_lit": _expr_shape("W {{ a: {} }}"),
+    "block": _body_shape("{{ {} }}"),
+    "if": _body_shape("if true {{ {} }}"),
+    "while": _body_shape("while true {{ {} break; }}"),
+    "for": _body_shape("for i in 0..1 {{ {} }}"),
+    "match": _body_shape("match 1 {{ _ => {{ {} }} }}"),
+    "defer_call": lambda n: _in_main("defer " + _nest(n, "f({})") + ";"),
+    "pointer_type": lambda n: _in_main("let x: " + "*" * n + "u8 = 0 as " + "*" * n + "u8;"),
+    "struct_field_pointer": lambda n: (
+        "struct P { a: " + "*" * n + "u8 }\n" + _in_main("")),
+    "alias_chain": lambda n: (
+        "".join(f"type A{i} = A{i + 1};\n" for i in range(n))
+        + f"type A{n} = u8;\n" + _in_main("")),
+    "alias_pointer": lambda n: (
+        "".join(f"type A{i} = *A{i + 1};\n" for i in range(n))
+        + f"type A{n} = u8;\n" + _in_main("")),
+    "array_type": lambda n: _in_main(
+        "let x: " + "[" * n + "u8" + "; 1]" * n + " = 0;"),
+    "tuple_type": lambda n: _in_main(
+        "let x: " + "(u8, " * n + "u8" + ")" * n + " = 0;"),
+    "fn_type": lambda n: _in_main(
+        "let x: " + "fn(" * n + "u8" + ") -> u8" * n + " = 0;"),
+    "generic_struct": lambda n: (
+        "struct G<T> { a: *T }\n" + _in_main(
+            "let x: " + "G<" * n + "u8" + ">" * n + " = 0;")),
+    "struct_chain": _struct_chain,
+    "struct_chain_drop": lambda n: _struct_chain(n) + (
+        "fn g(a: S0) -> i64 { return 0; }\n"),
+    "tuple_coerce": lambda n: (
+        _in_main("let x: " + "(u8, " * n + "u8" + ")" * n + " = "
+                 + _nest(n, "(1, {})") + ";")),
+    "generic_function_body": lambda n: (
+        "fn t<T>(a: T) -> T {\nlet b = " + _nest(n, "(a, {}).0", "a") + ";\nreturn b;\n}\n"
+        + _in_main("let x = t(1);")),
+}
+
+
+def _rejected_for_nesting(tmp_path, build, n):
+    path = tmp_path / "probe.mx"
+    path.write_text(build(n), encoding="utf-8")
+    result = py_check_dump.run_reference(path, "hosted", exact=True)
+    return result.error is not None and "nesting exceeds" in result.error
+
+
+@functools.cache
+def _first_rejected(name):
+    """The smallest nesting the Python compiler rejects as too deep."""
+    build = BOUNDARY_SHAPES[name]
+    directory = Path(tempfile.mkdtemp(prefix="mort-boundary-"))
+    low, high = 1, 8
+    while not _rejected_for_nesting(directory, build, high):
+        low, high = high, high * 2
+        assert high < 1 << 16, name
+    while high - low > 1:
+        middle = (low + high) // 2
+        if _rejected_for_nesting(directory, build, middle):
+            high = middle
+        else:
+            low = middle
+    shutil.rmtree(directory)
+    return high
+
+
+@pytest.mark.parametrize(
+    "shape,offset",
+    [(name, offset) for name in sorted(BOUNDARY_SHAPES) for offset in (-1, 0, 1)])
+def test_nesting_boundary_matches_python(expr_exe, tmp_path, shape, offset):
+    """Offset 0 is the smallest nesting Python rejects as too deep."""
+    source = BOUNDARY_SHAPES[shape](_first_rejected(shape) + offset)
+    assert_source_agrees(expr_exe, tmp_path, source)
 
 
 def _module_program(tmp_path, library, root):
@@ -1146,8 +1260,9 @@ def test_instantiation_work_budget(expr_exe, tmp_path):
 
 
 def test_constant_width_is_bounded(expr_exe, tmp_path):
-    chain = " << 64" * 10000
-    source = f"fn main() -> int {{\nlet x = 1{chain};\nreturn 0;\n}}\n"
+    """Large literals reach the width limit well inside the frame budget."""
+    literal = "9" * 4299
+    source = f"fn main() -> int {{\nlet x = {literal}{f' * {literal}' * 20};\nreturn 0;\n}}\n"
     assert assert_source_agrees(expr_exe, tmp_path, source) == "error"
     path = tmp_path / "input.mx"
     code, stderr = run_mort_bounded(expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
@@ -1157,13 +1272,13 @@ def test_constant_width_is_bounded(expr_exe, tmp_path):
 
 def test_retained_constants_are_bounded(expr_exe, tmp_path):
     """A huge value carried along a chain would otherwise store a huge value at
-    every node."""
-    literal = "9" * 4000
-    chain = " + 1" * 300000
+    every node. Inside the frame budget one chain is too short, so many are spent
+    against the same meter, and the `* 0` keeps each value representable."""
+    literal = "9" * 4299
+    chain = f"{literal}{' + 1' * 460}"
+    statements = "".join(f"let a{i} = ({chain}) * 0;\n" for i in range(200))
     path = tmp_path / "input.mx"
-    path.write_text(
-        f"fn main() -> int {{\nlet x = {literal}{chain};\nreturn 0;\n}}\n",
-        encoding="utf-8")
+    path.write_text(f"fn main() -> int {{\n{statements}return 0;\n}}\n", encoding="utf-8")
     code, stderr = run_mort_bounded(
         expr_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
     assert code == 1, stderr
