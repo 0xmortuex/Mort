@@ -826,7 +826,7 @@ class Parser:
                     return self._peek(offset + 1).type == T.LBRACE
                 if depth < 0:
                     return False
-            elif token_type in (T.SEMI, T.EOF):
+            elif token_type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
                 return False
             offset += 1
         return False
@@ -850,7 +850,7 @@ class Parser:
                     return self._peek(offset + 1).type == T.DOT
                 if depth < 0:
                     return False
-            elif token_type in (T.SEMI, T.EOF):
+            elif token_type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
                 return False
             offset += 1
         return False

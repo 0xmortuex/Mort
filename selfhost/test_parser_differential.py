@@ -120,6 +120,11 @@ def type_case(text):
 
 
 EDGE_CASES = {
+    # Every generic lookahead counts '>>' as two closes and stops at a brace.
+    "generic_lookahead_stops_at_brace": fragment("if a < b { if c > (d) {} }"),
+    "generic_lookahead_brace_before_struct": fragment("let v = a < b { c > { d: 1 } };"),
+    "generic_lookahead_brace_before_qualifier": fragment("if a < b { c > .d; }"),
+    "generic_struct_triple_close": fragment("let v = A<B<C<i64>>> { v: 1 };"),
     # --- call name positions
     "call_name_pos_split_line": fragment("    g\n  (1);"),
     "call_name_pos_parenthesized": fragment("  (g)(1);"),

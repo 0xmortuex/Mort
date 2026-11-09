@@ -45,8 +45,7 @@ struct Parser {
     depth: u64,
     strings: *Interner,
     path: *u8,
-    close_shr: *u64,
-    close_plain: *u64,
+    close_angle: *u64,
     ty: Buf,
 }
 
@@ -150,10 +149,10 @@ fn ps_leave(p: *Parser) {
 //
 // One pass, with a stack of open `<`. For the entry at index j, close[j] is the
 // token at which a depth count started at j first reaches zero, or NO_CLOSE if
-// a `;` or end of input comes first, or (with `>>` counted as two closes) if a
-// `>>` would take that count below zero.
+// a `;`, a brace or end of input comes first, or (with `>>` counted as two
+// closes) if a `>>` would take that count below zero.
 
-fn ps_compute_closes(toks: *Token, count: u64, split_shr: bool) -> *u64 {
+fn ps_compute_closes(toks: *Token, count: u64) -> *u64 {
     let close = sup_alloc_array(count, sizeof<u64>()) as *u64;
     for i: u64 in 0..count {
         close[i] = NO_CLOSE;
@@ -167,14 +166,15 @@ fn ps_compute_closes(toks: *Token, count: u64, split_shr: bool) -> *u64 {
             if open.len > 0 {
                 close[u64vec_pop(&open)] = i;
             }
-        } else if kind == Tok.SHR && split_shr {
+        } else if kind == Tok.SHR {
             if open.len > 0 {
                 u64vec_pop(&open);
             }
             if open.len > 0 {
                 close[u64vec_pop(&open)] = i;
             }
-        } else if kind == Tok.SEMI || kind == Tok.EOF {
+        } else if kind == Tok.SEMI || kind == Tok.EOF
+                || kind == Tok.LBRACE || kind == Tok.RBRACE {
             open.len = 0;
         }
     }
@@ -190,7 +190,7 @@ fn ps_close_then(p: *Parser, close: *u64, at: u64, follower: Tok) -> bool {
 }
 
 fn ps_looks_like_call_type_args(p: *Parser) -> bool {
-    return ps_close_then(p, (*p).close_shr, (*p).i, Tok.LPAREN);
+    return ps_close_then(p, (*p).close_angle, (*p).i, Tok.LPAREN);
 }
 
 fn ps_looks_like_struct_lit(p: *Parser) -> bool {
@@ -198,14 +198,14 @@ fn ps_looks_like_struct_lit(p: *Parser) -> bool {
     if next != Tok.LT {
         return next == Tok.LBRACE;
     }
-    return ps_close_then(p, (*p).close_plain, (*p).i + 1, Tok.LBRACE);
+    return ps_close_then(p, (*p).close_angle, (*p).i + 1, Tok.LBRACE);
 }
 
 fn ps_looks_like_generic_qualifier(p: *Parser) -> bool {
     if (*p).toks[(*p).i + 1].kind != Tok.LT {
         return false;
     }
-    return ps_close_then(p, (*p).close_shr, (*p).i + 1, Tok.DOT);
+    return ps_close_then(p, (*p).close_angle, (*p).i + 1, Tok.DOT);
 }
 
 // ----- types -----
@@ -1205,8 +1205,7 @@ fn parse_program(tokens: *TokenVec, strings: *Interner, path: *u8) -> Program {
     let parser = Parser {
         toks: (*tokens).data, count: (*tokens).len, i: 0, no_struct_lit: false,
         depth: 0, strings: strings, path: path,
-        close_shr: ps_compute_closes((*tokens).data, (*tokens).len, true),
-        close_plain: ps_compute_closes((*tokens).data, (*tokens).len, false),
+        close_angle: ps_compute_closes((*tokens).data, (*tokens).len),
         ty: buf_new(64),
     };
     let program = program_new();
