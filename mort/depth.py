@@ -4,14 +4,18 @@ The limit used to be CPython's recursion limit, which also counts the caller's
 frames and, depending on the version, some C calls: the same source was accepted
 by one Python and rejected by another. Python frames of this compiler are the
 same on every version, so they are counted here instead, and the interpreter's
-limit is only a safety net above the budget.
+limit is only a safety net above the budget. Recursion must not pass through a
+list, set or dict comprehension: those have their own frame only before Python
+3.12, so they make the count differ by version. Use a loop or a generator.
 """
 import functools
 import sys
 import threading
 
 COMPILE_FRAME_BUDGET = 1000
-_INTERPRETER_HEADROOM = 200
+# Python 3.10 also counts some C calls, such as a generator resumed by all(), so
+# the interpreter's limit must sit well above the budget for the budget to decide.
+_INTERPRETER_HEADROOM = 2 * COMPILE_FRAME_BUDGET
 
 
 class _FrameLimit(threading.local):

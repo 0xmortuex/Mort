@@ -10839,6 +10839,48 @@ def test_nesting_limit_is_exact_on_every_python_version(shape):
         mortc.compile_to_c(_nested_main(build(deepest + 1)))
 
 
+def _function_type(n):
+    return "fn(" * n + "i64" + ")->i64" * n
+
+
+def _left_tuple_type(n):
+    return "(" * n + "i64" + ",i64)" * n
+
+
+def _in_main(body):
+    return f"fn main() -> int {{ {body} return 0; }}"
+
+
+_WRAPPER = "struct W<T> { v: T }\n"
+_PAIR = "struct P<A, B> { a: A, b: *B }\n"
+_DEEPEST_TYPE_ACCEPTED = {
+    "function-type": (330, lambda n: _in_main(f"let x: {_function_type(n)} = null;")),
+    "function-result": (496, lambda n: _in_main("let x: " + "fn()->" * n + "i64 = null;")),
+    "left-tuple": (330, lambda n: _in_main(f"let x: *{_left_tuple_type(n)} = null;")),
+    "right-tuple": (330, lambda n: _in_main("let x: *" + "(i64," * n + "i64" + ")" * n + " = null;")),
+    "pointer": (495, lambda n: _in_main("let x: " + "*" * n + "i64 = null;")),
+    "slice": (495, lambda n: _in_main("let x: *" + "[]" * n + "i64 = null;")),
+    "generic-struct": (246, lambda n: _WRAPPER + _in_main(
+        "let x: *" + "W<" * n + "i64" + ">" * n + " = null;")),
+    "generic-pair": (246, lambda n: _PAIR + _in_main(
+        "let x: *" + "P<i64," * n + "i64" + ">" * n + " = null;")),
+    "parameter": (330, lambda n: f"fn f(x: {_function_type(n)}) -> void {{}}\n" + _in_main("")),
+    "return-type": (330, lambda n: f"fn f() -> {_function_type(n)} {{ return null; }}\n"
+                    + _in_main("")),
+    "struct-field": (330, lambda n: f"struct Q {{ f: {_function_type(n)} }}\n" + _in_main("")),
+    "alias": (330, lambda n: f"type A = {_function_type(n)};\n" + _in_main("let x: A = null;")),
+    "sizeof": (329, lambda n: _in_main(f"let x = sizeof<{_left_tuple_type(n)}>();")),
+}
+
+
+@pytest.mark.parametrize("shape", list(_DEEPEST_TYPE_ACCEPTED))
+def test_type_nesting_limit_is_exact_on_every_python_version(shape):
+    deepest, build = _DEEPEST_TYPE_ACCEPTED[shape]
+    assert "mort_main" in mortc.compile_to_c(build(deepest))
+    with pytest.raises(MortError, match="safety limit"):
+        mortc.compile_to_c(build(deepest + 1))
+
+
 def test_compiling_restores_the_recursion_limit():
     before = sys.getrecursionlimit()
     mortc.compile_to_c(_deep_sum_program(3))

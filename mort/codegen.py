@@ -1629,12 +1629,12 @@ class CodeGen:
         # buffers. This populates self.strings / used_* port-I/O flags (each
         # StrLit and port-I/O call registers itself), so the string table and
         # helpers can be emitted ahead of the code that references them.
-        global_decls = [
-            "static " + self._var_decl(
-                g.var_type, "m_" + g.name, self._gen_expr(g.expr),
-                binding_const=not g.mutable) + ";"
-            for g in self.program.globals
-        ]
+        global_decls = []
+        for g in self.program.globals:
+            global_decls.append(
+                "static " + self._var_decl(
+                    g.var_type, "m_" + g.name, self._gen_expr(g.expr),
+                    binding_const=not g.mutable) + ";")
         saved = self.lines
         self.lines = []
         for f in self.program.funcs:

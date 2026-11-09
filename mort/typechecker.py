@@ -631,9 +631,10 @@ class Checker:
             elif isinstance(value, (A.Param, A.StructField)):
                 value.typ = self._resolve_alias_type(value.typ)
             elif isinstance(value, A.EnumVariant) and value.payload_types:
-                value.payload_types = [
-                    self._resolve_alias_type(item) for item in value.payload_types
-                ]
+                resolved_payloads = []
+                for item in value.payload_types:
+                    resolved_payloads.append(self._resolve_alias_type(item))
+                value.payload_types = resolved_payloads
                 value.payload_type = (
                     value.payload_types[0] if len(value.payload_types) == 1
                     else made_type("(" + ",".join(value.payload_types) + ")")
@@ -648,9 +649,10 @@ class Checker:
                 if isinstance(value.obj, A.Var) and value.obj.name in self.aliases:
                     value.obj.name = self._resolve_alias_type(value.obj.name)
             elif isinstance(value, A.Call):
-                value.type_args = [
-                    self._resolve_alias_type(argument) for argument in value.type_args
-                ]
+                resolved_arguments = []
+                for argument in value.type_args:
+                    resolved_arguments.append(self._resolve_alias_type(argument))
+                value.type_args = resolved_arguments
                 if "." in value.name:
                     qualifier, member = value.name.rsplit(".", 1)
                     resolved = self._resolve_alias_type(qualifier)
@@ -737,10 +739,9 @@ class Checker:
             return False
         self._charge_instantiation(1 + len(template.fields), template)
         mapping = dict(zip(template.generic_params, args))
-        fields = [
-            A.StructField(field.name, substitute_type(field.typ, mapping))
-            for field in template.fields
-        ]
+        fields = []
+        for field in template.fields:
+            fields.append(A.StructField(field.name, substitute_type(field.typ, mapping)))
         self.structs[concrete_type] = None
         resolved = {}
         for field in fields:
@@ -772,16 +773,12 @@ class Checker:
             1 + sum(1 + len(variant.payload_types) for variant in template.variants),
             template)
         mapping = dict(zip(template.generic_params, args))
-        variants = [
-            A.EnumVariant(
-                variant.name,
-                payload_types=[
-                    substitute_type(item, mapping)
-                    for item in variant.payload_types
-                ],
-            )
-            for variant in template.variants
-        ]
+        variants = []
+        for variant in template.variants:
+            payload_types = []
+            for item in variant.payload_types:
+                payload_types.append(substitute_type(item, mapping))
+            variants.append(A.EnumVariant(variant.name, payload_types=payload_types))
         self.enums[concrete_type] = None
         resolved = {}
         for variant in variants:
@@ -910,9 +907,10 @@ class Checker:
             elif isinstance(value, A.StructLit) or isinstance(value, A.Var) and generic_parts(value.name):
                 value.name = substitute_type(value.name, mapping)
             elif isinstance(value, A.Call):
-                value.type_args = [
-                    substitute_type(argument, mapping) for argument in value.type_args
-                ]
+                substituted_arguments = []
+                for argument in value.type_args:
+                    substituted_arguments.append(substitute_type(argument, mapping))
+                value.type_args = substituted_arguments
                 if "." in value.name:
                     qualifier, member = value.name.rsplit(".", 1)
                     substituted = substitute_type(qualifier, mapping)
@@ -1389,6 +1387,7 @@ class Checker:
         return symbol
 
     def _register_nested_drop_types(self, typ, node):
+        check_frames()
         children = []
         if is_array(typ):
             children = [array_parts(typ)[0]]
@@ -2031,11 +2030,11 @@ class Checker:
                         arm.binding_types = binding_types
                         arm.binding_indices = binding_indices
                         arm.payload_arity = len(expected_payloads)
-                        arm.binding_destructors = [
-                            self._resource_destructor(binding_type, arm)
-                            if self._needs_drop_type(binding_type) else None
-                            for binding_type in binding_types
-                        ]
+                        arm.binding_destructors = []
+                        for binding_type in binding_types:
+                            arm.binding_destructors.append(
+                                self._resource_destructor(binding_type, arm)
+                                if self._needs_drop_type(binding_type) else None)
                         if len(binding_names) == 1:
                             arm.binding_name = binding_names[0]
                             arm.binding_type = binding_types[0]
@@ -2197,7 +2196,9 @@ class Checker:
         if isinstance(e, A.StrLit):
             return "*u8"  # a pointer to static, null-terminated bytes
         if isinstance(e, A.TupleLit):
-            element_types = [self._check_expr(element) for element in e.elements]
+            element_types = []
+            for element in e.elements:
+                element_types.append(self._check_expr(element))
             for element_type, element in zip(element_types, e.elements):
                 self._require_explicit_move(element_type, element)
             return made_type("(" + ",".join(element_types) + ")")
@@ -3203,7 +3204,9 @@ class Checker:
             self._error(
                 f"function {e.name!r} expects {len(ptypes)} argument(s), "
                 f"got {len(e.args)}", e)
-        actual_types = [self._check_expr(argument) for argument in e.args]
+        actual_types = []
+        for argument in e.args:
+            actual_types.append(self._check_expr(argument))
         if template is not None:
             if e.type_args and len(e.type_args) != len(template.generic_params):
                 self._error(
