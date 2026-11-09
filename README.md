@@ -50,6 +50,7 @@ fn main() -> int {
 
 ```
 $ python mortc.py examples/fib.mx --run
+mortc: wrote fib
 0
 1
 1
