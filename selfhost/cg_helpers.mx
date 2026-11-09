@@ -1,0 +1,323 @@
+// C code generator: which runtime helpers a program needs, and their text
+// (PLAN.md, T6). `_gen_integer_helpers` is written out here; the constant text of
+// the concurrency, network and random helpers lives in the generated
+// cg_helper_text.mx.
+
+import support;
+import ast;
+import codegen;
+import cg_helper_text;
+
+fn cg_use_int(g: *Cg, op: u64, at: u64) {
+    (*g).int_helpers[op * CG_FIXED_COUNT + at] = true;
+}
+
+fn cg_has_int(g: *Cg, op: u64, at: u64) -> bool {
+    return (*g).int_helpers[op * CG_FIXED_COUNT + at];
+}
+
+// Fixed-width types in `_FIXED_INT_INFO` order: i8 i16 i32 i64 u8 u16 u32 u64.
+fn cg_fixed_bits(at: u64) -> u64 {
+    let k = at % 4;
+    if k == 0 { return 8; }
+    if k == 1 { return 16; }
+    if k == 2 { return 32; }
+    return 64;
+}
+
+fn cg_fixed_signed(at: u64) -> bool {
+    return at < 4;
+}
+
+fn cg_fixed_name(out: *Buf, at: u64) {
+    if at < 4 {
+        buf_push(out, 'i');
+    } else {
+        buf_push(out, 'u');
+    }
+    buf_push_u64(out, cg_fixed_bits(at));
+}
+
+fn cg_fixed_ctype(out: *Buf, at: u64) {
+    if at >= 4 {
+        buf_push(out, 'u');
+    }
+    buf_push_z(out, "int");
+    buf_push_u64(out, cg_fixed_bits(at));
+    buf_push_z(out, "_t");
+}
+
+fn cg_fixed_unsigned(out: *Buf, at: u64) {
+    buf_push_z(out, "uint");
+    buf_push_u64(out, cg_fixed_bits(at));
+    buf_push_z(out, "_t");
+}
+
+fn cg_fixed_promoted(out: *Buf, at: u64) {
+    if cg_fixed_bits(at) <= 32 {
+        buf_push_z(out, "uint32_t");
+    } else {
+        buf_push_z(out, "uint64_t");
+    }
+}
+
+// One helper line, with $c the C type, $u its unsigned form, $b the bits, $t the
+// Mort type, $p the promoted type and $o the operation.
+fn cg_tmpl(g: *Cg, text: *u8, at: u64, op: *u8) {
+    let b = buf_new(128);
+    let i: u64 = 0;
+    while text[i] != 0 {
+        if text[i] != '$' {
+            buf_push(&b, text[i]);
+            i += 1;
+            continue;
+        }
+        let code = text[i + 1];
+        i += 2;
+        if code == 'c' {
+            cg_fixed_ctype(&b, at);
+        } else if code == 'u' {
+            cg_fixed_unsigned(&b, at);
+        } else if code == 'b' {
+            buf_push_u64(&b, cg_fixed_bits(at));
+        } else if code == 't' {
+            cg_fixed_name(&b, at);
+        } else if code == 'p' {
+            cg_fixed_promoted(&b, at);
+        } else {
+            buf_push_z(&b, op);
+        }
+    }
+    cg_em_buf(g, &b);
+}
+
+fn cg_any_int_helper(g: *Cg) -> bool {
+    if (*g).used_shift_count {
+        return true;
+    }
+    for i: u64 in 0..CG_OP_COUNT * CG_FIXED_COUNT {
+        if (*g).int_helpers[i] {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn cg_float_condition(at: u64) -> *u8 {
+    if at == 0 { return "value > -129.0 && value < 128.0"; }
+    if at == 1 { return "value > -32769.0 && value < 32768.0"; }
+    if at == 2 { return "value > -2147483649.0 && value < 2147483648.0"; }
+    if at == 3 { return "value >= -9223372036854775808.0 && value < 9223372036854775808.0"; }
+    if at == 4 { return "value > -1.0 && value < 256.0"; }
+    if at == 5 { return "value > -1.0 && value < 65536.0"; }
+    if at == 6 { return "value > -1.0 && value < 4294967296.0"; }
+    return "value > -1.0 && value < 18446744073709551616.0";
+}
+
+fn cg_gen_float_cast(g: *Cg, at: u64) {
+    cg_tmpl(g, "static inline $c mort_float_to_$t(double value, int64_t line) {", at, "");
+    let condition = buf_new(96);
+    buf_push_z(&condition, "    if (!(");
+    buf_push_z(&condition, cg_float_condition(at));
+    if (*g).freestanding {
+        buf_push_z(&condition, ")) { mort_integer_failure(); }");
+        cg_em_buf(g, &condition);
+        cg_em(g, "    (void)line;");
+    } else {
+        buf_push_z(&condition, ")) {");
+        cg_em_buf(g, &condition);
+        cg_em(g, "        mort_integer_failure(\"floating-point to integer cast out of range\", line);");
+        cg_em(g, "    }");
+    }
+    cg_tmpl(g, "    return ($c)value;", at, "");
+    cg_em(g, "}");
+    cg_blank(g);
+}
+
+fn cg_gen_shift(g: *Cg, shl: bool, at: u64) {
+    let op = "shr";
+    if shl {
+        op = "shl";
+    }
+    let signed = cg_fixed_signed(at);
+    cg_tmpl(g, "static inline $c mort_$o_$t($c value, uint64_t count) {", at, op);
+    let expression = buf_new(64);
+    if shl {
+        cg_tmpl(g, "    if (count >= $bU) { return ($c)0; }", at, op);
+        buf_push_z(&expression, "((");
+        cg_fixed_promoted(&expression, at);
+        buf_push_z(&expression, ")((");
+        cg_fixed_unsigned(&expression, at);
+        buf_push_z(&expression, ")value)) << count");
+    } else if signed {
+        cg_tmpl(g, "    if (count >= $bU) { return value < 0 ? ($c)-1 : ($c)0; }", at, op);
+        cg_em(g, "    if (count == 0U) { return value; }");
+        cg_tmpl(g, "    $u shifted = (($u)value) >> count;", at, op);
+        cg_em(g, "    if (value < 0) {");
+        cg_tmpl(g, "        shifted |= ($u)(UINT$b_MAX << ($bU - count));", at, op);
+        cg_em(g, "    }");
+        buf_push_z(&expression, "shifted");
+    } else {
+        cg_tmpl(g, "    if (count >= $bU) { return ($c)0; }", at, op);
+        buf_push_z(&expression, "value >> count");
+    }
+    let ret = buf_new(96);
+    if signed {
+        buf_push_z(&ret, "    return mort_wrap_");
+        cg_fixed_name(&ret, at);
+        buf_push_z(&ret, "((");
+        cg_fixed_unsigned(&ret, at);
+        buf_push_z(&ret, ")(");
+        buf_push_span(&ret, buf_span(&expression));
+        buf_push_z(&ret, "));");
+    } else {
+        buf_push_z(&ret, "    return (");
+        cg_fixed_ctype(&ret, at);
+        buf_push_z(&ret, ")(");
+        buf_push_span(&ret, buf_span(&expression));
+        buf_push_z(&ret, ");");
+    }
+    cg_em_buf(g, &ret);
+    free(expression.data as *void);
+    cg_em(g, "}");
+    cg_blank(g);
+}
+
+fn cg_gen_div(g: *Cg, div: bool, at: u64) {
+    let op = "rem";
+    if div {
+        op = "div";
+    }
+    cg_tmpl(g, "static inline $c mort_$o_$t($c left, $c right, int64_t line) {", at, op);
+    if (*g).freestanding {
+        cg_em(g, "    (void)line;");
+        cg_em(g, "    if (right == 0) { mort_integer_failure(); }");
+    } else if div {
+        cg_em(g, "    if (right == 0) { mort_integer_failure(\"integer division by zero\", line); }");
+    } else {
+        cg_em(g, "    if (right == 0) { mort_integer_failure(\"integer remainder by zero\", line); }");
+    }
+    if cg_fixed_signed(at) {
+        cg_tmpl(g, "    if (left == INT$b_MIN && right == ($c)-1) {", at, op);
+        if div {
+            cg_tmpl(g, "        return INT$b_MIN;", at, op);
+        } else {
+            cg_em(g, "        return 0;");
+        }
+        cg_em(g, "    }");
+    }
+    if div {
+        cg_tmpl(g, "    return ($c)(left / right);", at, op);
+    } else {
+        cg_tmpl(g, "    return ($c)(left % right);", at, op);
+    }
+    cg_em(g, "}");
+    cg_blank(g);
+}
+
+// `_gen_integer_helpers`.
+fn cg_gen_integer_helpers(g: *Cg) {
+    if !cg_any_int_helper(g) {
+        return;
+    }
+    if cg_any_failure_helper(g) {
+        if (*g).freestanding {
+            cg_em(g, "static void mort_integer_failure(void) {");
+            cg_em(g, "    __builtin_trap();");
+            cg_em(g, "}");
+        } else {
+            cg_em(g, "static void mort_integer_failure(const char* reason, int64_t line) {");
+            cg_em(g, "    fprintf(stderr, \"%s at Mort line %lld\\n\", reason, (long long)line);");
+            cg_em(g, "    exit(1);");
+            cg_em(g, "}");
+        }
+        cg_blank(g);
+    }
+    for at: u64 in 0..4 {
+        if cg_has_int(g, CG_OP_SHL, at) || cg_has_int(g, CG_OP_SHR, at) {
+            cg_use_int(g, CG_OP_WRAP, at);
+        }
+    }
+    for at: u64 in 0..4 {
+        if !cg_has_int(g, CG_OP_WRAP, at) {
+            continue;
+        }
+        cg_tmpl(g, "static inline $c mort_wrap_$t($u value) {", at, "");
+        cg_tmpl(g, "    if (value <= ($u)INT$b_MAX) {", at, "");
+        cg_tmpl(g, "        return ($c)value;", at, "");
+        cg_em(g, "    }");
+        cg_tmpl(g, "    return ($c)(-1 - ($c)(UINT$b_MAX - value));", at, "");
+        cg_em(g, "}");
+        cg_blank(g);
+    }
+    if (*g).used_shift_count {
+        cg_em(g, "static inline uint64_t mort_shift_count_signed(int64_t count, int64_t line) {");
+        if (*g).freestanding {
+            cg_em(g, "    (void)line;");
+            cg_em(g, "    if (count < 0) { mort_integer_failure(); }");
+        } else {
+            cg_em(g, "    if (count < 0) { mort_integer_failure(\"negative integer shift count\", line); }");
+        }
+        cg_em(g, "    return (uint64_t)count;");
+        cg_em(g, "}");
+        cg_blank(g);
+    }
+    for at: u64 in 0..CG_FIXED_COUNT {
+        if cg_has_int(g, CG_OP_FLOAT_CAST, at) {
+            cg_gen_float_cast(g, at);
+        }
+    }
+    for at: u64 in 0..CG_FIXED_COUNT {
+        if cg_has_int(g, CG_OP_SHL, at) {
+            cg_gen_shift(g, true, at);
+        }
+    }
+    for at: u64 in 0..CG_FIXED_COUNT {
+        if cg_has_int(g, CG_OP_SHR, at) {
+            cg_gen_shift(g, false, at);
+        }
+    }
+    for at: u64 in 0..CG_FIXED_COUNT {
+        if cg_has_int(g, CG_OP_DIV, at) {
+            cg_gen_div(g, true, at);
+        }
+    }
+    for at: u64 in 0..CG_FIXED_COUNT {
+        if cg_has_int(g, CG_OP_REM, at) {
+            cg_gen_div(g, false, at);
+        }
+    }
+}
+
+// `_gen_concurrency_helpers`.
+fn cg_gen_concurrency_helpers(g: *Cg) {
+    let threads = cg_flag(g, CgFlag.THREADS);
+    let mutexes = cg_flag(g, CgFlag.MUTEXES);
+    let atomics = cg_flag(g, CgFlag.ATOMICS);
+    if !(threads || mutexes || atomics) {
+        return;
+    }
+    cgt_concurrency_prefix(g);
+    if threads {
+        cgt_concurrency_threads(g);
+    }
+    if mutexes {
+        cgt_concurrency_mutexes(g);
+    }
+    if atomics {
+        cgt_concurrency_atomics(g);
+    }
+    cgt_concurrency_suffix(g);
+}
+
+fn cg_gen_network_helpers(g: *Cg) {
+    if cg_flag(g, CgFlag.NETWORK) {
+        cgt_network(g);
+    }
+}
+
+fn cg_gen_secure_random_helpers(g: *Cg) {
+    if cg_flag(g, CgFlag.SECURE_RANDOM) {
+        cgt_secure_random(g);
+    }
+}
