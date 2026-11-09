@@ -1068,14 +1068,26 @@ class Checker:
                 f"'move {expr.name}'",
                 expr,
             )
-        if isinstance(expr, (A.FieldAccess, A.Index)):
-            # A field or element of a local owner has no independent liveness
-            # flag, so a by-value read would be destroyed twice. Storage behind
-            # a raw pointer or slice is manually managed and rooted elsewhere.
-            root_type, _ = self._local_binding(self._assignment_root(expr))
-            if root_type is not None and self._needs_drop_type(root_type):
-                self._error(
-                    "a resource cannot be copied out of its owning binding", expr)
+        if isinstance(expr, (A.FieldAccess, A.Index)) and self._is_owned_place(expr):
+            self._error(
+                "a resource cannot be copied out of its owning binding", expr)
+
+    def _is_owned_place(self, expression):
+        """True when a field or element chain stays inside one local's storage.
+
+        Such a place has no liveness flag of its own, so a by-value read would
+        be destroyed twice. A step through a raw pointer or slice leaves the
+        binding for manually managed storage.
+        """
+        while isinstance(expression, (A.FieldAccess, A.Index)):
+            owner = expression.obj
+            if is_ptr(owner.type) or is_slice(owner.type):
+                return False
+            expression = owner
+        if not isinstance(expression, A.Var):
+            return False
+        root_type, _ = self._local_binding(expression.name)
+        return root_type is not None and self._needs_drop_type(root_type)
 
     def _binding_mutable(self, name):
         for scope, bindings in zip(
@@ -1741,21 +1753,25 @@ class Checker:
     # ----- expressions -----
     @staticmethod
     def _contains_try(expression):
-        if isinstance(expression, A.Try):
-            return True
+        return Checker._any_subexpression(
+            expression, lambda node: isinstance(node, A.Try))
+
+    @staticmethod
+    def _any_subexpression(expression, predicate):
         if not isinstance(expression, A.Node):
             return False
+        if predicate(expression):
+            return True
+        any_in = Checker._any_subexpression
         for value in vars(expression).values():
-            if isinstance(value, A.Node) and Checker._contains_try(value):
+            if isinstance(value, A.Node) and any_in(value, predicate):
                 return True
             if isinstance(value, (list, tuple)):
                 for item in value:
-                    if isinstance(item, A.Node) and Checker._contains_try(item):
+                    if isinstance(item, A.Node) and any_in(item, predicate):
                         return True
                     if isinstance(item, tuple) and any(
-                            isinstance(part, A.Node)
-                            and Checker._contains_try(part)
-                            for part in item):
+                            any_in(part, predicate) for part in item):
                         return True
         return False
 

@@ -1460,3 +1460,94 @@ def test_a_balanced_angle_before_a_paren_is_read_as_type_arguments():
     inner = outer.args[0]
     assert (outer.name, len(outer.args)) == ("g", 1)
     assert (inner.name, inner.type_args) == ("a", ["b", "c"])
+
+
+# ----- findings of the independent review --------------------------------------
+
+_OWNER = (
+    "resource struct R { v: i64 } fn destroy(r: *R) -> void { print((*r).v); } "
+    "struct O { items: *R, list: []R, r: R } "
+)
+
+
+@pytest.mark.parametrize("read", ["o.items[0]", "o.list[0]", "o.list.data[0]"])
+def test_raw_storage_reached_through_an_owner_is_not_a_copy_of_it(read):
+    _check_program(
+        _OWNER + "fn f(o: O) -> void { let a = " + read + "; } fn main() -> int { return 0; }")
+
+
+def test_raw_storage_of_a_vec_of_resources_stays_readable(tmp_path):
+    source = tmp_path / "program.mx"
+    source.write_text(
+        "import std.vec; resource struct R { v: i64 }"
+        " fn destroy(r: *R) -> void {}"
+        " fn main() -> int { let v = vec.new<R>(); let a = v.data[0]; return 0; }\n",
+        encoding="utf-8")
+    mortc.compile_files_to_c([str(source)])
+
+
+def test_the_owners_own_field_is_still_a_copy():
+    with pytest.raises(MortError, match="cannot be copied out of"):
+        _check_program(_OWNER + "fn f(o: O) -> void { let a = o.r; } fn main() -> int { return 0; }")
+
+
+_REPEATABLE = (
+    "resource struct R { v: i64 } fn destroy(r: *R) -> void { print((*r).v); } "
+    "struct H { r: R } fn eat(r: R) -> i64 { return 1; } "
+)
+
+
+@pytest.mark.parametrize("body", [
+    "let a = R { v: 1 }; let b = [a; 2];",
+    "let h = H { r: R { v: 1 } }; let b = [h.r; 2];",
+    "let a = R { v: 1 }; let b = [move a; 2];",
+    "let a = R { v: 1 }; let b = [H { r: move a }; 2];",
+    "let a = R { v: 1 }; let b = [eat(move a); 2];",
+    "let a = R { v: 1 }; let b: [R; 2] = [move a; 2];",
+])
+def test_an_array_repeat_cannot_duplicate_one_resource(body):
+    with pytest.raises(MortError, match="must be transferred|cannot be copied out of|array repeat"):
+        _check_program(_REPEATABLE + "fn main() -> int { " + body + " return 0; }")
+
+
+def test_an_array_repeat_of_a_fresh_resource_makes_one_per_element():
+    assert _run_program(
+        _REPEATABLE + "fn make() -> R { return R { v: 7 }; }"
+        " fn main() -> int { let b = [make(); 2]; return 0; }"
+    ).stdout == "7\n7\n"
+
+
+def test_a_copyable_array_repeat_may_still_use_move():
+    _check_program("fn main() -> int { let a = 1; let b = [move a; 2]; return 0; }")
+
+
+def test_command_line_usage_errors_exit_with_status_two():
+    assert _driver("--no-such-option").returncode == 2
+
+
+@pytest.mark.parametrize("pattern", [
+    r"\| 2 \|[^\n]*command line",
+    r"`free\(null\)` is a compile-time error",
+    r"parameters share the function body's outermost block",
+    r"`\.len`[^\n]*`u64`",
+    r"`\.data`",
+    r"once per element",
+])
+def test_the_specification_states_the_reviewed_rule(pattern):
+    assert re.search(pattern, SPEC_TEXT), pattern
+
+
+# The fix/frontend-crashes branch rewrites these lookaheads with a split_shr flag
+# and passes split_shr=False for struct literals. These parse-only cases hold the
+# required behaviour: every lookahead counts '>>' as two closes and stops at a
+# brace, whichever way it is implemented.
+@pytest.mark.parametrize("source", [
+    "fn f() { let a = B<B<i64>> { v: 1 }; }",
+    "fn f() { let a = A<B<C<i64>>> { v: 1 }; }",
+    "fn f() { let a = E<F<i64>>.V(1); g<H<i64>>(1); }",
+    "fn f() { if a < b { if c > (d) {} } }",
+    "fn f() { if a < b { g(); } else if c > (d) {} }",
+])
+def test_generic_lookaheads_required_behaviour(source):
+    assert parser_verdict(source) == "accept"
+    assert SyntaxGrammar(SPEC_TEXT).accepts(lex(source)) is True
