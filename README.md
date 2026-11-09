@@ -63,10 +63,11 @@ mortc: wrote fib
 34
 ```
 
-## 60-second quickstart
+## Quickstart
 
 You need [uv](https://docs.astral.sh/uv/) and Git. No C compiler is required:
-the `dev` extra installs Zig's.
+the `dev` extra installs Zig's. The commands below took 128 seconds from a fresh
+clone on a busy Windows machine, most of it downloading the toolchain.
 
 ```bash
 git clone https://github.com/0xmortuex/Mort.git
