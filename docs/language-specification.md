@@ -464,7 +464,8 @@ the programmer's responsibility in Mort 0.41.
 `[T; N]` is a fixed array of `N` values. `N` is a positive integer literal.
 Arrays have value semantics except that assigning a whole array is not
 supported. `[]T` is a mutable slice and `[]const T` is a read-only slice. A
-slice contains a pointer and a `u64` length.
+slice contains a pointer and a `u64` length, read as fields: `.len` has type `u64`,
+and `.data` has type `*T`, or `*const T` for a `[]const T`.
 
 `(T, U, ...)` is a structural tuple with at least two elements. Tuple fields
 are selected by zero-based decimal fields such as `.0`.
@@ -1702,8 +1703,9 @@ fn main() -> int { return f(); }
 Top-level functions, globals, structs, enums and aliases are visible throughout a
 program, in any source order. Functions and globals share one namespace with each other;
 a function may not reuse the name of a builtin. A local may shadow a global, or a
-binding of an enclosing block, but not a binding of its own block or a parameter of
-its own function. A test block is always type checked, even outside `mortc test`.
+binding of an enclosing block, but not a binding of its own block. Function
+parameters share the function body's outermost block, so they can be shadowed only in a
+nested block. A test block is always type checked, even outside `mortc test`.
 
 A call's path selects, in this order:
 
@@ -1737,6 +1739,21 @@ fn main() -> int {
 fn g(x: i64) -> i64 { return x + 1; }
 struct H { cb: fn(i64) -> i64 }
 fn main() -> int { let h = H { cb: g }; return h.cb(1); }
+```
+
+```mort run
+fn f(a: i64) -> i64 { { let a = 2; print(a); } return a; }
+fn main() -> int { print(f(1)); return 0; }
+```
+
+```output
+2
+1
+```
+
+```mort reject="already declared in this scope"
+fn f(a: i64) -> i64 { let a = 2; return a; }
+fn main() -> int { return f(1); }
 ```
 
 ```mort reject="is not callable"
@@ -1883,6 +1900,21 @@ fn main() -> int { let p = &1; return 0; }
 fn main() -> int { let a = 1; let p = &a; let q = p + 1; return 0; }
 ```
 
+```mort run
+fn main() -> int {
+    let a = [4, 5];
+    let s = slice(&a[0], 2);
+    print(s.len as i64);
+    print(s.data[1]);
+    return 0;
+}
+```
+
+```output
+2
+5
+```
+
 ```mort reject="cannot access a field through a pointer"
 struct P { x: i64 }
 fn main() -> int { let p = P { x: 1 }; let q = &p; return q.x; }
@@ -1979,7 +2011,8 @@ everything else about the relative order of subexpressions is unspecified, as se
    evaluates its bounds exactly once, before the first iteration.
 6. A compound assignment evaluates its target once and before its right operand. A
    plain assignment's two sides are unordered.
-7. An array repeat `[e; N]` evaluates `e` once per element.
+7. An array repeat `[e; N]` evaluates `e` once per element, so `e` may not name or
+   move a resource (section 21.3).
 
 ```mort run
 fn t(x: i64) -> i64 { print(x); return x; }
@@ -2034,8 +2067,21 @@ An object has no address separate from its storage. Automatic storage is not ini
 by the language beyond the required initializer, so every local has a value when it comes
 into scope, but memory from `alloc` is uninitialised and must be written before it is read
 at a given type. String literal storage is writable, and every evaluation of one literal occurrence
-yields the same object. `alloc` may return a null pointer on failure, and the language does not check it;
-`free(null)` is a no-op.
+yields the same object. `alloc` may return a null pointer on failure, and the language does not check it.
+Freeing a pointer whose value is null is a no-op. The bare literal has no pointer type, so
+`free(null)` is a compile-time error.
+
+```mort run
+fn main() -> int { let p: *void = null; free(p); print(1); return 0; }
+```
+
+```output
+1
+```
+
+```mort reject="free expects a pointer, got null"
+fn main() -> int { free(null); return 0; }
+```
 
 ### 21.2 Value semantics
 
@@ -2088,12 +2134,15 @@ A named resource must be transferred with `move`. Applied to a binding that is n
 resource-bearing, `move x` is a plain copy and `x` stays usable.
 
 A resource cannot be overwritten by assignment, stored in a global, or copied out of a
-field or element of its owner. The field or element of a resource-bearing binding
+field or element held by value in its owner. An array repeat evaluates its value once per
+element, so that value may create a fresh resource but may not name or move an existing one.
+The field or element of a resource-bearing binding
 cannot be moved on its own: the whole owner moves, or a `match move` transfers an
 active payload.
 
 Raw storage is not tracked. A resource read through `*p` or `p[i]`, or assigned there,
-copies bytes with no ownership effect. The programmer must then arrange for each
+copies bytes with no ownership effect, and this holds when the pointer or slice is itself
+a field of a resource-bearing owner. The programmer must then arrange for each
 value to be destroyed once.
 
 ```mort run
@@ -2171,6 +2220,24 @@ resource struct R { v: i64 }
 fn destroy(r: *R) -> void {}
 struct H { r: R }
 fn main() -> int { let h = H { r: R { v: 1 } }; let a = move h.r; return 0; }
+```
+
+```mort reject="once per element"
+resource struct R { v: i64 }
+fn destroy(r: *R) -> void {}
+fn main() -> int { let a = R { v: 1 }; let b = [move a; 2]; return 0; }
+```
+
+```mort run
+resource struct R { v: i64 }
+fn destroy(r: *R) -> void { print((*r).v); }
+fn make() -> R { return R { v: 7 }; }
+fn main() -> int { let b = [make(); 2]; return 0; }
+```
+
+```output
+7
+7
 ```
 
 ```mort reject="cannot overwrite a resource binding"
@@ -2383,8 +2450,8 @@ known, a line, and a reason. The reference driver `mortc` exits with:
 | Status | Meaning |
 | --- | --- |
 | 0 | compilation, or `--check`, succeeded |
-| 1 | a Mort diagnostic, a failed C backend, or a usage error |
-| 2 | no C compiler was found (generated C is written to disk) |
+| 1 | a Mort diagnostic, a failed C backend, or an invalid combination of options |
+| 2 | the command line could not be parsed, or no C compiler was found (generated C is written to disk) |
 
 Warnings, such as an unused binding, do not change the status unless `--deny-warnings`
 is given.

@@ -19,6 +19,9 @@ Commit hashes below are on branch `docs/spec`.
 | 6 | A variant named by two arms was accepted | Bug. The spec already called this a compile-time error | `ac2ae7b` |
 | 7 | `==` on arrays compared addresses silently, and on slices failed in C | Bug. The spec defines no aggregate equality | `dfbfc56` |
 | 7a | A `match` on a function value passed the checker and then failed in C | Bug. The same declaration spelling as the match binding fix | `d9f06f1` |
+| 7b | The rule from #3 also rejected reads through a raw pointer or slice held in an owner, such as `o.items[0]` and `v.data[0]` on `Vec<R>` | Bug in #3. Only a chain that stays inside the binding's storage is a copy of it | `20ad8ec` |
+| 7c | `[a; 2]`, `[h.r; 2]` and `[move a; 2]` compiled and destroyed one resource several times | Bug. The value is evaluated once per element, so it may create a fresh resource but not name or move one | `ae4c407` |
+| 7d | The self-hosted parser kept the old lookaheads after #1 and #2 | Bug. Both parsers now share one lookahead rule, and the Python parser stops at braces in all three lookaheads, as section 3.3 states | `4a75dd8` |
 
 ## Document changed
 
@@ -39,6 +42,10 @@ Commit hashes below are on branch `docs/spec`.
 | 20 | A discarded resource-bearing value is leaked, with no diagnostic | Stated in section 21.4. A leak is not unsafe. A lint belongs with future warnings work |
 | 21 | Character literals were described as untyped | They are `u8` literals that adopt a type, like integer literals |
 | 22 | Traits were expected among the type rules | Mort has none. Section 19.5 says so, and generic bodies are checked per instantiation |
+| 26 | Usage errors were documented as status 1, but argument parsing exits 2 | Corrected, section 22.1. Invalid option combinations that the driver checks itself exit 1 |
+| 27 | `free(null)` was documented as a no-op | A null-valued pointer is. The literal has no pointer type and is rejected, section 21.1 |
+| 28 | Shadowing a parameter was documented as forbidden | Only in the function's outermost block, which parameters share. Section 19.7 |
+| 29 | Slice `.len` and `.data` were undocumented | Documented, section 4.2 |
 
 ## Known gaps left open
 
