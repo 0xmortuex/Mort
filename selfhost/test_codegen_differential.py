@@ -450,7 +450,7 @@ def test_defer_replay_stays_within_memory(cg_exe, tmp_path):
 
 
 def test_reversed_struct_chain_agrees(cg_exe, tmp_path):
-    count = 1500
+    count = 600  # inside the frame budget; test_long_reversed_chain covers past it
     decls = "".join(f"struct S{i} {{ a: S{i + 1} }}\n" for i in range(count))
     source = f"{decls}struct S{count} {{ x: i64 }}\nfn main() -> int {{ return 0; }}\n"
     assert agree(cg_exe, tmp_path, source) == "ok"
