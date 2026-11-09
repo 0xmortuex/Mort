@@ -8,9 +8,11 @@ Every expected value comes from running the real Python checker; see
 py_check_dump.py for the dump format and for what is compared when the Python
 checker stops on an error only the type phase (T5) can see.
 """
+import functools
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -938,6 +940,80 @@ def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
                 ": error: source nesting exceeds the compiler safety limit")
         else:
             assert code == 0, stderr
+
+
+# The exact diagnostic of the real compiler at its limit: which node holds
+# `current_node` when the budget runs out depends on the order of the walks.
+TYPE_SHAPES = {
+    "fn_type": lambda n: "fn(" * n + "u8" + ") -> u8" * n,
+    "tuple_type": lambda n: "(u8, " * n + "u8" + ")" * n,
+    "generic_struct": lambda n: "G<" * n + "u8" + ">" * n,
+    "pointer_type": lambda n: "*" * n + "u8",
+}
+FORMAT_MAIN = OK_MAIN.replace("{", "{{").replace("}", "}}")
+TYPE_PLACES = {
+    "param": "struct G<T> {{ a: *T }}\nfn g(a: {}) -> i64 {{\nlet b = 1 + 1;\nreturn 1 + 2;\n}}\n" + FORMAT_MAIN,
+    "return": "struct G<T> {{ a: *T }}\nfn g() -> {} {{\nlet b = 1 + 1;\nreturn 1 + 2;\n}}\n" + FORMAT_MAIN,
+    "field": "struct G<T> {{ a: *T }}\nstruct P {{ a: {} }}\nfn g() {{\nlet b = 1 + 1;\n}}\n" + FORMAT_MAIN,
+    "let": "struct G<T> {{ a: *T }}\nfn main() -> int {{\nlet a: {} = 0;\nreturn 1 + 2;\n}}\n",
+}
+
+
+def _main_with(body):
+    return f"fn f(a: i64) -> i64 {{ return a; }}\nfn main() -> int {{\n{body}\nreturn 0;\n}}\n"
+
+
+EXACT_SHAPES = {
+    f"{kind}_in_{place}": (lambda n, kind=kind, place=place:
+                           TYPE_PLACES[place].format(TYPE_SHAPES[kind](n)))
+    for kind in TYPE_SHAPES for place in TYPE_PLACES
+}
+EXACT_SHAPES.update({
+    "left_deep": lambda n: _main_with("let x = 1" + " + 1" * n + ";"),
+    "right_deep": lambda n: _main_with("let x = " + "1 + (" * n + "1" + ")" * n + ";"),
+    "unary": lambda n: _main_with("let x = " + "-" * n + "1;"),
+    "call_args": lambda n: _main_with("let x = " + "f(" * n + "1" + ")" * n + ";"),
+    "nested_blocks": lambda n: _main_with("{ " * n + "let y = 1;" + " }" * n),
+    "nested_ifs": lambda n: _main_with("if true { " * n + "let y = 1;" + " }" * n),
+    "field_chain": lambda n: (
+        "struct N { next: *N }\nfn main() -> int {\nlet s = N { next: 0 as *N };\n"
+        "let x = s" + ".next" * n + ";\nreturn 0;\n}\n"),
+    "index_chain": lambda n: _main_with("let a = [1, 2];\nlet x = a" + "[0]" * n + ";"),
+})
+
+
+@functools.cache
+def _mortc_first_rejected(shape):
+    """The smallest nesting `mortc.py --check` rejects as too deep."""
+    def too_deep(n):
+        return "nesting exceeds" in mortc_check(directory, EXACT_SHAPES[shape](n))[1]
+
+    with tempfile.TemporaryDirectory(prefix="mort-limit-") as name:
+        directory = Path(name)
+        low, high = 1, 8
+        while not too_deep(high):
+            low, high = high, high * 2
+            assert high <= 8192, shape
+        while high - low > 1:
+            middle = (low + high) // 2
+            if too_deep(middle):
+                high = middle
+            else:
+                low = middle
+    return high
+
+
+@pytest.mark.parametrize(
+    "shape,offset", [(name, offset) for name in sorted(EXACT_SHAPES) for offset in (-1, 0, 1)])
+def test_diagnostic_at_the_limit_matches_mortc(check_exe, tmp_path, shape, offset):
+    """Offset 0 is the first nesting `mortc.py --check` rejects as too deep."""
+    source = EXACT_SHAPES[shape](_mortc_first_rejected(shape) + offset)
+    python_code, python_error = mortc_check(tmp_path, source)
+    path = tmp_path / "input.mx"
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert (code != 0) == (python_code != 0), (python_error, stderr)
+    if python_code != 0:
+        assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
 
 
 def test_alias_depth_error_uses_the_first_token_column(check_exe, tmp_path):
