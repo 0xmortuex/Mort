@@ -573,13 +573,13 @@ def test_invalid_test_block_is_rejected_when_hosted(check_exe, tmp_path):
     assert assert_source_agrees(check_exe, tmp_path, source, mode="freestanding") == "error"
 
 
-def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024):
+def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024, extra=()):
     """Run the Mort checker under a hard memory limit: past it, allocation
     fails and the checker exits 2 instead of taking the machine down."""
     manifest = tmp_path / "manifest.txt"
     manifest.write_bytes(manifest_text.encode("utf-8"))
     out = tmp_path / "out.txt"
-    command = [str(exe), str(manifest), str(out)]
+    command = [str(exe), str(manifest), str(out), *map(str, extra)]
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
@@ -708,21 +708,27 @@ def test_generic_work_budget_is_enforced(check_exe, tmp_path):
         152, GENERIC_WORK_EXCEEDED)
 
 
-@pytest.mark.parametrize("initialiser,column", [("null", 3), ("f()", 33)], ids=["statement", "call"])
-def test_body_budget_is_located_as_python_locates_it(check_exe, tmp_path, initialiser, column):
+@pytest.mark.parametrize(
+    "first,repeated,count",
+    [("", "let a{i}: *(A12, A12, T{i}) = null;", 600),
+     ("let f: fn() -> *(A12, A12) = null;", "f();", 6000)],
+    ids=["statement", "call"])
+def test_body_budget_is_located_as_python_locates_it(check_exe, tmp_path, first, repeated, count):
     """`_work_location`: a null has no column, so the statement's is used, and
-    a call reports its parenthesis. Which statement runs out is Mort's own until
-    T5 charges bodies as Python does (PLAN.md), so the line is measured here."""
-    count = 600
+    a call with no arguments reports its parenthesis. T5 charges bodies as Python
+    does, so which statement runs out, and where, come from the real checker."""
     source = (alias_chain(12, "({a}, {a})")
-              + "".join(f"struct T{i} {{ }}\n" for i in range(count))
-              + "fn f() -> i64 { return 0; }\nfn main() -> int {\n"
-              + "".join(f"  let a{i}: (A12, A12, T{i}) = {initialiser};\n" for i in range(count))
+              + "".join(f"struct T{i} {{ }}\n" for i in range(600))
+              + "fn main() -> int {\n  " + first + "\n"
+              + "".join("  " + repeated.format(i=i) + "\n" for i in range(count))
               + "  return 0;\n}\n")
     path = _written(tmp_path, source)
-    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    expected = py_check_dump.run_reference(path, "hosted", exact=True)
+    assert expected.outcome == "error", expected.error
+    assert TYPE_WORK_EXCEEDED in expected.error, expected.error
+    code, stderr = run_mort_bounded(check_exe, expected.manifest, tmp_path)
     assert code == 1, stderr
-    assert stderr.decode("utf-8") == f"{path}:806:{column}: error: {TYPE_WORK_EXCEEDED}"
+    assert stderr.decode("utf-8") == expected.error
 
 
 def test_generic_enum_work_budget_is_enforced(check_exe, tmp_path):

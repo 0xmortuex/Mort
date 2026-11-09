@@ -94,6 +94,14 @@ struct Node {
     name_col: u64,
     col: u64,
     paren_col: u64,
+    // Set by the checker (mort/typechecker.py's node attributes): `.type`, or
+    // NO_TEXT; `.is_lit`; `.const_val` as a *BigInt, null for None; and
+    // resolved_function on VAR and FIELD_ACCESS. Rarer results are a *Facts.
+    etype: u64,
+    is_lit: bool,
+    cv: *void,
+    resolved_fn: u64,
+    facts: *void,
 }
 
 fn ast_new(kind: NodeKind, line: u64) -> *Node {
@@ -104,7 +112,8 @@ fn ast_new(kind: NodeKind, line: u64) -> *Node {
         items: 0 as *PtrVec, names: 0 as *U64Vec, name_line: 0, name_col: 0,
         file: NO_TEXT, mod_name: NO_TEXT, symbol: NO_TEXT,
         import_aliases: 0 as *Map,
-        col: 0, paren_col: 0,
+        col: 0, paren_col: 0, etype: NO_TEXT, is_lit: false, cv: 0 as *void,
+        resolved_fn: NO_TEXT, facts: 0 as *void,
     };
     return node;
 }
