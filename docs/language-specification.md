@@ -85,7 +85,7 @@ Integer literals have arbitrary precision during checking:
 Separators may occur only between digits. A prefixed literal must contain at
 least one digit. Integer literals are initially untyped and adopt an integer
 type from context. A literal value that does not fit that type is a compile-time
-error.
+error. Section 11 limits literal and constant size in the reference implementation.
 
 Floating literals use decimal notation with an optional fraction and exponent,
 for example `1.5`, `2e3`, or `6.02e+23`. They initially have type `f64`, may
@@ -247,7 +247,9 @@ the unsigned 64-bit range so the same source checks on LLP64 and LP64 hosts.
 
 `*T` is a mutable pointer to `T`; `*const T` is a pointer through which `T`
 cannot be modified. Pointer validity, alignment, provenance, and lifetime are
-the programmer's responsibility in Mort 0.41.
+the programmer's responsibility in Mort 0.41. A pointer type `*T` where `T` is
+an array type is rejected, as is `&a` where `a` has an array type, unless it is
+immediately cast, as in `&a as *u8`; use `&a[0]` to point at the first element.
 
 `[T; N]` is a fixed array of `N` values. `N` is a non-negative integer literal.
 Arrays have value semantics except that assigning a whole array is not
@@ -571,6 +573,30 @@ are outside Mort 0.41's safety guarantees.
 An implementation must document supported targets and backend prerequisites.
 Mort 0.41's reference implementation emits C11, but C is not part of the
 language semantics and another backend may be conforming.
+
+The reference implementation reports a located diagnostic when a program
+exceeds any of these limits:
+
+- A program may create at most 16384 generic function instantiations.
+- Compiling a program may cost at most 1000000 work units in total. Instantiating a function costs 8 units per syntax tree
+  node, and a generic struct or enum 8 units per field or payload plus 8. Each
+  operation that scans, copies, substitutes or mangles a type also costs that
+  type's length in characters divided by 64 (rounded down), each time it runs,
+  and walks over dependencies and bindings cost what they visit.
+- Replaying deferred statements and resource cleanup at each exit may cost at
+  most 48000000 units of deferred code in one program, separately from the
+  limit above: each replay costs one unit per character of generated C plus 32
+  units per syntax tree node.
+- A type the compiler constructs, by substitution, an expression or an alias,
+  must not be longer than 65536 characters, whether or not generics are used.
+- A generic function's type argument must not be nested more than 256 type
+  constructors deep, and must not be longer than 4096 characters when spelled
+  in canonical form.
+- An integer literal may have at most 4300 digits, counted after any base
+  prefix, excluding `_` separators and including leading zeros.
+- A binary operator folded during checking must not produce a constant whose
+  magnitude needs more than 262144 bits, even if a later operation would reduce
+  it.
 
 Portable Mort source must not depend on:
 

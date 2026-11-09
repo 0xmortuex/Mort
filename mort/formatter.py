@@ -1,4 +1,5 @@
 """A conservative, comment-preserving formatter for Mort source files."""
+from .lexer import decode_source
 
 
 def _brace_delta(line, block_depth=0):
@@ -76,8 +77,8 @@ def format_source(source):
 
 
 def format_file(path, check=False):
-    with open(path, "r", encoding="utf-8") as handle:
-        original = handle.read()
+    with open(path, "rb") as handle:
+        original = decode_source(handle.read(), path)
     formatted = format_source(original)
     changed = formatted != original
     if changed and not check:

@@ -389,16 +389,19 @@ carries over: the checker's logic is far less mechanical.
 - Dump format: defined at the top of `py_ast_dump.py`. One line per node with no
   indentation, so a deep tree stays linear in size. Fields the checker fills in
   are excluded, and the dumper asserts they still hold their initial values.
-- Positions: `line`, plus `Call.name_pos` (line and column of the callee), because
-  that is all the Python AST records.
-- Diagnostics equal `MortError.format()` byte for byte, including Python's `repr`
-  of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
+- Positions are compared wherever the Python AST has them: `line`, `col` (on
+  every node class, `none` unless the parser set it: `Let`, `IntLit`, `CharLit`,
+  `Unary`, `Binary`, `ArrayRepeat`), `Call.paren_col` and `Call.name_pos`.
+- Diagnostics equal `MortError.format()` byte for byte, including the line and
+  column of every parse error, the invalid UTF-8 byte and position from
+  `decode_source`, the array size limit, and Python's `repr` of a token's value. Floats use dtoa's mode 0 digit loop on exact integers
   (`float_repr_main.mx` checks it against Python in bulk); no `f64`, no `strtod`.
   The first error exits 1 with no dump.
 - Depth: `MAX_NESTING` (1000) counts entries to the five recursive rules (types,
   expressions, unary, blocks, `if`). Python's own limit is a side effect of its
-  frame count, so the reference is the unmodified Python parser plus the same
-  counter (`GuardedParser`). Message and line match. Measured limits of the
+  frame count, so the reference is the Python parser plus the same counter
+  (`GuardedParser`). Message, line and column match, the column being the one
+  `mortc.py` reports when the Python parser runs out of stack. Measured limits of the
   unguarded Python parser: 65 nested parentheses, 497 blocks, 993 pointer stars,
   975 unary operators, all within 1000 units, so this rejects nothing it accepts.
   Measured C stack margin on Windows, worst shape: 16892 units at `-O2`, 7932 at
@@ -411,11 +414,11 @@ carries over: the checker's logic is far less mechanical.
 For T4: **chains make left-deep trees of any depth, so a recursive checker over
 the AST will overflow the C stack.** It needs an AST-depth check or iteration.
 
-Reconciling with `fix/frontend-crashes` (not merged here): it adds a `col` to
-parser diagnostics and to some nodes, an AST-depth rejection (`_check_nesting`,
-cost 800) and a located nesting error. On merge, the Mort parser must add
-columns and that check, and `GuardedParser` should be dropped or reduced. The
-dump's reflection will flag the new fields by itself, as a mismatch.
+Reconciled with `fix/frontend-crashes`: the Mort parser now records the same
+columns on diagnostics and nodes as the Python parser and enforces the array size
+limit. That branch's AST-depth check (`_check_nesting`) did not survive to its
+merge: nesting there is the located `RecursionError` path in `mortc.py`, so
+`GuardedParser` stays as the fixed limit and only gained the column.
 
 ## 12. Generator status (T2c)
 
