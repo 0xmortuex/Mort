@@ -10,6 +10,175 @@
   MMIO stores and poll loops; these accesses are not elided or reordered
   relative to each other. Specified in section 7.4 of the language
   specification.
+- `eprintln(text)` writes to stderr; `arg_count()` and `arg_get(index)` read the
+  command line, and an out-of-range index is a located runtime error.
+
+### Changed: front-end limits
+
+Hostile or malformed input now gets a located diagnostic instead of a crash or a
+hang. These limits are in section 11 of the language specification:
+
+- Integer literals have at most 4300 digits in any base.
+- A folded constant needs at most 262144 bits.
+- A type the compiler constructs is at most 65536 characters long.
+- A program creates at most 16384 generic function instantiations, and a generic
+  type argument is at most 256 constructors deep and 4096 characters long.
+- Compiling a program costs at most 1000000 work units, and replaying deferred
+  statements and cleanup at most a separate 48000000 units.
+
+### Fixed
+
+- The checker rejects out-of-range integer literals, `==` and `!=` on `void`
+  values, pointer-to-array types, array types nested where the C backend has no
+  form for them, and type arguments on non-generic builtins.
+- Invalid UTF-8 source, over-deep nesting, oversized literals and array-repeat
+  expansion report located diagnostics. Every parser diagnostic has a column.
+- Generics instantiated from `test` blocks are checked.
+- Generic-argument lookahead is linear, and branch snapshots are no longer
+  quadratic.
+- The fuzzer covers these crash and hang classes.
+
+### Self-hosting (incomplete)
+
+**Mort does not compile itself.** `selfhost/` holds a compiler being written in
+Mort, tested by comparing its output with the Python compiler's. See
+`selfhost/PLAN.md`. Merged so far:
+
+- The lexer, with a differential test against `mort/lexer.py`.
+- `support.mx` (checked allocation, buffers, vectors, a hash map, a string
+  interner, located diagnostics) and `bignum.mx` (arbitrary-precision integers).
+- The parser and flat AST, with a differential test against `mort/parser.py`.
+- A seeded generator of valid programs for those tests.
+
+The checker, the C code generator and the driver are not merged, so there is no
+stage-1 compiler and no bootstrap yet.
+
+## 0.55.0 to 0.137.0 - 2026-08-03 to 2026-11-08
+
+Almost entirely standard-library additions, one version per addition, each
+continuing to implement the unchanged Mort 0.41 language contract. Grouped by
+module; each entry gives its version and date. The newest version tag is
+`v0.45.0`, so these versions, like 0.46.0 to 0.54.0, exist only as commits.
+
+### `std.algorithm`
+
+- 0.95.0 (2026-09-22): std.algorithm.min and max, the slice-level counterparts to std.math.min/max.
+- 0.99.0 (2026-09-26): std.algorithm.dedup, the slice-level counterpart to std.vec.dedup.
+- 0.104.0 (2026-10-02): std.algorithm.find_by, predicate-based slice search.
+- 0.124.0 (2026-10-26): std.algorithm.any/all, predicate checks over a slice.
+- 0.129.0 (2026-10-31): std.algorithm.count and std.vec.count predicate tallies.
+- 0.131.0 (2026-11-02): std.algorithm.min_by/max_by, comparator-taking extrema over a slice.
+- 0.137.0 (2026-11-08): std.algorithm.rotate_left/rotate_right, bare-slice counterparts to std.vec's rotate.
+
+### `std.ascii`
+
+- 0.102.0 (2026-09-30): std.ascii.is_alnum, is_upper, is_lower.
+- 0.103.0 (2026-10-01): std.ascii.is_print and is_punct.
+- 0.108.0 (2026-10-06): std.ascii.is_hex_digit, a 0-9/a-f/A-F predicate.
+
+### `std.bytes`
+
+- 0.78.0 (2026-09-01): std.bytes.to_hex/from_hex, arbitrary-length hex encode/decode.
+- 0.127.0 (2026-10-29): std.bytes.compare, lexicographic ordering of two byte buffers.
+- 0.128.0 (2026-10-30): std.bytes.xor, byte-wise XOR of two buffers into a destination.
+- 0.132.0 (2026-11-03): std.bytes.and/or, bitwise AND/OR counterparts to xor.
+- 0.136.0 (2026-11-07): std.bytes.not, bitwise-complement counterpart to xor/and/or.
+
+### `std.map`
+
+- 0.58.0 (2026-08-09): std.map.remove, filling the missing key-deletion gap.
+- 0.65.0 (2026-08-16): std.map.key_at / value_at for indexed entry enumeration.
+- 0.68.0 (2026-08-19): std.map.find_by, predicate-based entry search.
+- 0.93.0 (2026-09-19): std.map.get_ref, a pointer to the live value slot.
+- 0.110.0 (2026-10-08): std.map.keys and std.map.values.
+
+### `std.math`
+
+- 0.81.0 (2026-09-04): std.math.lcm, the least-common-multiple counterpart to gcd.
+- 0.84.0 (2026-09-07): std.math.sign and is_power_of_two, small generic numeric predicates.
+- 0.126.0 (2026-10-28): std.math.is_even/is_odd, parity checks over a generic numeric T.
+
+### `std.option`
+
+- 0.85.0 (2026-09-09): std.option.is_some/is_none/unwrap_or.
+- 0.87.0 (2026-09-11): std.option.map, applying a function to a Some payload.
+- 0.91.0 (2026-09-17): std.option.unwrap_or_else and std.result.unwrap_or_else.
+- 0.106.0 (2026-10-04): std.option.and_then, the flat-map counterpart to map.
+- 0.113.0 (2026-10-12): std.option.filter, keep Some only if a predicate holds.
+- 0.117.0 (2026-10-16): std.option.or_else, None-side counterpart to and_then.
+- 0.118.0 (2026-10-17): std.option.and, eager counterpart to and_then.
+- 0.119.0 (2026-10-18): std.option.or and std.result.and/or, eager and/or-else counterparts.
+- 0.120.0 (2026-10-19): std.option.take and std.option.replace, pointer-based mutators.
+
+### `std.owned_string`
+
+- 0.122.0 (2026-10-21): std.owned_string.from_slice, build an owned String from any slice.
+- 0.123.0 (2026-10-22): std.owned_string.append, grow an owned String in place.
+
+### `std.result`
+
+- 0.86.0 (2026-09-10): std.result.is_ok/is_err/unwrap_or.
+- 0.88.0 (2026-09-13): std.result.map, applying a function to an Ok payload.
+- 0.89.0 (2026-09-14): std.result.map_err, the error-side counterpart to map.
+- 0.90.0 (2026-09-15): std.result.ok and std.option.ok_or, converting between the two enums.
+- 0.107.0 (2026-10-05): std.result.and_then, the flat-map counterpart to map.
+- 0.115.0 (2026-10-14): std.result.or_else, error-side recovery counterpart to and_then.
+- 0.116.0 (2026-10-15): std.result.err, error-side counterpart to ok.
+- 0.121.0 (2026-10-20): std.result.replace, pointer-based mutator.
+
+### `std.sort`
+
+- 0.100.0 (2026-09-27): examples/sort_struct.mx, demonstrating std.sort on a struct.
+
+### `std.strings`
+
+- 0.55.0 (2026-08-03): std.strings.replace for owned-buffer find/replace.
+- 0.56.0 (2026-08-07): std.strings.join, the inverse of split.
+- 0.57.0 (2026-08-08): std.strings.contains, a bool wrapper over index_of.
+- 0.61.0 (2026-08-12): std.strings.trim_start / trim_end, one-sided counterparts to trim.
+- 0.63.0 (2026-08-14): std.strings.repeat, text repeated count times.
+- 0.64.0 (2026-08-15): std.strings.last_index_of, the reverse counterpart to index_of.
+- 0.66.0 (2026-08-17): std.strings.split_once, borrowed-view split at first separator.
+- 0.67.0 (2026-08-18): std.strings.rsplit_once, the reverse counterpart to split_once.
+- 0.71.0 (2026-08-23): std.strings.count, non-overlapping occurrence counting.
+- 0.72.0 (2026-08-25): std.strings.from_u64 / from_i64, decimal int-to-string.
+- 0.74.0 (2026-08-28): std.strings.to_hex, decimal-to-hex counterpart.
+- 0.75.0 (2026-08-29): std.strings.parse_hex, to_hex's inverse.
+- 0.83.0 (2026-09-06): std.strings.is_empty, matching Vec/Map's is_empty predicate.
+- 0.92.0 (2026-09-18): std.strings.replacen, a count-limited variant of replace.
+- 0.96.0 (2026-09-23): std.strings.split_whitespace, splitting on whitespace runs.
+- 0.98.0 (2026-09-25): std.strings.lines, splitting text into lines on \n/\r\n.
+- 0.101.0 (2026-09-29): std.strings.to_upper and to_lower.
+- 0.105.0 (2026-10-03): std.strings.splitn, the count-limited counterpart to split.
+- 0.111.0 (2026-10-10): std.strings.strip_prefix and strip_suffix.
+- 0.112.0 (2026-10-11): std.strings.pad_start and pad_end.
+
+### `std.vec`
+
+- 0.59.0 (2026-08-10): std.vec.remove, the arbitrary-index counterpart to std.map.remove.
+- 0.60.0 (2026-08-11): std.vec.insert, the arbitrary-position counterpart to Vec.remove.
+- 0.62.0 (2026-08-13): std.vec.is_empty / std.map.is_empty convenience wrappers.
+- 0.69.0 (2026-08-20): std.vec.index_of / contains, membership check for Vec.
+- 0.70.0 (2026-08-21): std.vec.first / std.vec.last, peek at the ends without hand-rolled length math.
+- 0.73.0 (2026-08-26): std.vec.swap, in-place two-element exchange.
+- 0.76.0 (2026-08-30): std.vec.reverse, in-place reversal built on swap.
+- 0.77.0 (2026-08-31): std.vec.slice_reverse, reverse for bare []T slices.
+- 0.79.0 (2026-09-02): std.vec.rotate_left/rotate_right, in-place rotation via three reversals.
+- 0.80.0 (2026-09-03): std.vec.get_ref, a non-aliasing pointer accessor for resource elements.
+- 0.82.0 (2026-09-05): std.vec.dedup, in-place consecutive-duplicate collapsing.
+- 0.94.0 (2026-09-21): std.vec.truncate, shrinking a Vec down to at most N elements.
+- 0.97.0 (2026-09-24): std.vec.extend, bulk-appending a slice onto a Vec.
+- 0.109.0 (2026-10-07): std.vec.clone, a value-copying duplicate of a Vec.
+- 0.114.0 (2026-10-13): std.vec.swap_remove, O(1) remove-and-swap-last counterpart to remove.
+- 0.125.0 (2026-10-27): std.vec.any/all, predicate checks over a Vec.
+- 0.130.0 (2026-11-01): std.vec.find_by, predicate search wrapper over algorithm.find_by.
+- 0.133.0 (2026-11-04): std.vec.sort_by, comparator-sort wrapper over std.sort.sort.
+- 0.134.0 (2026-11-05): std.vec.min_by/max_by, comparator-extrema wrappers over std.algorithm.
+- 0.135.0 (2026-11-06): std.vec.min/max/sort, plain <-comparable wrappers over std.algorithm.
+
+### Fixes
+
+- 0.110.1 (2026-10-08): Fix freestanding builds pulling in the hosted runtime.
 
 ## 0.54.0 - 2026-08-01
 
