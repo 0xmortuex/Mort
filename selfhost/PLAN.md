@@ -210,7 +210,7 @@ measured data point.
 | T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | done |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | done |
-| T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
+| T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | 12 to 20 |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
@@ -580,3 +580,67 @@ instantiation, payload binding and module visibility. T4 and T5 should keep thei
 own targeted cases there, and widen these generator sections (or run with a larger
 `MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
 before relying on them.
+
+## 12. Type checker status (T5)
+
+`selfhost/check_expr.mx` (expressions, coercion, folding, statements, moves),
+`check_call.mx` (calls, generics, every builtin) and `check_dump.mx` (the checked
+dump). T4's walk in `checker.mx` is gone; declarations stay there. Time: about
+two hours elapsed by commit timestamps, including a pause for a usage limit,
+against 14 to 24 estimated, for the reason T4 gave: the
+checker ports line by line and the harness was already there. Most of the time
+went on the tests, not the port.
+
+- **Corrections to this plan.** T5's scope grew from the subset to the whole
+  language the Python checker handles, as T4's did. Generated programs and
+  `corpus.py` are on `main` and were not in T4's base; they were copied over.
+  `check_main` takes an optional third path for the checked dump, so T4's output
+  and its tests are unchanged.
+- **Dump.** `py_check_dump.checked_dump`: the post-check AST in `py_ast_dump`
+  format, each line followed by ` |` and every checker-set field (`type`,
+  `is_lit`, `const_val` on every node; `CHECKED_SUFFIX` for the rest), then the
+  drop table, warnings and final tables. It reads `vars(node)` reflectively, so
+  a new field shows up as a difference, and a test parses `mort/typechecker.py`
+  and fails if it assigns a node attribute the dump does not cover. A constant
+  above 256 bits prints as `~b<bits>:<fnv>` so the dump stays linear.
+- **Recursion.** Only the left spine (`Binary.left`, `Index.obj`, `Cast.expr`, a
+  `FieldAccess` on a non-variable) is unbounded, and it is walked with an explicit
+  stack. Everything else recurses within the parser's 1000 units. Measured with
+  that limit lifted, on Windows: stack overflow first at 8000 units at `-O0`
+  (nested calls and unary), 32000 at `-O2`, so the margin is 8x. Tests run every
+  recursive shape at the limit.
+- **Constants.** Folded bottom-up as a node finishes, so `_const_value`'s walk
+  disappears; it is pure, because a constant depends only on the literals under
+  it. `MAX_CONSTANT_BITS` is `main`'s check. Mort also charges work for every
+  retained constant (one unit per 1024 bits): without it, one huge value carried
+  along a 300,000-operand chain would store a huge value at every node. That
+  charge is Mort-only and cannot reject a program that does not fold over about
+  128 MB of constants.
+- **Hostile input.** Function instantiation follows `_instantiate_function` on
+  `main`: count, `size x 8` work, then 4096-character and 256-level limits at the
+  call, in that order. These tests run Mort alone under the 500 MB guard, because
+  Python on this base has no limits and cannot finish them.
+- **Deviation from the T4 base's Python, deliberately kept for now.** The base
+  accepts `let x: i64 = 1 << 2000` (an i64 literal passes `_coerce` unchecked);
+  the port does too, since it is compared with that Python.
+- **Vacuous pass found.** The expression cases first passed because the shared
+  prelude declared `destroy` twice, so all of them agreed on that one error.
+  `test_cases_exercise_the_checker` now requires at least 150 accepted programs,
+  200 rejections and no message on more than a tenth of the cases.
+- **Tests.** `test_checker_expr_differential.py` (1437 cases: every repo `.mx` in
+  three modes, the generated corpus, stubbed kernel, the compiler's own sources,
+  about 590 expression cases, function-level, modules, chains, hostile programs,
+  250 seeded source mutations). `test_checker_expr_mutants.py`: 43 planted bugs,
+  all caught.
+
+### Reconciled with `main`
+
+The merge of T4 and `fix/frontend-crashes` is done, and every case above now
+compares against that Python: columns from the parser (`Node.col`, `paren_col`),
+`literal_operand` and `_require_representable`, the literal case first in
+`_coerce`, `_value_str` in the shift and index messages, address-of-array, `void`
+and array or slice comparisons, `_valid_type` on a cast, resources in owned places
+and array repeats, duplicate match variants, `_valid_sizeof_type`, `current_statement`,
+and instances from test bodies. The base's defects recorded during T5 are gone with
+it: `1 << 2000` in an `i64` is rejected.
+

@@ -1,10 +1,10 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-330%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-1070%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
-**A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, no libraries.
+**A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, with no parser or compiler libraries. (The one runtime dependency, `cryptography`, verifies package-registry signatures.)
 
 **The proof it's a real language: an operating system written in it.** Here is [MORT OS](https://github.com/0xmortuex/MortOS) booting in QEMU, a graphical desktop with a terminal, file manager, browser and settings, all compiled by this compiler. You can [build and boot it yourself](https://github.com/0xmortuex/MortOS#try-it) with one command.
 
@@ -50,6 +50,7 @@ fn main() -> int {
 
 ```
 $ python mortc.py examples/fib.mx --run
+mortc: wrote fib
 0
 1
 1
@@ -61,6 +62,33 @@ $ python mortc.py examples/fib.mx --run
 21
 34
 ```
+
+## Quickstart
+
+You need [uv](https://docs.astral.sh/uv/) and Git. No C compiler is required:
+the `dev` extra installs Zig's. The commands below took 140 to 167 seconds from a
+fresh clone on a busy Windows machine: about 54 seconds in `uv sync` and about
+80 seconds in the first Zig runtime build.
+
+```bash
+git clone https://github.com/0xmortuex/Mort.git
+cd Mort
+uv sync --extra dev
+uv run mortc --version
+uv run mortc examples/fib.mx --run
+uv run mortc new hello
+cd hello
+uv run mortc run
+```
+
+Next, take the [language tour](docs/tour.md), where every program is compiled and
+run by the test suite. To work on the compiler, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+> **Self-hosting is incomplete.** Mort does not compile itself yet. A lexer,
+> parser, declaration checker and support libraries written in Mort are in
+> [`selfhost/`](selfhost/PLAN.md); expression checking, the code generator and the
+> driver are not merged.
 
 ## How it works
 
@@ -212,6 +240,8 @@ and a black-box [executable conformance suite](conformance/README.md). Run
 - **Hardware builtins:** the x86 port-I/O family
   (lowered to inline `in`/`out`): `outb`/`inb` (8-bit), `outw`/`inw` (16-bit),
   and `outl`/`inl` (32-bit, for PCI config space on ports `0xCF8`/`0xCFC`).
+- **Volatile memory access:** `volatile_read<T>(pointer)` and
+  `volatile_write<T>(pointer, value)` for `u8`..`u64` and `i8`..`i64`.
 - **Comments:** `// to end of line` and nestable `/* block comments */`.
 
 Everything is statically type-checked before a single line of C is emitted:
@@ -295,6 +325,7 @@ merges counters across test executables, and emits per-file executable and
 covered lines plus an aggregate percentage. `mortc bench` suppresses target
 output and records nanosecond samples in optional JSON. `mortc profile` writes
 standard Python `pstats` data for the complete compiler/build pipeline.
+[BENCHMARKS.md](BENCHMARKS.md) compares a checked workload suite against C.
 `mortc doc --format markdown|json` extracts deterministic module, function,
 generic, struct, resource, enum, type-alias, visibility, and source-location
 metadata without executing project code.
@@ -410,9 +441,13 @@ pip install ziglang        # Mort auto-detects and uses `python -m ziglang cc`
 ## Tests
 
 ```bash
-pip install pytest
-python -m pytest tests/ -v
+uv sync --extra dev
+uv run pytest tests/ -q
 ```
+
+Measured on Windows with the Zig backend at this revision: 1070 tests in `tests/`
+passed, 2108 in `selfhost/` passed and 1 skipped, and 31 of 31 conformance cases
+passed.
 
 Front-end tests (type checking, error messages, codegen) always run. The
 end-to-end tests compile each example to a real binary and check its output;

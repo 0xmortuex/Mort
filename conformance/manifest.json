@@ -218,6 +218,27 @@
       "args": ["--freestanding"],
       "sources": ["cases/reject/freestanding_print.mx"],
       "stderr_contains": "not available in freestanding mode"
+    },
+    {
+      "id": "diagnostic.duplicate_variant_arm",
+      "section": "19.6",
+      "mode": "reject",
+      "sources": ["cases/reject/duplicate_variant_arm.mx"],
+      "stderr_contains": "more than once"
+    },
+    {
+      "id": "diagnostic.resource_field_copy",
+      "section": "21.3",
+      "mode": "reject",
+      "sources": ["cases/reject/resource_field_copy.mx"],
+      "stderr_contains": "cannot be copied out of"
+    },
+    {
+      "id": "diagnostic.array_equality",
+      "section": "19.4",
+      "mode": "reject",
+      "sources": ["cases/reject/array_equality.mx"],
+      "stderr_contains": "cannot compare aggregate"
     }
   ]
 }

@@ -55,7 +55,7 @@ class Parser:
         # True while parsing an if/while condition: suppresses struct literals
         # so `if p {` is a block, not `if (p{...})`. Reset inside parentheses.
         self._no_struct_lit = False
-        self._angle_tables = {}
+        self._angle_table = None
 
     # ----- token helpers -----
     def _peek(self, offset=0):
@@ -719,17 +719,17 @@ class Parser:
             else:
                 return expr
 
-    def _angle_closes(self, split_shr):
+    def _angle_closes(self):
         """Map each '<' token index to the index of the token that closes it.
 
         Built once per token stream so lookahead stays linear: rescanning from
         every '<' made a long comparison chain quadratic. An angle is left out
-        when a ';' or end of input comes first, or when it is the inner angle
-        of a '>>' that overshoots it. Only tokens after a '<' decide its entry,
+        when a ';', a brace or end of input comes first, or when it is the inner
+        angle of a '>>' that overshoots it. Only tokens after a '<' decide its entry,
         so _expect_type_close splitting tokens behind the parser cannot stale it.
         """
-        if split_shr in self._angle_tables:
-            return self._angle_tables[split_shr]
+        if self._angle_table is not None:
+            return self._angle_table
         closes = {}
         open_angles = []
         for index, token in enumerate(self.toks):
@@ -738,18 +738,18 @@ class Parser:
             elif token.type == T.GT:
                 if open_angles:
                     closes[open_angles.pop()] = index
-            elif token.type == T.SHR and split_shr:
+            elif token.type == T.SHR:
                 if open_angles:
                     open_angles.pop()
                 if open_angles:
                     closes[open_angles.pop()] = index
-            elif token.type in (T.SEMI, T.EOF):
+            elif token.type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
                 open_angles.clear()
-        self._angle_tables[split_shr] = closes
+        self._angle_table = closes
         return closes
 
-    def _angle_closes_before(self, offset, follower, split_shr=True):
-        close = self._angle_closes(split_shr).get(self.i + offset)
+    def _angle_closes_before(self, offset, follower):
+        close = self._angle_closes().get(self.i + offset)
         return close is not None and self.toks[close + 1].type == follower
 
     def _looks_like_call_type_args(self):
@@ -849,7 +849,7 @@ class Parser:
         offset = 1
         if self._peek(offset).type != T.LT:
             return self._peek(offset).type == T.LBRACE
-        return self._angle_closes_before(offset, T.LBRACE, split_shr=False)
+        return self._angle_closes_before(offset, T.LBRACE)
 
     def _looks_like_generic_qualifier(self):
         if self._peek().type != T.IDENT or self._peek(1).type != T.LT:

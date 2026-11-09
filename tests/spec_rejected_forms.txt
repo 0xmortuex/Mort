@@ -1,0 +1,100 @@
+// Programs both the parser and the grammar must reject.
+fn f(a: i64,) {}
+fn f() { g(1,); }
+fn f<T,>() {}
+fn f() { let x: V<i64,> = y; }
+module a; module b;
+fn f() {} module a;
+pub struct S {}
+pub let a = 1;
+resource fn f() {}
+extern fn f<T>();
+extern fn f(a: i64, ...);
+extern let a: i64;
+trait T {}
+fn f() { (a,); }
+fn f(a: (i64,)) {}
+fn f() { []; }
+fn f() { let a = [1; n]; }
+fn f(a: [i64; n]) {}
+fn f() { if P { x: 1 }.x == 1 {} }
+fn f() { while g(P { x: 1 }) {} }
+fn f() { match P { x: 1 } {} }
+fn f() { for i in P { x: 1 }.x..2 {} }
+fn f() { let a: i64<u8> = 1; }
+fn f(a: fn(i64)) {}
+fn f() { x as T < 3; }
+fn f() { defer (x = 2); }
+fn f() { let a = 1 }
+fn f() { if a { } else b; }
+fn f() { asm(1); }
+fn f() { _ + 1 => {}; }
+fn f() { let x: A<B<i64>>= y; }
+fn f() { let a; }
+let a;
+const a: i64;
+fn f() { let v = P { a = 1 }; }
+fn f() { let v = P { a }; }
+fn f() { let v = P { a : 1 b : 2 }; }
+fn f() { match a { b } }
+fn f() { match a { b => c; } }
+fn f() { x[]; }
+fn f() { x[1, 2]; }
+fn f() { x.; }
+fn f() { x.*; }
+fn f() { for i 0..1 {} }
+fn f() { for i in 0 {} }
+fn f() { for i in 0..1; }
+fn f() { while {} }
+fn f() { if {} }
+fn f() { loop; }
+fn f() { return 1 2; }
+fn f() { break 1; }
+fn f() { continue 1; }
+fn f() { defer; }
+struct S { a }
+struct S { a: }
+struct S { a i64 }
+struct S<> {}
+enum E { A() }
+enum E { A(i64,) }
+fn f(a) {}
+fn f(: i64) {}
+fn () {}
+fn f {}
+fn f() -> {}
+type A;
+type = i64;
+import;
+import a.;
+import a as;
+module;
+test {}
+test "t";
+fn f(a: [i64]) {}
+fn f(a: [; 2]) {}
+fn f(a: *) {}
+fn f(a: fn() ->) {}
+fn f(a: T<>) {}
+fn f() { let x = 1 +; }
+fn f() { let x = * ; }
+fn f() { let x = 1 as; }
+fn f() { f(; }
+fn f() { let x = [1; 2, 3]; }
+fn f() { x += ; }
+fn f() { x = = 1; }
+fn f() { while x }
+fn f() { loop }
+fn f() { for i in 0..1 }
+fn f() { if x }
+fn f() { if x { } else }
+fn f() { match x }
+test "t"
+fn f()
+fn f() { let x = 1;
+struct S
+enum E
+fn f() { { }
+fn f() { if x { } else if }
+fn f() { match a { _ + 1 => { } } }
+fn f() { match a { _ . b => { } } }

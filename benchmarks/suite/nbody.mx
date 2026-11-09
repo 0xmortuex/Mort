@@ -1,0 +1,90 @@
+// N-body simulation of the Jovian planets (Benchmarks Game): floats and pointer indexing.
+// Prints the energy before and after as integers scaled by 1e9, so results compare exactly.
+import std.strings;
+import std.option;
+
+extern fn sqrt(value: f64) -> f64;
+
+fn size() -> u64 {
+    let text: *u8 = arg_get(1);
+    match strings.parse_u64(slice(text as *const u8, len(text))) {
+        Option<u64>.Some(value) => { return value; },
+        Option<u64>.None => { assert(false); return 0; },
+    }
+}
+
+fn energy(x: *f64, y: *f64, z: *f64, vx: *f64, vy: *f64, vz: *f64, m: *f64) -> f64 {
+    let e: f64 = 0.0;
+    for i: u64 in 0..5 {
+        e = e + 0.5 * m[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+        for j: u64 in (i + 1)..5 {
+            let dx: f64 = x[i] - x[j];
+            let dy: f64 = y[i] - y[j];
+            let dz: f64 = z[i] - z[j];
+            e = e - m[i] * m[j] / sqrt(dx * dx + dy * dy + dz * dz);
+        }
+    }
+    return e;
+}
+
+fn advance(x: *f64, y: *f64, z: *f64, vx: *f64, vy: *f64, vz: *f64, m: *f64, dt: f64) -> void {
+    for i: u64 in 0..5 {
+        for j: u64 in (i + 1)..5 {
+            let dx: f64 = x[i] - x[j];
+            let dy: f64 = y[i] - y[j];
+            let dz: f64 = z[i] - z[j];
+            let d2: f64 = dx * dx + dy * dy + dz * dz;
+            let mag: f64 = dt / (d2 * sqrt(d2));
+            let mi: f64 = m[i] * mag;
+            let mj: f64 = m[j] * mag;
+            vx[i] = vx[i] - dx * mj;
+            vy[i] = vy[i] - dy * mj;
+            vz[i] = vz[i] - dz * mj;
+            vx[j] = vx[j] + dx * mi;
+            vy[j] = vy[j] + dy * mi;
+            vz[j] = vz[j] + dz * mi;
+        }
+    }
+    for i: u64 in 0..5 {
+        x[i] = x[i] + dt * vx[i];
+        y[i] = y[i] + dt * vy[i];
+        z[i] = z[i] + dt * vz[i];
+    }
+}
+
+fn main() -> int {
+    let steps: u64 = size();
+    let solar: f64 = 39.47841760435743;
+    let days: f64 = 365.24;
+    let x: [f64; 5] = [0.0, 4.84143144246472082945, 8.34336671801458124085, 12.8943695621391310164, 15.3796971148509165498];
+    let y: [f64; 5] = [0.0, -1.16032004402742839362, 4.12479856412430479603, -15.1111514016986312525, -25.9193146099879641146];
+    let z: [f64; 5] = [0.0, -0.103622044471123109503, -0.403523417825932481042, -0.223307578892655733682, 0.179258772950371181758];
+    let vx: [f64; 5] = [0.0, 0.00166007664274403694959 * days, -0.00276742510726862411004 * days, 0.00296460137564761618652 * days, 0.00268067772490389322511 * days];
+    let vy: [f64; 5] = [0.0, 0.00769901118419740425080 * days, 0.00499852801234917238954 * days, 0.00237847173959480950018 * days, 0.00162824170038242295922 * days];
+    let vz: [f64; 5] = [0.0, -0.0000690460016972063023554 * days, 0.0000230417297573763262252 * days, -0.0000296589568540237556131 * days, -0.0000951592254519715870971 * days];
+    let m: [f64; 5] = [solar, 0.000954791938424326609124 * solar, 0.000285885980666130812119 * solar, 0.0000436624404335156298006 * solar, 0.0000515138902046611451304 * solar];
+    let px: f64 = 0.0;
+    let py: f64 = 0.0;
+    let pz: f64 = 0.0;
+    for i: u64 in 0..5 {
+        px = px + vx[i] * m[i];
+        py = py + vy[i] * m[i];
+        pz = pz + vz[i] * m[i];
+    }
+    vx[0] = 0.0 - px / solar;
+    vy[0] = 0.0 - py / solar;
+    vz[0] = 0.0 - pz / solar;
+    let xp: *f64 = &x[0];
+    let yp: *f64 = &y[0];
+    let zp: *f64 = &z[0];
+    let vxp: *f64 = &vx[0];
+    let vyp: *f64 = &vy[0];
+    let vzp: *f64 = &vz[0];
+    let mp: *f64 = &m[0];
+    print((energy(xp, yp, zp, vxp, vyp, vzp, mp) * 1000000000.0) as i64);
+    for step: u64 in 0..steps {
+        advance(xp, yp, zp, vxp, vyp, vzp, mp, 0.01);
+    }
+    print((energy(xp, yp, zp, vxp, vyp, vzp, mp) * 1000000000.0) as i64);
+    return 0;
+}

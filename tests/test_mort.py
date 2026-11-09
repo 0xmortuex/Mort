@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/ -v      (or)   python tests/test_mort.py
 """
 import base64
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -10230,6 +10231,41 @@ def test_examples_run(name, expected):
         subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
         result = subprocess.run([exe], capture_output=True, text=True, check=False)
     assert result.stdout == expected
+
+
+# Examples covered by their own test, because they need extra link flags, a
+# bundled module, or a freestanding target instead of the EXPECTED loop above.
+EXAMPLES_TESTED_ELSEWHERE = {
+    "async_io.mx": "test_cross_platform_nonblocking_readiness_runs",
+    "concurrency.mx": "test_cross_platform_threads_mutexes_and_atomics_run",
+    "http_loopback.mx": "test_bounded_http11_loopback_and_framing_validation",
+    "https_client.mx": "test_https_client_example_type_checks",
+    "kernel.mx": "test_freestanding_object_builds",
+    "secure_random.mx": "test_os_secure_random_runs_under_strict_c",
+    "stdlib.mx": "test_std_cli_module_runs",
+    "tasks.mx": "test_structured_task_group_cancels_and_joins",
+    "tcp_loopback.mx": "test_cross_platform_tcp_dns_loopback_runs",
+    "udp_loopback.mx": "test_cross_platform_udp_dns_loopback_runs",
+    "websocket_loopback.mx": "test_websocket_rfc6455_loopback_and_frame_validation",
+}
+
+
+def test_every_example_is_listed_with_a_test():
+    on_disk = {name for name in os.listdir(os.path.join(ROOT, "examples"))
+               if name.endswith(".mx")}
+    listed = set(EXPECTED) | set(EXAMPLES_TESTED_ELSEWHERE)
+    assert on_disk - listed == set(), "examples without a test"
+    assert listed - on_disk == set(), "listed examples that do not exist"
+    assert not set(EXPECTED) & set(EXAMPLES_TESTED_ELSEWHERE)
+    for name, test_name in EXAMPLES_TESTED_ELSEWHERE.items():
+        assert name in inspect.getsource(globals()[test_name])
+
+
+def test_https_client_example_type_checks():
+    # It connects to example.com, so a test can only check it, not run it. The
+    # TLS stack itself runs in test_verified_tls_loopback_and_fail_closed_validation.
+    source = os.path.join(ROOT, "examples", "https_client.mx")
+    assert mortc._compile_main([source, "--check"]) == 0
 
 
 # ---------- process builtins: eprintln, arg_count, arg_get ----------
