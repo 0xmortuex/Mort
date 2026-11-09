@@ -184,13 +184,24 @@ fn cx_is_aggregate(c: *Ck, t: u64) -> bool {
 
 // One `_needs_drop_type(root)`, charged as Python charges it: pre-order, stopping
 // at the first resource, with a `seen` set of its own. Iterative, because by-value
-// aggregate chains can be long.
-fn cx_drop_walk(c: *Ck, root: u64) -> bool {
+// aggregate chains can be long. `deepest` is the deepest call under root, in
+// frames: one for an array's element, two through a generator expression.
+fn cx_drop_walk(c: *Ck, root: u64, deepest: *u64) -> bool {
     let seen = map_new();
     let work = u64vec_new();
+    let depths = u64vec_new();
+    let first_frame = (*c).frames + 1;
     u64vec_push(&work, root);
+    u64vec_push(&depths, 0);
     while work.len > 0 {
         let t = u64vec_pop(&work);
+        let depth = u64vec_pop(&depths);
+        if depth > *deepest {
+            *deepest = depth;
+        }
+        if first_frame + depth >= COMPILE_FRAME_BUDGET {
+            ck_fail_nesting(c);
+        }
         if cx_is_resource_type(c, t) {
             free(work.data as *void);
             return true;
@@ -204,14 +215,20 @@ fn cx_drop_walk(c: *Ck, root: u64) -> bool {
         }
         let children = u64vec_new();
         cx_drop_children(c, t, &children);
+        let child_depth = depth + 2;
+        if cx_is_array(c, t) {
+            child_depth = depth + 1;
+        }
         let k = children.len;
         while k > 0 {
             k -= 1;
             u64vec_push(&work, u64vec_get(&children, k));
+            u64vec_push(&depths, child_depth);
         }
         free(children.data as *void);
     }
     free(work.data as *void);
+    free(depths.data as *void);
     return false;
 }
 
@@ -221,11 +238,17 @@ fn cx_needs_drop(c: *Ck, root: u64) -> bool {
     let memo = &(*c).drop_memo;
     let known: u64 = 0;
     if map_get(memo, root, &known) {
+        let known_depth: u64 = 0;
+        map_get(&(*c).drop_depths, root, &known_depth);
+        if (*c).frames + 1 + known_depth >= COMPILE_FRAME_BUDGET {
+            ck_fail_nesting(c);
+        }
         ck_spend(c, known / 2);
         return (known & 1) == 1;
     }
     let before = (*c).work_spent;
-    let result = cx_drop_walk(c, root);
+    let deepest: u64 = 0;
+    let result = cx_drop_walk(c, root, &deepest);
     let text = intern_text((*c).s, root);
     let incomplete = ts_find(text, '<') != text.len && ts_ends_with(text, '>')
         && !tb_has(&(*c).structs, root) && !tb_has(&(*c).enums, root);
@@ -235,6 +258,7 @@ fn cx_needs_drop(c: *Ck, root: u64) -> bool {
             flag = 1;
         }
         map_put(memo, root, ((*c).work_spent - before) * 2 + flag);
+        map_put(&(*c).drop_depths, root, deepest);
     }
     return result;
 }
@@ -285,6 +309,10 @@ fn cx_destructor_enter(c: *Ck, t: u64, node: *Node, frames: *PtrVec, positions: 
     m_t(c, &b, t);
     let symbol = ck_made(c, ts_take((*c).s, &b));
     tb_put(&(*c).drop_destructors, t, ck_box(symbol));
+    // `_register_nested_drop_types`, whose frame is the next one.
+    if (*c).frames + 1 >= COMPILE_FRAME_BUDGET {
+        ck_fail_nesting(c);
+    }
     let children = sup_alloc(sizeof<U64Vec>()) as *U64Vec;
     *children = u64vec_new();
     cx_drop_children(c, t, children);
@@ -298,10 +326,14 @@ fn cx_destructor_enter(c: *Ck, t: u64, node: *Node, frames: *PtrVec, positions: 
 }
 
 // _resource_destructor and _register_nested_drop_types: pre-order, with an
-// explicit stack because aggregate chains can be long.
+// explicit stack because aggregate chains can be long. Each level below the root
+// is two Python frames: its `_register_nested_drop_types`, then the next
+// `_resource_destructor`.
 fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
     let frames = ptrvec_new();
     let positions = u64vec_new();
+    let saved_frames = (*c).frames;
+    (*c).frames = saved_frames + 1;
     let result = cx_destructor_enter(c, root, node, &frames, &positions);
     while frames.len > 0 {
         let top = frames.len - 1;
@@ -316,10 +348,13 @@ fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
         }
         u64vec_set(&positions, top, at + 1);
         let child = u64vec_get(children, at);
+        (*c).frames = saved_frames + 1 + 2 * top + 1;
         if cx_needs_drop(c, child) {
+            (*c).frames = saved_frames + 1 + 2 * frames.len;
             cx_destructor_enter(c, child, node, &frames, &positions);
         }
     }
+    (*c).frames = saved_frames;
     free(frames.data as *void);
     free(positions.data as *void);
     return result;
@@ -344,12 +379,22 @@ fn cx_is_owned_place(c: *Ck, e: *Node) -> bool {
 }
 
 fn cx_require_explicit_move(c: *Ck, expected: u64, e: *Node) {
+    ck_frame(c);
+    cx_require_explicit_move_body(c, expected, e);
+    ck_leave(c);
+}
+
+fn cx_require_explicit_move_body(c: *Ck, expected: u64, e: *Node) {
     if !cx_needs_drop(c, expected) {
         return;
     }
-    if ((*e).kind == NodeKind.FIELD_ACCESS || (*e).kind == NodeKind.INDEX)
-            && cx_is_owned_place(c, e) {
-        ck_fail_z(c, e, "a resource cannot be copied out of its owning binding");
+    if (*e).kind == NodeKind.FIELD_ACCESS || (*e).kind == NodeKind.INDEX {
+        ck_frame(c);
+        let owned = cx_is_owned_place(c, e);
+        ck_leave(c);
+        if owned {
+            ck_fail_z(c, e, "a resource cannot be copied out of its owning binding");
+        }
     }
     if (*e).kind == NodeKind.VAR {
         let name = (*e).name;
@@ -634,6 +679,13 @@ fn cx_retag_literal(c: *Ck, node: *Node, target: u64) {
 }
 
 fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
+    ck_frame(c);
+    let result = cx_coerce_body(c, expected, e);
+    ck_leave(c);
+    return result;
+}
+
+fn cx_coerce_body(c: *Ck, expected: u64, e: *Node) -> bool {
     let s = (*c).s;
     let et = (*e).etype;
     if ck_is_int(c, expected) && (*e).is_lit {
@@ -660,11 +712,15 @@ fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
             if want.len != ck_items_len((*e).items) {
                 return false;
             }
+            // `all(...)` runs each element's coercion in a generator's frame.
+            ck_frame(c);
             for i: u64 in 0..want.len {
                 if !cx_coerce(c, u64vec_get(&want, i), ast_item((*e).items, i)) {
+                    ck_leave(c);
                     return false;
                 }
             }
+            ck_leave(c);
             (*e).etype = expected;
             return true;
         }
@@ -733,11 +789,20 @@ fn ck_check_expr(c: *Ck, e: *Node) -> u64 {
     return ck_check_expr_as(c, e, false);
 }
 
+// In `_check_expr`, `frames` is that function's own frame: `_infer` is the next
+// one, so a child's `_check_expr` is two further on. check_frames runs before
+// `current_node` is set, so a limit is reported at the node that was being
+// checked. On the spine each node's frame is reached going down, and restored
+// coming back up, by the same two steps.
 fn ck_check_expr_as(c: *Ck, e: *Node, literal_operand: bool) -> u64 {
+    ck_enter(c);
     if !cx_is_spine(e) {
         (*c).current_node = e;
+        ck_frame(c);
         cx_check_leaf(c, e);
+        ck_leave(c);
         cx_after_check(c, e, literal_operand);
+        ck_leave(c);
         return (*e).etype;
     }
     let stack = &(*c).stack_nodes;
@@ -747,21 +812,29 @@ fn ck_check_expr_as(c: *Ck, e: *Node, literal_operand: bool) -> u64 {
     while cx_is_spine(cursor) {
         ptrvec_push(stack, cursor as *void);
         parent = cursor;
+        (*c).current_node = cursor;
         let child = (*cursor).a;
         if (*cursor).kind == NodeKind.CAST && (*child).kind == NodeKind.UNARY
                 && (*child).name == (*c).t_amp {
             (*child).flag = true;
         }
+        (*c).frames += 2;
+        ck_site(c);
         cursor = child;
     }
     (*c).current_node = cursor;
+    ck_frame(c);
     cx_check_leaf(c, cursor);
+    ck_leave(c);
     cx_after_check(c, cursor, cx_folds(c, parent));
     while (*stack).len > base {
         let n = ptrvec_pop(stack) as *Node;
         (*n).is_lit = false;
         (*n).cv = 0 as *void;
         let kind = (*n).kind;
+        // Back up one level: this node's `_check_expr`, then its `_infer`.
+        (*c).frames -= 2;
+        ck_frame(c);
         if kind == NodeKind.BINARY {
             cx_binary(c, n);
         } else if kind == NodeKind.INDEX {
@@ -771,12 +844,14 @@ fn ck_check_expr_as(c: *Ck, e: *Node, literal_operand: bool) -> u64 {
         } else {
             cx_field_value(c, n);
         }
+        ck_leave(c);
         let as_operand = literal_operand;
         if (*stack).len > base {
             as_operand = cx_folds(c, ptrvec_get(stack, (*stack).len - 1) as *Node);
         }
         cx_after_check(c, n, as_operand);
     }
+    ck_leave(c);
     return (*e).etype;
 }
 
@@ -1484,6 +1559,7 @@ fn cx_moves_a_resource(root: *Node) -> bool {
 
 // _check_array_expr
 fn ck_array_expr(c: *Ck, expr: *Node, decl_type: u64, node: *Node) -> u64 {
+    ck_frame(c);
     let s = (*c).s;
     let elem: u64 = NO_TEXT;
     let size: u64 = NO_TEXT;
@@ -1540,6 +1616,7 @@ fn ck_array_expr(c: *Ck, expr: *Node, decl_type: u64, node: *Node) -> u64 {
         }
     }
     (*expr).etype = ts_make_array(s, elem, size);
+    ck_leave(c);
     return (*expr).etype;
 }
 
@@ -1583,10 +1660,12 @@ fn ck_block_stmts(c: *Ck, block: *Node) {
 }
 
 fn ck_block(c: *Ck, block: *Node) {
+    ck_frame(c);
     ck_push_scope(c);
     ck_block_stmts(c, block);
     cx_finish_scope(c);
     ck_pop_scope(c);
+    ck_leave(c);
 }
 
 fn ck_assignment_root(n: *Node) -> *Node {
@@ -2187,6 +2266,7 @@ fn ck_match(c: *Ck, s: *Node) {
 }
 
 fn ck_stmt(c: *Ck, s: *Node) {
+    ck_enter(c);
     let kind = (*s).kind;
     (*c).current_node = s;
     (*c).current_statement = 0 as *Node;
@@ -2241,6 +2321,7 @@ fn ck_stmt(c: *Ck, s: *Node) {
             ck_fail_z(c, s, "'continue' is only allowed inside a loop");
         }
     }
+    ck_leave(c);
 }
 
 fn ck_contains_try(root: *Node) -> bool {
@@ -2264,6 +2345,7 @@ fn cx_is_instance(c: *Ck, symbol: u64) -> bool {
 }
 
 fn ck_function_body(c: *Ck, f: *Node) {
+    ck_frame(c);
     let instance = cx_is_instance(c, (*f).symbol);
     if instance {
         (*c).suppress_events = true;
@@ -2295,6 +2377,7 @@ fn ck_function_body(c: *Ck, f: *Node) {
         (*c).events.len = (*c).events_mark;
         (*c).suppress_events = false;
     }
+    ck_leave(c);
 }
 
 fn ck_test_body(c: *Ck, t: *Node) {

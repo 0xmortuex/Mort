@@ -62,7 +62,9 @@ import py_ast_dump  # noqa: E402  (also lifts the int-string digit limit)
 from py_ast_dump import quoted as q  # noqa: E402
 
 import mortc  # noqa: E402
+from mort import depth  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
+from mort import parser as parser_module  # noqa: E402
 from mort import typechecker  # noqa: E402
 from mort.errors import MortError  # noqa: E402
 from mort.typechecker import BUILTIN_NAMES, Checker, generic_parts  # noqa: E402
@@ -420,6 +422,31 @@ class _LoggedBindings(list):
 
 LAST = [None]
 EXACT_MODE = [False]
+LOAD_DEPTHS = {}
+
+
+def _compiler_frames_below():
+    """Stack frames from the caller's caller up to the frame budget's wrapper,
+    leaving out this file's own instrumentation."""
+    compiler_frames = 0
+    frame = sys._getframe(2)
+    while frame.f_code is not mortc.compile_files_to_c.__code__:
+        if frame.f_code.co_filename != __file__:
+            compiler_frames += 1
+        frame = frame.f_back
+    return compiler_frames
+
+
+def _check_compiler_frames(extra=0):
+    """`check_frames` for the compiler's frames only, as if it ran uninstrumented:
+    the limits this file reports must be the ones `mortc.py` reports."""
+    harness_frames = 1  # this function
+    frame = sys._getframe(1)
+    while frame.f_code is not mortc.compile_files_to_c.__code__:
+        if frame.f_code.co_filename == __file__:
+            harness_frames += 1
+        frame = frame.f_back
+    depth.check_frames(extra - harness_frames)
 
 
 class Result(types.SimpleNamespace):
@@ -452,6 +479,7 @@ def manifest_text(mode, programs):
     lines = [f"MODE {mode}\n"]
     for program in programs:
         lines.append(f"FILE {program.filename}\n")
+        lines.append(f"DEPTH {LOAD_DEPTHS.get(program.filename, 0)}\n")
         for alias, module in program.import_aliases.items():
             lines.append(f"ALIAS {alias} {module}\n")
     return "".join(lines)
@@ -576,6 +604,11 @@ def checked_dump(checker):
     return "".join(out)
 
 
+def failing_manifest(mode, result):
+    """The manifest for parsing the one file a parse error stopped at."""
+    return f"MODE {mode}\nFILE {result.failing_file}\nDEPTH {result.failing_depth}\n"
+
+
 def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     """Run the compiler's own pipeline over one root file.
 
@@ -584,7 +617,10 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     """
     captured = []
     EXACT_MODE[0] = exact
+    LOAD_DEPTHS.clear()
     original_compile = mortc._compile_programs
+    original_decode = mortc.decode_source
+    original_check_frames = depth.check_frames
     original_checker, original_codegen = mortc.Checker, mortc.CodeGen
     original_set = getattr(typechecker, "set", None)
     limit = sys.getrecursionlimit()
@@ -596,8 +632,17 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     def stop_codegen(*args, **kwargs):
         raise _StopCodegen
 
+    def note_depth_then_decode(data, path):
+        # compile_files_to_c and one load are on the stack for a root file.
+        # In `load`, not in the parse, so the parser has no frame of this file
+        # below it for its limits that count interpreter frames.
+        LOAD_DEPTHS[path] = _compiler_frames_below() - 2
+        return original_decode(data, path)
+
     LAST[0] = None
     mortc._compile_programs = capture
+    mortc.decode_source = note_depth_then_decode
+    typechecker.check_frames = parser_module.check_frames = _check_compiler_frames
     mortc.Checker, mortc.CodeGen = _DumpChecker, stop_codegen
     typechecker.set = _OrderedSet
     sys.setrecursionlimit(recursion_limit)
@@ -614,6 +659,8 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     finally:
         sys.setrecursionlimit(limit)
         mortc._compile_programs = original_compile
+        mortc.decode_source = original_decode
+        typechecker.check_frames = parser_module.check_frames = original_check_frames
         mortc.Checker, mortc.CodeGen = original_checker, original_codegen
         if original_set is None:
             del typechecker.set
@@ -624,9 +671,11 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
     if checker is None:
         loader = error is not None and LOADER_MESSAGE.fullmatch(error.msg)
         outcome = "load" if loader or error is None else "parse"
+        failing_file = getattr(error, "filename", None)
         return Result(tables=None, events="", error=error.format() if error else None,
                       t4=False, manifest=None, outcome=outcome,
-                      failing_file=getattr(error, "filename", None), checked=None)
+                      failing_file=failing_file,
+                      failing_depth=LOAD_DEPTHS.get(failing_file, 0), checked=None)
     if error is None:
         checker._snapshot()
     elif error.msg in ("no 'main' function defined", "'main' must take no parameters",
@@ -643,6 +692,7 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
         manifest=manifest_text(mode, captured[0]),
         outcome="ok" if error is None else "error",
         failing_file=None,
+        failing_depth=0,
         checked=checked,
     )
 

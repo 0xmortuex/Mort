@@ -11,7 +11,12 @@
 // with an explicit stack: chains of binary, postfix and cast operators build
 // left-deep trees of any depth, and recursion over them would overflow the
 // C stack. Everything else recurses only over what the parser's depth limit
-// bounds, or counts its depth in `depth` (ck_enter).
+// bounds.
+//
+// `frames` is the Python compiler's frame count (mort/depth.py) for the function
+// being ported: ck_enter is a function that calls check_frames, ck_frame one that
+// does not, and both are undone by ck_leave. A generator expression is a frame
+// of its own, so a type's arguments each cost two levels and a pointer's one.
 
 import support;
 import ast;
@@ -25,7 +30,6 @@ import check_dump;
 // Python's default recursion limit, less the frames the real compiler has on
 // the stack by the time it resolves the first alias. Measured with
 // `mortc.py --check` and pinned by test_alias_chain_limit_matches_mortc.
-const CK_MAX_DEPTH: u64 = 989;
 
 // Python applies these three to generic functions; ck_charge_generic applies
 // them to struct and enum instances too (PLAN.md, section 11).
@@ -183,7 +187,9 @@ struct Ck {
     out_path: *u8,
     freestanding: bool,
     test_mode: bool,
-    depth: u64,
+    frames: u64,
+    drop_depths: Map,
+    copy_frames: Map,
     generic_instantiations: u64,
     work_spent: u64,
     work_instantiated: bool,
@@ -394,15 +400,23 @@ fn ck_fail_nesting(c: *Ck) {
     ck_exit_diag(c, (*node).line, col, (*node).file, buf_span(&msg));
 }
 
-fn ck_enter(c: *Ck) {
-    (*c).depth += 1;
-    if (*c).depth > CK_MAX_DEPTH {
+fn ck_site(c: *Ck) {
+    if (*c).frames >= COMPILE_FRAME_BUDGET {
         ck_fail_nesting(c);
     }
 }
 
+fn ck_enter(c: *Ck) {
+    (*c).frames += 1;
+    ck_site(c);
+}
+
+fn ck_frame(c: *Ck) {
+    (*c).frames += 1;
+}
+
 fn ck_leave(c: *Ck) {
-    (*c).depth -= 1;
+    (*c).frames -= 1;
 }
 
 // ----- events -----
@@ -672,6 +686,13 @@ fn ck_is_function(c: *Ck, t: u64) -> bool {
 }
 
 fn ck_substitute(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
+    ck_enter(c);
+    let result = ck_substitute_body(c, h, names, values);
+    ck_leave(c);
+    return result;
+}
+
+fn ck_substitute_body(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
     let s = (*c).s;
     ck_charge_text(c, h);
     let index: u64 = 0;
@@ -699,27 +720,33 @@ fn ck_substitute(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
     let result: u64 = 0;
     if ck_function_parts(c, h, &params, &result) {
         let mapped = u64vec_new();
+        ck_frame(c);
         for i: u64 in 0..params.len {
             u64vec_push(&mapped, ck_substitute(c, u64vec_get(&params, i), names, values));
         }
+        ck_leave(c);
         let new_result = ck_substitute(c, result, names, values);
         return ck_made(c, ts_make_function(s, &mapped, new_result));
     }
     let tuple = u64vec_new();
     if ck_tuple_parts(c, h, &tuple) {
         let mapped = u64vec_new();
+        ck_frame(c);
         for i: u64 in 0..tuple.len {
             u64vec_push(&mapped, ck_substitute(c, u64vec_get(&tuple, i), names, values));
         }
+        ck_leave(c);
         return ck_made(c, ts_make_tuple(s, &mapped));
     }
     let base: u64 = 0;
     let args = u64vec_new();
     if ck_generic_parts(c, h, &base, &args) {
         let mapped = u64vec_new();
+        ck_frame(c);
         for i: u64 in 0..args.len {
             u64vec_push(&mapped, ck_substitute(c, u64vec_get(&args, i), names, values));
         }
+        ck_leave(c);
         return ck_made(c, ts_make_generic(s, base, &mapped));
     }
     return h;
@@ -734,12 +761,13 @@ fn ck_substitute(c: *Ck, h: u64, names: *U64Vec, values: *U64Vec) -> u64 {
 // expansion has no cycle and repeating it is exponential.
 fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
     let s = (*c).s;
+    ck_enter(c);
     let cached: u64 = 0;
     if ((*stack).len == 0 || tb_has(&(*c).aliases, t))
             && map_get(&(*c).alias_cache, t, &cached) {
+        ck_leave(c);
         return cached;
     }
-    ck_enter(c);
     ck_charge_text(c, t);
     let result = t;
     if tb_has(&(*c).aliases, t) {
@@ -776,9 +804,11 @@ fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
         let fn_result: u64 = 0;
         if ck_function_parts(c, t, &params, &fn_result) {
             let mapped = u64vec_new();
+            ck_frame(c);
             for i: u64 in 0..params.len {
                 u64vec_push(&mapped, ck_resolve(c, u64vec_get(&params, i), stack));
             }
+            ck_leave(c);
             let resolved_result = (*c).t_void;
             if fn_result != (*c).t_void {
                 resolved_result = ck_resolve(c, fn_result, stack);
@@ -788,18 +818,22 @@ fn ck_resolve(c: *Ck, t: u64, stack: *U64Vec) -> u64 {
             let tuple = u64vec_new();
             if ck_tuple_parts(c, t, &tuple) {
                 let mapped = u64vec_new();
+                ck_frame(c);
                 for i: u64 in 0..tuple.len {
                     u64vec_push(&mapped, ck_resolve(c, u64vec_get(&tuple, i), stack));
                 }
+                ck_leave(c);
                 result = ck_made(c, ts_make_tuple(s, &mapped));
             } else {
                 let base: u64 = 0;
                 let args = u64vec_new();
                 if ck_generic_parts(c, t, &base, &args) {
                     let mapped = u64vec_new();
+                    ck_frame(c);
                     for i: u64 in 0..args.len {
                         u64vec_push(&mapped, ck_resolve(c, u64vec_get(&args, i), stack));
                     }
+                    ck_leave(c);
                     result = ck_made(c, ts_make_generic(s, base, &mapped));
                 }
             }
@@ -896,29 +930,95 @@ fn ck_push_children(stack: *PtrVec, n: *Node) {
     }
 }
 
-fn ck_apply_list(c: *Ck, stack: *PtrVec, list: *PtrVec) {
+// The frame budget of a walk with Python's recursive `visit`: `frames` is the
+// frame of the `visit` that holds the object at the same index of `stack`, and a
+// null object is a non-empty list in the budget's last frame, whose first item
+// is the visit that runs out. Reaching that visit needs no node to be recorded.
+fn ck_push_visit_list(stack: *PtrVec, frames: *U64Vec, list: *PtrVec, at: u64) {
+    if at + 1 >= COMPILE_FRAME_BUDGET {
+        if (*list).len != 0 {
+            ptrvec_push(stack, 0 as *void);
+            u64vec_push(frames, at + 1);
+        }
+        return;
+    }
     let i = (*list).len;
     while i > 0 {
         i -= 1;
         ptrvec_push(stack, ptrvec_get(list, i));
+        u64vec_push(frames, at + 1);
     }
+}
+
+// `n` in the frame `at`, its children in frames from there, in order when popped.
+fn ck_push_visit_children(stack: *PtrVec, frames: *U64Vec, n: *Node, at: u64) {
+    // A function's parameters come before its body in Python's field order, and
+    // a type in a parameter that runs out is reported at the node reached so far.
+    let params_first = (*n).kind == NodeKind.FN_DECL && (*n).a != (0 as *Node);
+    if params_first {
+        ptrvec_push(stack, (*n).a as *void);
+        u64vec_push(frames, at + 1);
+    }
+    if (*n).items != (0 as *PtrVec) {
+        ck_push_visit_list(stack, frames, (*n).items, at + 1);
+    }
+    if (*n).c != (0 as *Node) {
+        ptrvec_push(stack, (*n).c as *void);
+        u64vec_push(frames, at + 1);
+    }
+    if (*n).b != (0 as *Node) {
+        ptrvec_push(stack, (*n).b as *void);
+        u64vec_push(frames, at + 1);
+    }
+    if (*n).a != (0 as *Node) && !params_first {
+        ptrvec_push(stack, (*n).a as *void);
+        u64vec_push(frames, at + 1);
+    }
+}
+
+// Whether visiting the attributes of `n`, in the frame `at`, runs out of budget.
+// Every object has an attribute in the next frame, and a call's position tuple
+// has its items one frame further.
+fn ck_visit_exhausts(n: *Node, at: u64) -> bool {
+    return at + 1 >= COMPILE_FRAME_BUDGET
+        || ((*n).kind == NodeKind.CALL && at + 2 >= COMPILE_FRAME_BUDGET);
+}
+
+fn ck_apply_list(c: *Ck, stack: *PtrVec, frames: *U64Vec, list: *PtrVec) {
+    ck_push_visit_list(stack, frames, list, (*c).frames + 1);
 }
 
 fn ck_apply_aliases(c: *Ck) {
     let p = (*c).program;
     let stack = ptrvec_new();
-    ck_apply_list(c, &stack, (*p).aliases);
-    ck_apply_list(c, &stack, (*p).tests);
-    ck_apply_list(c, &stack, (*p).enums);
-    ck_apply_list(c, &stack, (*p).externs);
-    ck_apply_list(c, &stack, (*p).globals);
-    ck_apply_list(c, &stack, (*p).structs);
-    ck_apply_list(c, &stack, (*p).funcs);
+    let frames = u64vec_new();
+    let saved = (*c).frames;
+    // `_apply_type_aliases`, then `visit` of the program.
+    (*c).frames = saved + 2;
+    ck_apply_list(c, &stack, &frames, (*p).aliases);
+    ck_apply_list(c, &stack, &frames, (*p).tests);
+    ck_apply_list(c, &stack, &frames, (*p).enums);
+    ck_apply_list(c, &stack, &frames, (*p).externs);
+    ck_apply_list(c, &stack, &frames, (*p).globals);
+    ck_apply_list(c, &stack, &frames, (*p).structs);
+    ck_apply_list(c, &stack, &frames, (*p).funcs);
     while stack.len > 0 {
         let node = ptrvec_pop(&stack) as *Node;
+        let at = u64vec_pop(&frames);
+        if node == (0 as *Node) {
+            ck_fail_nesting(c);
+        }
+        (*c).frames = at;
+        ck_site(c);
         ck_apply_node(c, node);
-        ck_push_children(&stack, node);
+        if ck_visit_exhausts(node, at) {
+            ck_fail_nesting(c);
+        }
+        ck_push_visit_children(&stack, &frames, node, at);
     }
+    (*c).frames = saved;
+    free(stack.data as *void);
+    free(frames.data as *void);
 }
 
 // ----- type validity and generic instantiation -----
@@ -945,11 +1045,14 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
     if behind_pointer {
         memo = &(*c).valid_behind_pointer;
     }
+    ck_enter(c);
     if map_has(memo, type_in) {
+        ck_leave(c);
         return true;
     }
     ck_charge_text(c, type_in);
-    ck_enter(c);
+    // `_check_valid_type`, inlined.
+    ck_frame(c);
     let t = ck_resolve_alias(c, type_in);
     let result = false;
     if ts_is_ptr(s, t) {
@@ -978,6 +1081,7 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
         let fn_result: u64 = 0;
         if ck_function_parts(c, t, &params, &fn_result) {
             result = true;
+            ck_frame(c);
             for i: u64 in 0..params.len {
                 let item = u64vec_get(&params, i);
                 if item == (*c).t_void || ts_is_array(s, item) || !ck_valid(c, item) {
@@ -985,12 +1089,14 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
                     break;
                 }
             }
+            ck_leave(c);
             result = result && !ts_is_array(s, fn_result)
                 && (fn_result == (*c).t_void || ck_valid(c, fn_result));
         } else {
             let tuple = u64vec_new();
             if ck_tuple_parts(c, t, &tuple) {
                 result = true;
+                ck_frame(c);
                 for i: u64 in 0..tuple.len {
                     let item = u64vec_get(&tuple, i);
                     if item == (*c).t_void || !ck_valid(c, item) {
@@ -998,6 +1104,7 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
                         break;
                     }
                 }
+                ck_leave(c);
             } else {
                 let base: u64 = 0;
                 let args = u64vec_new();
@@ -1014,6 +1121,7 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
         free(params.data as *void);
     }
     ck_leave(c);
+    ck_leave(c);
     if result {
         map_put(memo, type_in, 1);
     }
@@ -1023,6 +1131,13 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
 // `_valid_sizeof_type`: an array of arrays has a size though no C declaration, so
 // an alias may name one and sizeof may measure it.
 fn ck_valid_sizeof(c: *Ck, t: u64) -> bool {
+    ck_frame(c);
+    let result = ck_valid_sizeof_body(c, t);
+    ck_leave(c);
+    return result;
+}
+
+fn ck_valid_sizeof_body(c: *Ck, t: u64) -> bool {
     let resolved = ck_resolve_alias(c, t);
     if ts_is_array((*c).s, resolved) {
         let elem: u64 = 0;
@@ -1099,13 +1214,18 @@ fn ck_enum_has_payload(info: *EnumInfo) -> bool {
     return (*info).any_payload;
 }
 
+// `all(self._valid_type(arg) for arg in args)`: the generator is a frame.
 fn ck_all_valid(c: *Ck, list: *U64Vec) -> bool {
+    ck_frame(c);
+    let valid = true;
     for i: u64 in 0..(*list).len {
         if !ck_valid(c, u64vec_get(list, i)) {
-            return false;
+            valid = false;
+            break;
         }
     }
-    return true;
+    ck_leave(c);
+    return valid;
 }
 
 // Python's limits on generic functions, which Mort also applies to struct and
@@ -1152,6 +1272,13 @@ fn ck_charge_instantiation(c: *Ck, nodes: u64, site: *Node) {
 }
 
 fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
+    ck_frame(c);
+    let result = ck_instantiate_struct_body(c, concrete);
+    ck_leave(c);
+    return result;
+}
+
+fn ck_instantiate_struct_body(c: *Ck, concrete: u64) -> bool {
     let s = (*c).s;
     if tb_has(&(*c).structs, concrete) {
         return true;
@@ -1220,6 +1347,13 @@ fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
 }
 
 fn ck_instantiate_enum(c: *Ck, concrete: u64) -> bool {
+    ck_frame(c);
+    let result = ck_instantiate_enum_body(c, concrete);
+    ck_leave(c);
+    return result;
+}
+
+fn ck_instantiate_enum_body(c: *Ck, concrete: u64) -> bool {
     let s = (*c).s;
     if tb_has(&(*c).enums, concrete) {
         return true;
@@ -1337,6 +1471,8 @@ fn ck_in_graph(c: *Ck, name: u64) -> bool {
 // The field or payload order matches Python's insertion-ordered reference:
 // duplicates are harmless, because a repeated dependency is already complete.
 fn ck_deps_of(c: *Ck, name: u64) -> *U64Vec {
+    // `dependencies`, which maps `_aggregate_value_dependencies` over the members.
+    ck_frame(c);
     let out = sup_alloc(sizeof<U64Vec>()) as *U64Vec;
     *out = u64vec_new();
     if tb_has(&(*c).structs, name) {
@@ -1353,6 +1489,7 @@ fn ck_deps_of(c: *Ck, name: u64) -> *U64Vec {
             }
         }
     }
+    ck_leave(c);
     return out;
 }
 
@@ -1376,8 +1513,12 @@ fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
     let visiting = u64vec_new();
     let frames = ptrvec_new();
     let positions = u64vec_new();
+    // `_validate_aggregate_cycles`, then one `visit` per aggregate being visited.
+    let saved_frames = (*c).frames;
     for i: u64 in 0..names.len {
         let root = u64vec_get(&names, i);
+        (*c).frames = saved_frames + 2;
+        ck_site(c);
         if map_has(&complete, root) {
             continue;
         }
@@ -1395,6 +1536,8 @@ fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
             if at < (*deps).len {
                 u64vec_set(&positions, top, at + 1);
                 let dep = u64vec_get(deps, at);
+                (*c).frames = saved_frames + 2 + frames.len;
+                ck_site(c);
                 if map_has(&complete, dep) {
                     continue;
                 }
@@ -1434,6 +1577,7 @@ fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
             }
         }
     }
+    (*c).frames = saved_frames;
 }
 
 // ----- the declaration phase -----
@@ -2097,7 +2241,8 @@ fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         freestanding: bool, test_mode: bool, first_columns: *Map) -> Ck {
     let c = Ck {
         s: strings, program: program, out_path: out_path,
-        freestanding: freestanding, test_mode: test_mode, depth: 0,
+        freestanding: freestanding, test_mode: test_mode, frames: 4,
+        drop_depths: map_new(), copy_frames: map_new(),
         generic_instantiations: 0,
         work_spent: 0, work_instantiated: false, work_site: 0 as *Node,
         current_node: 0 as *Node, current_statement: 0 as *Node,

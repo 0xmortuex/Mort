@@ -28,12 +28,13 @@ import mortc  # noqa: E402
 import py_ast_dump  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
+from mort.depth import COMPILE_FRAME_BUDGET  # noqa: E402
 from mort.lexer import Lexer, decode_source  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 from test_lexer_differential import repo_mx_files  # noqa: E402
 
 REPO_FILES = repo_mx_files()
-MAX_NESTING = py_ast_dump.max_nesting()
+FRAME_BUDGET = py_ast_dump.frame_budget()
 
 
 @pytest.fixture(scope="session")
@@ -653,36 +654,37 @@ def test_float_repr_short_decimals_and_integers(float_repr_exe, tmp_path):
 
 # ----- deep nesting -----
 #
-# Each shape spends a known number of nesting units per level, so these reach
-# the limit exactly: one below it, at it, and one past it.
+# Each shape spends a known number of the compiler's frames per level (see
+# mort/depth.py), so these reach the limit exactly: one below it, at it, and one
+# past it.
 
 def wrap(opening, middle, closing, levels):
     return opening * levels + middle + closing * levels
 
 
 NESTED_SHAPES = {
-    # name: (units per level, function from levels to source)
-    "paren": (2, lambda n: "fn f() { let v = " + wrap("(", "1", ")", n) + "; }"),
+    # name: (frames per level, function from levels to source)
+    "paren": (15, lambda n: "fn f() { let v = " + wrap("(", "1", ")", n) + "; }"),
     "unary": (1, lambda n: "fn f() { let v = " + "-" * n + "1; }"),
-    "array": (2, lambda n: "fn f() { let v = " + wrap("[", "1", "]", n) + "; }"),
-    "call_arg": (2, lambda n: "fn f() { g(" * 1 + wrap("g(", "1", ")", n) + "); }"),
-    "index": (2, lambda n: "fn f() { let v = " + wrap("a[", "1", "]", n) + "; }"),
-    "struct_lit": (2, lambda n: "fn f() { let v = " + wrap("P { a: ", "1", " }", n) + "; }"),
-    "tuple": (2, lambda n: "fn f() { let v = " + wrap("(1, ", "1", ")", n) + "; }"),
+    "array": (16, lambda n: "fn f() { let v = " + wrap("[", "1", "]", n) + "; }"),
+    "call_arg": (14, lambda n: "fn f() { g(" * 1 + wrap("g(", "1", ")", n) + "); }"),
+    "index": (14, lambda n: "fn f() { let v = " + wrap("a[", "1", "]", n) + "; }"),
+    "struct_lit": (16, lambda n: "fn f() { let v = " + wrap("P { a: ", "1", " }", n) + "; }"),
+    "tuple": (15, lambda n: "fn f() { let v = " + wrap("(1, ", "1", ")", n) + "; }"),
     "pointer_type": (1, lambda n: "let x: " + "*" * n + "u8 = 0;"),
     "array_type": (1, lambda n: "let x: " + wrap("[", "u8", "; 1]", n) + " = 0;"),
     "generic_type": (1, lambda n: "let x: " + wrap("A<", "u8", ">", n) + " = 0;"),
     "fn_type": (1, lambda n: "let x: " + wrap("fn(", "u8", ") -> u8", n) + " = 0;"),
     "fn_result_type": (1, lambda n: "let x: " + "fn() -> " * n + "u8 = 0;"),
     "tuple_type": (1, lambda n: "let x: " + wrap("(u8, ", "u8", ")", n) + " = 0;"),
-    "block": (1, lambda n: "fn f() " + wrap("{ ", "", "} ", n)),
-    "if": (2, lambda n: "fn f() { " + wrap("if a { ", "", "} ", n) + "}"),
+    "block": (2, lambda n: "fn f() " + wrap("{ ", "", "} ", n)),
+    "if": (3, lambda n: "fn f() { " + wrap("if a { ", "", "} ", n) + "}"),
     "else_if": (1, lambda n: "fn f() { if a { } " + "else if a { } " * n + "}"),
-    "while": (1, lambda n: "fn f() { " + wrap("while a { ", "", "} ", n) + "}"),
-    "for": (1, lambda n: "fn f() { " + wrap("for i in 0..1 { ", "", "} ", n) + "}"),
-    "loop": (1, lambda n: "fn f() { " + wrap("loop { ", "", "} ", n) + "}"),
-    "match": (1, lambda n: "fn f() { " + wrap("match a { _ => { ", "", "} } ", n) + "}"),
-    "operator_ladder": (2, lambda n: (
+    "while": (3, lambda n: "fn f() { " + wrap("while a { ", "", "} ", n) + "}"),
+    "for": (3, lambda n: "fn f() { " + wrap("for i in 0..1 { ", "", "} ", n) + "}"),
+    "loop": (2, lambda n: "fn f() { " + wrap("loop { ", "", "} ", n) + "}"),
+    "match": (3, lambda n: "fn f() { " + wrap("match a { _ => { ", "", "} } ", n) + "}"),
+    "operator_ladder": (15, lambda n: (
         "fn f() { let v = "
         + wrap("a||a&&a|a^a&a==a<a<<a+a*(", "1", ")", n) + "; }")),
 }
@@ -691,14 +693,15 @@ NESTED_SHAPES = {
 def admitted_levels(name):
     """The deepest nesting of this shape that the reference accepts."""
     units, build = NESTED_SHAPES[name]
-    levels = MAX_NESTING // units + 2
+    levels = FRAME_BUDGET // units + 2
     while levels > 0:
         try:
             py_ast_dump.parse_source(build(levels))
         except MortError:
             levels -= 1
             continue
-        assert levels >= MAX_NESTING // units - 8, name
+        # The frames spent reaching the first level can be a few dozen.
+        assert levels >= FRAME_BUDGET // units - 32, name
         return levels
     raise AssertionError(f"{name}: no depth was accepted")
 
@@ -720,6 +723,43 @@ def test_nesting_at_the_limit(parse_exe, tmp_path, name, offset):
         assert b"exceeds the compiler safety limit" in result.diagnostic
 
 
+def qualified_call(n):
+    return "fn f() { a" + ".b" * n + "(); }"
+
+
+def _qualified_call_rejected(n):
+    try:
+        py_ast_dump.parse_source(qualified_call(n))
+    except MortError:
+        return True
+    return False
+
+
+@functools.cache
+def qualified_call_limit():
+    """The first chain the interpreter limit stops: `_qualified_name` recurses
+    over it with no budget check, where no parser rule bounds its length."""
+    low, high = FRAME_BUDGET, 3 * FRAME_BUDGET + 8
+    assert not _qualified_call_rejected(low) and _qualified_call_rejected(high)
+    while high - low > 1:
+        middle = (low + high) // 2
+        if _qualified_call_rejected(middle):
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+@pytest.mark.parametrize("offset", (-1, 0, 1))
+def test_qualified_call_limit(parse_exe, tmp_path, offset):
+    source = qualified_call(qualified_call_limit() + offset).encode()
+    result = assert_source_agrees(parse_exe, tmp_path, source)
+    if offset >= 0:
+        assert b"exceeds the compiler safety limit" in result.diagnostic
+    else:
+        assert result.dump is not None
+
+
 # Python's `<` lookahead is quadratic, so the ladder gets a smaller multiple.
 FAR_PAST_MULTIPLE = {"operator_ladder": 4}
 
@@ -728,7 +768,7 @@ FAR_PAST_MULTIPLE = {"operator_ladder": 4}
 def test_far_past_the_limit_is_a_diagnostic(parse_exe, tmp_path, name):
     units, build = NESTED_SHAPES[name]
     multiple = FAR_PAST_MULTIPLE.get(name, 50)
-    source = build((MAX_NESTING // units) * multiple + 7).encode()
+    source = build((FRAME_BUDGET // units) * multiple + 7).encode()
     result = assert_source_agrees(parse_exe, tmp_path, source)
     assert result.dump is None
     assert b"exceeds the compiler safety limit" in result.diagnostic
@@ -774,10 +814,10 @@ def elapsed(exe, tmp_path, source):
 
 
 # Sized for a machine with little memory: the largest run is about 200k tokens.
+# `field_then_call` is not here: it stops at test_qualified_call_limit's limit.
 LINEARITY_SIZES = {
     "binary": 25_000,
     "field": 25_000,
-    "field_then_call": 25_000,
     "cast": 25_000,
     "comparison": 25_000,
     "statements": 25_000,
@@ -912,8 +952,12 @@ def test_mutation_differential(parse_exe, tmp_path, mutator):
 # ----- the reference itself -----
 
 
-def test_reference_guard_changes_nothing_on_the_corpus():
-    """Below the limit, the guarded parser is the plain Python parser."""
+def test_frame_budget_is_the_compilers():
+    assert FRAME_BUDGET == COMPILE_FRAME_BUDGET
+
+
+def test_reference_budget_changes_nothing_on_the_corpus():
+    """Below the limit, parsing under the budget is the plain Python parser."""
     deepest = sys.getrecursionlimit()
     assert deepest >= 1000
     for path in REPO_FILES:
