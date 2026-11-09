@@ -204,6 +204,7 @@ class _DumpChecker(Checker):
         self.frozen = False
         self.needs_type = False
         self._match_stack = []
+        self.exact = EXACT_MODE[0]
         super().__init__(program, freestanding=freestanding, test_mode=test_mode)
         LAST[0] = self
 
@@ -238,8 +239,10 @@ class _DumpChecker(Checker):
         return None
 
     def _snapshot(self):
-        if self.tables is not None:
-            return
+        if self.tables is None:
+            self.tables = self._render_tables()
+
+    def _render_tables(self):
         out = []
         for name, target in self.aliases.items():
             out.append(f"alias {q(name)} {q(target)}\n")
@@ -289,7 +292,7 @@ class _DumpChecker(Checker):
                 f"{q(symbol) if symbol else '-'}\n")
         for declaration in self.program.enums:
             out.append(f"enum-decl {q(declaration.name)}\n")
-        self.tables = "".join(out)
+        return "".join(out)
 
     @staticmethod
     def _fn_attrs(decl):
@@ -332,7 +335,7 @@ class _DumpChecker(Checker):
         have: it decides from the qualified name. Past a disagreement (always
         a type error in a correct program) the two walks are not comparable."""
         name = pattern.name
-        if "." not in name:
+        if "." not in name or self.exact:
             return
         subject_type = match.expr.type
         prefix = name.rsplit(".", 1)[0]
@@ -414,6 +417,7 @@ class _LoggedBindings(list):
 
 
 LAST = [None]
+EXACT_MODE = [False]
 
 
 class Result(types.SimpleNamespace):
@@ -424,6 +428,7 @@ class Result(types.SimpleNamespace):
     error    MortError.format() text, or None
     t4       whether the error is one T4 implements
     manifest text for check_main (None: a parse or load error stopped the run)
+    checked  the full checked dump (see checked_dump), None if the check failed
     outcome  'ok', 'error', 'parse' (lexical or syntax error), 'load' (import
              resolution error, owned by T8) or 'crash'
     """
@@ -442,9 +447,130 @@ def manifest_text(mode, programs):
     return "".join(lines)
 
 
-def run_reference(path, mode, recursion_limit=1_000_000):
-    """Run the compiler's own pipeline over one root file."""
+# ----- T5: the checked program -----
+#
+# The whole AST, in py_ast_dump's format, after checking; every node line gets
+# ` |` and the fields the checker set. Every attribute of every node is dumped
+# (reflectively, as in py_ast_dump) except the ones named in `_describe`, so a
+# new checker field shows up here as a difference.
+#
+# Then `--final--`: drop q(type) q(symbol) lines, warning lines, the tables as
+# they stand at the end of the check.
+#
+# Field order per class is CHECKED_SUFFIX below. A constant prints in decimal up
+# to 256 bits and as a digest beyond: ~b<bits>:<fnv-1a 64 of the magnitude's
+# little-endian bytes>, with `-` before `b` for a negative value, so a dump
+# stays linear in the size of the program whatever the program folds.
+CHECKED_SUFFIX = {
+    "StructDecl": ["destructor_symbol"],
+    "FnDecl": ["module", "symbol_name"],
+    "TestDecl": ["module"],
+    "Param": ["destructor_symbol"],
+    "Let": ["var_type", "destructor_symbol"],
+    "For": ["var_type"],
+    "MatchArm": [
+        "variant_name", "binding_name", "binding_type", "binding_names",
+        "binding_types", "binding_indices", "payload_arity", "binding_destructors",
+    ],
+    "Match": ["exhaustive"],
+    "Var": ["resolved_function"],
+    "Call": [
+        "resolved_name", "enum_name", "enum_variant", "enum_payload_type",
+        "indirect", "destroys_binding", "deferred_destroy",
+    ],
+    "Try": ["result_type", "error_type", "return_type"],
+    "Move": ["binding_name", "is_resource_move"],
+    "FieldAccess": ["resolved_function"],
+}
+# Set by code generation, never by the checker.
+CODEGEN_FIELDS = {"lowered_name", "temp_name", "obj_temp_name", "resolved_path"}
+DYNAMIC_FIELDS = {"destructor_symbol", "destroys_binding", "deferred_destroy",
+                  "is_resource_move", "binding_name"}
+
+
+def _const_text(value):
+    if value is None:
+        return "none"
+    bits = value.bit_length()
+    if bits <= 256:
+        return str(value)
+    magnitude = abs(value).to_bytes((bits + 7) // 8, "little")
+    digest = 0xcbf29ce484222325
+    for byte in magnitude:
+        digest = ((digest ^ byte) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    sign = "-" if value < 0 else ""
+    return f"~{sign}b{bits}:{digest:016x}"
+
+
+def _suffix_value(value):
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return f"#{value}"
+    if isinstance(value, str):
+        return q(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_suffix_value(item) for item in value) + "]"
+    raise TypeError(f"cannot dump {type(value).__name__}")
+
+
+def _describe(item):
+    if isinstance(item, tuple):
+        return py_ast_dump.describe(item)
+    name = type(item).__name__
+    skipped = dict(py_ast_dump.CHECKER_FIELDS.get(name, {}))
+    skipped.update(dict.fromkeys(CHECKED_SUFFIX.get(name, ()), None))
+    skipped.update(dict.fromkeys(DYNAMIC_FIELDS, None))
+    skipped["filename"] = None
+    if isinstance(item, A.Node):
+        skipped.update(py_ast_dump.BASE_NODE_FIELDS)
+    children = []
+    parts = [name]
+    for field, value in vars(item).items():
+        if field in skipped:
+            if field in CODEGEN_FIELDS:
+                assert value is None, (name, field)
+            continue
+        parts.append(f"{field}={py_ast_dump.format_field(value, children)}")
+    parts.append("|")
+    if isinstance(item, A.Node):
+        parts.append(f"type={_suffix_value(item.type)}")
+        parts.append(f"is_lit={_suffix_value(item.is_lit)}")
+        parts.append(f"const_val={_const_text(item.const_val)}")
+    for field in CHECKED_SUFFIX.get(name, ()):
+        parts.append(f"{field}={_suffix_value(getattr(item, field, None))}")
+    return " ".join(parts) + "\n", children
+
+
+def checked_dump(checker):
+    out = []
+    stack = [checker.program]
+    while stack:
+        line, children = _describe(stack.pop())
+        out.append(line)
+        stack.extend(reversed(children))
+    out.append("--final--\n")
+    for typ, symbol in checker.program.drop_destructors.items():
+        out.append(f"drop {q(typ)} {q(symbol)}\n")
+    for warning in checker.warnings:
+        line = "-" if warning.line is None else warning.line
+        out.append(
+            f"warning {q(warning.code)} {line} {q(warning.filename or '')} "
+            f"{q(warning.msg)}\n")
+    out.append(checker._render_tables())
+    return "".join(out)
+
+
+def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
+    """Run the compiler's own pipeline over one root file.
+
+    exact: compare as T5 does, with payload patterns chosen by the subject type
+    in both implementations, so nothing has to stop at T4's approximation.
+    """
     captured = []
+    EXACT_MODE[0] = exact
     original_compile = mortc._compile_programs
     original_checker, original_codegen = mortc.Checker, mortc.CodeGen
     original_set = getattr(typechecker, "set", None)
@@ -487,13 +613,14 @@ def run_reference(path, mode, recursion_limit=1_000_000):
         outcome = "load" if loader or error is None else "parse"
         return Result(tables=None, events="", error=error.format() if error else None,
                       t4=False, manifest=None, outcome=outcome,
-                      failing_file=getattr(error, "filename", None))
+                      failing_file=getattr(error, "filename", None), checked=None)
     if error is None:
         checker._snapshot()
     elif error.msg in ("no 'main' function defined", "'main' must take no parameters",
                        "'main' must return int"):
         checker._snapshot()
     events = "".join(checker.events)
+    checked = checked_dump(checker) if error is None else None
     return Result(
         tables=checker.tables,
         events=events,
@@ -502,6 +629,7 @@ def run_reference(path, mode, recursion_limit=1_000_000):
         manifest=manifest_text(mode, captured[0]),
         outcome="ok" if error is None else "error",
         failing_file=None,
+        checked=checked,
     )
 
 
