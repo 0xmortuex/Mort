@@ -669,9 +669,11 @@ been executed on Linux or macOS: the C cross-compiles and links for
 counted frames. Two consequences here. The differential reference calls the unbudgeted
 `compile_files_to_c.__wrapped__`, because its deep-chain comparisons must reach past
 that limit, as they did before. `CK_MAX_DEPTH` moved from 989 to 995 to stay on the real
-boundary, and `ck_valid_at` counts two levels a call, Python's `_valid_type` and
-`_check_valid_type`; a pointer chain one past the limit is now reported at the last
-alias, not the first.
+boundary. In the alias-target pass only, `ck_valid_at` counts a second level per call,
+for Python's `_check_valid_type`, so a pointer chain one past the limit is reported at
+the last alias as `mortc.py` does. Other validity checks keep counting one level, the
+open "Validity depth" difference in section 11: `mortc.py` now rejects a pointer field
+nested beyond about 494 levels, and Mort accepts it.
 
 **Known differences from `mortc.py`.**
 

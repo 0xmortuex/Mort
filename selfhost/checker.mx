@@ -181,6 +181,7 @@ struct Ck {
     s: *Interner,
     program: *Program,
     out_path: *u8,
+    in_alias_targets: bool,
     freestanding: bool,
     test_mode: bool,
     depth: u64,
@@ -953,15 +954,17 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
     if behind_pointer {
         memo = &(*c).valid_behind_pointer;
     }
-    // Python spends two frames a level here, _valid_type and _check_valid_type,
-    // and checks the first before its memo.
-    ck_enter(c);
     if map_has(memo, type_in) {
-        ck_leave(c);
         return true;
     }
     ck_charge_text(c, type_in);
     ck_enter(c);
+    // In the alias-target pass this is Python's second frame of the level,
+    // _check_valid_type, and keeps that pass on mortc.py's boundary. Elsewhere one
+    // level is counted, the open difference in PLAN.md section 11.
+    if (*c).in_alias_targets {
+        ck_enter(c);
+    }
     let t = ck_resolve_alias(c, type_in);
     let result = false;
     if ts_is_ptr(s, t) {
@@ -1025,7 +1028,9 @@ fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
         }
         free(params.data as *void);
     }
-    ck_leave(c);
+    if (*c).in_alias_targets {
+        ck_leave(c);
+    }
     ck_leave(c);
     if result {
         map_put(memo, type_in, 1);
@@ -1642,6 +1647,7 @@ fn ck_check_enum_payloads(c: *Ck) {
 
 fn ck_check_alias_targets(c: *Ck) {
     let list = (*(*c).program).aliases;
+    (*c).in_alias_targets = true;
     for i: u64 in 0..(*list).len {
         let d = ast_item(list, i);
         if (*d).ty == (*c).t_void || !ck_valid_sizeof(c, (*d).ty) {
@@ -1653,6 +1659,7 @@ fn ck_check_alias_targets(c: *Ck) {
             ck_fail_node(c, d, &b);
         }
     }
+    (*c).in_alias_targets = false;
 }
 
 fn ck_check_function(c: *Ck, f: *Node) {
@@ -2115,7 +2122,7 @@ fn ck_check_test_names(c: *Ck) {
 fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
         freestanding: bool, test_mode: bool, first_columns: *Map) -> Ck {
     let c = Ck {
-        s: strings, program: program, out_path: out_path,
+        s: strings, program: program, out_path: out_path, in_alias_targets: false,
         freestanding: freestanding, test_mode: test_mode, depth: 0,
         generic_instantiations: 0,
         work_spent: 0, work_instantiated: false, work_site: 0 as *Node,
