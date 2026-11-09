@@ -1,0 +1,2 @@
+enum E { A, B }
+fn main() -> int { match E.A { E.A => {} E.A => {} E.B => {} } return 0; }

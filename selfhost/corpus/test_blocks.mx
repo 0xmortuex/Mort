@@ -1,0 +1,30 @@
+// Corpus program with test blocks: the checker visits them in every mode.
+
+enum Shape { Dot, Line(i64) }
+
+let origin: i64 = 0;
+
+fn length(shape: Shape) -> i64 {
+    match shape {
+        Shape.Dot => { return 0; }
+        Shape.Line(size) => { return size; }
+    }
+}
+
+test "dot has no length" {
+    let shape = Shape.Dot;
+    assert(length(shape) == origin);
+}
+
+test "line keeps its length" {
+    let size = 3;
+    let shape = Shape.Line(size);
+    for step in 0..2 {
+        let seen = length(shape) + step;
+        assert(seen >= size);
+    }
+}
+
+fn main() -> int {
+    return length(Shape.Line(0));
+}

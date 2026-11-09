@@ -49,9 +49,11 @@ Mort, tested by comparing its output with the Python compiler's. See
   interner, located diagnostics) and `bignum.mx` (arbitrary-precision integers).
 - The parser and flat AST, with a differential test against `mort/parser.py`.
 - A seeded generator of valid programs for those tests.
+- The first part of the checker: names, declarations, type strings and scopes,
+  with a differential test against the Python checker.
 
-The checker, the C code generator and the driver are not merged, so there is no
-stage-1 compiler and no bootstrap yet.
+Expression checking, the C code generator and the driver are not merged, so there
+is no stage-1 compiler and no bootstrap yet.
 
 ## 0.55.0 to 0.137.0 - 2026-08-03 to 2026-11-08
 

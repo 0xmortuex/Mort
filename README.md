@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-791%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-1070%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, with no parser or compiler libraries. (The one runtime dependency, `cryptography`, verifies package-registry signatures.)
@@ -66,8 +66,9 @@ mortc: wrote fib
 ## Quickstart
 
 You need [uv](https://docs.astral.sh/uv/) and Git. No C compiler is required:
-the `dev` extra installs Zig's. The commands below took 128 seconds from a fresh
-clone on a busy Windows machine, most of it downloading the toolchain.
+the `dev` extra installs Zig's. The commands below took 140 to 167 seconds from a
+fresh clone on a busy Windows machine: about 54 seconds in `uv sync` and about
+80 seconds in the first Zig runtime build.
 
 ```bash
 git clone https://github.com/0xmortuex/Mort.git
@@ -85,8 +86,9 @@ run by the test suite. To work on the compiler, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 > **Self-hosting is incomplete.** Mort does not compile itself yet. A lexer,
-> parser and support libraries written in Mort are in [`selfhost/`](selfhost/PLAN.md);
-> the checker, code generator and driver are not merged.
+> parser, declaration checker and support libraries written in Mort are in
+> [`selfhost/`](selfhost/PLAN.md); expression checking, the code generator and the
+> driver are not merged.
 
 ## How it works
 
@@ -442,9 +444,9 @@ uv sync --extra dev
 uv run pytest tests/ -q
 ```
 
-Measured on Windows with the Zig backend at this revision: 791 tests in `tests/`
-passed, 1459 in `selfhost/` passed and 36 skipped (those need the self-hosted
-checker, which is not merged), and 28 of 28 conformance cases passed.
+Measured on Windows with the Zig backend at this revision: 1070 tests in `tests/`
+passed, 2108 in `selfhost/` passed and 1 skipped, and 31 of 31 conformance cases
+passed.
 
 Front-end tests (type checking, error messages, codegen) always run. The
 end-to-end tests compile each example to a real binary and check its output;

@@ -1,0 +1,325 @@
+// Type strings: the module-level helpers of mort/typechecker.py, ported 1:1.
+//
+// A type is an interner handle of its canonical text (PLAN.md, section 5: the
+// strings are the model until after bootstrap). Each function here corresponds
+// to the Python helper of the same name; the quirks are deliberate.
+
+import support;
+
+fn ts_text(s: *Interner, h: u64) -> Span {
+    return intern_text(s, h);
+}
+
+fn ts_sub(t: Span, from: u64, to: u64) -> Span {
+    return Span { data: &t.data[from], len: to - from };
+}
+
+fn ts_sub_h(s: *Interner, t: Span, from: u64, to: u64) -> u64 {
+    return intern(s, ts_sub(t, from, to));
+}
+
+fn ts_starts_with(t: Span, prefix: *u8) -> bool {
+    let i: u64 = 0;
+    while prefix[i] != 0 {
+        if i >= t.len || t.data[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+fn ts_ends_with(t: Span, c: u8) -> bool {
+    return t.len != 0 && t.data[t.len - 1] == c;
+}
+
+// The index of the first `c`, or `t.len` if absent.
+fn ts_find(t: Span, c: u8) -> u64 {
+    for i: u64 in 0..t.len {
+        if t.data[i] == c {
+            return i;
+        }
+    }
+    return t.len;
+}
+
+// ----- predicates and projections -----
+
+fn ts_is_ptr(s: *Interner, h: u64) -> bool {
+    return ts_starts_with(ts_text(s, h), "*");
+}
+
+fn ts_is_const_ptr(s: *Interner, h: u64) -> bool {
+    return ts_starts_with(ts_text(s, h), "*const ");
+}
+
+fn ts_pointee(s: *Interner, h: u64) -> u64 {
+    let t = ts_text(s, h);
+    if ts_is_const_ptr(s, h) {
+        return ts_sub_h(s, t, 7, t.len);
+    }
+    return ts_sub_h(s, t, 1, t.len);
+}
+
+// No string literal here may start with the two characters `[` `]`: codegen
+// mistakes such a literal for a slice type (BLOCKERS.md).
+fn ts_has_brackets(t: Span) -> bool {
+    return t.len >= 2 && t.data[0] == '[' && t.data[1] == ']';
+}
+
+fn ts_is_array(s: *Interner, h: u64) -> bool {
+    let t = ts_text(s, h);
+    return ts_starts_with(t, "[") && !ts_has_brackets(t);
+}
+
+fn ts_is_slice(s: *Interner, h: u64) -> bool {
+    return ts_has_brackets(ts_text(s, h));
+}
+
+fn ts_is_const_slice(s: *Interner, h: u64) -> bool {
+    let t = ts_text(s, h);
+    return ts_has_brackets(t) && ts_starts_with(ts_sub(t, 2, t.len), "const ");
+}
+
+fn ts_slice_elem(s: *Interner, h: u64) -> u64 {
+    let t = ts_text(s, h);
+    if ts_is_const_slice(s, h) {
+        return ts_sub_h(s, t, 8, t.len);
+    }
+    return ts_sub_h(s, t, 2, t.len);
+}
+
+// '[i32;8]' -> ('i32', '8'). Splits on the last ';' to allow nested arrays.
+fn ts_array_parts(s: *Interner, h: u64, elem: *u64, count: *u64) {
+    let t = ts_text(s, h);
+    let cut: u64 = 0;
+    let found = false;
+    for i: u64 in 1..t.len - 1 {
+        if t.data[i] == ';' {
+            cut = i;
+            found = true;
+        }
+    }
+    if !found {
+        sup_die("mort: internal error: array type without a size");
+    }
+    *elem = ts_sub_h(s, t, 1, cut);
+    *count = ts_sub_h(s, t, cut + 1, t.len - 1);
+}
+
+// Generic parts: `(base, args)` of a concrete generic type string.
+fn ts_generic_parts(s: *Interner, h: u64, base: *u64, args: *U64Vec) -> bool {
+    let t = ts_text(s, h);
+    if ts_find(t, '<') == t.len || !ts_ends_with(t, '>') {
+        return false;
+    }
+    let cut = ts_find(t, '<');
+    *base = ts_sub_h(s, t, 0, cut);
+    ts_split_type_list(s, ts_sub(t, cut + 1, t.len - 1), args);
+    return true;
+}
+
+fn ts_split_type_list(s: *Interner, inner: Span, out: *U64Vec) {
+    if inner.len == 0 {
+        return;
+    }
+    let start: u64 = 0;
+    let angle: i64 = 0;
+    let paren: i64 = 0;
+    let bracket: i64 = 0;
+    for i: u64 in 0..inner.len {
+        let c = inner.data[i];
+        if c == '<' {
+            angle += 1;
+        } else if c == '>' {
+            angle -= 1;
+        } else if c == '(' {
+            paren += 1;
+        } else if c == ')' {
+            paren -= 1;
+        } else if c == '[' {
+            bracket += 1;
+        } else if c == ']' {
+            bracket -= 1;
+        } else if c == ',' && angle == 0 && paren == 0 && bracket == 0 {
+            u64vec_push(out, ts_sub_h(s, inner, start, i));
+            start = i + 1;
+        }
+    }
+    u64vec_push(out, ts_sub_h(s, inner, start, inner.len));
+}
+
+fn ts_function_parts(s: *Interner, h: u64, params: *U64Vec, result: *u64) -> bool {
+    let t = ts_text(s, h);
+    if !ts_starts_with(t, "fn(") {
+        return false;
+    }
+    let depth: i64 = 0;
+    let close: u64 = t.len;
+    let i: u64 = 2;
+    while i < t.len {
+        if t.data[i] == '(' {
+            depth += 1;
+        } else if t.data[i] == ')' {
+            depth -= 1;
+            if depth == 0 {
+                close = i;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if close == t.len || close + 3 > t.len
+            || t.data[close + 1] != '-' || t.data[close + 2] != '>' {
+        return false;
+    }
+    ts_split_type_list(s, ts_sub(t, 3, close), params);
+    *result = ts_sub_h(s, t, close + 3, t.len);
+    return true;
+}
+
+// How many type constructors deep a type string goes; `type_nesting` on
+// fix/frontend-crashes. Pointers, slices and function results are prefixes with
+// nothing closing them, so they deepen everything up to the enclosing separator.
+// An unbalanced piece, where Python's list would raise, reads as depth zero.
+fn ts_type_nesting(t: Span) -> u64 {
+    let deepest: u64 = 0;
+    let depth: u64 = 0;
+    let enclosing = u64vec_new();
+    let position: u64 = 0;
+    while position < t.len {
+        let c = t.data[position];
+        let next: u8 = 0;
+        if position + 1 < t.len {
+            next = t.data[position + 1];
+        }
+        if c == '[' && next == ']' {
+            depth += 1;
+            position += 1;
+        } else if c == '*' {
+            depth += 1;
+        } else if c == '-' && next == '>' {
+            depth += 1;
+            position += 1;
+        } else if c == '(' || c == '[' || c == '<' {
+            u64vec_push(&enclosing, depth);
+            depth += 1;
+        } else if c == ')' || c == ']' || c == '>' {
+            depth = 0;
+            if enclosing.len != 0 {
+                depth = u64vec_pop(&enclosing);
+            }
+        } else if c == ',' || c == ';' {
+            depth = 1;
+            if enclosing.len != 0 {
+                depth = u64vec_get(&enclosing, enclosing.len - 1) + 1;
+            }
+        }
+        if depth > deepest {
+            deepest = depth;
+        }
+        position += 1;
+    }
+    free(enclosing.data as *void);
+    return deepest;
+}
+
+fn ts_tuple_parts(s: *Interner, h: u64, out: *U64Vec) -> bool {
+    let t = ts_text(s, h);
+    if !ts_starts_with(t, "(") || !ts_ends_with(t, ')') {
+        return false;
+    }
+    let before = (*out).len;
+    ts_split_type_list(s, ts_sub(t, 1, t.len - 1), out);
+    if (*out).len - before < 2 {
+        while (*out).len > before {
+            u64vec_pop(out);
+        }
+        return false;
+    }
+    return true;
+}
+
+// ----- building type text -----
+
+// Interns the buffer's text and releases the buffer, which matters on deep
+// types: every level builds a new string.
+fn ts_take(s: *Interner, b: *Buf) -> u64 {
+    let handle = intern(s, buf_span(b));
+    free((*b).data as *void);
+    return handle;
+}
+
+fn ts_join_list(b: *Buf, s: *Interner, list: *U64Vec) {
+    for i: u64 in 0..(*list).len {
+        if i != 0 {
+            buf_push(b, ',');
+        }
+        buf_push_span(b, ts_text(s, u64vec_get(list, i)));
+    }
+}
+
+fn ts_make_function(s: *Interner, params: *U64Vec, result: u64) -> u64 {
+    let b = buf_new(64);
+    buf_push_z(&b, "fn(");
+    ts_join_list(&b, s, params);
+    buf_push_z(&b, ")->");
+    buf_push_span(&b, ts_text(s, result));
+    return ts_take(s, &b);
+}
+
+fn ts_make_tuple(s: *Interner, items: *U64Vec) -> u64 {
+    let b = buf_new(64);
+    buf_push(&b, '(');
+    ts_join_list(&b, s, items);
+    buf_push(&b, ')');
+    return ts_take(s, &b);
+}
+
+fn ts_make_generic(s: *Interner, base: u64, args: *U64Vec) -> u64 {
+    let b = buf_new(64);
+    buf_push_span(&b, ts_text(s, base));
+    buf_push(&b, '<');
+    ts_join_list(&b, s, args);
+    buf_push(&b, '>');
+    return ts_take(s, &b);
+}
+
+fn ts_prefix_and(s: *Interner, prefix: *u8, tail: u64) -> u64 {
+    let b = buf_new(32);
+    buf_push_z(&b, prefix);
+    buf_push_span(&b, ts_text(s, tail));
+    return ts_take(s, &b);
+}
+
+fn ts_make_slice(s: *Interner, const_slice: bool, inner: u64) -> u64 {
+    let b = buf_new(32);
+    buf_push(&b, '[');
+    buf_push(&b, ']');
+    if const_slice {
+        buf_push_z(&b, "const ");
+    }
+    buf_push_span(&b, ts_text(s, inner));
+    return ts_take(s, &b);
+}
+
+fn ts_make_array(s: *Interner, elem: u64, count: u64) -> u64 {
+    let b = buf_new(32);
+    buf_push(&b, '[');
+    buf_push_span(&b, ts_text(s, elem));
+    buf_push(&b, ';');
+    buf_push_span(&b, ts_text(s, count));
+    buf_push(&b, ']');
+    return ts_take(s, &b);
+}
+
+// `names` and `values` are the two sides of the Python `mapping` dict.
+fn ts_subst_index(names: *U64Vec, h: u64, out: *u64) -> bool {
+    for i: u64 in 0..(*names).len {
+        if u64vec_get(names, i) == h {
+            *out = i;
+            return true;
+        }
+    }
+    return false;
+}
