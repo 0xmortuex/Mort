@@ -177,7 +177,7 @@ the thresholds so that a shrinking corpus fails:
 | Class | Content | Required size |
 | --- | --- | --- |
 | Self | Every `selfhost/*.mx` | Grows to the whole compiler |
-| Existing subset | The 17 repo files, including the 9 conformance programs | All 17 |
+| Existing subset | The 17 repo files, including the 9 conformance programs (the 6 conformance `reject` cases among them count as compiler-rejected and add nothing to the accepted-line floor) | All 17 |
 | Stubbed kernel | `kernel/kmain.mx` with `outb`/`outw`/`inb`/`inw` calls redirected to stub functions, `asm` statements removed and `u16` changed to `u32` | At least 1500 lines. Measured: 1905 lines, 0 gate violations, compiles to 1986 lines of C |
 | Generated | A seeded generator (`selfhost/tools/gen_subset_programs.py`, task T2c) producing valid subset programs that use every node kind and every binary operator on each integer type pair, including literal coercion and overflow edges | At least 20 programs totalling at least 6000 lines; at least 3 of 1500 lines or more |
 | Rejected | Every other repo `.mx`: the rest of `conformance/` (29 files in all), `std/` (5204 lines) and the original kernel; 88 files, 9242 lines today | Clean located diagnostic on all; never a crash and never accepted |
@@ -206,8 +206,8 @@ measured data point.
 | --- | --- | --- | ---: |
 | T1 | Lexer with differential test | none | done |
 | T2 | `support.mx`: string interner, hash map (lookup-only), vectors, diagnostics | T1 | done |
-| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | 4 to 8 |
-| T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | 3 to 5 |
+| T2b | `bignum.mx`: signed arbitrary-precision integers for checker constant folding | T2 | done (about 1 hour; estimated 4 to 8) |
+| T2c | `selfhost/tools/gen_subset_programs.py` and the corpus thresholds of section 5.1 | T1 | done |
 | T3 | AST in flat structs, parser, AST dump | T2, T2c | done |
 | T4 | Checker part 1: names, declarations, type strings, scopes | T3 | 10 to 16 |
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | 14 to 24 |
@@ -215,7 +215,9 @@ measured data point.
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | 8 to 14 |
 | T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
 | T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
-| | **Remaining total** | | **70 to 120** |
+| | **Remaining total** | | **50 to 86** |
+
+T3 lists T2c as a dependency but was completed first. T2c does not reopen T3: it only extends the corpus T3's differential test runs over.
 
 Not included: fixing gap G3 in section 8 if something comes to need it, and any
 Python compiler bugs the differential tests expose.
@@ -314,6 +316,28 @@ time bound, token-level mutation (at least 75% of cases must carry 10 or more
 dump lines), a separate invalid-bytes mutation class, the Unicode check, and the
 subset gate with a negative test per excluded construct.
 
+## 7b. Bignum status (T2b)
+
+- `selfhost/bignum.mx` (765 lines), driver `selfhost/bignum_test_main.mx`, test
+  `selfhost/test_bignum.py`. It does not share lexer_float's `Big`: both are the
+  same limb layout, but flat-namespace names stay apart (`bn_`, `BigInt`), and a
+  test links the two together.
+- Covers everything `Checker._fold_binary` and `_const_value` need, through
+  `bn_fold_binary` (Python's `_c_div`/`_c_mod` for `/` and `%`, the `1 << 65` cap),
+  plus Python's flooring `//` and `%`, `bn_not`, `bn_neg`, `bn_bit_length` and
+  `bn_cmp`. Parsing takes bases 2 to 36 and decimal formatting matches `str`.
+- `bn_parse` must accept more than 4300 digits: a maximal 4300-digit hex literal
+  reaches the checker as 5178 canonical decimal digits.
+- The checker owns `MAX_CONSTANT_BITS` (2^18), checked after the fold as Python
+  does, so a product can reach 2^19 bits. Library hard limit: `BN_MAX_BITS`, 2^20
+  bits, an internal-error exit that a checked program cannot reach.
+- Uses `sup_die` and `sup_alloc_array` from `support.mx`.
+- Test: 300,000 seeded operations per run against Python `int` and the real
+  checker fold (fresh driver build), a boundary cross product, all bases, diagnostics
+  and 18 seeded mutants, plus fixed zero-negation cases that catch a 19th directly. Allocation failure is a real `malloc` null: the size comes
+  from input and the pointer escapes, because clang otherwise deletes the unused
+  `malloc` and its check.
+
 ## 8. Language and stdlib gaps
 
 Exact errors are in `BLOCKERS.md`.
@@ -392,3 +416,45 @@ parser diagnostics and to some nodes, an AST-depth rejection (`_check_nesting`,
 cost 800) and a located nesting error. On merge, the Mort parser must add
 columns and that check, and `GuardedParser` should be dropped or reduced. The
 dump's reflection will flag the new fields by itself, as a mismatch.
+
+## 12. Generator status (T2c)
+
+`selfhost/tools/gen_subset_programs.py` builds each construct as Mort text plus a
+Python closure for its meaning, written from the language spec, so the expected
+stdout, stderr and exit status never come from the compiler under test.
+`selfhost/corpus.py` holds the 5.1 classes and floors, and
+`selfhost/test_generated_corpus.py` enforces them. Run with
+`MORT_SELFHOST_CORPUS_SCALE=n` for a larger corpus.
+
+- `subset` profile: 25 programs, about 10,400 lines, three of them over 1500
+  lines. A `matrix` program runs every integer operator on every ordered pair of
+  subset integer types, and on literals, at their edges; `trap` programs end in
+  each defined runtime failure. All pass the gate and match the model.
+- `full` profile: generics (`>>` closers, inferred and explicit), payload enums,
+  `match` bindings, tuples, slices, local arrays, function pointers (the language
+  has no closures or traits), `try`, `defer`, `resource`/`move`, floats, modules
+  across files, aliases, `asm`, `volatile`, every integer width. Not counted
+  towards the floor, and only parser/checker-relevant, but every program also runs
+  and is checked.
+- The header of the generator states exactly what is not independently modelled
+  (target-defined `c_*` behaviour, `test` block bodies, float format, `sizeof` of
+  enums).
+- Six planted defects in a copy of `parser.mx` (precedence swap, right-associative
+  binary operators, lost `..=`, chained casts, operator line, `%` level) are all
+  caught by the corpus, in the default test run; the real parser is not.
+- The test wires the corpus into T4's declaration-checker differential through
+  `test_checker_decl_differential.compare` once that file is on the branch; until
+  T4 merges those tests skip with that reason. On a trial merge with T4, 32 of 35
+  passed; the other 3 hit the unchecked-test-body divergence in `BLOCKERS.md`.
+
+**Follow-up for T4 and T5: the corpus is thin outside the subset.** Generics,
+payload enums and cross-file modules (`module`, `pub`, `import ... as`) appear only
+in the `full` profile, whose default size is 10 programs and 2,088 lines. Measured
+at the default scale: 16 generic declarations, 9 payload enums, 3 module files, and
+each comes from a fixed template with random values, not from random shapes. The
+8000-line floor says nothing about these features, because the `subset` profile
+cannot contain them. A pass over this corpus is weak evidence for generic
+instantiation, payload binding and module visibility. T4 and T5 should keep their
+own targeted cases there, and widen these generator sections (or run with a larger
+`MORT_SELFHOST_CORPUS_SCALE`, which repeats the templates but adds no new shapes)
+before relying on them.
