@@ -495,13 +495,14 @@ def test_many_distinct_tuple_types_stay_within_memory(cg_exe, tmp_path):
 # ----- the generated source and the gate -----
 
 def test_helper_text_is_current():
-    """cg_helper_text.mx must be what the tool generates from mort/codegen.py."""
-    target = HERE / "cg_helper_text.mx"
-    before = target.read_bytes().replace(b"\r\n", b"\n")
-    subprocess.run(
-        [sys.executable, str(HERE / "tools" / "gen_helper_text.py")],
-        capture_output=True, check=True)
-    assert target.read_bytes().replace(b"\r\n", b"\n") == before
+    """cg_helper_text.mx must be what the tool generates from mort/codegen.py.
+
+    Compares and fails: a test must not modify the tree."""
+    import gen_helper_text
+
+    on_disk = (HERE / "cg_helper_text.mx").read_bytes().replace(b"\r\n", b"\n")
+    assert on_disk == gen_helper_text.render().encode("ascii"), (
+        "cg_helper_text.mx is stale; run selfhost/tools/gen_helper_text.py")
 
 
 def test_subset_gate_covers_the_generator():
