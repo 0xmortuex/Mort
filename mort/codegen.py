@@ -10,6 +10,7 @@ Design choices:
 import base64
 
 from . import mort_ast as A
+from .depth import check_frames
 from .errors import MortError
 from .typechecker import (
     BUILTIN_NAMES,
@@ -190,6 +191,7 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
 
     '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
     """
+    check_frames()
     charge_chars(t)
     callable_type = _function_parts(t)
     if callable_type:
@@ -253,6 +255,7 @@ class CodeGen:
         seen = set()
 
         def visit(value):
+            check_frames()
             if isinstance(value, str):
                 if _is_slice(value):
                     found.add(value)
@@ -288,6 +291,7 @@ class CodeGen:
         visited_types = set()
 
         def visit_type(value):
+            check_frames()
             # One huge type named by many nodes is walked once.
             if value in visited_types:
                 return
@@ -332,6 +336,7 @@ class CodeGen:
                     visit_type(item)
 
         def visit(value):
+            check_frames()
             if isinstance(value, str):
                 visit_type(value)
                 return
@@ -2058,6 +2063,7 @@ class CodeGen:
                 nodes[("enum", enum.name)] = enum
 
         def value_dependency(value_type):
+            check_frames()
             if _is_array(value_type):
                 element, _ = _array_parts(value_type)
                 return value_dependency(element)
@@ -2220,6 +2226,7 @@ class CodeGen:
         self.loop_defer_bases = saved_loops
 
     def _gen_stmt(self, s):
+        check_frames()
         self.current_node = s
         self._coverage_point(s)
         if isinstance(s, A.Let):
@@ -2566,6 +2573,7 @@ class CodeGen:
         return s
 
     def _gen_expr(self, e):
+        check_frames()
         self.current_node = e
         if isinstance(e, A.IntLit):
             if e.value > self._I64_MAX:
