@@ -56,3 +56,12 @@ Interim: declare the exact C signature (`end: **c_char`).
   struct C { a: A }` the message is either `A -> B -> A` or `A -> C -> A`. Found
   by T4, whose reference (`selfhost/py_check_dump.py`) makes that iteration
   insertion-ordered so the comparison is stable.
+- `mort/typechecker.py` on this base: `_coerce` returns at `expr.type == expected`
+  before any range check, so `let x: i64 = 1 << 2000;` is accepted. T5 reproduces
+  it, since the comparison is with this checker; `main` fixes it with
+  `_require_representable`, and T5 must follow at that merge (`selfhost/PLAN.md`,
+  section 12).
+- Instances created while checking a `test` block are appended after the loop that
+  checks function bodies, so their bodies are never checked. Found porting T5,
+  which reproduces it: a body error in a generic used only from a test goes
+  unreported.

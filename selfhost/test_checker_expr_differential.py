@@ -927,6 +927,73 @@ def test_deepest_nesting_the_parser_allows_does_not_overflow_the_stack(expr_exe,
     assert outcome == "ok", outcome
 
 
+def _nest(depth, wrap, seed="1"):
+    text = seed
+    for _ in range(depth):
+        text = wrap.format(text)
+    return text
+
+
+# Every shape recurses in the checker on the parser's bounded depth. The stack
+# frames on the path differ, which is why each is run at the parser's limit.
+LIMIT_SHAPES = {
+    "unary": "let x = " + _nest(990, "-{}") + ";",
+    "call": "let x = " + _nest(490, "f({})") + ";",
+    "builtin": "let x = " + _nest(490, "alloc({})") + ";",
+    "generic_call": "let x = " + _nest(490, "id({})") + ";",
+    "enum_ctor": "let x = " + _nest(490, "B.N({})", "B.L") + ";",
+    "tuple": "let x = " + _nest(490, "({}, 1)") + ";",
+    "struct_lit": "let x = " + _nest(490, "W {{ a: {} }}", "1") + ";",
+    "if": _nest(490, "if true {{ {} }}", "let y = 1;"),
+    "else_if": "if true { } " + "else if true { } " * 490,
+    "block": _nest(490, "{{ {} }}", "let y = 1;"),
+    "while": _nest(490, "while true {{ {} break; }}", "let y = 1;"),
+    "match": _nest(330, "match 1 {{ _ => {{ {} }} }}", "let y = 1;"),
+}
+LIMIT_PRELUDE = (
+    "fn f(a: i64) -> i64 { return a; }\n"
+    "fn id<T>(a: T) -> T { return a; }\n"
+    "enum B { L, N(i64) }\n"
+    "struct W { a: i64 }\n"
+)
+
+
+@pytest.mark.parametrize("shape", sorted(LIMIT_SHAPES))
+def test_recursion_at_the_parser_limit(expr_exe, tmp_path, shape):
+    source = f"{LIMIT_PRELUDE}fn main() -> int {{\n{LIMIT_SHAPES[shape]}\nreturn 0;\n}}\n"
+    assert assert_source_agrees(expr_exe, tmp_path, source) in ("ok", "error", "parse")
+
+
+def _module_program(tmp_path, library, root):
+    (tmp_path / "lib.mx").write_text(library, encoding="utf-8")
+    path = tmp_path / "main.mx"
+    path.write_text(root, encoding="utf-8")
+    return path
+
+
+LIBRARY = (
+    "module util;\npub fn add(a: i64, b: i64) -> i64 { return a + hidden(b); }\n"
+    "fn hidden(a: i64) -> i64 { return a; }\n"
+    "pub fn same<T>(a: T) -> T { return a; }\n"
+    "fn secret<T>(a: T) -> T { return a; }\n"
+)
+MODULE_CASES = {
+    "call": "import lib as u;\nfn main() -> int { return u.add(1, 2); }\n",
+    "generic": "import lib as u;\nfn main() -> int { let a = u.same(1); let b = u.same(true); return a; }\n",
+    "private": "import lib as u;\nfn main() -> int { return u.hidden(1); }\n",
+    "private_generic": "import lib as u;\nfn main() -> int { return u.secret(1); }\n",
+    "fn_value": "import lib as u;\nfn main() -> int { let f = u.add; return f(1, 2); }\n",
+    "arg_mismatch": "import lib as u;\nfn main() -> int { return u.add(true, 2); }\n",
+    "unknown_member": "import lib as u;\nfn main() -> int { return u.nothing(); }\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(MODULE_CASES))
+def test_modules(expr_exe, tmp_path, name):
+    path = _module_program(tmp_path, LIBRARY, MODULE_CASES[name])
+    assert compare(expr_exe, path, "hosted", tmp_path) in ("ok", "error")
+
+
 def test_nested_parens_at_the_limit(expr_exe, tmp_path):
     depth = 300
     source = "fn main() -> int {\nlet x = " + "(" * depth + "1" + ")" * depth + ";\nreturn 0;\n}\n"
