@@ -566,24 +566,36 @@ def test_doubled_slice_text_is_bounded(cg_exe, tmp_path):
     assert b"duplicated slice operands" in stderr
 
 
+def slice_while_chain(depth):
+    """An unprepared `while` condition: no temporaries, and no defer replay budget."""
+    slice_type = "[]" * depth + "u8"
+    return (
+        f"fn main() -> int {{\nlet p: *{slice_type[2:]} = null;\n"
+        f"let s = slice<{slice_type[2:]}>(p, 1);\n"
+        f"while s{'[0]' * depth} != 0 {{ break; }}\nreturn 0;\n}}\n")
+
+
 def test_doubled_slice_text_agrees_at_python_sizes(cg_exe, tmp_path):
     """Python writes about 13 MB here; Mort must not reject it."""
     assert agree(cg_exe, tmp_path, slice_chain(18)) == "ok"
+    assert agree(cg_exe, tmp_path, slice_while_chain(18)) == "ok"
 
 
 def test_doubled_slice_text_is_exact_beyond_the_inline_threshold(cg_exe, tmp_path):
     """21 levels is about 109 MB of C: Python compiles it, so Mort must, in bounded memory.
 
-    Size follows the recurrence from depth 18, which test_..._at_python_sizes compared."""
-    sizes = []
+    Depth 18 is compared byte for byte in test_..._at_python_sizes. The `while` line
+    obeys L(d) = 2 L(d - 1) + c, so 18 and 19 predict 21 exactly; the head does not."""
+    lines = []
     for depth in (18, 19, 21):
-        code, stderr, c_out = bounded(cg_exe, tmp_path, slice_chain(depth))
+        code, stderr, c_out = bounded(cg_exe, tmp_path, slice_while_chain(depth))
         assert code == 0, stderr
-        sizes.append(c_out.stat().st_size)
-    per_level = sizes[1] - sizes[0]
-    assert sizes[2] == sizes[0] + per_level * 7  # 2 + 4 = (2^3 - 1) more doublings
-    tail = c_out.read_bytes()[-200:]
-    assert b"\xff" not in tail
+        data = c_out.read_bytes()
+        assert b"\xff" not in data
+        start = data.index(b"while (")
+        lines.append(data.index(b"\n", start) - start)
+    constant = lines[1] - 2 * lines[0]
+    assert lines[2] == 8 * (lines[0] + constant) - constant
 
 
 def nested_len_slice(depth):

@@ -563,11 +563,8 @@ this branch adopted T5's own reconciliation for the checker files.
   `visit_type` loop, because aliases can spell tens of thousands of `*`. Statements
   and other type constructors recurse within the parser and alias limits.
 - **Known limits.** `--coverage` output is not ported (not needed to bootstrap).
-  Type-text charges count UTF-8 bytes where Python counts code points, as the
-  checker does, so an all-non-ASCII type name is charged up to 3 to 4 times what
-  Python charges and can hit a budget that far early (an open difference). The
-  replay budget was the same until T7 and rejected a valid CJK program at about 44%
-  of the limit; it now counts code points. A `KeyError` in
+  All type-text charges and the type length limits count code points, as Python
+  does; the replay budget and generic argument limits did not until T7. A `KeyError` in
   Python's `c_type` is an internal-error exit (2) here.
 
 ## 15. Expression generator status (T7)
@@ -596,18 +593,13 @@ placeholder is gone, so section 14's "in isolation" no longer applies.
   replay charge count the expanded text in code points.
 - **Temporaries** live in the node's `num` field (Python's `lowered_name`,
   `temp_name`, `obj_temp_name` are set the same way, by the same preparation pass).
-- **Known differences, both only on runaway programs.** Python has no limit on
-  either; each is a Mort-only diagnostic. A slice operand without a prepared
-  temporary is written twice, so nesting doubles the text; the total duplicated is
-  limited to 64 MiB. `slice` and `len` of a slice generate their arguments twice, so
-  nesting doubles the work; regenerated nodes are limited to 4,000,000. No program
-  under roughly 20 nesting levels of either reaches them. See `BLOCKERS.md`.
+- **Doubling accounting.** Python writes an unprepared slice operand twice and generates the arguments of `slice` and `len` of a slice twice, with no limit; both double per level. Mort charges what is really produced. A duplicated operand over 1 MiB is one shared token, expanding at output, so a 21-level slice index (109 MB of C) needs only small memory. A second generation with no effect (no string, array repeat or work charge) reuses the first text, so `len(slice<u8>(u, ...))` nested 40 deep is linear. Output Python could not reasonably make either is reported: 1 GiB of duplicated text, 8,000,000 string-table entries, 256,000,000 regenerated nodes (real regeneration only). See `BLOCKERS.md`.
 - **Tests.** `test_codegen_expr_differential.py`: about 110 expression constructs in
   three modes, every `used_*` flag and every integer helper from real programs
   asserted on the Python side too, string-table order, `.17g` on 150,000 random values
   plus constructed values and exact ties, the whole generated corpus compiled and run
   against its independent model, deep chains against Python and at scale, and hostile
-  programs under the guard. `test_codegen_mutants.py`: 55 planted bugs.
+  programs under the guard. `test_codegen_mutants.py`: 63 planted bugs.
 - **Corrected test.** T6's `condition_strips_parens_of_call` survives on real
   programs, since expression text never has the `(a)(b)` shape; it is kept, probed
   through `cg_cond.mx` directly against Python's `_gen_cond`.

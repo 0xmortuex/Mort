@@ -25,7 +25,8 @@ from test_codegen_differential import (  # noqa: E402,F401
 )
 import py_codegen_dump  # noqa: E402
 from test_codegen_expr_differential import (  # noqa: E402
-    assert_condition_texts_match, body, expression_program, replay_cjk_program,
+    CJK, assert_condition_texts_match, body, expression_program, replay_cjk_program,
+    slice_while_chain,
 )
 
 MAIN = "fn main() -> int { return 0; }\n"
@@ -302,6 +303,18 @@ EXPRESSION_MUTANTS = {
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, binding_const);\n",
         "            cg_var_decl(g, out, elem, buf_span(&inner), 0 as *Span, false);\n",
         [statement("const_array_of_fn"), declaration("global_const_array_of_fn")]),
+    # Doubled work is charged by what is really generated.
+    "second_generation_always_reused": (
+        "cg_expr.mx", "    if first.reusable {\n", "    if true {\n",
+        [expr("slice_strings_generated_twice")]),
+    "shared_token_written_as_a_repeat": (
+        "cg_expr.mx",
+        "    if (*big).kind == CG_BIG_SHARED {\n        cw_text(w, g, (*big).value);\n        return;\n    }\n",
+        "", [slice_while_chain(18)]),
+    "type_charges_count_bytes": (
+        "typestr.mx", "        if (t.data[i] & 0xC0) != 0x80 {\n", "        if true {\n",
+        ["struct " + CJK * 2000 + " { x: i64 }\nfn id<T>(x: T) -> T { return x; }\n"
+         "fn main() -> int { let a = id(" + CJK * 2000 + " { x: 1 }); return 0; }\n"]),
     # What an independent mutation pass found the probes did not reach.
     "try_runs_only_its_own_scope_defers": (
         "cg_stmt.mx",

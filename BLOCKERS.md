@@ -62,8 +62,9 @@ Interim: declare the exact C signature (`end: **c_char`).
   condition) writes its object twice, so `s[0][0]...` doubles the text per level; and
   `slice` and `len` of a slice generate their arguments twice (once discarded), so
   nested `slice<u8>(...)` calls double the work and the string table per level. A
-  few dozen levels exhaust memory. The Mort generator reports each with a located
-  diagnostic instead (`selfhost/PLAN.md` section 15); Python is not changed here.
+  few dozen levels exhaust memory. The Mort generator shares or reuses that text, so
+  it accepts what Python compiles at a sensible size and reports only output that
+  would be enormous (`selfhost/PLAN.md` section 15); Python is not changed here.
 
 Found by the program generator (T2c). None is fixed here; the generator stays
 clear of each one, and says so where it does:
