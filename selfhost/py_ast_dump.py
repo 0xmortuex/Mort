@@ -46,6 +46,7 @@ import functools
 import re
 import struct
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -225,6 +226,34 @@ class GuardedParser(Parser):
         return self._guarded(super()._if_stmt)
 
 
+# Before Python 3.11 every Python frame also uses C stack, and the nesting limit
+# allows thousands of frames, so the reference parses on a thread with room.
+REFERENCE_STACK_BYTES = 128 * 1024 * 1024
+
+
+def _on_large_stack(work):
+    """Run work() on a thread with a large C stack, re-raising what it raises."""
+    outcome = []
+
+    def run():
+        try:
+            outcome.append((work(), None))
+        except (MortError, RecursionError) as error:
+            outcome.append((None, error))
+
+    saved_size = threading.stack_size(REFERENCE_STACK_BYTES)
+    try:
+        thread = threading.Thread(target=run)
+        thread.start()
+    finally:
+        threading.stack_size(saved_size)
+    thread.join()
+    result, error = outcome[0]
+    if error is not None:
+        raise error
+    return result
+
+
 def parse_source(source, limit=None):
     """Parse decoded source with the nesting limit and a large frame budget."""
     tokens = Lexer(source).tokenize()
@@ -232,7 +261,7 @@ def parse_source(source, limit=None):
     saved = sys.getrecursionlimit()
     sys.setrecursionlimit(1_000_000)
     try:
-        return parser.parse()
+        return _on_large_stack(parser.parse)
     finally:
         sys.setrecursionlimit(saved)
 

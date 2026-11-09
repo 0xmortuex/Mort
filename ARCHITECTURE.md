@@ -108,6 +108,8 @@ for them to pick link flags and to trigger the TLS build.
 - `extern fn` symbols keep their exact names.
 - Every user-facing compile failure should be a `MortError`. `RecursionError`
   is translated to "source nesting exceeds the compiler safety limit".
+  `mort/depth.py` sets that limit in the compiler's own Python frames, so a
+  program is accepted or rejected the same way on every supported Python.
 - Compiler version (`mort.__version__`) and language version
   (`mort.__language_version__`) are independent. See
   `docs/compatibility-policy.md`.
