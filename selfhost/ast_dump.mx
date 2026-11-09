@@ -111,16 +111,33 @@ fn ad_head(d: *Dumper, kind: *u8) {
     buf_push_z((*d).out, kind);
 }
 
+// A column field: 0 means the parser recorded none.
+fn ad_col(d: *Dumper, field: *u8, value: u64) {
+    ad_label(d, field);
+    if value == 0 {
+        buf_push_z((*d).out, "none");
+    } else {
+        buf_push((*d).out, '#');
+        buf_push_u64((*d).out, value);
+    }
+}
+
+// The head of a mort_ast.Node subclass, which all carry `col` first.
+fn ad_node_head(d: *Dumper, kind: *u8, n: *Node) {
+    ad_head(d, kind);
+    ad_col(d, "col", (*n).col);
+}
+
 // Field order is constructor order in mort/mort_ast.py.
 fn ad_decl(d: *Dumper, n: *Node) -> bool {
     let kind = (*n).kind;
     if kind == NodeKind.IMPORT_DECL {
-        ad_head(d, "ImportDecl");
+        ad_node_head(d, "ImportDecl", n);
         ad_names(d, "parts", (*n).names);
         ad_line(d, n);
         ad_text(d, "alias", (*n).name);
     } else if kind == NodeKind.STRUCT_DECL {
-        ad_head(d, "StructDecl");
+        ad_node_head(d, "StructDecl", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "fields", (*n).items);
         ad_line(d, n);
@@ -131,12 +148,12 @@ fn ad_decl(d: *Dumper, n: *Node) -> bool {
         ad_text(d, "name", (*n).name);
         ad_text(d, "typ", (*n).ty);
     } else if kind == NodeKind.TYPE_ALIAS_DECL {
-        ad_head(d, "TypeAliasDecl");
+        ad_node_head(d, "TypeAliasDecl", n);
         ad_text(d, "name", (*n).name);
         ad_text(d, "target", (*n).ty);
         ad_line(d, n);
     } else if kind == NodeKind.FN_DECL {
-        ad_head(d, "FnDecl");
+        ad_node_head(d, "FnDecl", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "params", (*n).items);
         ad_text(d, "ret", (*n).ty);
@@ -149,7 +166,7 @@ fn ad_decl(d: *Dumper, n: *Node) -> bool {
         ad_text(d, "name", (*n).name);
         ad_text(d, "typ", (*n).ty);
     } else if kind == NodeKind.ENUM_DECL {
-        ad_head(d, "EnumDecl");
+        ad_node_head(d, "EnumDecl", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "variants", (*n).items);
         ad_line(d, n);
@@ -160,13 +177,13 @@ fn ad_decl(d: *Dumper, n: *Node) -> bool {
         ad_names(d, "payload_types", (*n).names);
         ad_text(d, "payload_type", (*n).ty);
     } else if kind == NodeKind.EXTERN_FN_DECL {
-        ad_head(d, "ExternFnDecl");
+        ad_node_head(d, "ExternFnDecl", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "params", (*n).items);
         ad_text(d, "ret", (*n).ty);
         ad_line(d, n);
     } else if kind == NodeKind.TEST_DECL {
-        ad_head(d, "TestDecl");
+        ad_node_head(d, "TestDecl", n);
         ad_text(d, "name", (*n).name);
         ad_child(d, "body", (*n).a);
         ad_line(d, n);
@@ -179,35 +196,35 @@ fn ad_decl(d: *Dumper, n: *Node) -> bool {
 fn ad_stmt(d: *Dumper, n: *Node) -> bool {
     let kind = (*n).kind;
     if kind == NodeKind.LET {
-        ad_head(d, "Let");
+        ad_node_head(d, "Let", n);
         ad_text(d, "name", (*n).name);
         ad_text(d, "decl_type", (*n).ty);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
         ad_bool(d, "mutable", (*n).flag);
     } else if kind == NodeKind.ASSIGN {
-        ad_head(d, "Assign");
+        ad_node_head(d, "Assign", n);
         ad_child(d, "target", (*n).a);
         ad_child(d, "expr", (*n).b);
         ad_text(d, "op", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.RETURN {
-        ad_head(d, "Return");
+        ad_node_head(d, "Return", n);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.IF {
-        ad_head(d, "If");
+        ad_node_head(d, "If", n);
         ad_child(d, "cond", (*n).a);
         ad_child(d, "then", (*n).b);
         ad_child(d, "els", (*n).c);
         ad_line(d, n);
     } else if kind == NodeKind.WHILE {
-        ad_head(d, "While");
+        ad_node_head(d, "While", n);
         ad_child(d, "cond", (*n).a);
         ad_child(d, "body", (*n).b);
         ad_line(d, n);
     } else if kind == NodeKind.FOR {
-        ad_head(d, "For");
+        ad_node_head(d, "For", n);
         ad_text(d, "var", (*n).name);
         ad_text(d, "decl_type", (*n).ty);
         ad_child(d, "start", (*n).a);
@@ -216,34 +233,34 @@ fn ad_stmt(d: *Dumper, n: *Node) -> bool {
         ad_child(d, "body", (*n).c);
         ad_line(d, n);
     } else if kind == NodeKind.BLOCK {
-        ad_head(d, "Block");
+        ad_node_head(d, "Block", n);
         ad_items(d, "stmts", (*n).items);
         ad_line(d, n);
     } else if kind == NodeKind.EXPR_STMT {
-        ad_head(d, "ExprStmt");
+        ad_node_head(d, "ExprStmt", n);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.ASM {
-        ad_head(d, "Asm");
+        ad_node_head(d, "Asm", n);
         ad_text(d, "text", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.BREAK {
-        ad_head(d, "Break");
+        ad_node_head(d, "Break", n);
         ad_line(d, n);
     } else if kind == NodeKind.CONTINUE {
-        ad_head(d, "Continue");
+        ad_node_head(d, "Continue", n);
         ad_line(d, n);
     } else if kind == NodeKind.DEFER {
-        ad_head(d, "Defer");
+        ad_node_head(d, "Defer", n);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.MATCH_ARM {
-        ad_head(d, "MatchArm");
+        ad_node_head(d, "MatchArm", n);
         ad_child(d, "pattern", (*n).a);
         ad_child(d, "body", (*n).b);
         ad_line(d, n);
     } else if kind == NodeKind.MATCH {
-        ad_head(d, "Match");
+        ad_node_head(d, "Match", n);
         ad_child(d, "expr", (*n).a);
         ad_items(d, "arms", (*n).items);
         ad_line(d, n);
@@ -256,70 +273,71 @@ fn ad_stmt(d: *Dumper, n: *Node) -> bool {
 fn ad_expr(d: *Dumper, n: *Node) {
     let kind = (*n).kind;
     if kind == NodeKind.INT_LIT {
-        ad_head(d, "IntLit");
+        ad_node_head(d, "IntLit", n);
         ad_decimal(d, "value", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.FLOAT_LIT {
-        ad_head(d, "FloatLit");
+        ad_node_head(d, "FloatLit", n);
         ad_label(d, "value");
         buf_push((*d).out, 'f');
         dump_hex64((*d).out, (*n).num);
         ad_line(d, n);
     } else if kind == NodeKind.CHAR_LIT {
-        ad_head(d, "CharLit");
+        ad_node_head(d, "CharLit", n);
         ad_u64(d, "value", (*n).num);
         ad_line(d, n);
     } else if kind == NodeKind.NULL_LIT {
-        ad_head(d, "NullLit");
+        ad_node_head(d, "NullLit", n);
         ad_line(d, n);
     } else if kind == NodeKind.BOOL_LIT {
-        ad_head(d, "BoolLit");
+        ad_node_head(d, "BoolLit", n);
         ad_bool(d, "value", (*n).flag);
         ad_line(d, n);
     } else if kind == NodeKind.STR_LIT {
-        ad_head(d, "StrLit");
+        ad_node_head(d, "StrLit", n);
         ad_text(d, "value", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.VAR {
-        ad_head(d, "Var");
+        ad_node_head(d, "Var", n);
         ad_text(d, "name", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.UNARY {
-        ad_head(d, "Unary");
+        ad_node_head(d, "Unary", n);
         ad_text(d, "op", (*n).name);
         ad_child(d, "operand", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.BINARY {
-        ad_head(d, "Binary");
+        ad_node_head(d, "Binary", n);
         ad_text(d, "op", (*n).name);
         ad_child(d, "left", (*n).a);
         ad_child(d, "right", (*n).b);
         ad_line(d, n);
     } else if kind == NodeKind.CALL {
-        ad_head(d, "Call");
+        ad_node_head(d, "Call", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "args", (*n).items);
         ad_line(d, n);
+        ad_col(d, "paren_col", (*n).paren_col);
         ad_names(d, "type_args", (*n).names);
         ad_label(d, "name_pos");
         buf_push_u64((*d).out, (*n).name_line);
         buf_push((*d).out, ':');
         buf_push_u64((*d).out, (*n).name_col);
     } else if kind == NodeKind.CAST {
-        ad_head(d, "Cast");
+        ad_node_head(d, "Cast", n);
         ad_child(d, "expr", (*n).a);
         ad_text(d, "target_type", (*n).ty);
         ad_line(d, n);
     } else if kind == NodeKind.TRY {
-        ad_head(d, "Try");
+        ad_node_head(d, "Try", n);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.MOVE {
-        ad_head(d, "Move");
+        ad_node_head(d, "Move", n);
         ad_child(d, "expr", (*n).a);
         ad_line(d, n);
     } else if kind == NodeKind.STRUCT_LIT {
-        ad_head(d, "StructLit");
+        ad_node_head(d, "StructLit", n);
         ad_text(d, "name", (*n).name);
         ad_items(d, "fields", (*n).items);
         ad_line(d, n);
@@ -328,25 +346,25 @@ fn ad_expr(d: *Dumper, n: *Node) {
         ad_text(d, "0", (*n).name);
         ad_child(d, "1", (*n).a);
     } else if kind == NodeKind.TUPLE_LIT {
-        ad_head(d, "TupleLit");
+        ad_node_head(d, "TupleLit", n);
         ad_items(d, "elements", (*n).items);
         ad_line(d, n);
     } else if kind == NodeKind.FIELD_ACCESS {
-        ad_head(d, "FieldAccess");
+        ad_node_head(d, "FieldAccess", n);
         ad_child(d, "obj", (*n).a);
         ad_text(d, "field", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.ARRAY_LIT {
-        ad_head(d, "ArrayLit");
+        ad_node_head(d, "ArrayLit", n);
         ad_items(d, "elements", (*n).items);
         ad_line(d, n);
     } else if kind == NodeKind.ARRAY_REPEAT {
-        ad_head(d, "ArrayRepeat");
+        ad_node_head(d, "ArrayRepeat", n);
         ad_child(d, "value", (*n).a);
         ad_decimal(d, "count", (*n).name);
         ad_line(d, n);
     } else if kind == NodeKind.INDEX {
-        ad_head(d, "Index");
+        ad_node_head(d, "Index", n);
         ad_child(d, "obj", (*n).a);
         ad_child(d, "index", (*n).b);
         ad_line(d, n);
@@ -371,6 +389,7 @@ fn ad_visit(d: *Dumper, n: *Node) {
 
 fn ad_program_line(d: *Dumper, program: *Program) {
     ad_head(d, "Program");
+    ad_col(d, "col", 0);
     ad_items(d, "funcs", (*program).funcs);
     ad_items(d, "structs", (*program).structs);
     ad_items(d, "globals", (*program).globals);

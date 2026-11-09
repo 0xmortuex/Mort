@@ -10,6 +10,9 @@ in a context that expects one (let annotations, assignments, returns, args, and
 the other operand of a binary op). Everything else needs an explicit ``as`` cast.
 """
 import copy
+import itertools
+import threading
+from contextlib import contextmanager
 
 from . import mort_ast as A
 from .errors import MortError, MortWarning
@@ -24,6 +27,29 @@ VOLATILE_WIDTHS = ("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64")
 F32_MAX = 3.4028234663852886e38
 ARITH_OPS = {"+", "-", "*", "/", "%"}
 REL_OPS = {"<", ">", "<=", ">="}
+# Each multiplication's cost grows with its operands, so an unbounded constant
+# chain can stall compilation. No value this wide can fit an integer type.
+MAX_CONSTANT_BITS = 2 ** 18
+# Instantiation can only diverge by producing ever-larger type arguments, so
+# limit their size, not the length of a call chain: nesting grows linearly and
+# exhausts the recursive type helpers, spelling length catches types that double
+# at each step, and the total catches calls branching into many small types.
+MAX_TYPE_ARGUMENT_NESTING = 256
+MAX_TYPE_ARGUMENT_LENGTH = 4096
+MAX_GENERIC_INSTANTIATIONS = 16384
+# Generics can multiply the compiler's work by any amount, so WorkMeter limits
+# the work itself; see its docstring for why every shape of program is covered.
+MAX_GENERIC_WORK = 1_000_000
+WORK_CHARS_PER_UNIT = 64
+WORK_UNITS_PER_NODE = 8
+# Replaying deferred code at each exit is the product of the defer and exit
+# counts by design, and it creates output as long as it costs, so it has a
+# budget of its own in units of generated C text; see WorkMeter.spend_replay.
+MAX_DEFER_REPLAY = 48_000_000
+REPLAY_UNITS_PER_NODE = 32
+# Every type the compiler builds is at most this long, generics or not: a tuple
+# of tuples doubles with each `let`, and aliases double without any statement.
+MAX_TYPE_LENGTH = 65536
 # Builtins that accept explicit type arguments. Every other builtin rejects them,
 # so a new generic builtin must be declared here and only here.
 GENERIC_BUILTINS = frozenset({"sizeof", "slice", "volatile_read", "volatile_write"})
@@ -94,11 +120,129 @@ def _c_mod(a, b):
     return a - _c_div(a, b) * b
 
 
+def _column_of(node):
+    return getattr(node, "paren_col", None) or getattr(node, "col", None)
+
+
+class WorkMeter:
+    """The total compile work of one program, in work units.
+
+    Why nothing escapes it. Compile work has only these parts:
+
+    * Walking syntax trees: copying, substituting, checking and generating an
+      instance visits each of its nodes a fixed number of times. Instantiating
+      charges WORK_UNITS_PER_NODE for each node of the template; generic structs
+      and enums charge the same for each field and payload.
+    * Handling type strings: every primitive that scans, copies, substitutes or
+      mangles a type charges its length divided by WORK_CHARS_PER_UNIT, again at
+      every recursion level, so a type handled repeatedly pays every time. Below
+      that length a call costs a fixed amount, and such calls are a fixed number
+      per node or type constructor.
+    * Walks whose length depends on what is reachable rather than on one node:
+      struct dependency graphs, drop analysis, move snapshots, definition
+      ordering and C name lookups. Each charges for the items it visits.
+    * Replaying deferred statements at each exit. Its cost is the output itself,
+      so it spends MAX_DEFER_REPLAY instead: one unit per generated C character
+      plus REPLAY_UNITS_PER_NODE per node walked, each time it runs. Type strings
+      handled during a replay still charge the main budget.
+
+    New type strings are charged when built and rejected beyond MAX_TYPE_LENGTH,
+    so the remaining uncharged string operations (hashing, equality) cost at
+    most MAX_TYPE_LENGTH bytes each, a fixed number per charged node. Total work
+    is therefore proportional to MAX_GENERIC_WORK + MAX_DEFER_REPLAY, whatever
+    the program's shape.
+
+    Every program is metered from the start of checking. Types shorter than
+    WORK_CHARS_PER_UNIT cost nothing, so ordinary code spends almost no units.
+    Repeated use of one huge type is interned (validity, alias expansion, C
+    spelling) so that it pays once, not once per use.
+    """
+
+    def __init__(self):
+        self.spent = 0
+        self.replayed = 0
+        self.instantiated = False
+        self.locate = lambda: None
+        self.site = None
+
+    def spend(self, units):
+        if not units:
+            return
+        self.spent += units
+        if self.spent > MAX_GENERIC_WORK:
+            subject = "generic instantiation" if self.instantiated else "type processing"
+            self.fail(
+                f"{subject} exceeds the limit of {MAX_GENERIC_WORK} "
+                "work units in one program")
+
+    def spend_replay(self, units, node):
+        """Charge one replayed deferred statement to the exit at node."""
+        self.replayed += units
+        if self.replayed > MAX_DEFER_REPLAY:
+            raise MortError(
+                "replaying deferred statements at each exit exceeds the limit of "
+                f"{MAX_DEFER_REPLAY} units of generated code in one program",
+                getattr(node, "line", None), _column_of(node),
+                filename=getattr(node, "filename", None))
+
+    def fail(self, message):
+        """Report at the nodes on record; a position is never made up."""
+        node = self.locate()
+        if node is None or (_column_of(node) is None and _column_of(self.site) is not None):
+            node = self.site or node
+        raise MortError(
+            message, getattr(node, "line", None), _column_of(node),
+            filename=getattr(node, "filename", None))
+
+
+class _CurrentMeter(threading.local):
+    meter = None
+
+
+_current = _CurrentMeter()
+
+
+@contextmanager
+def charging(meter):
+    """Charge the type primitives in this thread to meter for the duration."""
+    previous = _current.meter
+    _current.meter = meter
+    try:
+        yield meter
+    finally:
+        _current.meter = previous
+
+
+def charge_units(units):
+    meter = _current.meter
+    if meter is not None:
+        meter.spend(units)
+
+
+def charge_items(count):
+    """Charge a scan over count items or characters."""
+    charge_units(count // WORK_CHARS_PER_UNIT)
+
+
+def charge_chars(text):
+    charge_items(len(text))
+
+
+def made_type(text):
+    """Charge a newly built type string and enforce MAX_TYPE_LENGTH."""
+    charge_chars(text)
+    meter = _current.meter
+    if meter is not None and len(text) > MAX_TYPE_LENGTH:
+        meter.fail(f"type is longer than {MAX_TYPE_LENGTH} characters")
+    return text
+
+
 def is_ptr(t):
     return isinstance(t, str) and t.startswith("*")
 
 
 def pointee(t):
+    charge_chars(t)
     return t[7:] if t.startswith("*const ") else t[1:]
 
 
@@ -119,11 +263,13 @@ def is_const_slice(t):
 
 
 def slice_elem(t):
+    charge_chars(t)
     return t[8:] if is_const_slice(t) else t[2:]
 
 
 def array_parts(t):
     """'[i32;8]' -> ('i32', 8). Splits on the last ';' to allow nested arrays."""
+    charge_chars(t)
     inner = t[1:-1]
     cut = inner.rfind(";")
     return inner[:cut], int(inner[cut + 1:])
@@ -135,24 +281,13 @@ def generic_parts(t):
         return None
     cut = t.find("<")
     base = t[:cut]
-    inner = t[cut + 1:-1]
-    args = []
-    start = depth = 0
-    for index, char in enumerate(inner):
-        if char == "<":
-            depth += 1
-        elif char == ">":
-            depth -= 1
-        elif char == "," and depth == 0:
-            args.append(inner[start:index])
-            start = index + 1
-    args.append(inner[start:])
-    return base, args
+    return base, _split_type_list(t[cut + 1:-1])
 
 
 def _split_type_list(inner):
     if not inner:
         return []
+    charge_chars(inner)
     result = []
     start = 0
     angle = paren = bracket = 0
@@ -180,6 +315,7 @@ def function_parts(t):
     """Return (parameter types, return type) for ``fn(...)->...``."""
     if not isinstance(t, str) or not t.startswith("fn("):
         return None
+    charge_chars(t)
     depth = 0
     close = None
     for index in range(2, len(t)):
@@ -204,33 +340,79 @@ def tuple_parts(t):
     return elements if len(elements) >= 2 else None
 
 
+def type_nesting(t):
+    """How many type constructors deep a type string goes.
+
+    Pointers, slices and function results are prefixes with nothing closing
+    them, so they deepen everything after them up to the enclosing separator.
+    """
+    charge_chars(t)
+    deepest = depth = 0
+    enclosing = []
+    position = 0
+    while position < len(t):
+        char = t[position]
+        if t.startswith("[]", position):
+            depth += 1
+            position += 1
+        elif char == "*" or t.startswith("->", position):
+            depth += 1
+            position += 1 if char == "-" else 0
+        elif char in "([<":
+            enclosing.append(depth)
+            depth += 1
+        elif char in ")]>":
+            depth = enclosing.pop()
+        elif char in ",;":
+            depth = enclosing[-1] + 1
+        deepest = max(deepest, depth)
+        position += 1
+    return deepest
+
+
+def ast_size(root):
+    """Count the AST nodes under root, without recursing."""
+    size = 0
+    pending = [root]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, A.Node):
+            size += 1
+            pending.extend(vars(value).values())
+    return size
+
+
 def substitute_type(t, mapping):
+    charge_chars(t)
     if t in mapping:
         return mapping[t]
     if is_ptr(t):
         prefix = "*const " if is_const_ptr(t) else "*"
-        return prefix + substitute_type(pointee(t), mapping)
+        return made_type(prefix + substitute_type(pointee(t), mapping))
     if is_slice(t):
         prefix = "[]const " if is_const_slice(t) else "[]"
-        return prefix + substitute_type(slice_elem(t), mapping)
+        return made_type(prefix + substitute_type(slice_elem(t), mapping))
     if is_array(t):
         elem, count = array_parts(t)
-        return f"[{substitute_type(elem, mapping)};{count}]"
+        return made_type(f"[{substitute_type(elem, mapping)};{count}]")
     callable_type = function_parts(t)
     if callable_type:
         parameters, result = callable_type
-        return (
+        return made_type(
             "fn(" + ",".join(substitute_type(item, mapping) for item in parameters)
             + ")->" + substitute_type(result, mapping)
         )
     tuple_type = tuple_parts(t)
     if tuple_type:
-        return "(" + ",".join(
-            substitute_type(item, mapping) for item in tuple_type) + ")"
+        return made_type("(" + ",".join(
+            substitute_type(item, mapping) for item in tuple_type) + ")")
     parts = generic_parts(t)
     if parts:
         base, args = parts
-        return base + "<" + ",".join(substitute_type(arg, mapping) for arg in args) + ">"
+        return made_type(
+            base + "<" + ",".join(substitute_type(arg, mapping) for arg in args) + ">")
     return t
 
 
@@ -255,6 +437,15 @@ class Checker:
         self.binding_scopes = []
         self.warnings = []
         self.current_ret = None
+        self.current_node = None  # where a stack overflow is reported
+        self.generic_instantiations = 0
+        self.work = WorkMeter()
+        self.work.locate = self._work_location
+        self.current_statement = None  # the statement being checked, if it has a column
+        self.valid_types = set()
+        self.moved_bindings = []  # every binding moved so far in this body
+        self.template_sizes = {}
+        self.alias_cache = {}
         self.extern_names = set()
         self.loop_depth = 0
         self.current_module = None
@@ -269,24 +460,56 @@ class Checker:
         raise MortError(
             msg,
             getattr(node, "line", None),
+            getattr(node, "col", None),
             filename=getattr(node, "filename", None),
         )
 
-    def _valid_type(self, t):
-        """A type is usable if its (possibly pointed-to / element) base is known."""
+    def _work_location(self):
+        """The most specific node being checked that has a real column."""
+        node = self.current_node
+        if _column_of(node) is None and self.current_statement is not None:
+            return self.current_statement
+        return node
+
+    def _valid_type(self, t, behind_pointer=False):
+        """A type is usable if its (possibly pointed-to / element) base is known.
+
+        C spells arrays around the declared name, and codegen only does that
+        for a variable or field. An array nested in any other type has no C
+        form, except a slice of arrays behind a pointer, which is never laid out.
+
+        Only a True answer is remembered: it cannot later become False, and
+        one huge type used many times is then validated once.
+        """
+        key = (t, behind_pointer)
+        if key in self.valid_types:
+            return True
+        charge_chars(t)
+        valid = self._check_valid_type(t, behind_pointer)
+        if valid:
+            self.valid_types.add(key)
+        return valid
+
+    def _check_valid_type(self, t, behind_pointer):
         t = self._resolve_alias_type(t)
         if is_ptr(t):
-            return pointee(t) == "void" or self._valid_type(pointee(t))
+            return pointee(t) == "void" or (
+                not is_array(pointee(t))
+                and self._valid_type(pointee(t), behind_pointer=True))
         if is_array(t):
             elem, n = array_parts(t)
-            return n > 0 and self._valid_type(elem)
+            return n > 0 and not is_array(elem) and self._valid_type(elem)
         if is_slice(t):
-            return slice_elem(t) != "void" and self._valid_type(slice_elem(t))
+            element = slice_elem(t)
+            return element != "void" and (
+                behind_pointer or not is_array(element)) and self._valid_type(element)
         callable_type = function_parts(t)
         if callable_type:
             parameters, result = callable_type
             return (
-                all(item != "void" and self._valid_type(item) for item in parameters)
+                all(item != "void" and not is_array(item) and self._valid_type(item)
+                    for item in parameters)
+                and not is_array(result)
                 and (result == "void" or self._valid_type(result))
             )
         tuple_type = tuple_parts(t)
@@ -298,25 +521,35 @@ class Checker:
                 or t in self.structs or t in self.enums)
 
     def _resolve_alias_type(self, t, stack=()):
+        """Expand aliases in a type string, cached per type name.
+
+        Every level of a nested type re-resolves its whole inner type, so
+        without the cache a deep type costs cubic time. A resolved name depends
+        only on the fixed alias table; `stack` is non-empty only while tracing
+        an alias body for cycles. Alias names are cached even then, because a
+        finished expansion has no cycle and repeating it is exponential.
+        """
+        if (not stack or t in self.aliases) and t in self.alias_cache:
+            return self.alias_cache[t]
+        charge_chars(t)
         if t in self.aliases:
             if t in stack:
                 declaration = self.alias_decls[t]
                 self._error(
                     "cyclic type alias: " + " -> ".join((*stack, t)), declaration)
-            return self._resolve_alias_type(self.aliases[t], (*stack, t))
-        if is_ptr(t):
+            resolved = self._resolve_alias_type(self.aliases[t], (*stack, t))
+        elif is_ptr(t):
             prefix = "*const " if is_const_ptr(t) else "*"
-            return prefix + self._resolve_alias_type(pointee(t), stack)
-        if is_slice(t):
+            resolved = made_type(prefix + self._resolve_alias_type(pointee(t), stack))
+        elif is_slice(t):
             prefix = "[]const " if is_const_slice(t) else "[]"
-            return prefix + self._resolve_alias_type(slice_elem(t), stack)
-        if is_array(t):
+            resolved = made_type(prefix + self._resolve_alias_type(slice_elem(t), stack))
+        elif is_array(t):
             element, count = array_parts(t)
-            return f"[{self._resolve_alias_type(element, stack)};{count}]"
-        callable_type = function_parts(t)
-        if callable_type:
+            resolved = made_type(f"[{self._resolve_alias_type(element, stack)};{count}]")
+        elif callable_type := function_parts(t):
             parameters, result = callable_type
-            return (
+            resolved = made_type(
                 "fn(" + ",".join(
                     self._resolve_alias_type(item, stack) for item in parameters
                 ) + ")->" + (
@@ -324,18 +557,20 @@ class Checker:
                     else self._resolve_alias_type(result, stack)
                 )
             )
-        tuple_type = tuple_parts(t)
-        if tuple_type:
-            return "(" + ",".join(
+        elif tuple_type := tuple_parts(t):
+            resolved = made_type("(" + ",".join(
                 self._resolve_alias_type(item, stack) for item in tuple_type
-            ) + ")"
-        parts = generic_parts(t)
-        if parts:
+            ) + ")")
+        elif parts := generic_parts(t):
             base, arguments = parts
-            return base + "<" + ",".join(
+            resolved = made_type(base + "<" + ",".join(
                 self._resolve_alias_type(argument, stack) for argument in arguments
-            ) + ">"
-        return t
+            ) + ">")
+        else:
+            resolved = t
+        if not stack or t in self.aliases:
+            self.alias_cache[t] = resolved
+        return resolved
 
     def _apply_type_aliases(self):
         seen = set()
@@ -350,6 +585,8 @@ class Checker:
             if id(value) in seen:
                 return
             seen.add(id(value))
+            if getattr(value, "line", None) is not None:
+                self.current_node = value
             if isinstance(value, A.TypeAliasDecl):
                 value.target = self._resolve_alias_type(value.target)
             elif isinstance(value, (A.FnDecl, A.ExternFnDecl)):
@@ -362,7 +599,7 @@ class Checker:
                 ]
                 value.payload_type = (
                     value.payload_types[0] if len(value.payload_types) == 1
-                    else "(" + ",".join(value.payload_types) + ")"
+                    else made_type("(" + ",".join(value.payload_types) + ")")
                 )
             elif isinstance(value, A.Let) and value.decl_type is not None or isinstance(value, A.For) and value.decl_type is not None:
                 value.decl_type = self._resolve_alias_type(value.decl_type)
@@ -410,29 +647,29 @@ class Checker:
         return set()
 
     def _validate_aggregate_cycles(self, roots=None, node=None):
-        graph = {}
-        for name, fields in self.structs.items():
-            if fields is not None:
-                graph[name] = set().union(*(
-                    self._aggregate_value_dependencies(field_type)
-                    for field_type in fields.values()
-                )) if fields else set()
-        for name, variants in self.enums.items():
-            if variants is not None:
-                payloads = [
-                    payload for payload in variants.values()
-                    if payload is not None
-                ]
-                graph[name] = set().union(*(
-                    self._aggregate_value_dependencies(payload)
-                    for payload in payloads
-                )) if payloads else set()
+        def dependencies(name):
+            """Value dependencies of a finished aggregate, else None.
+
+            Worked out on demand: each new generic type passes its own roots,
+            and rebuilding the whole graph for each is quadratic.
+            """
+            members = self.structs.get(name)
+            if members is None:
+                members = self.enums.get(name)
+                if members is None:
+                    return None
+            types = [member for member in members.values() if member is not None]
+            return set().union(*map(self._aggregate_value_dependencies, types))
 
         visiting = []
         complete = set()
 
         def visit(name):
-            if name in complete or name not in graph:
+            if name in complete:
+                return
+            self.work.spend(1)
+            names = dependencies(name)
+            if names is None:
                 return
             if name in visiting:
                 start = visiting.index(name)
@@ -442,12 +679,12 @@ class Checker:
                     node or self._aggregate_declarations.get(name, self.program),
                 )
             visiting.append(name)
-            for dependency in graph[name]:
+            for dependency in names:
                 visit(dependency)
             visiting.pop()
             complete.add(name)
 
-        for name in roots or graph:
+        for name in roots or [*self.structs, *self.enums]:
             visit(name)
 
     def _instantiate_struct(self, concrete_type):
@@ -459,6 +696,7 @@ class Checker:
             return False
         if not all(self._valid_type(arg) for arg in args):
             return False
+        self._charge_instantiation(1 + len(template.fields), template)
         mapping = dict(zip(template.generic_params, args))
         fields = [
             A.StructField(field.name, substitute_type(field.typ, mapping))
@@ -491,6 +729,9 @@ class Checker:
             return False
         if not all(self._valid_type(arg) for arg in args):
             return False
+        self._charge_instantiation(
+            1 + sum(1 + len(variant.payload_types) for variant in template.variants),
+            template)
         mapping = dict(zip(template.generic_params, args))
         variants = [
             A.EnumVariant(
@@ -529,7 +770,14 @@ class Checker:
         self._validate_aggregate_cycles([concrete_type], template)
         return True
 
+    def _charge_instantiation(self, nodes, site):
+        self.work.instantiated = True
+        if _column_of(site) is not None:
+            self.work.site = site
+        self.work.spend(nodes * WORK_UNITS_PER_NODE)
+
     def _unify_generic_type(self, pattern, actual, generic_params, mapping):
+        charge_chars(actual)
         if pattern in generic_params:
             previous = mapping.get(pattern)
             if previous is None:
@@ -645,9 +893,29 @@ class Checker:
                 node,
             )
         type_args = [mapping[name] for name in template.generic_params]
-        concrete_symbol = resolved + "<" + ",".join(type_args) + ">"
+        concrete_symbol = made_type(resolved + "<" + ",".join(type_args) + ">")
         if concrete_symbol in self.funcs:
             return concrete_symbol
+        self.generic_instantiations += 1
+        if resolved not in self.template_sizes:
+            self.template_sizes[resolved] = ast_size(template)
+        self.current_node = node
+        self._charge_instantiation(self.template_sizes[resolved], node)
+        problem = None
+        if self.generic_instantiations > MAX_GENERIC_INSTANTIATIONS:
+            problem = f"exceeds the limit of {MAX_GENERIC_INSTANTIATIONS} in one program"
+        elif any(len(arg) > MAX_TYPE_ARGUMENT_LENGTH for arg in type_args):
+            problem = (
+                f"has a type argument longer than {MAX_TYPE_ARGUMENT_LENGTH} characters")
+        elif any(type_nesting(arg) > MAX_TYPE_ARGUMENT_NESTING for arg in type_args):
+            problem = (
+                f"has a type argument nested more than {MAX_TYPE_ARGUMENT_NESTING} levels deep")
+        if problem:
+            raise MortError(
+                f"generic instantiation of {template.name!r} {problem}",
+                node.line, getattr(node, "paren_col", None) or getattr(node, "col", None),
+                filename=getattr(node, "filename", None),
+            )
         instance = copy.deepcopy(template)
         self._substitute_function_types(instance, mapping)
         instance.generic_params = []
@@ -681,6 +949,10 @@ class Checker:
         return concrete_symbol
 
     def check(self):
+        with charging(self.work):
+            return self._check_program()
+
+    def _check_program(self):
         self.program.drop_destructors = {}
         self._aggregate_declarations = {}
         for declaration in self.program.aliases:
@@ -691,6 +963,7 @@ class Checker:
             self.aliases[declaration.name] = declaration.target
             self.alias_decls[declaration.name] = declaration
         for name in list(self.aliases):
+            self.current_node = self.alias_decls[name]
             self.aliases[name] = self._resolve_alias_type(name)
         self._apply_type_aliases()
 
@@ -860,7 +1133,8 @@ class Checker:
                 self.globals[g.name] = g.var_type
                 self.global_mutable[g.name] = g.mutable
                 continue
-            t = self._check_expr(g.expr)
+            # A declared type range-checks the literal below, naming that type.
+            t = self._check_expr(g.expr, literal_operand=bool(g.decl_type))
             if t == "void":
                 self._error("cannot bind a void value to a global", g)
             if t == "null" and not g.decl_type:
@@ -873,6 +1147,8 @@ class Checker:
                         f"global {g.name!r} is {g.decl_type} but its value is {t}", g)
                 g.var_type = g.decl_type
             else:
+                if g.expr.is_lit:
+                    self._coerce(t, g.expr)
                 g.var_type = t
             if self._needs_drop_type(g.var_type):
                 self._error(
@@ -905,6 +1181,7 @@ class Checker:
             if f.generic_params:
                 continue
             self._check_fn(f)
+        functions_before_tests = len(self.program.funcs)
         test_names = set()
         for test in self.program.tests:
             if test.name in test_names:
@@ -914,11 +1191,18 @@ class Checker:
             self.current_module = test.module
             self.current_import_aliases = test.import_aliases
             self.scopes = [{}]
+            self.moved_bindings = []
             self.binding_scopes = [{}]
             self.loop_depth = 0
             for statement in test.body.stmts:
                 self._check_stmt(statement)
             self._finish_binding_scope()
+        # Test bodies can instantiate generics; those instances still need checking.
+        for instance in itertools.islice(self.program.funcs, functions_before_tests, None):
+            self._check_fn(instance)
+        self.program.work_meter = self.work
+        if self.work.site is None:
+            self.work.site = self.current_node
         return self.program
 
     # ----- scopes -----
@@ -973,16 +1257,32 @@ class Checker:
                 return scope[name], bindings.get(name)
         return None, None
 
-    def _move_snapshot(self):
-        return [
-            (binding, binding.get("moved", False))
-            for scope in self.binding_scopes for binding in scope.values()
-        ]
+    def _mark_moved(self, binding):
+        binding["moved"] = True
+        if not binding.get("move_recorded"):
+            binding["move_recorded"] = True
+            self.moved_bindings.append(binding)
 
-    @staticmethod
-    def _restore_move_snapshot(snapshot):
+    def _move_snapshot(self):
+        """Move state of every binding moved so far.
+
+        Only moved bindings can differ between branches, so plain locals cost
+        nothing here; scanning them all made each branch linear in the locals.
+        """
+        snapshot = [
+            (binding, binding.get("moved", False)) for binding in self.moved_bindings
+        ]
+        # Each binding is copied here, then restored and merged by the caller,
+        # at about four times the cost of scanning one character.
+        charge_items(len(snapshot) * 4)
+        return snapshot
+
+    def _restore_move_snapshot(self, snapshot):
         for binding, moved in snapshot:
             binding["moved"] = moved
+        # Recorded after this snapshot was taken, so unmoved when it was.
+        for binding in self.moved_bindings[len(snapshot):]:
+            binding["moved"] = False
 
     @staticmethod
     def _merge_move_snapshots(*snapshots):
@@ -1006,6 +1306,8 @@ class Checker:
         if typ in seen:
             return False
         seen.add(typ)
+        if is_array(typ) or typ.startswith("(") or typ in self.structs or typ in self.enums:
+            self.work.spend(1)  # only aggregates walk anything
         if is_array(typ):
             element, _ = array_parts(typ)
             return self._needs_drop_type(element, seen)
@@ -1026,7 +1328,7 @@ class Checker:
 
     def _resource_destructor(self, typ, node):
         if not self._is_resource_type(typ):
-            symbol = "$drop$" + typ
+            symbol = made_type("$drop$" + typ)
             self.program.drop_destructors[typ] = symbol
             self._register_nested_drop_types(typ, node)
             return symbol
@@ -1155,6 +1457,7 @@ class Checker:
         self.current_module = f.module
         self.current_import_aliases = f.import_aliases
         self.scopes = [{}]
+        self.moved_bindings = []
         self.binding_scopes = [{}]
         self.loop_depth = 0
         self.block_depth = 0
@@ -1258,6 +1561,8 @@ class Checker:
         checked against its target type — `1 << 8`, `200 << 4`, `~0` etc. are
         caught exactly like a bare out-of-range literal. (Runtime expressions
         wrap instead; see codegen's _narrow.)"""
+        if e.const_val is not None:  # folding is pure, so one pass per node is enough
+            return e.const_val
         if isinstance(e, A.IntLit):
             return e.value
         if isinstance(e, A.CharLit):
@@ -1273,34 +1578,42 @@ class Checker:
             rv = self._const_value(e.right)
             if lv is None or rv is None:
                 return None
-            op = e.op
-            if op == "+":
-                return lv + rv
-            if op == "-":
-                return lv - rv
-            if op == "*":
-                return lv * rv
-            # Fold / and % with C semantics so the checked value matches the
-            # value the generated C actually computes (esp. for negatives and
-            # near the 64-bit limits).
-            if op == "/" and rv != 0:
-                return _c_div(lv, rv)
-            if op == "%" and rv != 0:
-                return _c_mod(lv, rv)
-            if op == "&":
-                return lv & rv
-            if op == "|":
-                return lv | rv
-            if op == "^":
-                return lv ^ rv
-            if op == "<<" and rv >= 0:
-                if lv == 0:
-                    return 0
-                if rv > 64:
-                    return 1 << 65   # cap: already out of range for any Mort int
-                return lv << rv
-            if op == ">>" and rv >= 0:
-                return lv >> rv
+            value = self._fold_binary(e.op, lv, rv)
+            if value is not None and value.bit_length() > MAX_CONSTANT_BITS:
+                self._error(
+                    f"constant expression needs more than {MAX_CONSTANT_BITS} bits", e)
+            return value
+        return None
+
+    @staticmethod
+    def _fold_binary(op, lv, rv):
+        if op == "+":
+            return lv + rv
+        if op == "-":
+            return lv - rv
+        if op == "*":
+            return lv * rv
+        # Fold / and % with C semantics so the checked value matches the
+        # value the generated C actually computes (esp. for negatives and
+        # near the 64-bit limits).
+        if op == "/" and rv != 0:
+            return _c_div(lv, rv)
+        if op == "%" and rv != 0:
+            return _c_mod(lv, rv)
+        if op == "&":
+            return lv & rv
+        if op == "|":
+            return lv | rv
+        if op == "^":
+            return lv ^ rv
+        if op == "<<" and rv >= 0:
+            if lv == 0:
+                return 0
+            if rv > 64:
+                return 1 << 65   # cap: already out of range for any Mort int
+            return lv << rv
+        if op == ">>" and rv >= 0:
+            return lv >> rv
         return None
 
     def _check_volatile_call(self, e):
@@ -1352,6 +1665,16 @@ class Checker:
         value must actually fit, so hardware writes like outb(0x12345, ...) or a
         `let x: u8 = 300;` are compile errors, not silent truncation.
         """
+        if expected in INT_TYPES and expr.is_lit:
+            value = self._const_value(expr)
+            if value is not None:
+                lo, hi = INT_RANGES[expected]
+                if not (lo <= value <= hi):
+                    self._error(
+                        f"integer literal {self._value_str(value)} does not fit in "
+                        f"{expected} (range {lo}..{hi})", expr)
+            expr.type = expected  # untyped literal adopts the expected int type
+            return True
         if expr.type == expected:
             self._require_explicit_move(expected, expr)
             return True
@@ -1377,20 +1700,12 @@ class Checker:
                 and pointee(expected) == pointee(expr.type)):
             expr.type = expected
             return True
-        if expected in INT_TYPES and expr.is_lit:
-            value = self._const_value(expr)
-            if value is not None:
-                lo, hi = INT_RANGES[expected]
-                if not (lo <= value <= hi):
-                    self._error(
-                        f"integer literal {self._value_str(value)} does not fit in "
-                        f"{expected} (range {lo}..{hi})", expr)
-            expr.type = expected  # untyped literal adopts the expected int type
-            return True
         return False
 
     # ----- statements -----
     def _check_stmt(self, s):
+        self.current_node = s
+        self.current_statement = s if _column_of(s) is not None else None
         if isinstance(s, A.Let):
             if isinstance(s.expr, (A.ArrayLit, A.ArrayRepeat)):
                 s.var_type = self._check_array_expr(s.expr, s.decl_type, s)
@@ -1399,7 +1714,8 @@ class Checker:
                     s.destructor_symbol = self._resource_destructor(
                         s.var_type, s)
                 return
-            t = self._check_expr(s.expr)
+            # A declared type range-checks the literal below, naming that type.
+            t = self._check_expr(s.expr, literal_operand=bool(s.decl_type))
             if t == "void":
                 self._error("cannot bind a void value to a variable", s)
             if t == "null" and not s.decl_type:
@@ -1416,6 +1732,8 @@ class Checker:
                         f"but the value is {t}", s)
                 s.var_type = s.decl_type
             else:
+                if s.expr.is_lit:
+                    self._coerce(t, s.expr)
                 s.var_type = t
             self._require_explicit_move(s.var_type, s.expr)
             self._declare(s.name, s.var_type, s, mutable=s.mutable)
@@ -1741,7 +2059,8 @@ class Checker:
                         return True
         return False
 
-    def _check_expr(self, e):
+    def _check_expr(self, e, literal_operand=False):
+        self.current_node = e
         e.is_lit = False
         t = self._infer(e)
         e.type = t
@@ -1749,7 +2068,19 @@ class Checker:
         # emit it directly (needed for shifts, whose C form is otherwise UB).
         if t in INT_TYPES and e.is_lit:
             e.const_val = self._const_value(e)
+            # Inside a constant expression values are arbitrary-precision; only
+            # the finished value has to be representable.
+            if not literal_operand:
+                self._require_representable(e)
         return t
+
+    def _require_representable(self, e):
+        """Reject a finished literal no Mort integer type can hold."""
+        value = self._const_value(e)
+        if value is not None and not (INT_RANGES["i64"][0] <= value <= INT_RANGES["u64"][1]):
+            self._error(
+                f"integer literal {self._value_str(value)} does not fit in "
+                "any integer type", e)
 
     @staticmethod
     def _is_lvalue(e):
@@ -1778,7 +2109,7 @@ class Checker:
             element_types = [self._check_expr(element) for element in e.elements]
             for element_type, element in zip(element_types, e.elements):
                 self._require_explicit_move(element_type, element)
-            return "(" + ",".join(element_types) + ")"
+            return made_type("(" + ",".join(element_types) + ")")
         if isinstance(e, A.Var):
             vt = self._lookup(e.name, e)
             if vt is not None:
@@ -1802,7 +2133,7 @@ class Checker:
                         f"function {e.name!r} is private to module {target_module!r}", e)
                 parameters, result = self.funcs[resolved]
                 e.resolved_function = resolved
-                return f"fn({','.join(parameters)})->{result}"
+                return made_type(f"fn({','.join(parameters)})->{result}")
             self._error(f"undefined variable {e.name!r}", e)
 
         if isinstance(e, A.Move):
@@ -1832,21 +2163,24 @@ class Checker:
                     e,
                 )
             binding["used"] = True
-            binding["moved"] = True
+            self._mark_moved(binding)
             return typ
 
         if isinstance(e, A.Cast):
+            if isinstance(e.expr, A.Unary) and e.expr.op == "&":
+                e.expr.is_cast_operand = True
             st = self._check_expr(e.expr)
             tgt = e.target_type
-            payload_enums = {
-                name for name, variants in self.enums.items()
-                if any(payload is not None for payload in variants.values())
-            }
+
+            def plain_enum(name):
+                return name in self.enums and all(
+                    payload is None for payload in self.enums[name].values())
+
             src_ok = (st in INT_TYPES or st in FLOAT_TYPES or st == "null"
-                      or (st in self.enums and st not in payload_enums) or is_ptr(st))
+                      or plain_enum(st) or is_ptr(st))
             tgt_ok = (tgt in INT_TYPES or tgt in FLOAT_TYPES
-                      or (tgt in self.enums and tgt not in payload_enums) or is_ptr(tgt))
-            if not (src_ok and tgt_ok):
+                      or plain_enum(tgt) or is_ptr(tgt))
+            if not (src_ok and tgt_ok and self._valid_type(tgt)):
                 self._error(f"cannot cast {st} to {tgt}", e)
             if st == "null" and not is_ptr(tgt):
                 self._error(f"cannot cast null to {tgt}", e)
@@ -1885,20 +2219,26 @@ class Checker:
                 ot = self._check_expr(e.operand)
                 if not self._is_lvalue(e.operand):
                     self._error("cannot take the address of this expression", e)
+                # A pointer to an array has no C type of its own, but a cast
+                # gives the address one, which is how kernels reach their buffers.
+                if is_array(self._resolve_alias_type(ot)) and not e.is_cast_operand:
+                    self._error(
+                        f"cannot take the address of an array ({ot}); take the "
+                        "address of an element instead, such as &a[0]", e)
                 root_name = self._assignment_root(e.operand)
                 prefix = (
                     "*const "
                     if root_name is not None and not self._binding_mutable(root_name)
                     else "*"
                 )
-                return prefix + ot
+                return made_type(prefix + ot)
             if e.op == "*":
                 ot = self._check_expr(e.operand)
                 if not is_ptr(ot):
                     self._error(f"cannot dereference a non-pointer value of type {ot}", e)
                 return pointee(ot)
             if e.op == "-":
-                ot = self._check_expr(e.operand)
+                ot = self._check_expr(e.operand, literal_operand=True)
                 if ot not in INT_TYPES and ot not in FLOAT_TYPES:
                     self._error("unary '-' requires a numeric value", e)
                 e.is_lit = e.operand.is_lit if ot in INT_TYPES else False
@@ -1908,15 +2248,16 @@ class Checker:
                     self._error("unary '!' requires a bool", e)
                 return "bool"
             if e.op == "~":
-                ot = self._check_expr(e.operand)
+                ot = self._check_expr(e.operand, literal_operand=True)
                 if ot not in INT_TYPES:
                     self._error("unary '~' requires an integer", e)
                 e.is_lit = e.operand.is_lit
                 return ot
 
         if isinstance(e, A.Binary):
-            lt = self._check_expr(e.left)
-            rt = self._check_expr(e.right)
+            folds = e.op in ARITH_OPS or e.op in ("&", "|", "^", "<<", ">>")
+            lt = self._check_expr(e.left, literal_operand=folds)
+            rt = self._check_expr(e.right, literal_operand=folds)
             op = e.op
             if op in ARITH_OPS or op in REL_OPS:
                 if lt in FLOAT_TYPES or rt in FLOAT_TYPES:
@@ -1962,8 +2303,12 @@ class Checker:
                     self._error(f"operator '{op}' requires int operands", e)
                 count = self._const_value(e.right)
                 if count is not None and count < 0:
-                    self._error(f"shift count cannot be negative ({count})", e)
+                    self._error(f"shift count cannot be negative ({self._value_str(count)})", e)
                 e.is_lit = e.left.is_lit and e.right.is_lit
+                if not e.is_lit:
+                    for operand in (e.left, e.right):
+                        if operand.is_lit:
+                            self._require_representable(operand)
                 return lt
             if op in ("==", "!="):
                 if lt == "null" and (is_ptr(rt) or function_parts(rt)):
@@ -1988,6 +2333,8 @@ class Checker:
                                 f"mismatched float types {lt} and {rt}; add an 'as' cast", e)
                 elif lt != rt:
                     self._error(f"operator '{op}' needs operands of the same type", e)
+                elif lt == "void":
+                    self._error(f"operator '{op}' cannot compare void values", e)
                 elif lt in self.structs or (
                         lt in self.enums
                         and any(value is not None for value in self.enums[lt].values())
@@ -2043,7 +2390,7 @@ class Checker:
                             f"module {module!r}", e)
                     parameters, result = self.funcs[resolved]
                     e.resolved_function = resolved
-                    return f"fn({','.join(parameters)})->{result}"
+                    return made_type(f"fn({','.join(parameters)})->{result}")
             if isinstance(e.obj, A.Var) and e.obj.name in self.enums:
                 enum_name = e.obj.name
                 if e.field not in self.enums[enum_name]:
@@ -2068,7 +2415,7 @@ class Checker:
                     return "u64"
                 if e.field == "data":
                     prefix = "*const " if is_const_slice(ot) else "*"
-                    return prefix + slice_elem(ot)
+                    return made_type(prefix + slice_elem(ot))
                 self._error(f"slice has no field {e.field!r}", e)
             if is_ptr(ot):
                 self._error(
@@ -2099,7 +2446,8 @@ class Checker:
             constant = self._const_value(e.index)
             if constant is not None and not (0 <= constant < length):
                 self._error(
-                    f"array index {constant} is out of bounds for length {length}", e)
+                    f"array index {self._value_str(constant)} is out of bounds "
+                    f"for length {length}", e)
             return elem
 
         if isinstance(e, (A.ArrayLit, A.ArrayRepeat)):
@@ -2132,13 +2480,13 @@ class Checker:
         """Both operands must end up the same integer type; literals adapt."""
         if lt not in INT_TYPES or rt not in INT_TYPES:
             self._error(f"operator '{op}' requires int operands", e)
-        if lt == rt:
-            return lt
         if e.left.is_lit and not e.right.is_lit:
             self._retag_literal(e.left, rt)
             return rt
         if e.right.is_lit and not e.left.is_lit:
             self._retag_literal(e.right, lt)
+            return lt
+        if lt == rt:
             return lt
         if e.left.is_lit and e.right.is_lit:
             return "i64"
@@ -2640,7 +2988,7 @@ class Checker:
             if not self._coerce("u64", e.args[1]):
                 self._error(f"slice length must be u64, got {e.args[1].type}", e)
             prefix = "[]const " if is_const_ptr(pointer_type) else "[]"
-            return prefix + pointee(pointer_type)
+            return made_type(prefix + pointee(pointer_type))
         if e.name in ("volatile_read", "volatile_write"):
             return self._check_volatile_call(e)
         if e.name == "outb":
@@ -2808,5 +3156,5 @@ class Checker:
                 e.destroys_binding = binding_name
                 e.deferred_destroy = self.checking_defer
                 if not self.checking_defer:
-                    binding["moved"] = True
+                    self._mark_moved(binding)
         return ret

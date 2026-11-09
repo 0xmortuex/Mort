@@ -130,7 +130,7 @@ fn cm_symbol(strings: *Interner, mod_name: u64, name: u64) -> u64 {
 
 // Parses one manifest file and merges it into `all`, doing what
 // compile_files_to_c and _compile_programs do to each source program.
-fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program) {
+fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program, first_columns: *Map) {
     let path = (*entry).path;
     let raw = cm_read_all(path.data);
     if raw.cap == 0 {
@@ -152,6 +152,12 @@ fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program) {
     }
     let program = parse_program(&(*lexer).tokens, strings, path.data);
     let file = intern(strings, path);
+    for i: u64 in 0..(*lexer).tokens.len {
+        let key = ck_line_key(file, (*lexer).tokens.data[i].line);
+        if !map_has(first_columns, key) {
+            map_put(first_columns, key, (*lexer).tokens.data[i].col);
+        }
+    }
     let aliases = sup_alloc(sizeof<Map>()) as *Map;
     *aliases = map_new();
     for i: u64 in 0..(*entry).alias_names.len {
@@ -198,11 +204,14 @@ fn main() -> int {
     let strings = intern_new();
     let manifest = cm_read_manifest(arg_get(1), &strings);
     let program = program_new();
+    let first_columns = map_new();
     for i: u64 in 0..manifest.files.len {
-        cm_add_file(ptrvec_get(&manifest.files, i) as *ManifestFile, &strings, &program);
+        cm_add_file(ptrvec_get(&manifest.files, i) as *ManifestFile, &strings, &program,
+            &first_columns);
     }
     let checker = ck_new(&strings, &program, arg_get(2),
-        span_eq_z(manifest.mode, "freestanding"), span_eq_z(manifest.mode, "test"));
+        span_eq_z(manifest.mode, "freestanding"), span_eq_z(manifest.mode, "test"),
+        &first_columns);
     ck_run(&checker);
     return 0;
 }

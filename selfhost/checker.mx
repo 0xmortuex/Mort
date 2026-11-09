@@ -23,17 +23,16 @@ import typestr;
 // Python's default recursion limit, less the frames the real compiler has on
 // the stack by the time it resolves the first alias. Measured with
 // `mortc.py --check` and pinned by test_alias_chain_limit_matches_mortc.
-const CK_MAX_DEPTH: u64 = 993;
+const CK_MAX_DEPTH: u64 = 989;
 
-// Limits on generic instantiation (docs/language-specification.md on
-// fix/frontend-crashes, section 11). Instantiation can only diverge by growing
-// its type arguments, so their size is what is limited.
+// Python applies these three to generic functions; ck_charge_generic applies
+// them to struct and enum instances too (PLAN.md, section 11).
 const MAX_GENERIC_INSTANTIATIONS: u64 = 16384;
 const MAX_GENERIC_WORK: u64 = 1000000;
-const GENERIC_WORK_TYPE_CHARS: u64 = 64;
-// WorkMeter on fix/frontend-crashes: every program is metered from the start of
+// WorkMeter in mort/typechecker.py: every program is metered from the start of
 // checking, and no type the compiler builds is longer than MAX_TYPE_LENGTH.
 const WORK_CHARS_PER_UNIT: u64 = 64;
+const WORK_UNITS_PER_NODE: u64 = 8;
 const MAX_TYPE_LENGTH: u64 = 65536;
 const MAX_TYPE_ARGUMENT_LENGTH: u64 = 4096;
 const MAX_TYPE_ARGUMENT_NESTING: u64 = 256;
@@ -153,12 +152,15 @@ struct Ck {
     test_mode: bool,
     depth: u64,
     generic_instantiations: u64,
-    generic_work: u64,
     work_spent: u64,
     work_instantiated: bool,
+    work_site: *Node,
     current_node: *Node,
+    current_statement: *Node,
+    first_columns: *Map,
     alias_cache: Map,
     valid_types: Map,
+    valid_behind_pointer: Map,
 
     aliases: Table,
     alias_decls: Table,
@@ -263,11 +265,11 @@ fn ck_write_output(c: *Ck) {
     file_close(handle);
 }
 
-fn ck_exit_diag(c: *Ck, line: u64, file: u64, message: Span) {
+fn ck_exit_diag(c: *Ck, line: u64, col: u64, file: u64, message: Span) {
     ck_write_output(c);
     let text = buf_new(256);
     if file != NO_TEXT {
-        diag_format(&text, intern_text((*c).s, file).data, line, 0, message);
+        diag_format(&text, intern_text((*c).s, file).data, line, col, message);
     } else {
         buf_push_z(&text, "error");
         if line != 0 {
@@ -287,9 +289,9 @@ fn ck_exit_diag(c: *Ck, line: u64, file: u64, message: Span) {
 
 fn ck_fail_node(c: *Ck, node: *Node, message: *Buf) {
     if node == (0 as *Node) {
-        ck_exit_diag(c, 0, NO_TEXT, buf_span(message));
+        ck_exit_diag(c, 0, 0, NO_TEXT, buf_span(message));
     }
-    ck_exit_diag(c, (*node).line, (*node).file, buf_span(message));
+    ck_exit_diag(c, (*node).line, (*node).col, (*node).file, buf_span(message));
 }
 
 fn ck_fail_z(c: *Ck, node: *Node, text: *u8) {
@@ -298,10 +300,36 @@ fn ck_fail_z(c: *Ck, node: *Node, text: *u8) {
     ck_fail_node(c, node, &b);
 }
 
+// The key of a file and line in `first_columns`.
+fn ck_line_key(file: u64, line: u64) -> u64 {
+    return file * 4294967296 + line;
+}
+
+// `_nesting_error`: at the node reached, in its column or else that of the
+// line's first token.
+fn ck_fail_nesting(c: *Ck) {
+    let node = (*c).current_node;
+    let msg = m_new();
+    m_s(&msg, "source nesting exceeds the compiler safety limit");
+    if node == (0 as *Node) {
+        ck_fail_node(c, node, &msg);
+    }
+    let col = (*node).col;
+    if col == 0 {
+        col = 1;
+        let first: u64 = 0;
+        if (*node).file != NO_TEXT
+                && map_get((*c).first_columns, ck_line_key((*node).file, (*node).line), &first) {
+            col = first;
+        }
+    }
+    ck_exit_diag(c, (*node).line, col, (*node).file, buf_span(&msg));
+}
+
 fn ck_enter(c: *Ck) {
     (*c).depth += 1;
     if (*c).depth > CK_MAX_DEPTH {
-        ck_fail_z(c, 0 as *Node, "source nesting exceeds the compiler safety limit");
+        ck_fail_nesting(c);
     }
 }
 
@@ -434,10 +462,37 @@ fn ck_payload_type(c: *Ck, list: *U64Vec) -> u64 {
 
 // ----- charged type primitives -----
 //
-// The `WorkMeter` charges of mort/typechecker.py on fix/frontend-crashes, at the
-// same primitives: a scan, copy or split costs its length divided by
+// The `WorkMeter` charges of mort/typechecker.py, at the same primitives: a scan, copy or split costs its length divided by
 // WORK_CHARS_PER_UNIT each time it runs, and every type built is charged and
 // capped, so total type work is bounded whatever the shape of the program.
+
+fn ck_column_of(n: *Node) -> u64 {
+    if n == (0 as *Node) {
+        return 0;
+    }
+    if (*n).paren_col != 0 {
+        return (*n).paren_col;
+    }
+    return (*n).col;
+}
+
+// `WorkMeter.fail` with `_work_location`: the most specific node with a column.
+fn ck_work_fail(c: *Ck, message: *Buf) {
+    let node = (*c).current_node;
+    if ck_column_of(node) == 0 && (*c).current_statement != (0 as *Node) {
+        node = (*c).current_statement;
+    }
+    if node == (0 as *Node)
+            || (ck_column_of(node) == 0 && ck_column_of((*c).work_site) != 0) {
+        if (*c).work_site != (0 as *Node) {
+            node = (*c).work_site;
+        }
+    }
+    if node == (0 as *Node) {
+        ck_exit_diag(c, 0, 0, NO_TEXT, buf_span(message));
+    }
+    ck_exit_diag(c, (*node).line, ck_column_of(node), (*node).file, buf_span(message));
+}
 
 fn ck_spend(c: *Ck, units: u64) {
     if units == 0 {
@@ -454,7 +509,7 @@ fn ck_spend(c: *Ck, units: u64) {
         m_s(&msg, " exceeds the limit of ");
         m_u(&msg, MAX_GENERIC_WORK);
         m_s(&msg, " work units in one program");
-        ck_fail_node(c, (*c).current_node, &msg);
+        ck_work_fail(c, &msg);
     }
 }
 
@@ -475,7 +530,7 @@ fn ck_made(c: *Ck, t: u64) -> u64 {
         m_s(&msg, "type is longer than ");
         m_u(&msg, MAX_TYPE_LENGTH);
         m_s(&msg, " characters");
-        ck_fail_node(c, (*c).current_node, &msg);
+        ck_work_fail(c, &msg);
     }
     return t;
 }
@@ -805,11 +860,21 @@ fn ck_is_float(c: *Ck, t: u64) -> bool {
     return map_has(&(*c).float_types, t);
 }
 
-// A true answer cannot change, so it is remembered: one huge type used many
-// times is validated, and charged, once. False answers are not kept.
+// `_valid_type`. A true answer cannot change, so it is remembered: one huge type
+// used many times is validated, and charged, once. False answers are not kept.
+// C spells arrays around the declared name, so an array nested in any other type
+// has no C form, except a slice of arrays behind a pointer.
 fn ck_valid(c: *Ck, type_in: u64) -> bool {
+    return ck_valid_at(c, type_in, false);
+}
+
+fn ck_valid_at(c: *Ck, type_in: u64, behind_pointer: bool) -> bool {
     let s = (*c).s;
-    if map_has(&(*c).valid_types, type_in) {
+    let memo = &(*c).valid_types;
+    if behind_pointer {
+        memo = &(*c).valid_behind_pointer;
+    }
+    if map_has(memo, type_in) {
         return true;
     }
     ck_charge_text(c, type_in);
@@ -818,16 +883,25 @@ fn ck_valid(c: *Ck, type_in: u64) -> bool {
     let result = false;
     if ts_is_ptr(s, t) {
         let inner = ck_pointee(c, t);
-        result = inner == (*c).t_void || ck_valid(c, inner);
+        if inner == (*c).t_void {
+            result = true;
+        } else {
+            ck_charge_text(c, t);
+            if !ts_is_array(s, inner) {
+                ck_charge_text(c, t);
+                result = ck_valid_at(c, inner, true);
+            }
+        }
     } else if ts_is_array(s, t) {
         let elem: u64 = 0;
         let count: u64 = 0;
         ck_array_parts(c, t, &elem, &count);
         let zero = ck_decimal(c, 0);
-        result = count != zero && ck_valid(c, elem);
+        result = count != zero && !ts_is_array(s, elem) && ck_valid(c, elem);
     } else if ts_is_slice(s, t) {
         let elem = ck_slice_elem(c, t);
-        result = elem != (*c).t_void && ck_valid(c, elem);
+        result = elem != (*c).t_void && (behind_pointer || !ts_is_array(s, elem))
+            && ck_valid(c, elem);
     } else {
         let params = u64vec_new();
         let fn_result: u64 = 0;
@@ -835,12 +909,13 @@ fn ck_valid(c: *Ck, type_in: u64) -> bool {
             result = true;
             for i: u64 in 0..params.len {
                 let item = u64vec_get(&params, i);
-                if item == (*c).t_void || !ck_valid(c, item) {
+                if item == (*c).t_void || ts_is_array(s, item) || !ck_valid(c, item) {
                     result = false;
                     break;
                 }
             }
-            result = result && (fn_result == (*c).t_void || ck_valid(c, fn_result));
+            result = result && !ts_is_array(s, fn_result)
+                && (fn_result == (*c).t_void || ck_valid(c, fn_result));
         } else {
             let tuple = u64vec_new();
             if ck_tuple_parts(c, t, &tuple) {
@@ -869,7 +944,7 @@ fn ck_valid(c: *Ck, type_in: u64) -> bool {
     }
     ck_leave(c);
     if result {
-        map_put(&(*c).valid_types, type_in, 1);
+        map_put(memo, type_in, 1);
     }
     return result;
 }
@@ -926,33 +1001,11 @@ fn ck_all_valid(c: *Ck, list: *U64Vec) -> bool {
     return true;
 }
 
-fn ck_node_count(root: *Node) -> u64 {
-    let stack = ptrvec_new();
-    ptrvec_push(&stack, root as *void);
-    let count: u64 = 0;
-    while stack.len > 0 {
-        ck_push_children(&stack, ptrvec_pop(&stack) as *Node);
-        count += 1;
-    }
-    free(stack.data as *void);
-    return count;
-}
-
-// `_instantiate_function`'s limits on fix/frontend-crashes, applied here before
-// the arguments are validated, because validating them is what recurses. A
-// template's `num` caches its node count, plus one so that zero means unset.
+// Python's limits on generic functions, which Mort also applies to struct and
+// enum instances (PLAN.md, section 11), before validating the arguments, because
+// validating them is what recurses.
 fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
-    if (*template).num == 0 {
-        (*template).num = ck_node_count(template) + 1;
-    }
-    (*c).work_instantiated = true;
-    let characters: u64 = 0;
-    for i: u64 in 0..(*args).len {
-        characters += intern_text((*c).s, u64vec_get(args, i)).len;
-    }
     (*c).generic_instantiations += 1;
-    (*c).generic_work += ((*template).num - 1)
-        * (1 + characters / GENERIC_WORK_TYPE_CHARS);
     let msg = m_new();
     m_s(&msg, "generic instantiation of ");
     m_r(c, &msg, (*template).name);
@@ -961,12 +1014,6 @@ fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
         m_s(&msg, "exceeds the limit of ");
         m_u(&msg, MAX_GENERIC_INSTANTIATIONS);
         m_s(&msg, " in one program");
-        ck_fail_node(c, template, &msg);
-    }
-    if (*c).generic_work > MAX_GENERIC_WORK {
-        m_s(&msg, "exceeds the limit of ");
-        m_u(&msg, MAX_GENERIC_WORK);
-        m_s(&msg, " work units in one program");
         ck_fail_node(c, template, &msg);
     }
     for i: u64 in 0..(*args).len {
@@ -988,6 +1035,15 @@ fn ck_charge_generic(c: *Ck, template: *Node, args: *U64Vec) {
     free(msg.data as *void);
 }
 
+// `_charge_instantiation`, after the arguments are known to be valid.
+fn ck_charge_instantiation(c: *Ck, nodes: u64, site: *Node) {
+    (*c).work_instantiated = true;
+    if ck_column_of(site) != 0 {
+        (*c).work_site = site;
+    }
+    ck_spend(c, nodes * WORK_UNITS_PER_NODE);
+}
+
 fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
     let s = (*c).s;
     if tb_has(&(*c).structs, concrete) {
@@ -1007,6 +1063,7 @@ fn ck_instantiate_struct(c: *Ck, concrete: u64) -> bool {
     if !ck_all_valid(c, &args) {
         return false;
     }
+    ck_charge_instantiation(c, 1 + ck_items_len((*template).items), template);
     let fields = ptrvec_new();
     for i: u64 in 0..ck_items_len((*template).items) {
         let declared = ast_item((*template).items, i);
@@ -1074,6 +1131,11 @@ fn ck_instantiate_enum(c: *Ck, concrete: u64) -> bool {
     if !ck_all_valid(c, &args) {
         return false;
     }
+    let nodes: u64 = 1;
+    for i: u64 in 0..ck_items_len((*template).items) {
+        nodes += 1 + ck_names_len((*ast_item((*template).items, i)).names);
+    }
+    ck_charge_instantiation(c, nodes, template);
     let variants = ptrvec_new();
     for i: u64 in 0..ck_items_len((*template).items) {
         let declared = ast_item((*template).items, i);
@@ -1235,6 +1297,7 @@ fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
                 if !ck_in_graph(c, dep) {
                     continue;
                 }
+                let dep_deps = ck_deps_of(c, dep);
                 if ck_u64vec_has(&visiting, dep) {
                     let b = m_new();
                     m_s(&b, "aggregate by-value cycle: ");
@@ -1257,7 +1320,7 @@ fn ck_validate_cycles(c: *Ck, roots: *U64Vec, node: *Node) {
                     ck_fail_node(c, target, &b);
                 }
                 u64vec_push(&visiting, dep);
-                ptrvec_push(&frames, ck_deps_of(c, dep) as *void);
+                ptrvec_push(&frames, dep_deps as *void);
                 u64vec_push(&positions, 0);
             } else {
                 ptrvec_pop(&frames);
@@ -2168,6 +2231,7 @@ fn ck_expr(c: *Ck, root: *Node) {
         let phase = u64vec_pop(&(*c).stack_phases);
         let extra = u64vec_pop(&(*c).stack_extras);
         if phase == W_EXPR {
+            (*c).current_node = n;
             ck_expr_step(c, n);
         } else if phase == W_CALL_DONE {
             ck_call_done(c, n, extra);
@@ -2416,6 +2480,11 @@ fn ck_match(c: *Ck, s: *Node) {
 }
 
 fn ck_stmt(c: *Ck, s: *Node) {
+    (*c).current_node = s;
+    (*c).current_statement = 0 as *Node;
+    if ck_column_of(s) != 0 {
+        (*c).current_statement = s;
+    }
     let kind = (*s).kind;
     if kind == NodeKind.LET {
         ck_let(c, s);
@@ -2738,13 +2807,15 @@ fn ck_check_test_names(c: *Ck) {
 }
 
 fn ck_new(strings: *Interner, program: *Program, out_path: *u8,
-        freestanding: bool, test_mode: bool) -> Ck {
+        freestanding: bool, test_mode: bool, first_columns: *Map) -> Ck {
     let c = Ck {
         s: strings, program: program, out_path: out_path,
         freestanding: freestanding, test_mode: test_mode, depth: 0,
-        generic_instantiations: 0, generic_work: 0,
-        work_spent: 0, work_instantiated: false, current_node: 0 as *Node,
-        alias_cache: map_new(), valid_types: map_new(),
+        generic_instantiations: 0,
+        work_spent: 0, work_instantiated: false, work_site: 0 as *Node,
+        current_node: 0 as *Node, current_statement: 0 as *Node,
+        first_columns: first_columns,
+        alias_cache: map_new(), valid_types: map_new(), valid_behind_pointer: map_new(),
         aliases: tb_new(), alias_decls: tb_new(),
         enums: tb_new(), enum_templates: tb_new(),
         structs: tb_new(), struct_templates: tb_new(),
