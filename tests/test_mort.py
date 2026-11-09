@@ -4680,6 +4680,68 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_clone_copies_entries_independently_of_the_original():
+    program = r'''import std.map;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let original: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&original);
+    map.insert(&original, 1, 10);
+    map.insert(&original, 2, 20);
+    map.insert(&original, 3, 30);
+
+    let copy: Map<i64, i64> = map.clone(&original);
+    defer map.destroy(&copy);
+    let ok: i64 = 0;
+
+    if copy.length == 3 { ok += 1; }
+    if unwrap(map.get(&copy, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&copy, 3)) == 30 { ok += 1; }
+
+    // Mutating either map after cloning must not affect the other.
+    map.insert(&original, 1, 999);
+    map.insert(&original, 4, 40);
+    map.insert(&copy, 5, 50);
+    if unwrap(map.get(&copy, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&copy, 4)) == -1 { ok += 1; }
+    if unwrap(map.get(&original, 5)) == -1 { ok += 1; }
+    if original.length == 4 { ok += 1; }
+    if copy.length == 4 { ok += 1; }
+
+    let empty: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&empty);
+    let empty_copy: Map<i64, i64> = map.clone(&empty);
+    defer map.destroy(&empty_copy);
+    if empty_copy.length == 0 { ok += 1; }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapclone.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapclone.exe" if os.name == "nt" else "mapclone")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_remove_moves_value_out_and_shifts_remaining_elements():
     program = r'''import std.vec;
 
