@@ -109,7 +109,7 @@ def _split_type_list(inner):
     for index, char in enumerate(inner):
         if char == "<":
             angle += 1
-        elif char == ">":
+        elif char == ">" and inner[index - 1:index] != "-":
             angle -= 1
         elif char == "(":
             paren += 1
@@ -367,6 +367,12 @@ class CodeGen:
             self.c_types[t] = spelled
         charge_chars(spelled)  # every use is written out, even when cached
         return spelled
+
+    def _sizeof(self, t):
+        if _is_array(t):
+            element, count = _array_parts(t)
+            return f"({count}ULL * {self._sizeof(element)})"
+        return f"sizeof({self._ct(t)})"
 
     _U64_MAX = (1 << 64) - 1
     _I64_MAX = (1 << 63) - 1
@@ -2382,7 +2388,8 @@ class CodeGen:
             temporary = f"mort_match_{match_id}"
             self._emit("{")
             self.indent += 1
-            self._emit(f"{self._ct(s.expr.type)} {temporary} = {self._gen_expr(s.expr)};")
+            self._emit(self._var_decl(
+                s.expr.type, temporary, self._gen_expr(s.expr)) + ";")
             emitted_condition = False
             for arm_index, arm in enumerate(s.arms):
                 if arm.pattern is None:
@@ -2410,8 +2417,8 @@ class CodeGen:
                     payload = f"{temporary}.data.v_{arm.variant_name}"
                     if arm.payload_arity > 1:
                         payload += f".f_{binding_index}"
-                    self._emit(
-                        f"{self._ct(binding_type)} m_{binding_name} = {payload};")
+                    self._emit(self._var_decl(
+                        binding_type, f"m_{binding_name}", payload) + ";")
                     if destructor is not None:
                         live = f"mort_live_m_{binding_name}"
                         self._emit(f"bool {live} = true;")
@@ -2775,7 +2782,7 @@ class CodeGen:
                 return f"((void)(*(volatile {c_access}*)({pointer}) = ({value})))"
             args = ", ".join(self._gen_expr(a) for a in e.args)
             if e.name == "sizeof":
-                return f"((uint64_t)sizeof({self._ct(e.type_args[0])}))"
+                return f"((uint64_t){self._sizeof(e.type_args[0])})"
             if e.name == "print":
                 name = (
                     "mort_print_float"
