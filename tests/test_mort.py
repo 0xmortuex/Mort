@@ -11114,3 +11114,149 @@ def test_chain_of_large_finite_generics_compiles():
 
 def test_spec_states_the_generic_work_limit():
     assert "1000000 work units" in _spec_text()
+
+
+_HOSTILE_SECONDS = 60
+
+
+def _tuple_of(item, width):
+    return "(" + ", ".join([item] * width) + ")"
+
+
+_WIDE_T = _tuple_of("T", 16)
+
+
+def _hostile_lets(count, annotation, value="null"):
+    return "".join(f"  let a{index}: {annotation} = {value};\n" for index in range(count))
+
+
+def _branching_generic(body, declarations=""):
+    return (declarations + "fn g<T>(x: T) -> i64 {\n" + body
+            + "  g(&x);\n  g((x, x));\n  return 0;\n}\n"
+            "fn main() -> int { return g(1) as int; }\n")
+
+
+_WIDE_ANNOTATIONS = {
+    "pointer-to-tuple": "*" + _WIDE_T,
+    "pointer-to-slice": "*[]" + _WIDE_T,
+    "generic-struct": "*W<" + _WIDE_T + ">",
+    "function-pointer": "fn" + _WIDE_T + " -> " + _WIDE_T,
+}
+
+_HOSTILE_PROGRAMS = {
+    "annotation-multiplication": _branching_generic(_hostile_lets(30, "*" + _WIDE_T)),
+    "growing-structs": (
+        "struct W<T> { v: T }\nfn g<T>(x: *W<T>) -> i64 {\n"
+        "  let y: *W<W<T>> = null;\n  let z: *W<*T> = null;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+        "fn main() -> int { let a: *W<i64> = null; return g(a) as int; }"),
+    "large-body": _branching_generic(_big_generic_body(8000)),
+    "growing-enum-casts": (
+        "enum E<T> { A(T), B }\nfn g<T>(x: *E<T>) -> i64 {\n"
+        "  let y = null as *E<E<T>>;\n  let z = null as *E<*T>;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+        "fn main() -> int { let a: *E<i64> = null; return g(a) as int; }"),
+    "doubling-type": "fn g<T>(x: T) -> i64 { return g((x, x)); } "
+                     "fn main() -> int { return g(1) as int; }",
+    "cast-multiplication": _branching_generic("".join(
+        f"  let a{index} = null as *{_WIDE_T};\n" for index in range(30))),
+    "sizeof-multiplication": _branching_generic("".join(
+        f"  let a{index} = sizeof<{_WIDE_T}>();\n" for index in range(30))),
+    "explicit-type-arguments": ("fn g<T>(x: T) -> i64 { g<*T>(&x); return g<(T, T)>((x, x)); } "
+                                "fn main() -> int { return g(1) as int; }"),
+    "tuple-return": (
+        f"fn g<T>(x: T) -> {_WIDE_T} {{\n  g(&x);\n  g((x, x));\n"
+        f"  return {_tuple_of('x', 16)};\n}}\n"
+        "fn main() -> int { g(1); return 0; }\n"),
+    "self-growing-struct": ("struct W<T> { a: *W<(T, T)> }\n"
+                            "fn main() -> int { let a: *W<i64> = null; return 0; }\n"),
+    "self-growing-enum": ("enum E<T> { A(*E<(T, T)>), B }\n"
+                          "fn main() -> int { let a: *E<i64> = null; return 0; }\n"),
+    "branch-snapshots": _branching_generic(
+        _big_generic_body(2000)
+        + "".join(f"  if true {{ let b{index}: i64 = 1; }}\n" for index in range(2000))),
+    "defers-and-returns": (
+        "fn f() -> void {}\n"
+        + _branching_generic(
+            "".join("  defer f();\n" for _ in range(1000))
+            + "".join("  if true { return 1; }\n" for _ in range(1000)))),
+    "doubling-aliases": (
+        "type A0 = (i64, i64);\n"
+        + "".join(f"type A{index + 1} = (A{index}, A{index});\n" for index in range(40))
+        + "fn main() -> int { return 0; }\n"),
+    "doubling-without-generics": (
+        "fn main() -> int {\n  let a0 = (1, 1);\n"
+        + "".join(f"  let a{index + 1} = (a{index}, a{index});\n" for index in range(40))
+        + "  return 0;\n}\n"),
+    **{
+        f"{name}-{count}x{width}": _branching_generic(
+            _hostile_lets(count, annotation.replace(_WIDE_T, _tuple_of("T", width))),
+            "struct W<T> { v: T }\n")
+        for name, annotation in _WIDE_ANNOTATIONS.items()
+        for count, width in ((1, 64), (120, 4))
+    },
+}
+
+
+@pytest.mark.parametrize("source", list(_HOSTILE_PROGRAMS.values()), ids=list(_HOSTILE_PROGRAMS))
+def test_hostile_generic_program_is_rejected_within_the_time_bound(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None and error.col is not None, error.format()
+    assert "instantiation" in error.msg or "longer than" in error.msg, error.msg
+    assert elapsed < _HOSTILE_SECONDS
+
+
+def test_finite_wide_annotations_keep_compiling():
+    source = ("fn g<T>(x: T) -> i64 {\n" + _hostile_lets(30, "*" + _WIDE_T)
+              + "  return 0;\n}\nfn main() -> int { return g(1) as int; }\n")
+    assert "mort_g" in c_of(source)
+
+
+def test_type_primitives_charge_for_the_text_they_process():
+    meter = typechecker_module.WorkMeter()
+    meter.armed = True
+    long_tuple = _tuple_of("i64", 200)
+    with typechecker_module.charging(meter):
+        typechecker_module.tuple_parts(long_tuple)
+    scanned = meter.spent
+    assert scanned >= len(long_tuple) // typechecker_module.WORK_CHARS_PER_UNIT
+    with typechecker_module.charging(meter):
+        typechecker_module.substitute_type("*" + long_tuple, {"i64": "(u8,u8)"})
+    assert meter.spent > scanned
+
+
+def test_charges_are_ignored_until_a_generic_is_instantiated():
+    meter = typechecker_module.WorkMeter()
+    with typechecker_module.charging(meter):
+        typechecker_module.tuple_parts(_tuple_of("i64", 200))
+    assert meter.spent == 0
+
+
+def test_codegen_primitives_charge_the_same_meter():
+    meter = typechecker_module.WorkMeter()
+    meter.armed = True
+    with typechecker_module.charging(meter):
+        codegen_module._split_type_list(",".join(["i64"] * 200))
+    assert meter.spent >= 800 // typechecker_module.WORK_CHARS_PER_UNIT
+
+
+def test_exhausted_meter_raises_a_located_instantiation_error():
+    meter = typechecker_module.WorkMeter()
+    meter.armed = True
+    node = type("Site", (), {"line": 3, "col": 7})()
+    meter.locate = lambda: node
+    with pytest.raises(MortError) as caught:
+        meter.spend(typechecker_module.MAX_GENERIC_WORK + 1)
+    assert (caught.value.line, caught.value.col) == (3, 7)
+    assert "work units" in caught.value.msg
+
+
+def test_constructed_type_length_limit_is_located():
+    source = ("fn main() -> int {\n  let a0 = (1, 1);\n"
+              + "".join(f"  let a{index + 1} = (a{index}, a{index});\n" for index in range(16))
+              + "  return 0;\n}\n")
+    error = assert_located(source, "longer than 65536")
+    assert error.line is not None
+
+
+def test_spec_states_the_constructed_type_limit():
+    assert "65536 characters" in _spec_text()

@@ -11,6 +11,8 @@ the other operand of a binary op). Everything else needs an explicit ``as`` cast
 """
 import copy
 import itertools
+import threading
+from contextlib import contextmanager
 
 from . import mort_ast as A
 from .errors import MortError, MortWarning
@@ -35,10 +37,14 @@ MAX_CONSTANT_BITS = 2 ** 18
 MAX_TYPE_ARGUMENT_NESTING = 256
 MAX_TYPE_ARGUMENT_LENGTH = 4096
 MAX_GENERIC_INSTANTIATIONS = 16384
-# Copying and checking an instance costs its body size, more when long type
-# names fill that body, so a few huge instances can stall as many small ones do.
+# Generics can multiply the compiler's work by any amount, so WorkMeter limits
+# the work itself; see its docstring for why every shape of program is covered.
 MAX_GENERIC_WORK = 1_000_000
-GENERIC_WORK_TYPE_CHARS = 64
+WORK_CHARS_PER_UNIT = 64
+WORK_UNITS_PER_NODE = 8
+# Every type the compiler builds is at most this long, generics or not: a tuple
+# of tuples doubles with each `let`, and aliases double without any statement.
+MAX_TYPE_LENGTH = 65536
 # Builtins that accept explicit type arguments. Every other builtin rejects them,
 # so a new generic builtin must be declared here and only here.
 GENERIC_BUILTINS = frozenset({"sizeof", "slice", "volatile_read", "volatile_write"})
@@ -109,11 +115,106 @@ def _c_mod(a, b):
     return a - _c_div(a, b) * b
 
 
+class WorkMeter:
+    """The total compile work of one program, in work units.
+
+    Why nothing escapes it. Compile work has only these parts:
+
+    * Walking syntax trees: copying, substituting, checking and generating an
+      instance visits each of its nodes a fixed number of times. Instantiating
+      charges WORK_UNITS_PER_NODE for each node of the template; generic structs
+      and enums charge the same for each field and payload.
+    * Handling type strings: every primitive that scans, copies, substitutes or
+      mangles a type charges its length divided by WORK_CHARS_PER_UNIT, again at
+      every recursion level, so a type handled repeatedly pays every time. Below
+      that length a call costs a fixed amount, and such calls are a fixed number
+      per node or type constructor.
+    * Walks whose length depends on what is reachable rather than on one node:
+      struct dependency graphs, drop analysis, move snapshots, repeated deferred
+      statements, definition ordering and C name lookups. Each charges for the
+      items it visits.
+
+    New type strings are charged when built and rejected beyond MAX_TYPE_LENGTH,
+    so the remaining uncharged string operations (hashing, equality) cost at
+    most MAX_TYPE_LENGTH bytes each, a fixed number per charged node. Total work
+    is therefore proportional to MAX_GENERIC_WORK, whatever the program's shape.
+
+    Charges are ignored until the first generic instantiation, so a program
+    without generics keeps being limited only by its own size.
+    """
+
+    def __init__(self):
+        self.spent = 0
+        self.armed = False
+        self.locate = lambda: None
+        self.site = None
+
+    def spend(self, units):
+        if not self.armed or not units:
+            return
+        self.spent += units
+        if self.spent > MAX_GENERIC_WORK:
+            self.fail(
+                f"generic instantiation exceeds the limit of {MAX_GENERIC_WORK} "
+                "work units in one program")
+
+    def fail(self, message):
+        node = self.locate() or self.site
+        line = getattr(node, "line", None)
+        col = getattr(node, "paren_col", None) or getattr(node, "col", None)
+        if line is not None and col is None:
+            col = 1
+        raise MortError(message, line, col, filename=getattr(node, "filename", None))
+
+
+class _CurrentMeter(threading.local):
+    meter = None
+
+
+_current = _CurrentMeter()
+
+
+@contextmanager
+def charging(meter):
+    """Charge the type primitives in this thread to meter for the duration."""
+    previous = _current.meter
+    _current.meter = meter
+    try:
+        yield meter
+    finally:
+        _current.meter = previous
+
+
+def charge_units(units):
+    meter = _current.meter
+    if meter is not None:
+        meter.spend(units)
+
+
+def charge_items(count):
+    """Charge a scan over count items or characters."""
+    charge_units(count // WORK_CHARS_PER_UNIT)
+
+
+def charge_chars(text):
+    charge_items(len(text))
+
+
+def made_type(text):
+    """Charge a newly built type string and enforce MAX_TYPE_LENGTH."""
+    charge_chars(text)
+    meter = _current.meter
+    if meter is not None and len(text) > MAX_TYPE_LENGTH:
+        meter.fail(f"type is longer than {MAX_TYPE_LENGTH} characters")
+    return text
+
+
 def is_ptr(t):
     return isinstance(t, str) and t.startswith("*")
 
 
 def pointee(t):
+    charge_chars(t)
     return t[7:] if t.startswith("*const ") else t[1:]
 
 
@@ -134,11 +235,13 @@ def is_const_slice(t):
 
 
 def slice_elem(t):
+    charge_chars(t)
     return t[8:] if is_const_slice(t) else t[2:]
 
 
 def array_parts(t):
     """'[i32;8]' -> ('i32', 8). Splits on the last ';' to allow nested arrays."""
+    charge_chars(t)
     inner = t[1:-1]
     cut = inner.rfind(";")
     return inner[:cut], int(inner[cut + 1:])
@@ -156,6 +259,7 @@ def generic_parts(t):
 def _split_type_list(inner):
     if not inner:
         return []
+    charge_chars(inner)
     result = []
     start = 0
     angle = paren = bracket = 0
@@ -183,6 +287,7 @@ def function_parts(t):
     """Return (parameter types, return type) for ``fn(...)->...``."""
     if not isinstance(t, str) or not t.startswith("fn("):
         return None
+    charge_chars(t)
     depth = 0
     close = None
     for index in range(2, len(t)):
@@ -213,6 +318,7 @@ def type_nesting(t):
     Pointers, slices and function results are prefixes with nothing closing
     them, so they deepen everything after them up to the enclosing separator.
     """
+    charge_chars(t)
     deepest = depth = 0
     enclosing = []
     position = 0
@@ -251,32 +357,34 @@ def ast_size(root):
 
 
 def substitute_type(t, mapping):
+    charge_chars(t)
     if t in mapping:
         return mapping[t]
     if is_ptr(t):
         prefix = "*const " if is_const_ptr(t) else "*"
-        return prefix + substitute_type(pointee(t), mapping)
+        return made_type(prefix + substitute_type(pointee(t), mapping))
     if is_slice(t):
         prefix = "[]const " if is_const_slice(t) else "[]"
-        return prefix + substitute_type(slice_elem(t), mapping)
+        return made_type(prefix + substitute_type(slice_elem(t), mapping))
     if is_array(t):
         elem, count = array_parts(t)
-        return f"[{substitute_type(elem, mapping)};{count}]"
+        return made_type(f"[{substitute_type(elem, mapping)};{count}]")
     callable_type = function_parts(t)
     if callable_type:
         parameters, result = callable_type
-        return (
+        return made_type(
             "fn(" + ",".join(substitute_type(item, mapping) for item in parameters)
             + ")->" + substitute_type(result, mapping)
         )
     tuple_type = tuple_parts(t)
     if tuple_type:
-        return "(" + ",".join(
-            substitute_type(item, mapping) for item in tuple_type) + ")"
+        return made_type("(" + ",".join(
+            substitute_type(item, mapping) for item in tuple_type) + ")")
     parts = generic_parts(t)
     if parts:
         base, args = parts
-        return base + "<" + ",".join(substitute_type(arg, mapping) for arg in args) + ">"
+        return made_type(
+            base + "<" + ",".join(substitute_type(arg, mapping) for arg in args) + ">")
     return t
 
 
@@ -303,7 +411,8 @@ class Checker:
         self.current_ret = None
         self.current_node = None  # where a stack overflow is reported
         self.generic_instantiations = 0
-        self.generic_work = 0
+        self.work = WorkMeter()
+        self.work.locate = lambda: self.current_node
         self.template_sizes = {}
         self.alias_cache = {}
         self.extern_names = set()
@@ -331,6 +440,7 @@ class Checker:
         for a variable or field. An array nested in any other type has no C
         form, except a slice of arrays behind a pointer, which is never laid out.
         """
+        charge_chars(t)
         t = self._resolve_alias_type(t)
         if is_ptr(t):
             return pointee(t) == "void" or (
@@ -370,6 +480,7 @@ class Checker:
         """
         if not stack and t in self.alias_cache:
             return self.alias_cache[t]
+        charge_chars(t)
         if t in self.aliases:
             if t in stack:
                 declaration = self.alias_decls[t]
@@ -378,16 +489,16 @@ class Checker:
             resolved = self._resolve_alias_type(self.aliases[t], (*stack, t))
         elif is_ptr(t):
             prefix = "*const " if is_const_ptr(t) else "*"
-            resolved = prefix + self._resolve_alias_type(pointee(t), stack)
+            resolved = made_type(prefix + self._resolve_alias_type(pointee(t), stack))
         elif is_slice(t):
             prefix = "[]const " if is_const_slice(t) else "[]"
-            resolved = prefix + self._resolve_alias_type(slice_elem(t), stack)
+            resolved = made_type(prefix + self._resolve_alias_type(slice_elem(t), stack))
         elif is_array(t):
             element, count = array_parts(t)
-            resolved = f"[{self._resolve_alias_type(element, stack)};{count}]"
+            resolved = made_type(f"[{self._resolve_alias_type(element, stack)};{count}]")
         elif callable_type := function_parts(t):
             parameters, result = callable_type
-            resolved = (
+            resolved = made_type(
                 "fn(" + ",".join(
                     self._resolve_alias_type(item, stack) for item in parameters
                 ) + ")->" + (
@@ -396,14 +507,14 @@ class Checker:
                 )
             )
         elif tuple_type := tuple_parts(t):
-            resolved = "(" + ",".join(
+            resolved = made_type("(" + ",".join(
                 self._resolve_alias_type(item, stack) for item in tuple_type
-            ) + ")"
+            ) + ")")
         elif parts := generic_parts(t):
             base, arguments = parts
-            resolved = base + "<" + ",".join(
+            resolved = made_type(base + "<" + ",".join(
                 self._resolve_alias_type(argument, stack) for argument in arguments
-            ) + ">"
+            ) + ">")
         else:
             resolved = t
         if not stack:
@@ -437,7 +548,7 @@ class Checker:
                 ]
                 value.payload_type = (
                     value.payload_types[0] if len(value.payload_types) == 1
-                    else "(" + ",".join(value.payload_types) + ")"
+                    else made_type("(" + ",".join(value.payload_types) + ")")
                 )
             elif isinstance(value, A.Let) and value.decl_type is not None or isinstance(value, A.For) and value.decl_type is not None:
                 value.decl_type = self._resolve_alias_type(value.decl_type)
@@ -505,6 +616,7 @@ class Checker:
         def visit(name):
             if name in complete:
                 return
+            self.work.spend(1)
             names = dependencies(name)
             if names is None:
                 return
@@ -533,6 +645,7 @@ class Checker:
             return False
         if not all(self._valid_type(arg) for arg in args):
             return False
+        self._charge_instantiation(1 + len(template.fields), template)
         mapping = dict(zip(template.generic_params, args))
         fields = [
             A.StructField(field.name, substitute_type(field.typ, mapping))
@@ -565,6 +678,9 @@ class Checker:
             return False
         if not all(self._valid_type(arg) for arg in args):
             return False
+        self._charge_instantiation(
+            1 + sum(1 + len(variant.payload_types) for variant in template.variants),
+            template)
         mapping = dict(zip(template.generic_params, args))
         variants = [
             A.EnumVariant(
@@ -603,7 +719,14 @@ class Checker:
         self._validate_aggregate_cycles([concrete_type], template)
         return True
 
+    def _charge_instantiation(self, nodes, site):
+        self.work.armed = True
+        if self.work.site is None:
+            self.work.site = site
+        self.work.spend(nodes * WORK_UNITS_PER_NODE)
+
     def _unify_generic_type(self, pattern, actual, generic_params, mapping):
+        charge_chars(actual)
         if pattern in generic_params:
             previous = mapping.get(pattern)
             if previous is None:
@@ -719,19 +842,17 @@ class Checker:
                 node,
             )
         type_args = [mapping[name] for name in template.generic_params]
-        concrete_symbol = resolved + "<" + ",".join(type_args) + ">"
+        concrete_symbol = made_type(resolved + "<" + ",".join(type_args) + ">")
         if concrete_symbol in self.funcs:
             return concrete_symbol
         self.generic_instantiations += 1
         if resolved not in self.template_sizes:
             self.template_sizes[resolved] = ast_size(template)
-        self.generic_work += self.template_sizes[resolved] * (
-            1 + sum(map(len, type_args)) // GENERIC_WORK_TYPE_CHARS)
+        self.current_node = node
+        self._charge_instantiation(self.template_sizes[resolved], node)
         problem = None
         if self.generic_instantiations > MAX_GENERIC_INSTANTIATIONS:
             problem = f"exceeds the limit of {MAX_GENERIC_INSTANTIATIONS} in one program"
-        elif self.generic_work > MAX_GENERIC_WORK:
-            problem = f"exceeds the limit of {MAX_GENERIC_WORK} work units in one program"
         elif any(len(arg) > MAX_TYPE_ARGUMENT_LENGTH for arg in type_args):
             problem = (
                 f"has a type argument longer than {MAX_TYPE_ARGUMENT_LENGTH} characters")
@@ -777,6 +898,10 @@ class Checker:
         return concrete_symbol
 
     def check(self):
+        with charging(self.work):
+            return self._check_program()
+
+    def _check_program(self):
         self.program.drop_destructors = {}
         self._aggregate_declarations = {}
         for declaration in self.program.aliases:
@@ -787,6 +912,7 @@ class Checker:
             self.aliases[declaration.name] = declaration.target
             self.alias_decls[declaration.name] = declaration
         for name in list(self.aliases):
+            self.current_node = self.alias_decls[name]
             self.aliases[name] = self._resolve_alias_type(name)
         self._apply_type_aliases()
 
@@ -1022,6 +1148,7 @@ class Checker:
         # Test bodies can instantiate generics; those instances still need checking.
         for instance in itertools.islice(self.program.funcs, functions_before_tests, None):
             self._check_fn(instance)
+        self.program.work_meter = self.work
         return self.program
 
     # ----- scopes -----
@@ -1077,10 +1204,14 @@ class Checker:
         return None, None
 
     def _move_snapshot(self):
-        return [
+        snapshot = [
             (binding, binding.get("moved", False))
             for scope in self.binding_scopes for binding in scope.values()
         ]
+        # Each binding is copied here, then restored and merged by the caller,
+        # at about four times the cost of scanning one character.
+        charge_items(len(snapshot) * 4)
+        return snapshot
 
     @staticmethod
     def _restore_move_snapshot(snapshot):
@@ -1109,6 +1240,7 @@ class Checker:
         if typ in seen:
             return False
         seen.add(typ)
+        self.work.spend(1)
         if is_array(typ):
             element, _ = array_parts(typ)
             return self._needs_drop_type(element, seen)
@@ -1129,7 +1261,7 @@ class Checker:
 
     def _resource_destructor(self, typ, node):
         if not self._is_resource_type(typ):
-            symbol = "$drop$" + typ
+            symbol = made_type("$drop$" + typ)
             self.program.drop_destructors[typ] = symbol
             self._register_nested_drop_types(typ, node)
             return symbol
@@ -1908,7 +2040,7 @@ class Checker:
             element_types = [self._check_expr(element) for element in e.elements]
             for element_type, element in zip(element_types, e.elements):
                 self._require_explicit_move(element_type, element)
-            return "(" + ",".join(element_types) + ")"
+            return made_type("(" + ",".join(element_types) + ")")
         if isinstance(e, A.Var):
             vt = self._lookup(e.name, e)
             if vt is not None:
@@ -1932,7 +2064,7 @@ class Checker:
                         f"function {e.name!r} is private to module {target_module!r}", e)
                 parameters, result = self.funcs[resolved]
                 e.resolved_function = resolved
-                return f"fn({','.join(parameters)})->{result}"
+                return made_type(f"fn({','.join(parameters)})->{result}")
             self._error(f"undefined variable {e.name!r}", e)
 
         if isinstance(e, A.Move):
@@ -2030,7 +2162,7 @@ class Checker:
                     if root_name is not None and not self._binding_mutable(root_name)
                     else "*"
                 )
-                return prefix + ot
+                return made_type(prefix + ot)
             if e.op == "*":
                 ot = self._check_expr(e.operand)
                 if not is_ptr(ot):
@@ -2189,7 +2321,7 @@ class Checker:
                             f"module {module!r}", e)
                     parameters, result = self.funcs[resolved]
                     e.resolved_function = resolved
-                    return f"fn({','.join(parameters)})->{result}"
+                    return made_type(f"fn({','.join(parameters)})->{result}")
             if isinstance(e.obj, A.Var) and e.obj.name in self.enums:
                 enum_name = e.obj.name
                 if e.field not in self.enums[enum_name]:
@@ -2214,7 +2346,7 @@ class Checker:
                     return "u64"
                 if e.field == "data":
                     prefix = "*const " if is_const_slice(ot) else "*"
-                    return prefix + slice_elem(ot)
+                    return made_type(prefix + slice_elem(ot))
                 self._error(f"slice has no field {e.field!r}", e)
             if is_ptr(ot):
                 self._error(
@@ -2787,7 +2919,7 @@ class Checker:
             if not self._coerce("u64", e.args[1]):
                 self._error(f"slice length must be u64, got {e.args[1].type}", e)
             prefix = "[]const " if is_const_ptr(pointer_type) else "[]"
-            return prefix + pointee(pointer_type)
+            return made_type(prefix + pointee(pointer_type))
         if e.name in ("volatile_read", "volatile_write"):
             return self._check_volatile_call(e)
         if e.name == "outb":

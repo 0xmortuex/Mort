@@ -578,9 +578,14 @@ The reference implementation reports a located diagnostic when a program
 exceeds any of these limits:
 
 - A program may create at most 16384 generic function instantiations.
-- Generic function instantiations may cost at most 1000000 work units in total.
-  One instantiation costs the size of the function, in syntax tree nodes, times
-  1 plus the total characters of its type arguments divided by 64 (rounded down).
+- Once a program instantiates a generic, compiling it may cost at most 1000000
+  work units in total. Instantiating a function costs 8 units per syntax tree
+  node, and a generic struct or enum 8 units per field or payload plus 8. Each
+  operation that scans, copies, substitutes or mangles a type also costs that
+  type's length in characters divided by 64 (rounded down), each time it runs,
+  and walks over dependencies, bindings and deferred code cost what they visit.
+- A type the compiler constructs, by substitution, an expression or an alias,
+  must not be longer than 65536 characters, whether or not generics are used.
 - A generic function's type argument must not be nested more than 256 type
   constructors deep, and must not be longer than 4096 characters when spelled
   in canonical form.

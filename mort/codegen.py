@@ -11,7 +11,16 @@ import base64
 
 from . import mort_ast as A
 from .errors import MortError
-from .typechecker import BUILTIN_NAMES
+from .typechecker import (
+    BUILTIN_NAMES,
+    WORK_UNITS_PER_NODE,
+    WorkMeter,
+    ast_size,
+    charge_chars,
+    charge_items,
+    charge_units,
+    charging,
+)
 
 # [value; n] is written out element by element in the generated C, so a short
 # source line can demand gigabytes. This bounds that C text across the program.
@@ -65,10 +74,12 @@ def _is_const_slice(t):
 
 
 def _slice_elem(t):
+    charge_chars(t)
     return t[8:] if _is_const_slice(t) else t[2:]
 
 
 def _type_tag(t):
+    charge_chars(t)
     return (t.replace("->", "_to_")
             .replace("*const ", "const_").replace("*", "ptr_")
             .replace("[]const ", "slice_const_").replace("[]", "slice_")
@@ -83,6 +94,7 @@ def _slice_c_name(t):
 
 
 def _array_parts(t):
+    charge_chars(t)
     inner = t[1:-1]
     cut = inner.rfind(";")
     return inner[:cut], int(inner[cut + 1:])
@@ -91,6 +103,7 @@ def _array_parts(t):
 def _split_type_list(inner):
     if not inner:
         return []
+    charge_chars(inner)
     result = []
     start = 0
     angle = paren = bracket = 0
@@ -117,6 +130,7 @@ def _split_type_list(inner):
 def _function_parts(t):
     if not isinstance(t, str) or not t.startswith("fn("):
         return None
+    charge_chars(t)
     depth = 0
     close = None
     for index in range(2, len(t)):
@@ -177,6 +191,7 @@ def c_type(t, struct_names=frozenset(), enum_names=frozenset(),
 
     '*i32' -> 'int32_t*';  'Point' -> 'struct mort_Point'.
     """
+    charge_chars(t)
     callable_type = _function_parts(t)
     if callable_type:
         parameters, result = callable_type
@@ -223,11 +238,14 @@ class CodeGen:
         self.extern_names = {f.name for f in program.externs}
         self.lines = []
         self.indent = 0
-        self.slice_types = self._collect_slice_types(program)
-        self.tuple_types = self._collect_tuple_types(program)
+        self.current_node = None  # where a stack overflow is reported
+        self.work = getattr(program, "work_meter", None) or WorkMeter()
+        self.work.locate = lambda: self.current_node
+        with charging(self.work):
+            self.slice_types = self._collect_slice_types(program)
+            self.tuple_types = self._collect_tuple_types(program)
         self.drop_destructors = getattr(program, "drop_destructors", {})
         self.array_repeat_bytes = 0
-        self.current_node = None  # where a stack overflow is reported
 
     @staticmethod
     def _collect_slice_types(program):
@@ -269,6 +287,7 @@ class CodeGen:
         seen = set()
 
         def visit_type(value):
+            charge_chars(value)
             tuple_type = _tuple_parts(value)
             if tuple_type:
                 found.add(value)
@@ -1548,6 +1567,10 @@ class CodeGen:
         self._emit()
 
     def generate(self):
+        with charging(self.work):
+            return self._generate_program()
+
+    def _generate_program(self):
         self.strings = []       # raw string-literal values, index = id
         self.used_inb = False   # set if a port-I/O builtin is generated, per helper
         self.used_outb = False
@@ -1971,6 +1994,7 @@ class CodeGen:
                 if element in self.drop_destructors:
                     self._emit(self._drop_call(element, f"&value->f_{index}"))
         elif typ in self.struct_names:
+            charge_items(len(self.program.structs))
             declaration = next(
                 item for item in self.program.structs
                 if item.name == typ and not item.generic_params
@@ -1980,6 +2004,7 @@ class CodeGen:
                     self._emit(self._drop_call(
                         field.typ, f"&value->f_{field.name}"))
         elif typ in self.payload_enum_names:
+            charge_items(len(self.program.enums))
             declaration = next(
                 item for item in self.program.enums
                 if item.name == typ and not item.generic_params
@@ -2053,6 +2078,7 @@ class CodeGen:
         result = []
         remaining = list(nodes)
         while remaining:
+            charge_items(len(remaining))
             ready = [
                 key for key in remaining
                 if dependencies[key].issubset(emitted)
@@ -2065,7 +2091,7 @@ class CodeGen:
             for key in ready:
                 result.append((key[0], nodes[key]))
                 emitted.add(key)
-                remaining.remove(key)
+            remaining = [key for key in remaining if key not in emitted]
         return result
 
     def _gen_enum(self, enum):
@@ -2144,9 +2170,12 @@ class CodeGen:
                         if destructor.startswith("$drop$")
                         else f"mort_{_c_symbol(destructor)}"
                     )
+                    charge_units(1)
                     self._emit(
                         f"if ({live}) {{ {destructor_name}(&m_{name}); }}")
                 else:
+                    # Each exit path regenerates every deferred expression.
+                    charge_units(ast_size(expression) * WORK_UNITS_PER_NODE)
                     self._emit(self._gen_expr(expression) + ";")
 
     def _gen_scoped_statements(self, statements):
