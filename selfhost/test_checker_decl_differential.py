@@ -222,7 +222,14 @@ DECL_CASES = {
     "generic_shape_fn": OK_MAIN + "struct G<T> { f: fn(T, *const T) -> []T }\nstruct S { g: G<u8> }\n",
     "generic_shape_array": OK_MAIN + "struct G<T> { f: [T; 3], h: [[*T; 2]; 3] }\nstruct S { g: G<u8> }\n",
     "generic_shape_nested_generic": OK_MAIN + "struct H<A, B> { a: A, b: B }\nstruct G<T> { f: H<T, *T> }\nstruct S { g: G<u8> }\n",
-    "generic_tuple_comma_split_quirk": OK_MAIN + "struct D<T> { a: *D<(T, T)> }\nstruct S { d: D<u8> }\n",
+    "array_rule_pointer_to_array": OK_MAIN + "struct S { a: *[u8; 2] }\n",
+    "array_rule_array_of_arrays": OK_MAIN + "struct S { a: [[u8; 2]; 3] }\n",
+    "array_rule_function_parameter": OK_MAIN + "struct S { a: fn([u8; 2]) -> void }\n",
+    "array_rule_function_result": OK_MAIN + "struct S { a: fn() -> [u8; 2] }\n",
+    "array_rule_slice_of_arrays": OK_MAIN + "struct S { a: [][u8; 2] }\n",
+    "array_rule_slice_of_arrays_behind_pointer": OK_MAIN + "struct S { a: *[][u8; 2] }\n",
+    "array_rule_memo_is_per_position": OK_MAIN + "struct S { a: *[][u8; 2], b: [][u8; 2] }\n",
+    "generic_tuple_argument_splits_at_the_top_level": OK_MAIN + "struct G<A, B> { a: A, b: B }\nstruct S { g: G<(u8, u8), i64> }\n",
     "generic_enum_shape_tuple": OK_MAIN + "enum O<T> { A((T, *const T)), B(T, []T) }\nstruct S { o: O<u8> }\n",
     "instance_order": OK_MAIN + "struct G<T> { x: T }\nstruct H<T> { y: T }\nenum E<T> { A(T) }\nstruct S { a: H<u8>, b: G<u8>, c: E<i64>, d: H<i64>, e: E<u8> }\n",
     "instance_order_nested": OK_MAIN + "struct G<T> { x: T }\nstruct H<T> { y: G<T> }\nstruct S { a: H<*u8> }\n",
@@ -640,8 +647,8 @@ def run_mort_bounded(exe, manifest_text, tmp_path, limit=500 * 1024 * 1024, extr
 
 
 def assert_generic_limit(exe, tmp_path, source, line, template, problem):
-    """The limits are the specification's; Python on main has none yet and
-    cannot run these inputs, so the expected text is built from the rule."""
+    """Python applies these limits to generic functions only (see PLAN.md,
+    section 11), so the expected text is built from its rule."""
     path = _written(tmp_path, source)
     code, stderr = run_mort_bounded(exe, f"MODE hosted\nFILE {path}\n", tmp_path)
     assert code == 1, stderr
@@ -695,10 +702,49 @@ def test_generic_work_budget_is_enforced(check_exe, tmp_path):
     template = ", ".join(f"f{i}: T" for i in range(9999))
     uses = ", ".join(f"g{i}: W<T{i}>" for i in range(150))
     declarations = "".join(f"struct T{i} {{ }}\n" for i in range(150))
-    assert_generic_limit(
+    assert_type_limit(
         check_exe, tmp_path,
         f"struct W<T> {{ {template} }}\n{declarations}struct S {{ {uses} }}\n" + OK_MAIN,
-        1, "W", "exceeds the limit of 1000000 work units in one program")
+        152, GENERIC_WORK_EXCEEDED)
+
+
+@pytest.mark.parametrize("initialiser,column", [("null", 3), ("f()", 33)], ids=["statement", "call"])
+def test_body_budget_is_located_as_python_locates_it(check_exe, tmp_path, initialiser, column):
+    """`_work_location`: a null has no column, so the statement's is used, and
+    a call reports its parenthesis. Which statement runs out is Mort's own until
+    T5 charges bodies as Python does (PLAN.md), so the line is measured here."""
+    count = 600
+    source = (alias_chain(12, "({a}, {a})")
+              + "".join(f"struct T{i} {{ }}\n" for i in range(count))
+              + "fn f() -> i64 { return 0; }\nfn main() -> int {\n"
+              + "".join(f"  let a{i}: (A12, A12, T{i}) = {initialiser};\n" for i in range(count))
+              + "  return 0;\n}\n")
+    path = _written(tmp_path, source)
+    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    assert stderr.decode("utf-8") == f"{path}:806:{column}: error: {TYPE_WORK_EXCEEDED}"
+
+
+def test_generic_enum_work_budget_is_enforced(check_exe, tmp_path):
+    variants = ", ".join(f"V{i}(T)" for i in range(9999))
+    uses = ", ".join(f"g{i}: W<T{i}>" for i in range(150))
+    declarations = "".join(f"struct T{i} {{ }}\n" for i in range(150))
+    assert_type_limit(
+        check_exe, tmp_path,
+        f"enum W<T> {{ {variants} }}\n{declarations}struct S {{ {uses} }}\n" + OK_MAIN,
+        1, GENERIC_WORK_EXCEEDED)
+
+
+def test_known_difference_doubling_tuple_argument(check_exe, tmp_path):
+    """PLAN.md, section 11: Mort's 4096-character argument limit applies to
+    struct instances and Python's does not. Both exact results are pinned, so
+    closing the gap fails here rather than passing unnoticed."""
+    source = OK_MAIN + "struct D<T> { a: *D<(T, T)> }\nstruct S { d: D<u8> }\n"
+    assert_generic_limit(
+        check_exe, tmp_path, source, 2, "D", "has a type argument longer than 4096 characters")
+    path = _written(tmp_path, source)
+    expected = py_check_dump.run_reference(path, "hosted")
+    assert expected.error == f"{path}:3: error: {TYPE_TOO_LONG}"
 
 
 def test_deep_pointer_types_are_resolved_once(check_exe, tmp_path):
@@ -733,14 +779,14 @@ def alias_chain(count, link):
         f"type A{i + 1} = {link.format(a=f'A{i}')};\n" for i in range(count))
 
 
-def assert_type_limit(exe, tmp_path, source, line, message=TYPE_TOO_LONG):
-    """Python on main has no such limit; the expected texts and lines were
-    measured from fix/frontend-crashes (see PLAN.md, section 11), so a hostile
-    program is checked only for what Mort reports, under the memory limit."""
+def assert_type_limit(exe, tmp_path, source, where, message=TYPE_TOO_LONG):
+    """The memory limit guards Mort; the text and location are pinned here and
+    must also be exactly what the Python checker reports."""
     path = _written(tmp_path, source)
     code, stderr = run_mort_bounded(exe, f"MODE hosted\nFILE {path}\n", tmp_path)
     assert code == 1, stderr
-    assert stderr.decode("utf-8") == f"{path}:{line}: error: {message}"
+    assert stderr.decode("utf-8") == f"{path}:{where}: error: {message}"
+    assert py_check_dump.run_reference(path, "hosted").error == stderr.decode("utf-8")
 
 
 @pytest.mark.parametrize(
@@ -766,7 +812,7 @@ def test_struct_field_type_over_the_limit_is_located(check_exe, tmp_path):
 def test_annotation_over_the_limit_is_located(check_exe, tmp_path):
     source = (alias_chain(13, "({a}, {a})")
               + "fn main() -> int {\n  let x: (A13, A13) = missing;\n  return 0;\n}\n")
-    assert_type_limit(check_exe, tmp_path, source, 16)
+    assert_type_limit(check_exe, tmp_path, source, "16:3")
 
 
 def _pad_name(extra):
@@ -803,8 +849,9 @@ def _large_valid_aliases(count):
 
 
 def test_budget_boundary_is_exact(check_exe, tmp_path):
-    """222 and 223 are where fix/frontend-crashes' Python changes its answer, so
-    every charge on the path (expansion, validation, re-resolution) must match."""
+    """222 and 223 are where Python changes its answer, so every charge on the
+    path (expansion, validation, re-resolution) must match."""
+    assert assert_source_agrees(check_exe, tmp_path, _large_valid_aliases(222)) == "ok"
     path = _written(tmp_path, _large_valid_aliases(222))
     code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
     assert code == 0, stderr
@@ -837,6 +884,14 @@ def test_repeated_use_of_a_large_pointer_type_is_validated_once(check_exe, tmp_p
     assert code == 0, stderr
 
 
+def test_failed_validation_is_not_remembered_as_valid(check_exe, tmp_path):
+    """Only a true answer may be kept: `q.a` asks whether `q` is a type, and a
+    remembered "no" must not make `q` usable afterwards."""
+    source = ("struct P { a: i64 }\nfn main() -> int {\n  let q = P { a: 1 };\n  let v = q.a;\n"
+              "  let r: q = null;\n  return 0;\n}\n")
+    assert assert_source_agrees(check_exe, tmp_path, source) == "error"
+
+
 def test_alias_chain_below_the_type_limit_agrees_with_python(check_exe, tmp_path):
     source = alias_chain(13, "({a}, {a})") + OK_MAIN
     assert assert_source_agrees(check_exe, tmp_path, source) == "ok"
@@ -859,7 +914,7 @@ def mortc_check(tmp_path, source):
 
 
 @pytest.mark.parametrize(
-    "star,accepted", [("", 991), ("*", 495)], ids=["direct", "pointer"])
+    "star,accepted", [("", 987), ("*", 493)], ids=["direct", "pointer"])
 def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
     def chain(count):
         links = "".join(f"type A{i} = {star}A{i + 1};\n" for i in range(count))
@@ -874,11 +929,26 @@ def test_alias_chain_limit_matches_mortc(check_exe, tmp_path, star, accepted):
             check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
         if rejected:
             assert code == 1, stderr
-            assert python_error == (
-                "mortc: error: source nesting exceeds the compiler safety limit")
-            assert stderr == b"error: source nesting exceeds the compiler safety limit"
+            expected = f"{path}:1:1: error: source nesting exceeds the compiler safety limit"
+            assert python_error.splitlines()[0] == f"mortc: {expected}"
+            assert stderr.decode("utf-8") == expected
         else:
             assert code == 0, stderr
+
+
+def test_alias_depth_error_uses_the_first_token_column(check_exe, tmp_path):
+    """A declaration has no column of its own, so the real compiler reports the
+    column of the first token on its line."""
+    links = "".join(f"type A{i} = A{i + 1};\n" for i in range(1500))
+    source = "   " + links + "type A1500 = u8;\n" + OK_MAIN
+    python_code, python_error = mortc_check(tmp_path, source)
+    assert python_code != 0
+    path = _written(tmp_path, source)
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 1, stderr
+    expected = f"{path}:1:4: error: source nesting exceeds the compiler safety limit"
+    assert python_error.splitlines()[0] == f"mortc: {expected}"
+    assert stderr.decode("utf-8") == expected
 
 
 def test_bad_test_block_is_located(check_exe, tmp_path):
@@ -1067,7 +1137,8 @@ def test_alias_chain_past_the_depth_limit_is_a_clean_diagnostic(check_exe, tmp_p
     assert expected.outcome == "error"
     code, stderr, _dump = run_mort(check_exe, expected.manifest, tmp_path)
     assert code == 1
-    assert stderr == b"error: source nesting exceeds the compiler safety limit"
+    assert stderr.decode("utf-8") == expected.error
+    assert expected.error.endswith(":1:1: error: source nesting exceeds the compiler safety limit")
 
 
 def test_long_struct_chain_by_value(check_exe, tmp_path):

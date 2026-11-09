@@ -11,7 +11,6 @@ import collections
 import functools
 import os
 import random
-import re
 import struct
 import subprocess
 import sys
@@ -29,7 +28,7 @@ import mortc  # noqa: E402
 import py_ast_dump  # noqa: E402
 from mort import mort_ast as A  # noqa: E402
 from mort.errors import MortError  # noqa: E402
-from mort.lexer import Lexer  # noqa: E402
+from mort.lexer import Lexer, decode_source  # noqa: E402
 from mort.parser import Parser  # noqa: E402
 from test_lexer_differential import repo_mx_files  # noqa: E402
 
@@ -120,6 +119,11 @@ def type_case(text):
 
 
 EDGE_CASES = {
+    # Every generic lookahead counts '>>' as two closes and stops at a brace.
+    "generic_lookahead_stops_at_brace": fragment("if a < b { if c > (d) {} }"),
+    "generic_lookahead_brace_before_struct": fragment("let v = a < b { c > { d: 1 } };"),
+    "generic_lookahead_brace_before_qualifier": fragment("if a < b { c > .d; }"),
+    "generic_struct_triple_close": fragment("let v = A<B<C<i64>>> { v: 1 };"),
     # --- call name positions
     "call_name_pos_split_line": fragment("    g\n  (1);"),
     "call_name_pos_parenthesized": fragment("  (g)(1);"),
@@ -522,6 +526,18 @@ EDGE_CASES = {
     # --- newlines
     "crlf": b"fn f() {\r\n  let a = 1;\r\n}\r\n",
     "lone_cr": b"fn f() {\r  let @;\r}",
+    # --- columns: counted in characters, and 1 at the start of a line
+    "col_at_line_start": b"fn f() {\n) }",
+    "col_after_multibyte": 'fn f() { let a = "\u00e9" ) ; }'.encode(),
+    "col_of_node_after_multibyte": 'fn f() -> void { let a = "\u00e9" + 1; }'.encode(),
+    "col_after_astral": 'fn f() { let a = "\U0001f600" ) ; }'.encode(),
+    "invalid_utf8_after_multibyte": 'fn f() { "\u00e9" '.encode() + b"\xff",
+    "invalid_utf8_at_line_start": b"fn f() {\n\xff }",
+    # --- array sizes are limited to u64
+    "array_size_at_u64_max": b"fn f() { let a: [u8; 18446744073709551615] = [0; 1]; }",
+    "array_size_past_u64": b"fn f() { let a: [u8; 18446744073709551616] = [0; 1]; }",
+    "array_repeat_past_u64": b"fn f() { let a = [0; 18446744073709551616]; }",
+    "array_size_hex_past_u64": b"fn f() { let a: [u8; 0x10000000000000000] = [0; 1]; }",
 }
 
 
@@ -862,11 +878,12 @@ def fuzz_seeds():
 def outcome_of(result, path):
     if result.dump is not None:
         return "parsed"
-    # Lexical errors carry a column, or no line at all for invalid UTF-8.
-    after_path = result.diagnostic[len(str(path).encode("utf-8")):]
-    if re.match(rb":\d+: error: ", after_path):
-        return "parse error"
-    return "lexical error"
+    # Both kinds carry a position now, so ask the Python lexer which this is.
+    try:
+        Lexer(decode_source(path.read_bytes())).tokenize()
+    except MortError:
+        return "lexical error"
+    return "parse error"
 
 
 @pytest.mark.parametrize("mutator", ["tokens", "bytes"])
@@ -943,7 +960,8 @@ def test_every_ast_class_is_exercised():
 def test_reference_dumps_the_call_name_position():
     program = py_ast_dump.parse_source("fn f() {\n    g\n  (1);\n}\n")
     dump = py_ast_dump.dump_program(program)
-    assert 'Call name="g" args=[1 line=#3 type_args=[0 name_pos=2:5\n' in dump
+    assert ('Call col=none name="g" args=[1 line=#3 paren_col=#3 type_args=[0 '
+            'name_pos=2:5\n') in dump
 
 
 def test_reference_rejects_a_parser_set_checker_field():
@@ -1021,7 +1039,7 @@ def test_diagnostic_has_file_and_line(parse_exe, tmp_path):
     assert code == 1
     assert dump is None
     assert normalized(stderr) == (
-        f"{source}:2: error: expected variable name, got '='".encode())
+        f"{source}:2:7: error: expected variable name, got '='".encode())
 
 
 def test_usage_is_a_clean_failure(parse_exe):

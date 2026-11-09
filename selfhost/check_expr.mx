@@ -81,7 +81,7 @@ fn ck_frt(c: *Ck, n: *Node, a: *u8, t1: u64, b: *u8, t2: u64, d: *u8) {
 fn ck_fbn(c: *Ck, n: *Node, a: *u8, value: BigInt, d: *u8) {
     let msg = m_new();
     m_s(&msg, a);
-    m_s(&msg, bn_format(value));
+    cx_value_text(&msg, value);
     m_s(&msg, d);
     ck_fail_node(c, n, &msg);
 }
@@ -296,7 +296,7 @@ fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
             let b = buf_new(32);
             buf_push_z(&b, "$drop$");
             m_t(c, &b, t);
-            symbol = ts_take(s, &b);
+            symbol = ck_made(c, ts_take(s, &b));
         }
         tb_put(table, t, ck_box(symbol));
         if first {
@@ -322,8 +322,33 @@ fn cx_resource_destructor(c: *Ck, root: u64, node: *Node) -> u64 {
     return result;
 }
 
+// _is_owned_place: a field or element chain that stays inside one local.
+fn cx_is_owned_place(c: *Ck, e: *Node) -> bool {
+    let cursor = e;
+    while (*cursor).kind == NodeKind.FIELD_ACCESS || (*cursor).kind == NodeKind.INDEX {
+        let owner = (*cursor).a;
+        let t = (*owner).etype;
+        if t != NO_TEXT && (cx_is_ptr(c, t) || cx_is_slice(c, t)) {
+            return false;
+        }
+        cursor = owner;
+    }
+    if (*cursor).kind != NodeKind.VAR {
+        return false;
+    }
+    let b = ck_find_binding(c, (*cursor).name);
+    return b != (0 as *Binding) && cx_needs_drop(c, (*b).btype);
+}
+
 fn cx_require_explicit_move(c: *Ck, expected: u64, e: *Node) {
-    if (*e).kind == NodeKind.VAR && cx_needs_drop(c, expected) {
+    if !cx_needs_drop(c, expected) {
+        return;
+    }
+    if ((*e).kind == NodeKind.FIELD_ACCESS || (*e).kind == NodeKind.INDEX)
+            && cx_is_owned_place(c, e) {
+        ck_fail_z(c, e, "a resource cannot be copied out of its owning binding");
+    }
+    if (*e).kind == NodeKind.VAR {
         let name = (*e).name;
         let msg = m_new();
         m_s(&msg, "resource ");
@@ -608,6 +633,13 @@ fn cx_retag_literal(c: *Ck, node: *Node, target: u64) {
 fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
     let s = (*c).s;
     let et = (*e).etype;
+    if ck_is_int(c, expected) && (*e).is_lit {
+        if (*e).cv != (0 as *void) {
+            cx_require_range(c, *cx_big(e), expected, e);
+        }
+        (*e).etype = expected;
+        return true;
+    }
     if et == expected {
         cx_require_explicit_move(c, expected, e);
         return true;
@@ -644,13 +676,6 @@ fn cx_coerce(c: *Ck, expected: u64, e: *Node) -> bool {
         (*e).etype = expected;
         return true;
     }
-    if ck_is_int(c, expected) && (*e).is_lit {
-        if (*e).cv != (0 as *void) {
-            cx_require_range(c, *cx_big(e), expected, e);
-        }
-        (*e).etype = expected;
-        return true;
-    }
     return false;
 }
 
@@ -664,21 +689,67 @@ fn cx_is_spine(n: *Node) -> bool {
     return kind == NodeKind.FIELD_ACCESS && (*(*n).a).kind != NodeKind.VAR;
 }
 
+// `literal_operand`: inside a constant expression only the finished value has
+// to be representable.
+fn cx_folds(c: *Ck, n: *Node) -> bool {
+    if (*n).kind != NodeKind.BINARY {
+        return false;
+    }
+    let op = (*n).name;
+    return cx_is_arith(c, op) || cx_op_is(c, op, "&") || cx_op_is(c, op, "|")
+        || cx_op_is(c, op, "^") || cx_op_is(c, op, "<<") || cx_op_is(c, op, ">>");
+}
+
+fn cx_require_representable(c: *Ck, e: *Node) {
+    if (*e).cv == (0 as *void) {
+        return;
+    }
+    let value = *cx_big(e);
+    let low = tb_get(&(*c).int_ranges, (*c).t_i64) as *IntRange;
+    let high = tb_get(&(*c).int_ranges, (*c).t_u64) as *IntRange;
+    if bn_cmp(value, (*low).low) < 0 || bn_cmp(value, (*high).high) > 0 {
+        let msg = m_new();
+        m_s(&msg, "integer literal ");
+        cx_value_text(&msg, value);
+        m_s(&msg, " does not fit in any integer type");
+        ck_fail_node(c, e, &msg);
+    }
+}
+
+fn cx_after_check(c: *Ck, e: *Node, literal_operand: bool) {
+    if !literal_operand && (*e).is_lit && ck_is_int(c, (*e).etype) {
+        cx_require_representable(c, e);
+    }
+}
+
 fn ck_check_expr(c: *Ck, e: *Node) -> u64 {
+    return ck_check_expr_as(c, e, false);
+}
+
+fn ck_check_expr_as(c: *Ck, e: *Node, literal_operand: bool) -> u64 {
     if !cx_is_spine(e) {
         (*c).current_node = e;
         cx_check_leaf(c, e);
+        cx_after_check(c, e, literal_operand);
         return (*e).etype;
     }
     let stack = &(*c).stack_nodes;
     let base = (*stack).len;
     let cursor = e;
+    let parent = 0 as *Node;
     while cx_is_spine(cursor) {
         ptrvec_push(stack, cursor as *void);
-        cursor = (*cursor).a;
+        parent = cursor;
+        let child = (*cursor).a;
+        if (*cursor).kind == NodeKind.CAST && (*child).kind == NodeKind.UNARY
+                && (*child).name == (*c).t_amp {
+            (*child).flag = true;
+        }
+        cursor = child;
     }
     (*c).current_node = cursor;
     cx_check_leaf(c, cursor);
+    cx_after_check(c, cursor, cx_folds(c, parent));
     while (*stack).len > base {
         let n = ptrvec_pop(stack) as *Node;
         (*n).is_lit = false;
@@ -693,6 +764,11 @@ fn ck_check_expr(c: *Ck, e: *Node) -> u64 {
         } else {
             cx_field_value(c, n);
         }
+        let as_operand = literal_operand;
+        if (*stack).len > base {
+            as_operand = cx_folds(c, ptrvec_get(stack, (*stack).len - 1) as *Node);
+        }
+        cx_after_check(c, n, as_operand);
     }
     return (*e).etype;
 }
@@ -834,7 +910,7 @@ fn cx_cast(c: *Ck, e: *Node) {
         || (tb_has(&(*c).enums, st) && !cx_is_enum_with_payload(c, st)) || cx_is_ptr(c, st);
     let tgt_ok = ck_is_int(c, tgt) || ck_is_float(c, tgt)
         || (tb_has(&(*c).enums, tgt) && !cx_is_enum_with_payload(c, tgt)) || cx_is_ptr(c, tgt);
-    if !(src_ok && tgt_ok) {
+    if !(src_ok && tgt_ok && ck_valid(c, tgt)) {
         ck_ft2(c, e, "cannot cast ", st, " to ", tgt, "");
     }
     if st == (*c).t_null && !cx_is_ptr(c, tgt) {
@@ -901,6 +977,10 @@ fn cx_unary(c: *Ck, e: *Node) {
         if !cx_is_lvalue(c, operand) {
             ck_fail_z(c, e, "cannot take the address of this expression");
         }
+        if cx_is_array(c, ck_resolve_alias(c, ot)) && !(*e).flag {
+            ck_ft1(c, e, "cannot take the address of an array (", ot,
+                "); take the address of an element instead, such as &a[0]");
+        }
         let root = ck_assignment_root(operand);
         if root != (0 as *Node) && !ck_binding_mutable(c, (*root).name) {
             (*e).etype = cx_const_ptr_to(c, ot);
@@ -914,7 +994,7 @@ fn cx_unary(c: *Ck, e: *Node) {
         }
         (*e).etype = ck_pointee(c, ot);
     } else if op == (*c).t_minus {
-        let ot = ck_check_expr(c, operand);
+        let ot = ck_check_expr_as(c, operand, true);
         if !ck_is_int(c, ot) && !ck_is_float(c, ot) {
             ck_fail_z(c, e, "unary '-' requires a numeric value");
         }
@@ -931,7 +1011,7 @@ fn cx_unary(c: *Ck, e: *Node) {
         }
         (*e).etype = (*c).t_bool;
     } else if op == (*c).t_tilde {
-        let ot = ck_check_expr(c, operand);
+        let ot = ck_check_expr_as(c, operand, true);
         if !ck_is_int(c, ot) {
             ck_fail_z(c, e, "unary '~' requires an integer");
         }
@@ -1064,8 +1144,11 @@ fn cx_equality(c: *Ck, e: *Node, op: u64, lt_in: u64, rt_in: u64) -> u64 {
         }
     } else if lt != rt {
         cx_operator_error(c, e, op, "' needs operands of the same type");
+    } else if lt == (*c).t_void {
+        cx_operator_error(c, e, op, "' cannot compare void values");
     } else if tb_has(&(*c).structs, lt) || cx_is_enum_with_payload(c, lt)
-            || cx_is_tuple(c, lt) && cx_tuple_len_ok(c, lt) {
+            || cx_is_tuple(c, lt) && cx_tuple_len_ok(c, lt)
+            || cx_is_array(c, lt) || cx_is_slice(c, lt) {
         let msg = m_new();
         m_s(&msg, "cannot compare aggregate values with '");
         m_t(c, &msg, op);
@@ -1101,6 +1184,14 @@ fn cx_binary_type(c: *Ck, e: *Node, lt: u64, rt: u64) -> u64 {
             ck_fbn(c, e, "shift count cannot be negative (", *cx_big(right), ")");
         }
         (*e).is_lit = (*(*e).a).is_lit && (*right).is_lit;
+        if !(*e).is_lit {
+            if (*(*e).a).is_lit {
+                cx_require_representable(c, (*e).a);
+            }
+            if (*right).is_lit {
+                cx_require_representable(c, right);
+            }
+        }
         return lt;
     }
     if cx_op_is(c, op, "==") || cx_op_is(c, op, "!=") {
@@ -1118,7 +1209,7 @@ fn cx_binary_type(c: *Ck, e: *Node, lt: u64, rt: u64) -> u64 {
 
 fn cx_binary(c: *Ck, e: *Node) {
     let lt = (*(*e).a).etype;
-    let rt = ck_check_expr(c, (*e).b);
+    let rt = ck_check_expr_as(c, (*e).b, cx_folds(c, e));
     let t = cx_binary_type(c, e, lt, rt);
     (*e).etype = t;
     if (*e).is_lit {
@@ -1359,13 +1450,29 @@ fn cx_index(c: *Ck, e: *Node) {
         if bn_is_negative(*cx_big(index)) || bn_cmp(*cx_big(index), length) >= 0 {
             let msg = m_new();
             m_s(&msg, "array index ");
-            m_s(&msg, bn_format(*cx_big(index)));
+            cx_value_text(&msg, *cx_big(index));
             m_s(&msg, " is out of bounds for length ");
             m_t(c, &msg, count);
             ck_fail_node(c, e, &msg);
         }
     }
     (*e).etype = elem;
+}
+
+fn cx_moves_a_resource(root: *Node) -> bool {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    let found = false;
+    while stack.len > 0 && !found {
+        let n = ptrvec_pop(&stack) as *Node;
+        if (*n).kind == NodeKind.MOVE && (*n).facts != (0 as *void)
+                && (*((*n).facts as *Facts)).is_resource_move {
+            found = true;
+        }
+        ck_push_children(&stack, n);
+    }
+    free(stack.data as *void);
+    return found;
 }
 
 // _check_array_expr
@@ -1385,6 +1492,10 @@ fn ck_array_expr(c: *Ck, expr: *Node, decl_type: u64, node: *Node) -> u64 {
     if (*expr).kind == NodeKind.ARRAY_REPEAT {
         let value = (*expr).a;
         ck_check_expr(c, value);
+        cx_require_explicit_move(c, (*value).etype, value);
+        if cx_moves_a_resource(value) {
+            ck_fail_z(c, node, "an array repeat evaluates its value once per element, so it cannot move a resource");
+        }
         if elem == NO_TEXT {
             elem = (*value).etype;
             size = (*expr).name;
@@ -1500,7 +1611,7 @@ fn ck_let(c: *Ck, s: *Node) {
         }
         return;
     }
-    let t = ck_check_expr(c, expr);
+    let t = ck_check_expr_as(c, expr, (*s).ty != NO_TEXT);
     if t == (*c).t_void {
         ck_fail_z(c, s, "cannot bind a void value to a variable");
     }
@@ -1527,6 +1638,8 @@ fn ck_let(c: *Ck, s: *Node) {
             ck_fail_node(c, s, &msg);
         }
         var_type = (*s).ty;
+    } else if (*expr).is_lit {
+        cx_coerce(c, t, expr);
     }
     (*f).var_type = var_type;
     cx_require_explicit_move(c, var_type, expr);
@@ -1951,6 +2064,9 @@ fn cx_payload_arm(c: *Ck, arm: *Node, pattern: *Node, subject: u64, variant: u64
         (*f).binding_name = u64vec_get((*f).binding_names, 0);
         (*f).binding_type = u64vec_get((*f).binding_types, 0);
     }
+    if map_has(variants_seen, variant) {
+        ck_fail_named(c, arm, "match names variant ", variant, " more than once");
+    }
     map_put(variants_seen, variant, 1);
 }
 
@@ -2003,6 +2119,9 @@ fn ck_match(c: *Ck, s: *Node) {
             }
             if (*pattern).kind == NodeKind.FIELD_ACCESS && (*(*pattern).a).kind == NodeKind.VAR
                     && (*(*pattern).a).name == subject_type {
+                if map_has(&seen, (*pattern).name) {
+                    ck_fail_named(c, arm, "match names variant ", (*pattern).name, " more than once");
+                }
                 map_put(&seen, (*pattern).name, 1);
                 (*f).variant_name = (*pattern).name;
             }
@@ -2063,6 +2182,10 @@ fn ck_match(c: *Ck, s: *Node) {
 fn ck_stmt(c: *Ck, s: *Node) {
     let kind = (*s).kind;
     (*c).current_node = s;
+    (*c).current_statement = 0 as *Node;
+    if ck_column_of(s) != 0 {
+        (*c).current_statement = s;
+    }
     if kind == NodeKind.LET {
         ck_let(c, s);
     } else if kind == NodeKind.ASSIGN {
@@ -2200,7 +2323,7 @@ fn ck_check_globals(c: *Ck) {
                 ck_fail_named(c, g, "global ", name, " must be initialised with constants");
             }
         } else {
-            let t = ck_check_expr(c, expr);
+            let t = ck_check_expr_as(c, expr, (*g).ty != NO_TEXT);
             if t == (*c).t_void {
                 ck_fail_z(c, g, "cannot bind a void value to a global");
             }
@@ -2223,6 +2346,8 @@ fn ck_check_globals(c: *Ck) {
                     ck_fail_node(c, g, &msg);
                 }
                 var_type = (*g).ty;
+            } else if (*expr).is_lit {
+                cx_coerce(c, t, expr);
             }
             (*f).var_type = var_type;
             if cx_needs_drop(c, var_type) {

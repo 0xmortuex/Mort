@@ -808,7 +808,7 @@ def test_dump_covers_every_field_the_checker_assigns():
         "generic_params",
     }
     # Only where a diagnostic is reported, which every test here compares.
-    location_only = {"filename"}
+    location_only = {"filename", "meter", "work_meter"}
     missing = written - dumped - parser_rewrites - location_only
     assert not missing, f"checker fields missing from the dump: {sorted(missing)}"
     assert "drop_destructors" not in missing

@@ -72,6 +72,8 @@ EVENTS_MARK = "--events--\n"
 # Messages the Mort checker implements. Anything else needs an expression's
 # type and belongs to T5.
 T4_MESSAGES = tuple(re.compile(pattern) for pattern in (
+    r"type is longer than \d+ characters",
+    r"(type processing|generic instantiation) exceeds the limit of \d+ work units in one program",
     r"type alias .* is already defined",
     r"cyclic type alias: .*",
     r"enum .* must have at least one variant",
@@ -434,7 +436,15 @@ class Result(types.SimpleNamespace):
     """
 
 
-def message_is_t4(message):
+# The budget is spent by bodies too, and T5 owns the charges made there: only a
+# limit reached during the declaration phase can be compared.
+BUDGET_MESSAGE = re.compile(
+    r"type is longer than .*|(type processing|generic instantiation) exceeds .*")
+
+
+def message_is_t4(message, declarations_finished=False):
+    if declarations_finished and BUDGET_MESSAGE.fullmatch(message):
+        return False
     return any(pattern.fullmatch(message) for pattern in T4_MESSAGES)
 
 
@@ -473,6 +483,7 @@ CHECKED_SUFFIX = {
         "binding_types", "binding_indices", "payload_arity", "binding_destructors",
     ],
     "Match": ["exhaustive"],
+    "Unary": ["is_cast_operand"],
     "Var": ["resolved_function"],
     "Call": [
         "resolved_name", "enum_name", "enum_variant", "enum_payload_type",
@@ -525,6 +536,7 @@ def _describe(item):
     skipped.update(dict.fromkeys(DYNAMIC_FIELDS, None))
     skipped["filename"] = None
     skipped["drop_destructors"] = None  # dumped after --final--
+    skipped["work_meter"] = None  # carries budget to codegen; no compile result
     if isinstance(item, A.Node):
         skipped.update(py_ast_dump.BASE_NODE_FIELDS)
     children = []
@@ -626,7 +638,8 @@ def run_reference(path, mode, recursion_limit=1_000_000, exact=False):
         tables=checker.tables,
         events=events,
         error=error.format() if error is not None else None,
-        t4=error is not None and not checker.needs_type and message_is_t4(error.msg),
+        t4=error is not None and not checker.needs_type and message_is_t4(
+            error.msg, declarations_finished=checker.tables is not None),
         manifest=manifest_text(mode, captured[0]),
         outcome="ok" if error is None else "error",
         failing_file=None,
