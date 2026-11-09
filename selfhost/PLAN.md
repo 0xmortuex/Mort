@@ -213,8 +213,8 @@ measured data point.
 | T5 | Checker part 2: expressions, literal coercion, const folding, return analysis | T4, T2b | done (about 2 hours elapsed, see section 12; estimated 14 to 24) |
 | T6 | C codegen part 1: type and declaration emission, statements, helper selection | T5 | done (section 14; estimated 12 to 20) |
 | T7 | C codegen part 2: expressions, full byte-exact agreement | T6 | done (section 15; estimated 8 to 14) |
-| T8 | Driver, import resolution, stage script, fixpoint test | T7 | 4 to 8 |
-| T9 | Rejecting out-of-subset programs, CI gate | T8 | 2 to 4 |
+| T8 | Driver, import resolution, stage script, fixpoint test | T7 | done (section 16; estimated 4 to 8) |
+| T9 | Rejecting out-of-subset programs, CI gate | T8 | done (section 16; estimated 2 to 4) |
 | | **Remaining total** | | **40 to 70** |
 
 T3 lists T2c as a dependency but was completed first. T2c does not reopen T3: it only extends the corpus T3's differential test runs over.
@@ -346,7 +346,7 @@ Exact errors are in `BLOCKERS.md`.
 | --- | --- |
 | G1, command-line access | Fixed: builtins `arg_count()` and `arg_get(u64)`. An out-of-range index is a located runtime error. C `main` takes arguments only in programs that use them |
 | G2, writing to stderr | Fixed: builtin `eprintln(*u8)` |
-| G3, `extern fn` prototypes clash with libc headers | Open and not needed: the support layer's only extern is `exit` |
+| G3, `extern fn` prototypes clash with libc headers | Open and not needed: the compiler's only externs are `exit` and `getcwd`, whose headers the generated C does not include |
 
 `lex_main.mx` uses both builtins, and later drivers should too.
 
@@ -609,6 +609,76 @@ placeholder is gone, so section 14's "in isolation" no longer applies.
 - **Corrected test.** T6's `condition_strips_parens_of_call` survives on real
   programs, since expression text never has the `(a)(b)` shape; it is kept, probed
   through `cg_cond.mx` directly against Python's `_gen_cond`.
+
+## 16. Driver and fixpoint status (T8, T9)
+
+`selfhost/mortc_main.mx` (the command line), `driver.mx` (paths and import
+resolution), `subset.mx` (the gate) and `bootstrap.py`. `manifest.mx` keeps
+`cm_merge`, shared with the driver; `check_main` and `cg_main` still read manifests,
+because the differential tests drive them in `test` mode and with Python's loader
+as the reference. "T8 replaces the manifest" (section 11) therefore applies to the
+compiler itself, not to those test drivers.
+
+**The result.** `python selfhost/bootstrap.py` builds C0, B1, C1, B2 and C2 from a
+clean directory, on Windows 11 with zig 0.16.0: `C1 == C2` and `C0 == C1`, about
+1.2 MB of C, in about 30 seconds. Peak memory of any step: 427 MB (`zig cc -O2`);
+Python 70 MB, each stage binary 46 MB. B1 and B2 differ as binaries, which section 3
+says is not a gate. The script takes `--work-dir` and `--json`, refuses to clear a
+directory it did not make, and on a mismatch prints the first differing byte offset,
+line and both lines' text. Limits per process: 500 MB (`--memory-mb`), and 1500 MB for
+the C compiler (`--cc-memory-mb`), because 500 MB is enough only once zig's libc is in
+its cache: with an empty cache it fails with `unable to build compiler_rt: OutOfMemory`.
+POSIX limits the stage binaries only.
+
+**Correction to T9 as written.** Section 2 says a subset compiler rejects other
+programs, but T3 to T7 went on to implement the whole language. Both are kept: the
+driver rejects programs outside the subset, and the phases stay whole-language. The
+gate (a port of `check_subset.py` over the whole import closure) scans the parsed
+files before checking and reports only after checking and code generation succeed.
+So a program Python rejects gets Python's diagnostic byte for byte, and a program
+Python accepts outside the subset gets `<file>:<line>: error: <what> is outside the
+bootstrap subset`. Without this order the two T9 requirements contradict each other.
+`--no-subset-gate` turns the gate off; the tests use it to compare nested, module and
+`std` import resolution with Python, and the stages never do.
+
+**Driver.** `mortc_main [--check] [--emit-c] [--freestanding] [--no-subset-gate]
+[--std-dir DIR] -o OUTPUT FILE...`. It only ever writes C; `bootstrap.py` runs the C
+compiler. Diagnostics are `mortc: ` plus `MortError.render()`, excerpt included.
+Windows and POSIX path rules are chosen at run time from the working directory's
+shape, since Mort has no conditional compilation.
+
+**Tests.** `test_bootstrap.py` runs the real bootstrap once and checks stage-2 against
+Python: 27 import-resolution trees, the command line, every repo `.mx` hosted and
+freestanding (measured: 196 rejected with Python's exact text, 83 rejected by the gate
+with a located diagnostic, 25 accepted with equal C, no crash), the generated subset
+corpus, the stubbed kernel, and each subset violation and false-reject case from
+`test_lexer_differential.py`. Determinism: a second full bootstrap from a directory
+with spaces, CRLF sources, another hash seed, working directory, locale, `TEMP` and
+`SOURCE_DATE_EPOCH` gives the same three hashes. A planted one-byte generator bug fails
+with `C0 and C1 differ`.
+
+**CI.** The `bootstrap` job runs the script and `test_bootstrap.py` on `ubuntu-latest`
+and `windows-latest`, 25 minutes, on Python 3.14. On Windows the file takes about six
+minutes, four of them the repo corpus. It has not yet run on GitHub, and nothing has
+been executed on Linux or macOS: the C cross-compiles and links for
+`x86_64-linux-gnu` and `aarch64-macos`, which shows only that `getcwd` resolves.
+
+**Frame budget.** The checker and parser count `mort/depth.py`'s frames (section 11).
+The driver passes each file's import depth to the parser, so an over-deep import chain
+gets Python's located diagnostic. Stage output on the deep chains is compared with
+Python only inside the budget; past it both reject.
+
+**Known differences from `mortc.py`.**
+
+- Files are the same when their normalized absolute paths are (ASCII
+  case-insensitive on Windows). Python uses `realpath`, so a symlink to a loaded file
+  loads it twice here, and differently-cased non-ASCII names load twice on Windows.
+- A file that exists but cannot be read is "cannot find" here; Python quotes the OS
+  error. The excerpt stops at a NUL byte in a source line (`eprintln` takes a C
+  string). Non-ASCII command-line paths on Windows arrive in the ANSI code page, and
+  are untested.
+- Not ported: `--package`, `--std`, `--diagnostic-format`, the warning flags, test
+  mode and invoking the C compiler. `import std.x` needs `--std-dir`.
 
 ## 13. Generator status (T2c)
 

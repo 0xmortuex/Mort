@@ -170,34 +170,40 @@ fn cm_add_file(entry: *ManifestFile, strings: *Interner, all: *Program, first_co
         map_put(aliases, u64vec_get(&(*entry).alias_names, i),
             u64vec_get(&(*entry).alias_modules, i));
     }
-    let mod_name = program.module_name;
-    for i: u64 in 0..(*program.funcs).len {
-        let f = ast_item(program.funcs, i);
+    cm_merge(strings, all, &program, file, aliases);
+}
+
+// Merges one parsed file into the program, as compile_files_to_c and
+// _compile_programs do: module tags and symbols, source tags, then the lists.
+fn cm_merge(strings: *Interner, all: *Program, program: *Program, file: u64, aliases: *Map) {
+    let mod_name = (*program).module_name;
+    for i: u64 in 0..(*(*program).funcs).len {
+        let f = ast_item((*program).funcs, i);
         (*f).mod_name = mod_name;
         (*f).symbol = cm_symbol(strings, mod_name, (*f).name);
         (*f).import_aliases = aliases;
     }
-    for i: u64 in 0..(*program.externs).len {
-        let f = ast_item(program.externs, i);
+    for i: u64 in 0..(*(*program).externs).len {
+        let f = ast_item((*program).externs, i);
         (*f).symbol = (*f).name;
     }
-    for i: u64 in 0..(*program.tests).len {
-        let t = ast_item(program.tests, i);
+    for i: u64 in 0..(*(*program).tests).len {
+        let t = ast_item((*program).tests, i);
         (*t).mod_name = mod_name;
         (*t).import_aliases = aliases;
     }
-    cm_tag_list(program.funcs, file);
-    cm_tag_list(program.structs, file);
-    cm_tag_list(program.globals, file);
-    cm_tag_list(program.externs, file);
-    cm_tag_list(program.enums, file);
-    cm_tag_list(program.tests, file);
-    cm_tag_list(program.aliases, file);
-    cm_extend((*all).funcs, program.funcs);
-    cm_extend((*all).structs, program.structs);
-    cm_extend((*all).globals, program.globals);
-    cm_extend((*all).externs, program.externs);
-    cm_extend((*all).enums, program.enums);
-    cm_extend((*all).tests, program.tests);
-    cm_extend((*all).aliases, program.aliases);
+    cm_tag_list((*program).funcs, file);
+    cm_tag_list((*program).structs, file);
+    cm_tag_list((*program).globals, file);
+    cm_tag_list((*program).externs, file);
+    cm_tag_list((*program).enums, file);
+    cm_tag_list((*program).tests, file);
+    cm_tag_list((*program).aliases, file);
+    cm_extend((*all).funcs, (*program).funcs);
+    cm_extend((*all).structs, (*program).structs);
+    cm_extend((*all).globals, (*program).globals);
+    cm_extend((*all).externs, (*program).externs);
+    cm_extend((*all).enums, (*program).enums);
+    cm_extend((*all).tests, (*program).tests);
+    cm_extend((*all).aliases, (*program).aliases);
 }

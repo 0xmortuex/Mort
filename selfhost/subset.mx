@@ -1,0 +1,494 @@
+// The bootstrap-subset gate (PLAN.md, section 2 and T9), a port of
+// tools/check_subset.py over the loaded program.
+//
+// The whole-language compiler phases accept far more than the subset. This pass
+// is what makes the driver a subset compiler: it runs over the parsed files
+// before checking and records the first violation; the driver reports it only
+// after checking and code generation succeed, so a program Python would reject
+// keeps Python's diagnostic.
+
+import support;
+import ast;
+import typestr;
+import checker;
+
+// Must stay equal to check_subset.ALLOWED_BUILTINS.
+const SB_ALLOWED_BUILTINS: *u8 = "alloc free sizeof println eprintln print file_open file_close file_read file_write arg_count arg_get";
+const SB_SCALARS: *u8 = "bool void u8 u32 u64 i64 int c_char c_int";
+
+const SB_INDEXED: u64 = 1;
+const SB_ENUM_HEAD: u64 = 2;
+
+struct Sb {
+    s: *Interner,
+    builtins: *Map,
+    allowed: Map,
+    scalars: Map,
+    types: Map,
+    enums: Map,
+    callables: Map,
+    declared: Map,
+    arrays: Map,
+    // Bindings in scope: how many of each name, with an undo log.
+    bound: Map,
+    log: U64Vec,
+    marks: U64Vec,
+    file: u64,
+    found: bool,
+    found_file: u64,
+    found_line: u64,
+    found_message: Span,
+}
+
+fn sb_fail(b: *Sb, line: u64, text: *Buf) {
+    if (*b).found {
+        return;
+    }
+    (*b).found = true;
+    (*b).found_file = (*b).file;
+    (*b).found_line = line;
+    buf_push_z(text, " is outside the bootstrap subset");
+    (*b).found_message = buf_span(text);
+}
+
+fn sb_fail_z(b: *Sb, line: u64, what: *u8) {
+    let text = buf_new(64);
+    buf_push_z(&text, what);
+    sb_fail(b, line, &text);
+}
+
+fn sb_fail_name(b: *Sb, line: u64, what: *u8, name: u64) {
+    let text = buf_new(64);
+    buf_push_z(&text, what);
+    buf_push(&text, ' ');
+    buf_push_span(&text, intern_text((*b).s, name));
+    sb_fail(b, line, &text);
+}
+
+fn sb_mark_set(strings: *Interner, set: *Map, words: *u8) {
+    let text = span_z(words);
+    let start: u64 = 0;
+    for i: u64 in 0..=text.len {
+        if i == text.len || text.data[i] == ' ' {
+            map_put(set, ts_sub_h(strings, text, start, i), 1);
+            start = i + 1;
+        }
+    }
+}
+
+fn sb_check_type(b: *Sb, line: u64, ty: u64, global_array: bool) {
+    if ty == NO_TEXT {
+        return;
+    }
+    let text = intern_text((*b).s, ty);
+    let at: u64 = 0;
+    loop {
+        if ts_starts_with(ts_sub(text, at, text.len), "*const ") {
+            at += 7;
+        } else if at < text.len && text.data[at] == '*' {
+            at += 1;
+        } else {
+            break;
+        }
+    }
+    let base = ts_sub(text, at, text.len);
+    if global_array && text.len > 0 && text.data[0] == '[' {
+        let semi = base.len;
+        while semi > 0 && base.data[semi - 1] != ';' {
+            semi -= 1;
+        }
+        if semi > 0 {
+            sb_check_type(b, line, ts_sub_h((*b).s, base, 1, semi - 1), false);
+            return;
+        }
+    }
+    let handle = intern((*b).s, base);
+    if map_has(&(*b).scalars, handle) || map_has(&(*b).types, handle) {
+        return;
+    }
+    sb_fail_name(b, line, "type", ty);
+}
+
+fn sb_allowed_kind(kind: NodeKind) -> bool {
+    match kind {
+        NodeKind.TYPE_ALIAS_DECL => { return false; }
+        NodeKind.TEST_DECL => { return false; }
+        NodeKind.ASM => { return false; }
+        NodeKind.DEFER => { return false; }
+        NodeKind.FLOAT_LIT => { return false; }
+        NodeKind.NULL_LIT => { return false; }
+        NodeKind.TRY => { return false; }
+        NodeKind.MOVE => { return false; }
+        NodeKind.TUPLE_LIT => { return false; }
+        NodeKind.ARRAY_REPEAT => { return false; }
+        _ => { return true; }
+    }
+}
+
+fn sb_kind_text(kind: NodeKind) -> *u8 {
+    match kind {
+        NodeKind.TYPE_ALIAS_DECL => { return "type alias"; }
+        NodeKind.TEST_DECL => { return "test declaration"; }
+        NodeKind.ASM => { return "asm statement"; }
+        NodeKind.DEFER => { return "defer statement"; }
+        NodeKind.FLOAT_LIT => { return "float literal"; }
+        NodeKind.NULL_LIT => { return "null literal"; }
+        NodeKind.TRY => { return "try expression"; }
+        NodeKind.MOVE => { return "move expression"; }
+        NodeKind.TUPLE_LIT => { return "tuple literal"; }
+        _ => { return "array repeat"; }
+    }
+}
+
+fn sb_check_match(b: *Sb, node: *Node) {
+    let variant_arms: u64 = 0;
+    for i: u64 in 0..(*(*node).items).len {
+        let pattern = (*ast_item((*node).items, i)).a;
+        if pattern == (0 as *Node) {
+            continue;
+        }
+        variant_arms += 1;
+        if (*pattern).kind == NodeKind.CALL {
+            sb_fail_z(b, (*node).line, "payload pattern in match arm");
+        } else if !((*pattern).kind == NodeKind.FIELD_ACCESS
+                && (*(*pattern).a).kind == NodeKind.VAR
+                && map_has(&(*b).enums, (*(*pattern).a).name)) {
+            sb_fail_z(b, (*node).line, "match arm that is not a unit enum variant");
+        }
+    }
+    if variant_arms == 0 {
+        sb_fail_z(b, (*node).line, "match with no enum variant arm");
+    }
+}
+
+fn sb_check_call(b: *Sb, n: *Node) {
+    let name = (*n).name;
+    let names = (*n).names;
+    let is_sizeof = name != NO_TEXT && span_eq_z(intern_text((*b).s, name), "sizeof");
+    if names != (0 as *U64Vec) && (*names).len > 0 {
+        if is_sizeof {
+            for i: u64 in 0..(*names).len {
+                sb_check_type(b, (*n).line, u64vec_get(names, i), false);
+            }
+        } else {
+            sb_fail_name(b, (*n).line, "explicit type arguments on", name);
+        }
+    }
+    if name == NO_TEXT || intern_text((*b).s, name).len == 0
+            || ts_find(intern_text((*b).s, name), '.') != intern_text((*b).s, name).len {
+        sb_fail_z(b, (*n).line, "qualified or payload call");
+    } else if map_has((*b).builtins, name) && !map_has(&(*b).declared, name)
+            && !map_has(&(*b).allowed, name) {
+        sb_fail_name(b, (*n).line, "builtin", name);
+    }
+}
+
+fn sb_visit(b: *Sb, n: *Node, in_global: bool) {
+    let kind = (*n).kind;
+    if !sb_allowed_kind(kind) {
+        sb_fail_z(b, (*n).line, sb_kind_text(kind));
+    }
+    if kind == NodeKind.CALL {
+        sb_check_call(b, n);
+    } else if kind == NodeKind.CAST || kind == NodeKind.FOR {
+        sb_check_type(b, (*n).line, (*n).ty, false);
+    } else if kind == NodeKind.STRUCT_LIT {
+        if !map_has(&(*b).types, (*n).name) {
+            sb_fail_name(b, (*n).line, "struct literal", (*n).name);
+        }
+    } else if kind == NodeKind.FIELD_ACCESS {
+        let field = intern_text((*b).s, (*n).name);
+        if field.len > 0 && field.data[0] >= '0' && field.data[0] <= '9' {
+            sb_fail_z(b, (*n).line, "tuple field");
+        }
+    } else if kind == NodeKind.MATCH {
+        sb_check_match(b, n);
+    } else if kind == NodeKind.ARRAY_LIT {
+        if !in_global {
+            sb_fail_z(b, (*n).line, "array literal outside a global");
+        }
+        for i: u64 in 0..(*(*n).items).len {
+            if (*ast_item((*n).items, i)).kind == NodeKind.ARRAY_LIT {
+                sb_fail_z(b, (*n).line, "nested array literal");
+            }
+        }
+    } else if kind == NodeKind.LET && !in_global {
+        sb_check_type(b, (*n).line, (*n).ty, false);
+    }
+}
+
+fn sb_walk(b: *Sb, root: *Node, in_global: bool) {
+    let stack = ptrvec_new();
+    ptrvec_push(&stack, root as *void);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        sb_visit(b, n, in_global);
+        ck_push_children(&stack, n);
+    }
+    free(stack.data as *void);
+}
+
+fn sb_is_bound(b: *Sb, name: u64) -> bool {
+    let count: u64 = 0;
+    return map_get(&(*b).bound, name, &count) && count > 0;
+}
+
+fn sb_bind(b: *Sb, name: u64) {
+    let count: u64 = 0;
+    map_get(&(*b).bound, name, &count);
+    map_put(&(*b).bound, name, count + 1);
+    u64vec_push(&(*b).log, name);
+}
+
+fn sb_push_scope(b: *Sb) {
+    u64vec_push(&(*b).marks, (*b).log.len);
+}
+
+fn sb_pop_scope(b: *Sb) {
+    let mark = u64vec_pop(&(*b).marks);
+    while (*b).log.len > mark {
+        let name = u64vec_pop(&(*b).log);
+        let count: u64 = 0;
+        map_get(&(*b).bound, name, &count);
+        map_put(&(*b).bound, name, count - 1);
+    }
+}
+
+// check_name_uses's check_expr: a variable naming a global array may only be
+// indexed, and a callable's name may appear only as the target of a call. The
+// flags follow a node through the explicit stack.
+fn sb_check_expr(b: *Sb, root: *Node) {
+    if root == (0 as *Node) {
+        return;
+    }
+    let stack = ptrvec_new();
+    let flags = u64vec_new();
+    ptrvec_push(&stack, root as *void);
+    u64vec_push(&flags, 0);
+    while stack.len > 0 {
+        let n = ptrvec_pop(&stack) as *Node;
+        let flag = u64vec_pop(&flags);
+        let kind = (*n).kind;
+        if kind == NodeKind.VAR && (flag & SB_ENUM_HEAD) == 0 && !sb_is_bound(b, (*n).name) {
+            if map_has(&(*b).arrays, (*n).name) {
+                if (flag & SB_INDEXED) == 0 {
+                    sb_fail_name(b, (*n).line, "array value", (*n).name);
+                }
+            } else if map_has(&(*b).callables, (*n).name) || map_has((*b).builtins, (*n).name) {
+                sb_fail_name(b, (*n).line, "function value", (*n).name);
+            }
+        }
+        if (*n).items != (0 as *PtrVec) {
+            let i = (*(*n).items).len;
+            while i > 0 {
+                i -= 1;
+                ptrvec_push(&stack, ptrvec_get((*n).items, i));
+                u64vec_push(&flags, 0);
+            }
+        }
+        if (*n).c != (0 as *Node) {
+            ptrvec_push(&stack, (*n).c as *void);
+            u64vec_push(&flags, 0);
+        }
+        if (*n).b != (0 as *Node) {
+            ptrvec_push(&stack, (*n).b as *void);
+            u64vec_push(&flags, 0);
+        }
+        if (*n).a != (0 as *Node) {
+            let child_flag: u64 = 0;
+            if (*(*n).a).kind == NodeKind.VAR {
+                if kind == NodeKind.INDEX {
+                    child_flag = SB_INDEXED;
+                } else if kind == NodeKind.FIELD_ACCESS && map_has(&(*b).enums, (*(*n).a).name) {
+                    child_flag = SB_ENUM_HEAD;
+                }
+            }
+            ptrvec_push(&stack, (*n).a as *void);
+            u64vec_push(&flags, child_flag);
+        }
+    }
+    free(stack.data as *void);
+    free(flags.data as *void);
+}
+
+fn sb_check_scoped(b: *Sb, statement: *Node) {
+    sb_push_scope(b);
+    sb_check_stmt(b, statement);
+    sb_pop_scope(b);
+}
+
+fn sb_check_stmt(b: *Sb, statement: *Node) {
+    let kind = (*statement).kind;
+    if kind == NodeKind.BLOCK {
+        sb_push_scope(b);
+        for i: u64 in 0..(*(*statement).items).len {
+            sb_check_stmt(b, ast_item((*statement).items, i));
+        }
+        sb_pop_scope(b);
+    } else if kind == NodeKind.LET {
+        sb_check_expr(b, (*statement).a);
+        sb_bind(b, (*statement).name);
+    } else if kind == NodeKind.IF {
+        sb_check_expr(b, (*statement).a);
+        sb_check_scoped(b, (*statement).b);
+        if (*statement).c != (0 as *Node) {
+            sb_check_scoped(b, (*statement).c);
+        }
+    } else if kind == NodeKind.WHILE {
+        sb_check_expr(b, (*statement).a);
+        sb_check_scoped(b, (*statement).b);
+    } else if kind == NodeKind.FOR {
+        sb_check_expr(b, (*statement).a);
+        sb_check_expr(b, (*statement).b);
+        sb_push_scope(b);
+        sb_bind(b, (*statement).name);
+        sb_check_stmt(b, (*statement).c);
+        sb_pop_scope(b);
+    } else if kind == NodeKind.MATCH {
+        sb_check_expr(b, (*statement).a);
+        for i: u64 in 0..(*(*statement).items).len {
+            sb_check_scoped(b, (*ast_item((*statement).items, i)).b);
+        }
+    } else {
+        sb_check_expr(b, statement);
+    }
+}
+
+fn sb_collect_names(b: *Sb, program: *Program) {
+    for i: u64 in 0..(*(*program).structs).len {
+        map_put(&(*b).types, (*ast_item((*program).structs, i)).name, 1);
+    }
+    for i: u64 in 0..(*(*program).enums).len {
+        let name = (*ast_item((*program).enums, i)).name;
+        map_put(&(*b).types, name, 1);
+        map_put(&(*b).enums, name, 1);
+    }
+    for i: u64 in 0..(*(*program).funcs).len {
+        let name = (*ast_item((*program).funcs, i)).name;
+        map_put(&(*b).callables, name, 1);
+        map_put(&(*b).declared, name, 1);
+    }
+    for i: u64 in 0..(*(*program).externs).len {
+        let name = (*ast_item((*program).externs, i)).name;
+        map_put(&(*b).callables, name, 1);
+        map_put(&(*b).declared, name, 1);
+    }
+    for i: u64 in 0..(*(*program).globals).len {
+        let g = ast_item((*program).globals, i);
+        if ((*g).ty != NO_TEXT && ts_starts_with(intern_text((*b).s, (*g).ty), "["))
+                || ((*g).a != (0 as *Node) && (*(*g).a).kind == NodeKind.ARRAY_LIT) {
+            map_put(&(*b).arrays, (*g).name, 1);
+        }
+    }
+}
+
+fn sb_check_decl_generics(b: *Sb, n: *Node, what: *u8) {
+    if (*n).names != (0 as *U64Vec) && (*(*n).names).len > 0 {
+        sb_fail_z(b, (*n).line, what);
+    }
+}
+
+fn sb_check_signature(b: *Sb, f: *Node) {
+    for i: u64 in 0..(*(*f).items).len {
+        sb_check_type(b, (*f).line, (*ast_item((*f).items, i)).ty, false);
+    }
+    sb_check_type(b, (*f).line, (*f).ty, false);
+}
+
+fn sb_check_file(b: *Sb, program: *Program) {
+    let strings = (*b).s;
+    if (*program).module_name != NO_TEXT {
+        sb_fail_z(b, 0, "module declaration");
+    }
+    if (*(*program).tests).len > 0 {
+        sb_fail_z(b, (*ast_item((*program).tests, 0)).line, "test declaration");
+    }
+    if (*(*program).aliases).len > 0 {
+        sb_fail_z(b, (*ast_item((*program).aliases, 0)).line, "type alias");
+    }
+    for i: u64 in 0..(*(*program).imports).len {
+        let d = ast_item((*program).imports, i);
+        if (*(*d).names).len != 1 || span_eq_z(intern_text(strings, u64vec_get((*d).names, 0)), "std") {
+            sb_fail_z(b, (*d).line, "import that is not one relative segment");
+        }
+        if (*d).name != NO_TEXT {
+            sb_fail_z(b, (*d).line, "import alias");
+        }
+    }
+    for i: u64 in 0..(*(*program).structs).len {
+        let d = ast_item((*program).structs, i);
+        sb_check_decl_generics(b, d, "generic struct");
+        if (*d).flag {
+            sb_fail_z(b, (*d).line, "resource struct");
+        }
+        for j: u64 in 0..(*(*d).items).len {
+            sb_check_type(b, (*d).line, (*ast_item((*d).items, j)).ty, false);
+        }
+    }
+    for i: u64 in 0..(*(*program).enums).len {
+        let d = ast_item((*program).enums, i);
+        sb_check_decl_generics(b, d, "generic enum");
+        for j: u64 in 0..(*(*d).items).len {
+            let v = ast_item((*d).items, j);
+            if (*v).names != (0 as *U64Vec) && (*(*v).names).len > 0 {
+                sb_fail_z(b, (*d).line, "enum payload");
+            }
+        }
+    }
+    for i: u64 in 0..(*(*program).funcs).len {
+        let f = ast_item((*program).funcs, i);
+        sb_check_decl_generics(b, f, "generic function");
+        if (*f).flag {
+            sb_fail_z(b, (*f).line, "pub function");
+        }
+        sb_check_signature(b, f);
+    }
+    for i: u64 in 0..(*(*program).externs).len {
+        sb_check_signature(b, ast_item((*program).externs, i));
+    }
+    for i: u64 in 0..(*(*program).globals).len {
+        let g = ast_item((*program).globals, i);
+        sb_check_type(b, (*g).line, (*g).ty, true);
+        sb_walk(b, g, true);
+        sb_push_scope(b);
+        sb_check_expr(b, (*g).a);
+        sb_pop_scope(b);
+    }
+    for i: u64 in 0..(*(*program).structs).len {
+        sb_walk(b, ast_item((*program).structs, i), false);
+    }
+    for i: u64 in 0..(*(*program).enums).len {
+        sb_walk(b, ast_item((*program).enums, i), false);
+    }
+    for i: u64 in 0..(*(*program).externs).len {
+        sb_walk(b, ast_item((*program).externs, i), false);
+    }
+    for i: u64 in 0..(*(*program).funcs).len {
+        let f = ast_item((*program).funcs, i);
+        sb_walk(b, f, false);
+        sb_push_scope(b);
+        for j: u64 in 0..(*(*f).items).len {
+            sb_bind(b, (*ast_item((*f).items, j)).name);
+        }
+        sb_check_stmt(b, (*f).a);
+        sb_pop_scope(b);
+    }
+    for i: u64 in 0..(*(*program).tests).len {
+        sb_walk(b, ast_item((*program).tests, i), false);
+    }
+    for i: u64 in 0..(*(*program).aliases).len {
+        sb_walk(b, ast_item((*program).aliases, i), false);
+    }
+}
+
+fn sb_new(strings: *Interner, builtins: *Map) -> Sb {
+    let b = Sb {
+        s: strings, builtins: builtins, allowed: map_new(), scalars: map_new(), types: map_new(),
+        enums: map_new(), callables: map_new(), declared: map_new(), arrays: map_new(),
+        bound: map_new(), log: u64vec_new(), marks: u64vec_new(), file: NO_TEXT, found: false,
+        found_file: NO_TEXT, found_line: 0, found_message: span_z(""),
+    };
+    sb_mark_set(strings, &b.allowed, SB_ALLOWED_BUILTINS);
+    sb_mark_set(strings, &b.scalars, SB_SCALARS);
+    return b;
+}

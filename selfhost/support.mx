@@ -302,11 +302,172 @@ fn diag_format(out: *Buf, path: *u8, line: u64, col: u64, message: Span) {
     }
 }
 
+// Set by the mortc driver: diagnostics then look like mortc.py's, with the
+// `mortc: ` prefix and MortError.render()'s source excerpt. Source files are
+// registered by the driver as it reads them, so this file itself reads nothing.
+let DIAG_RENDER: bool = false;
+// A global's initializer must be constant, so the list lives in one array slot.
+let DIAG_SOURCE_SLOT: [*u8; 1] = [""];
+let DIAG_HAS_SOURCES: bool = false;
+
+struct DiagSource {
+    path: Span,
+    bytes: Span,
+}
+
+fn diag_register_source(path: Span, bytes: Span) {
+    if !DIAG_HAS_SOURCES {
+        let list = sup_alloc(sizeof<PtrVec>()) as *PtrVec;
+        *list = ptrvec_new();
+        DIAG_SOURCE_SLOT[0] = list as *u8;
+        DIAG_HAS_SOURCES = true;
+    }
+    let entry = sup_alloc(sizeof<DiagSource>()) as *DiagSource;
+    *entry = DiagSource { path: path, bytes: bytes };
+    ptrvec_push(DIAG_SOURCE_SLOT[0] as *PtrVec, entry as *void);
+}
+
+fn diag_find_source(path: *u8, out: *Span) -> bool {
+    if !DIAG_HAS_SOURCES {
+        return false;
+    }
+    let list = DIAG_SOURCE_SLOT[0] as *PtrVec;
+    let wanted = span_z(path);
+    for i: u64 in 0..(*list).len {
+        let entry = ptrvec_get(list, i) as *DiagSource;
+        if span_eq((*entry).path, wanted) {
+            *out = (*entry).bytes;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn diag_push_spaces(out: *Buf, count: u64) {
+    for i: u64 in 0..count {
+        buf_push(out, ' ');
+    }
+}
+
+// One step of Python's UTF-8 decoding with errors="replace": copies a valid
+// sequence, or writes U+FFFD for the maximal invalid subpart. Returns the bytes used.
+fn diag_utf8_step(data: *u8, n: u64, i: u64, out: *Buf) -> u64 {
+    let b0 = data[i];
+    if b0 < 128 {
+        buf_push(out, b0);
+        return 1;
+    }
+    let need: u64 = 0;
+    let lo: u8 = 128;
+    let hi: u8 = 191;
+    if b0 >= 194 && b0 <= 223 {
+        need = 2;
+    } else if b0 >= 224 && b0 <= 239 {
+        need = 3;
+        if b0 == 224 { lo = 160; }
+        if b0 == 237 { hi = 159; }
+    } else if b0 >= 240 && b0 <= 244 {
+        need = 4;
+        if b0 == 240 { lo = 144; }
+        if b0 == 244 { hi = 143; }
+    }
+    let consumed: u64 = 1;
+    if need != 0 && i + 1 < n && data[i + 1] >= lo && data[i + 1] <= hi {
+        consumed = 2;
+        while consumed < need && i + consumed < n
+                && data[i + consumed] >= 128 && data[i + consumed] <= 191 {
+            consumed += 1;
+        }
+    }
+    if need != 0 && consumed == need {
+        for k: u64 in 0..need {
+            buf_push(out, data[i + k]);
+        }
+        return need;
+    }
+    buf_push(out, 239);
+    buf_push(out, 191);
+    buf_push(out, 189);
+    return consumed;
+}
+
+// MortError.render()'s excerpt: nothing when the file or line does not exist.
+fn diag_push_excerpt(out: *Buf, path: *u8, line: u64, col: u64) {
+    let raw = span_z("");
+    if !diag_find_source(path, &raw) {
+        return;
+    }
+    let data = raw.data;
+    let n = raw.len;
+    let at: u64 = 0;
+    let current: u64 = 1;
+    while current < line {
+        if at >= n {
+            return;
+        }
+        let b = data[at];
+        at += 1;
+        if b == 10 {
+            current += 1;
+        } else if b == 13 {
+            if at < n && data[at] == 10 {
+                at += 1;
+            }
+            current += 1;
+        }
+    }
+    if at >= n {
+        return;
+    }
+    let end = at;
+    while end < n && data[end] != 10 && data[end] != 13 {
+        end += 1;
+    }
+    let digits = buf_new(24);
+    buf_push_u64(&digits, line);
+    let width = digits.len;
+    let column = col;
+    if column < 1 {
+        column = 1;
+    }
+    buf_push(out, 10);
+    buf_push(out, ' ');
+    diag_push_spaces(out, width);
+    buf_push_z(out, " |");
+    buf_push(out, 10);
+    buf_push(out, ' ');
+    buf_push_span(out, buf_span(&digits));
+    buf_push_z(out, " | ");
+    let i = at;
+    while i < end {
+        i += diag_utf8_step(data, end, i, out);
+    }
+    buf_push(out, 10);
+    buf_push(out, ' ');
+    diag_push_spaces(out, width);
+    buf_push_z(out, " | ");
+    diag_push_spaces(out, column - 1);
+    buf_push(out, '^');
+}
+
+// Prints one formatted diagnostic, as mortc.py does when DIAG_RENDER is on.
+fn diag_emit(header: *Buf, path: *u8, line: u64, col: u64) {
+    let text = buf_new((*header).len + 256);
+    if DIAG_RENDER {
+        buf_push_z(&text, "mortc: ");
+    }
+    buf_push_span(&text, buf_span(header));
+    if DIAG_RENDER && path[0] != 0 && line != 0 {
+        diag_push_excerpt(&text, path, line, col);
+    }
+    buf_push(&text, 0);
+    eprintln(text.data);
+}
+
 fn diag_report(path: *u8, line: u64, col: u64, message: Span) {
     let text = buf_new(128);
     diag_format(&text, path, line, col, message);
-    buf_push(&text, 0);
-    eprintln(text.data);
+    diag_emit(&text, path, line, col);
 }
 
 fn diag_fatal(path: *u8, line: u64, col: u64, message: Span) {

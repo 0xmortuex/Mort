@@ -1,0 +1,415 @@
+// Import resolution from the filesystem and the path handling it needs
+// (PLAN.md, T8). Mirrors compile_files_to_c in mortc.py: files load depth first in
+// import order, each once, and every diagnostic path is the file's absolute path.
+//
+// Known difference from Python, recorded in PLAN.md: two paths are the same file
+// when their normalized absolute spelling matches (ASCII case-insensitively on
+// Windows), so a symlink to an already loaded file loads it again, where
+// os.path.realpath would have merged them.
+
+import support;
+import lexer;
+import ast;
+import parser;
+import typestr;
+import checker;
+import manifest;
+import pyrepr;
+
+extern fn getcwd(buf: *c_char, size: u64) -> *c_char;
+
+// A backstop for load()'s own recursion. The parser's frame budget, which is told
+// each file's import depth, rejects a chain first, as Python's does; pinned by
+// test_import_depth_boundary.
+const DR_MAX_IMPORT_DEPTH: u64 = 1000;
+
+struct LoadedFile {
+    path: u64,
+    program: Program,
+    // For each import, the key of the file it resolved to.
+    targets: U64Vec,
+}
+
+struct Driver {
+    strings: *Interner,
+    windows: bool,
+    cwd: Span,
+    // The directory of `import std.x`, empty when none was given.
+    std_dir: Span,
+    // key handle -> index + 1 in `files`, 0 means loading is under way.
+    loaded: Map,
+    files: PtrVec,
+    first_columns: *Map,
+}
+
+fn dr_is_sep(d: *Driver, c: u8) -> bool {
+    return c == '/' || ((*d).windows && c == 92);
+}
+
+fn dr_sep(d: *Driver) -> u8 {
+    if (*d).windows {
+        return 92;
+    }
+    return '/';
+}
+
+fn dr_is_drive_letter(c: u8) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+fn dr_cwd() -> Span {
+    let size: u64 = 4096;
+    loop {
+        let buffer = sup_alloc(size) as *u8;
+        let got = getcwd(buffer as *c_char, size);
+        if got != (0 as *c_char) {
+            return span_z(buffer);
+        }
+        free(buffer as *void);
+        size = size * 2;
+        if size > 1048576 {
+            sup_die("mortc: cannot read the working directory");
+        }
+    }
+}
+
+// True for a Windows absolute prefix `X:` followed by a separator, or `\\`.
+fn dr_has_win_root(path: Span) -> bool {
+    if path.len >= 3 && dr_is_drive_letter(path.data[0]) && path.data[1] == ':'
+            && (path.data[2] == 92 || path.data[2] == '/') {
+        return true;
+    }
+    return path.len >= 2 && (path.data[0] == 92 || path.data[0] == '/')
+        && (path.data[1] == 92 || path.data[1] == '/');
+}
+
+// os.path.abspath: joined with the working directory if relative, then normalized.
+fn dr_abspath(d: *Driver, path: Span) -> Span {
+    let joined = buf_new(path.len + (*d).cwd.len + 2);
+    let sep = dr_sep(d);
+    if (*d).windows {
+        if dr_has_win_root(path) {
+            buf_push_span(&joined, path);
+        } else if path.len >= 1 && dr_is_sep(d, path.data[0]) {
+            buf_push(&joined, (*d).cwd.data[0]);
+            buf_push(&joined, ':');
+            buf_push_span(&joined, path);
+        } else if path.len >= 2 && dr_is_drive_letter(path.data[0]) && path.data[1] == ':' {
+            // `C:name`: relative to that drive's directory, which Windows tracks
+            // per drive; the current drive's directory is the one known here.
+            if path.data[0] == (*d).cwd.data[0] {
+                buf_push_span(&joined, (*d).cwd);
+                buf_push(&joined, sep);
+                buf_push_span(&joined, ts_sub(path, 2, path.len));
+            } else {
+                buf_push(&joined, path.data[0]);
+                buf_push(&joined, ':');
+                buf_push(&joined, sep);
+                buf_push_span(&joined, ts_sub(path, 2, path.len));
+            }
+        } else {
+            buf_push_span(&joined, (*d).cwd);
+            buf_push(&joined, sep);
+            buf_push_span(&joined, path);
+        }
+    } else if path.len >= 1 && path.data[0] == '/' {
+        buf_push_span(&joined, path);
+    } else {
+        buf_push_span(&joined, (*d).cwd);
+        buf_push(&joined, sep);
+        buf_push_span(&joined, path);
+    }
+    return dr_normpath(d, buf_span(&joined));
+}
+
+// os.path.normpath on a joined absolute path. The result is interned, so it is
+// NUL-terminated and stable.
+fn dr_normpath(d: *Driver, path: Span) -> Span {
+    let out = buf_new(path.len + 2);
+    let i: u64 = 0;
+    let sep = dr_sep(d);
+    let root_len: u64 = 0;
+    if (*d).windows {
+        // A UNC share is the root: \\server\share is never collapsed away.
+        if path.len >= 2 && dr_is_sep(d, path.data[0]) && dr_is_sep(d, path.data[1]) {
+            buf_push(&out, sep);
+            buf_push(&out, sep);
+            i = 2;
+            for part: u64 in 0..2 {
+                while i < path.len && !dr_is_sep(d, path.data[i]) {
+                    buf_push(&out, path.data[i]);
+                    i += 1;
+                }
+                if part == 0 && i < path.len {
+                    buf_push(&out, sep);
+                    i += 1;
+                }
+            }
+            root_len = out.len;
+        } else if path.len >= 2 && dr_is_drive_letter(path.data[0]) && path.data[1] == ':' {
+            buf_push(&out, path.data[0]);
+            buf_push(&out, ':');
+            i = 2;
+            root_len = 2;
+        }
+    } else if path.len >= 2 && path.data[0] == '/' && path.data[1] == '/'
+            && (path.len == 2 || path.data[2] != '/') {
+        // POSIX keeps exactly two leading slashes.
+        buf_push(&out, '/');
+        root_len = 1;
+        i = 1;
+    }
+    // The root's separator is always written, the `..` floor sits after it.
+    let floor = root_len;
+    if out.len == 0 || out.data[out.len - 1] != sep {
+        buf_push(&out, sep);
+        floor = out.len;
+    }
+    while i < path.len {
+        while i < path.len && dr_is_sep(d, path.data[i]) {
+            i += 1;
+        }
+        let start = i;
+        while i < path.len && !dr_is_sep(d, path.data[i]) {
+            i += 1;
+        }
+        let part = ts_sub(path, start, i);
+        if part.len == 0 || span_eq_z(part, ".") {
+            continue;
+        }
+        if span_eq_z(part, "..") {
+            if out.len > floor {
+                out.len -= 1;
+                while out.len > floor && out.data[out.len - 1] != sep {
+                    out.len -= 1;
+                }
+                if out.len > floor {
+                    out.len -= 1;
+                }
+            }
+            continue;
+        }
+        if out.len > floor {
+            buf_push(&out, sep);
+        }
+        buf_push_span(&out, part);
+    }
+    return intern_text((*d).strings, intern((*d).strings, buf_span(&out)));
+}
+
+fn dr_dirname(d: *Driver, path: Span) -> Span {
+    let end = path.len;
+    while end > 0 && !dr_is_sep(d, path.data[end - 1]) {
+        end -= 1;
+    }
+    // Keep a root (`X:\` or `/`); drop the separator otherwise.
+    let is_root = end <= 1;
+    if (*d).windows && end == 3 && path.data[1] == ':' {
+        is_root = true;
+    }
+    if !is_root {
+        end -= 1;
+    }
+    return ts_sub(path, 0, end);
+}
+
+// Lower-casing is ASCII only on Windows, see the header.
+fn dr_key(d: *Driver, path: Span) -> u64 {
+    if !(*d).windows {
+        return intern((*d).strings, path);
+    }
+    let lower = buf_new(path.len + 1);
+    for i: u64 in 0..path.len {
+        let c = path.data[i];
+        if c >= 'A' && c <= 'Z' {
+            c += 32;
+        }
+        buf_push(&lower, c);
+    }
+    return intern((*d).strings, buf_span(&lower));
+}
+
+// os.path.isfile: fopen opens a directory on POSIX, which `dir/.` then exposes.
+fn dr_is_file(d: *Driver, path: *u8) -> bool {
+    let handle = file_open(path, "rb");
+    if handle == (0 as *void) {
+        return false;
+    }
+    file_close(handle);
+    if !(*d).windows {
+        let probe = buf_new(64);
+        buf_push_z(&probe, path);
+        buf_push_z(&probe, "/.");
+        buf_push(&probe, 0);
+        let dot = file_open(probe.data, "rb");
+        if dot != (0 as *void) {
+            file_close(dot);
+            return false;
+        }
+    }
+    return true;
+}
+
+fn dr_fail(path: Span, line: u64, message: *Buf) {
+    diag_fatal(path.data, line, 0, buf_span(message));
+}
+
+fn dr_fail_z(path: Span, line: u64, text: *u8) {
+    diag_fatal(path.data, line, 0, span_z(text));
+}
+
+fn dr_dotted(d: *Driver, parts: *U64Vec, out: *Buf) {
+    for i: u64 in 0..(*parts).len {
+        if i > 0 {
+            buf_push(out, '.');
+        }
+        buf_push_span(out, intern_text((*d).strings, u64vec_get(parts, i)));
+    }
+}
+
+fn dr_new(strings: *Interner, std_dir: Span, first_columns: *Map) -> Driver {
+    let cwd = dr_cwd();
+    let d = Driver {
+        strings: strings,
+        windows: cwd.len >= 2 && dr_is_drive_letter(cwd.data[0]) && cwd.data[1] == ':',
+        cwd: cwd,
+        std_dir: span_z(""),
+        loaded: map_new(),
+        files: ptrvec_new(),
+        first_columns: first_columns,
+    };
+    if std_dir.len != 0 {
+        d.std_dir = dr_abspath(&d, std_dir);
+    }
+    return d;
+}
+
+// Loads `path` and, depth first, everything it imports. `path` need not be
+// absolute. This recursion is Python's load(), the only one here over user input.
+fn dr_load(d: *Driver, path: Span, depth: u64) {
+    if depth > DR_MAX_IMPORT_DEPTH {
+        eprintln("mortc: error: source nesting or import depth exceeds the compiler safety limit");
+        exit(1);
+    }
+    let abs = dr_abspath(d, path);
+    let key = dr_key(d, abs);
+    if map_has(&(*d).loaded, key) {
+        return;
+    }
+    map_put(&(*d).loaded, key, 0);
+    let raw = cm_read_all(abs.data);
+    if raw.cap == 0 {
+        let msg = buf_new(128);
+        buf_push_z(&msg, "cannot read imported source");
+        dr_fail(abs, 0, &msg);
+    }
+    diag_register_source(abs, buf_span(&raw));
+    let source = lx_decode_source(buf_span(&raw));
+    if !source.valid {
+        let msg = buf_new(64);
+        buf_push_z(&msg, "source is not valid UTF-8 (byte 0x");
+        let hex = "0123456789abcdef";
+        buf_push(&msg, hex[(source.err_byte >> 4) as u64]);
+        buf_push(&msg, hex[(source.err_byte & 15) as u64]);
+        buf_push(&msg, ')');
+        diag_fatal(abs.data, source.err_line, source.err_col, buf_span(&msg));
+    }
+    let lexer = sup_alloc(sizeof<Lexer>()) as *Lexer;
+    *lexer = lx_new(source.bytes);
+    if !lx_tokenize(lexer) {
+        diag_fatal(abs.data, (*lexer).err_line, (*lexer).err_col, (*lexer).err_message);
+    }
+    let program = parse_program(&(*lexer).tokens, (*d).strings, abs.data, depth);
+    let file = intern((*d).strings, abs);
+    for i: u64 in 0..(*lexer).tokens.len {
+        let line_key = ck_line_key(file, (*lexer).tokens.data[i].line);
+        if !map_has((*d).first_columns, line_key) {
+            map_put((*d).first_columns, line_key, (*lexer).tokens.data[i].col);
+        }
+    }
+    let loaded = sup_alloc(sizeof<LoadedFile>()) as *LoadedFile;
+    *loaded = LoadedFile { path: file, program: program, targets: u64vec_new() };
+    ptrvec_push(&(*d).files, loaded as *void);
+    map_put(&(*d).loaded, key, (*d).files.len);
+    for i: u64 in 0..(*program.imports).len {
+        let declaration = ast_item(program.imports, i);
+        let parts = (*declaration).names;
+        let imported = buf_new(128);
+        if u64vec_get(parts, 0) == intern_z((*d).strings, "std") {
+            if (*parts).len != 2 {
+                dr_fail_z(abs, (*declaration).line, "standard imports use 'import std.<module>;'");
+            }
+            if (*d).std_dir.len == 0 {
+                dr_fail_z(abs, (*declaration).line, "standard imports need --std-dir");
+            }
+            buf_push_span(&imported, (*d).std_dir);
+            buf_push(&imported, dr_sep(d));
+            buf_push_span(&imported, intern_text((*d).strings, u64vec_get(parts, 1)));
+        } else {
+            buf_push_span(&imported, dr_dirname(d, abs));
+            for k: u64 in 0..(*parts).len {
+                buf_push(&imported, dr_sep(d));
+                buf_push_span(&imported, intern_text((*d).strings, u64vec_get(parts, k)));
+            }
+        }
+        buf_push_z(&imported, ".mx");
+        buf_push(&imported, 0);
+        if !dr_is_file(d, imported.data) {
+            let msg = buf_new(128);
+            buf_push_z(&msg, "cannot find imported module ");
+            let dotted = buf_new(64);
+            dr_dotted(d, parts, &dotted);
+            pr_push_str_repr(&msg, buf_span(&dotted));
+            dr_fail(abs, (*declaration).line, &msg);
+        }
+        let resolved = ts_sub(buf_span(&imported), 0, imported.len - 1);
+        u64vec_push(&(*loaded).targets, dr_key(d, dr_abspath(d, resolved)));
+        dr_load(d, resolved, depth + 1);
+    }
+}
+
+fn dr_program_of(d: *Driver, key: u64) -> *LoadedFile {
+    let value: u64 = 0;
+    if !map_get(&(*d).loaded, key, &value) || value == 0 {
+        sup_die("mortc: internal error: import target was not loaded");
+    }
+    return ptrvec_get(&(*d).files, value - 1) as *LoadedFile;
+}
+
+// The alias tables, which need every file parsed, then the merge into `all`.
+fn dr_finish(d: *Driver, all: *Program) {
+    let strings = (*d).strings;
+    for f: u64 in 0..(*d).files.len {
+        let loaded = ptrvec_get(&(*d).files, f) as *LoadedFile;
+        let program = &(*loaded).program;
+        let path = intern_text(strings, (*loaded).path);
+        let aliases = sup_alloc(sizeof<Map>()) as *Map;
+        *aliases = map_new();
+        for i: u64 in 0..(*(*program).imports).len {
+            let declaration = ast_item((*program).imports, i);
+            let target = dr_program_of(d, u64vec_get(&(*loaded).targets, i));
+            let target_module = (*target).program.module_name;
+            let alias_given = (*declaration).name != NO_TEXT;
+            if target_module != NO_TEXT {
+                let alias = (*declaration).name;
+                if !alias_given {
+                    let parts = (*declaration).names;
+                    alias = u64vec_get(parts, (*parts).len - 1);
+                }
+                let existing: u64 = 0;
+                if map_get(aliases, alias, &existing) && existing != target_module {
+                    let msg = buf_new(64);
+                    buf_push_z(&msg, "import alias ");
+                    pr_push_str_repr(&msg, intern_text(strings, alias));
+                    buf_push_z(&msg, " is already used");
+                    dr_fail(path, (*declaration).line, &msg);
+                }
+                map_put(aliases, alias, target_module);
+            } else if alias_given {
+                dr_fail_z(path, (*declaration).line,
+                    "an aliased import must target a file with a module declaration");
+            }
+        }
+        cm_merge(strings, all, program, (*loaded).path, aliases);
+    }
+}
