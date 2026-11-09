@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import socket
 import ssl
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import mortc
+from mort import codegen as codegen_module
+from mort import fuzz as fuzz_module
+from mort import typechecker as typechecker_module
 from mort.errors import MortError
 from mort.formatter import format_source
 from mort.fuzz import run_fuzz
@@ -10374,3 +10379,1024 @@ def test_arguments_are_available_under_the_test_runner():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ----- malformed-input hardening: every failure is a located MortError -----
+def assert_located(source, *messages):
+    """Compile source; it must fail with a MortError carrying line and column."""
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    error = caught.value
+    assert error.line is not None and error.col is not None, error.format()
+    for message in messages:
+        assert message in error.msg, error.msg
+    return error
+
+
+def test_oversized_decimal_literal_is_a_located_diagnostic():
+    digits = "9" * 5000
+    error = assert_located(
+        f"fn main() -> int {{\n  let x: i64 = {digits};\n  return 0;\n}}",
+        "decimal integer literal", "4300",
+    )
+    assert (error.line, error.col) == (2, 16)
+    # Separators do not count toward the limit but cannot hide digits from it.
+    assert_located(f"fn main() -> int {{ let x = {'1_' * 5000}1; return 0; }}",
+                   "decimal integer literal")
+
+
+def test_oversized_tuple_index_is_a_located_diagnostic():
+    assert_located(
+        "fn main() -> int { let t = (1, 2); let y = t." + "1" * 5000 + "; return 0; }",
+        "decimal integer literal",
+    )
+
+
+def test_decimal_literal_at_the_digit_limit_still_compiles():
+    # 4300 nines divided down to a value that fits: arbitrary-precision folding
+    # must keep working right up to the limit.
+    digits = "9" * 4300
+    c_of(f"fn main() -> int {{ let x: i64 = {digits} / {digits}; return x as int; }}")
+
+
+@pytest.mark.parametrize("expression", [
+    "a[0x" + "F" * 4000 + "]",
+    "1 << (-0x" + "F" * 4000 + ")",
+], ids=["array-index", "negative-shift"])
+def test_huge_constant_in_a_diagnostic_message_does_not_crash(expression):
+    with pytest.raises(MortError):
+        c_of("fn main() -> int { let a: [i64; 1] = [1]; "
+             f"let y = {expression}; return 0; }}")
+
+@pytest.mark.parametrize("data,position", [
+    (b"\xff", (1, 1)),
+    (b"fn main() -> int { return 0; }\n// bad: \xc3\xa9 \xff\n", (2, 11)),
+    (b"\r\n\r\nx\r\xfe", (4, 1)),
+], ids=["first-byte", "after-multibyte-char", "crlf-and-cr-lines"])
+def test_invalid_utf8_source_is_a_located_diagnostic(tmp_path, capsys, data, position):
+    path = tmp_path / "bad.mx"
+    path.write_bytes(data)
+    with pytest.raises(MortError, match="not valid UTF-8") as caught:
+        mortc.compile_files_to_c([str(path)])
+    assert (caught.value.line, caught.value.col) == position
+    assert caught.value.filename == str(path)
+    # The CLI re-reads the file to print an excerpt, so that path must survive too.
+    assert mortc.main([str(path), "--check"]) == 1
+    assert f"{path}:{position[0]}:{position[1]}: error" in capsys.readouterr().err
+    assert mortc.main([str(path), "--check", "--diagnostic-format", "json"]) == 1
+    assert json.loads(capsys.readouterr().err)["line"] == position[0]
+
+
+def test_invalid_utf8_is_reported_by_the_formatter(tmp_path, capsys):
+    path = tmp_path / "bad.mx"
+    path.write_bytes(b"fn main() -> int { return 0; } // \xff\n")
+    assert mortc.main(["fmt", str(path)]) == 1
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_huge_zero_array_repeat_costs_no_memory():
+    code = c_of("fn main() -> int { let x: [i64; 2000000000] = [0; 2000000000]; return 0; }")
+    assert "{0}" in code and len(code) < 1_000_000
+
+
+def test_array_repeat_budget_is_shared_across_the_program(monkeypatch):
+    # Each repeat alone fits; together they pass the budget, which a
+    # per-literal cap would miss.
+    monkeypatch.setattr(codegen_module, "MAX_ARRAY_REPEAT_BYTES", 1024 * 1024)
+    repeats = " ".join(f"let a{i}: [u8; 100000] = [1; 100000];" for i in range(10))
+    assert_located(f"fn main() -> int {{ {repeats} return 0; }}", "array repeat")
+
+
+def test_array_repeat_budget_counts_the_element_text():
+    element = "+".join(["a"] * 150)
+    error = assert_located(
+        f"fn main() -> int {{ let a: i64 = 1; let x: [i64; 200000] = [{element}; 200000]; "
+        "return 0; }",
+        "array repeat",
+    )
+    assert error.line == 1
+
+
+def test_large_zero_array_repeat_collapses_and_nonzero_expands():
+    assert "{0}" in c_of("fn main() -> int { let x: [u8; 100000] = [0; 100000]; return 0; }")
+    assert "1, 1" in c_of("fn main() -> int { let x: [u8; 1000] = [1; 1000]; return 0; }")
+
+
+def test_generic_lookahead_is_linear_on_long_less_than_chains():
+    # Every '<' used to rescan to the end of the statement: 8000 terms took
+    # over 40 seconds.
+    chain = " < ".join(["a"] * 8000)
+    started = time.perf_counter()
+    with pytest.raises(MortError):
+        c_of(f"fn main() -> int {{ let a: i64 = 1; let x = {chain}; return 0; }}")
+    assert time.perf_counter() - started < 10
+
+
+@pytest.mark.parametrize("expression,kept", [
+    ("pick<i64>(1)", "mort_pick_i64"),
+    ("pick<Box<i64>>(Box<i64> { v: 1 }).v", "mort_pick_Box_i64"),
+], ids=["flat", "nested-closed-by-shift"])
+def test_generic_call_lookahead_still_finds_type_arguments(expression, kept):
+    source = (
+        "struct Box<T> { v: T } fn pick<T>(x: T) -> T { return x; } "
+        f"fn main() -> int {{ let y = {expression}; return y as int; }}"
+    )
+    assert kept in c_of(source)
+
+
+_NESTING_BODIES = {
+    "less-than": "let x = " + " < ".join(["a"] * 8000) + ";",
+    "plus": "let x = " + " + ".join(["a"] * 8000) + ";",
+    "cast": "let x = a" + " as i64" * 8000 + ";",
+    "field": "let x = a" + ".f" * 8000 + ";",
+    "index": "let x = a" + "[0]" * 8000 + ";",
+    "unary": "let x = " + "- " * 8000 + "a;",
+    "parens": "let x = " + "(" * 8000 + "a" + ")" * 8000 + ";",
+    "unclosed-parens": "let x = " + "(" * 8000,
+    "array": "let x = " + "[" * 8000,
+    "blocks": "{ " * 8000 + "}" * 8000,
+    "if": "if b { " * 8000 + "}" * 8000,
+    "pointer-type": "let x: " + "*" * 8000 + "i64 = null;",
+    "tuple-type": "let x: " + "(" * 8000,
+}
+
+
+@pytest.mark.parametrize("body", _NESTING_BODIES.values(), ids=_NESTING_BODIES.keys())
+def test_nesting_past_the_limit_is_a_located_diagnostic(body):
+    assert_located(
+        f"fn main() -> int {{\n  let a: i64 = 1; let b: bool = true;\n  {body}\n  return 0; }}",
+        "compiler safety limit",
+    )
+
+
+def test_nesting_limit_reports_file_line_and_column(tmp_path, capsys):
+    path = tmp_path / "deep.mx"
+    path.write_text(
+        "fn main() -> int {\n  let a: i64 = 1;\n  let x = "
+        + " + ".join(["a"] * 8000) + ";\n  return 0;\n}\n",
+        encoding="utf-8",
+    )
+    assert mortc.main([str(path), "--check"]) == 1
+    assert re.search(r"deep\.mx:3:\d+: error: source nesting", capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("body", [
+    "let x = " + " + ".join(["a"] * 380) + ";",
+    "let x = a" + " as i64" * 380 + ";",
+    "let x = " + "- " * 380 + "a;",
+    "{ " * 380 + "}" * 380,
+    "if b { " * 190 + "}" * 190,
+    "if b { } " + "else if b { } " * 700,
+], ids=["plus", "cast", "unary", "blocks", "if", "else-if"])
+def test_nesting_inside_the_limit_still_compiles(body):
+    c_of(f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}")
+
+
+_I64 = "let a: i64 = 1; let u: u64 = 1; "
+
+
+@pytest.mark.parametrize("body,col", [
+    ("let x: i64 = 18446744073709551616;", 14),
+    ("let x: i64 = 9223372036854775808;", 14),
+    ("let x = 9223372036854775808;", 9),
+    ("let x = 18446744073709551616;", 9),
+    ("let x = -0x" + "F" * 4000 + ";", 9),
+    ("print(18446744073709551616);", 7),
+    ("let x = 18446744073709551616 as u64;", 9),
+    ("let x = a + 9223372036854775808;", 13),
+    ("let x = 18446744073709551616 == 1;", 9),
+    ("let x = u + 18446744073709551616;", 13),
+    ("let x = a == 9223372036854775808;", 14),
+    ("let x = a << 0x" + "F" * 4000 + ";", 14),
+    ("let x: [i64; 1] = [9223372036854775808];", 20),
+    ("let x: i64 = 18446744073709551616 / 2;", 35),
+], ids=["2^64", "2^63", "untyped-2^63", "untyped-2^64", "huge-negative-hex", "print",
+        "cast", "binary-signed", "both-literal-compare", "binary-unsigned-overflow",
+        "compare-signed", "shift-count", "array-element", "folded-expression"])
+def test_out_of_range_integer_literal_is_a_checker_diagnostic(body, col):
+    error = assert_located(f"{_I64}\n{body}".join(["fn main() -> int { ", " return 0; }"]),
+                           "does not fit")
+    assert (error.line, error.col) == (2, col)
+
+
+def test_out_of_range_literal_argument_and_return_are_rejected():
+    source = "fn f() -> i64 { return 18446744073709551616; } fn main() -> int { return 0; }"
+    assert_located(source, "does not fit")
+    source = ("fn f(v: i64) -> i64 { return v; } "
+              "fn main() -> int { return f(9223372036854775808) as int; }")
+    assert_located(source, "does not fit")
+
+
+@pytest.mark.parametrize("body", [
+    "let x: i64 = 9223372036854775807;",
+    "let x: i64 = -9223372036854775808;",
+    "let x: u64 = 18446744073709551615;",
+    "let x = 0xFFFFFFFFFFFFFFFF as u64;",
+    "let x = u + 18446744073709551615;",
+    "let x = u == 18446744073709551615;",
+    "let x: i64 = 18446744073709551616 / 4;",
+    "let x: i64 = 2^64;",  # '^' is XOR in Mort, so this is 66.
+    "let x = a << 3;",
+], ids=["i64-max", "i64-min", "u64-max", "cast-u64-max", "binary-u64-max",
+        "compare-u64-max", "folded-down", "xor", "shift"])
+def test_in_range_integer_literals_stay_accepted(body):
+    c_of(f"fn main() -> int {{ {_I64} {body} return 0; }}")
+
+
+@pytest.mark.parametrize("operator", ["==", "!="])
+def test_comparing_void_values_is_a_checker_diagnostic(operator):
+    source = f"fn f() {{}} fn main() -> int {{ if f() {operator} f() {{ return 1; }} return 0; }}"
+    error = assert_located(source, "void")
+    assert error.col == source.index(operator) + 1
+
+
+@pytest.mark.parametrize("source", [
+    "fn main() -> int { return 0 }",
+    "fn f() {} module m;",
+    "pub let x = 1;",
+    "resource fn f() {}",
+    "fn f(x: (i64)) {}",
+    "fn f(x: (i64,)) {}",
+    "fn f(x: 1) {}",
+    "fn 1() {}",
+    "fn main() -> int { 1 = 2; return 0; }",
+    "fn main() -> int { let x = 1<i64>(2); return 0; }",
+    "fn main() -> int { let x = 1(2); return 0; }",
+    "fn main() -> int { let x = (1,); return 0; }",
+    "fn main() -> int { let x = ; return 0; }",
+    "fn main() -> int { let x = []; return 0; }",
+], ids=["expect", "module-order", "pub", "resource", "tuple-type-one", "tuple-type-comma",
+        "type", "function-name", "assignment-target", "type-args-on-value", "call-on-value",
+        "tuple-literal", "unexpected-token", "empty-array"])
+def test_syntax_errors_carry_line_and_column(source):
+    assert_located(source)
+
+
+def test_fuzzer_generates_every_hostile_input_class():
+    generators = fuzz_module._HOSTILE
+    assert {g.__name__ for g in generators} == {
+        "_huge_literal", "_invalid_bytes", "_deep_nesting", "_long_chain", "_big_array_repeat",
+        "_type_shapes", "_type_like_strings", "_runaway_generics",
+    }
+    for generator in generators:
+        rng = random.Random(7)
+        cases = [generator(rng) for _ in range(40)]
+        assert all(isinstance(case, (str, bytes)) for case in cases)
+        assert len(set(cases)) > 1, generator.__name__
+    assert all(isinstance(fuzz_module._invalid_bytes(random.Random(i)), bytes) for i in range(5))
+
+
+def test_fuzzer_is_deterministic_and_clean_on_hostile_inputs():
+    # Every 20th case is adversarial, so 400 cases draw about 15 hostile inputs.
+    assert run_fuzz(cases=400, seed=11) == run_fuzz(cases=400, seed=11)
+
+
+def test_fuzzer_reports_a_crash_and_a_hang(monkeypatch):
+    def crash(source):
+        raise ValueError("boom")
+
+    def hang(source):
+        time.sleep(0.5)
+
+    monkeypatch.setattr(mortc, "compile_to_c", crash)
+    with pytest.raises(AssertionError, match="crashed with ValueError"):
+        run_fuzz(cases=20, seed=1)
+    monkeypatch.setattr(mortc, "compile_to_c", hang)
+    with pytest.raises(AssertionError, match="hung"):
+        run_fuzz(cases=20, seed=1, case_timeout=0.05)
+
+
+def test_fuzzer_oracle_requires_a_location_on_limit_errors():
+    limit = "source nesting exceeds the compiler safety limit"
+    fuzz_module._check_located(MortError(limit, 1, 1), "case")
+    for unlocated in (MortError(limit), MortError(limit, 1)):
+        with pytest.raises(AssertionError, match="without line and column"):
+            fuzz_module._check_located(unlocated, "case")
+
+
+def _compile_bounded(source, seconds):
+    """Compile on a worker so a hang fails the test instead of wedging the run."""
+    started = time.perf_counter()
+    finished, error = fuzz_module._run_with_timeout(lambda: c_of(source), seconds)
+    assert finished, f"still compiling after {seconds}s"
+    return error, time.perf_counter() - started
+
+
+def assert_located_quickly(source, seconds, *messages):
+    error, _ = _compile_bounded(source, seconds)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None and error.col is not None, error.format()
+    for message in messages:
+        assert message in error.msg, error.msg
+    return error
+
+
+@pytest.mark.parametrize("kind,literal", [
+    ("hex", "0x" + "F" * 4301),
+    ("hex", "0x" + "0" * 5000),
+    ("hex", "0x" + "F_" * 4300 + "F"),
+    ("binary", "0b" + "1" * 4301),
+    ("octal", "0o" + "7" * 4301),
+], ids=["hex", "hex-leading-zeros", "hex-separators", "binary", "octal"])
+def test_oversized_prefixed_literal_is_a_located_diagnostic(kind, literal):
+    error = assert_located(f"fn main() -> int {{\n  let x = {literal};\n  return 0;\n}}",
+                           f"{kind} integer literal has", "the limit is 4300")
+    assert (error.line, error.col) == (2, 11)
+
+
+def test_prefixed_literal_keeps_its_trailing_character_error():
+    assert_located("fn main() -> int { let x = 0x" + "F" * 5000 + "g; return 0; }",
+                   "invalid hex literal")
+
+
+def test_prefixed_literal_at_the_digit_limit_still_folds():
+    literal = "0x" + "F" * 4300
+    c_of(f"fn main() -> int {{ let x: i64 = {literal} / {literal}; return x as int; }}")
+
+
+@pytest.mark.parametrize("body", [
+    "let x = [0; 0x" + "F" * 4000 + "];",
+    "let x: [i64; 0x" + "F" * 4000 + "] = [0; 1];",
+    "let x = [0; 18446744073709551616];",
+    "let x: [i64; 18446744073709551616] = [0; 1];",
+], ids=["repeat-hex", "type-hex", "repeat-2^64", "type-2^64"])
+def test_array_size_past_u64_is_a_located_diagnostic(body):
+    assert_located(f"fn main() -> int {{ {body} return 0; }}", "array size")
+
+
+def test_caret_is_xor_so_two_caret_sixty_three_is_sixty_one():
+    assert "61" in c_of("fn main() -> int { let x: i64 = 2^63; return x as int; }")
+
+
+@pytest.mark.parametrize("body", [
+    "let p: *[i64; 1] = null;",
+    "let p: *const [i64; 1] = null;",
+    "let p: **[i64; 1] = null;",
+], ids=["pointer", "const-pointer", "pointer-pointer"])
+def test_pointer_to_array_type_is_a_located_diagnostic(body):
+    assert_located(f"fn main() -> int {{ {body} return 0; }}", "unknown type")
+
+
+def test_generic_body_past_the_copy_depth_has_a_location():
+    source = ("fn g<T>(x: T) -> i64 {\n  let a: i64 = 1;\n  return "
+              + " + ".join(["a"] * 300)
+              + ";\n}\nfn main() -> int { return g(1) as int; }")
+    error = assert_located(source, "compiler safety limit")
+    assert error.line is not None
+
+
+@pytest.mark.parametrize("name,body", [
+    ("sum", "let x = " + " + ".join(["a"] * 495) + ";"),
+    ("if", "if b { " * 324 + "}" * 324),
+    ("else-if", "if b { } " + "else if b { } " * 970),
+    ("blocks", "{ " * 493 + "}" * 493),
+], ids=["sum", "if", "else-if", "blocks"])
+def test_cli_compiles_every_depth_main_compiled(tmp_path, name, body):
+    path = tmp_path / f"{name}.mx"
+    path.write_text(
+        f"fn main() -> int {{ let a: i64 = 1; let b: bool = true; {body} return 0; }}",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "mortc.py"), str(path), "--check"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr[:300]
+
+
+_TYPE_LIKE_TEXT = [
+    "[]", "[]x", "[][]", "[]const ", "[", "[;", "[x;y]", "[u8;3]", "(", ")", "(a,b)", "(,)",
+    "*", "*const ", "fn(", "fn(x)->y", "fn()->", "W<", "W<>", "W<x>", "<>",
+]
+
+
+@pytest.mark.parametrize("text", _TYPE_LIKE_TEXT)
+def test_string_contents_are_never_read_as_types(text):
+    assert "main" in c_of(f'fn main() -> int {{ println("{text}"); return 0; }}')
+
+
+@pytest.mark.parametrize("text", _TYPE_LIKE_TEXT)
+def test_asm_text_is_never_read_as_a_type(text):
+    assert "main" in c_of(f'fn main() -> int {{ asm("{text}"); return 0; }}')
+
+
+@pytest.mark.parametrize("folder", ["[]", "(a,b)", "[x;y]", "fn(x)->y"],
+                         ids=["slice", "tuple", "array", "function"])
+def test_source_paths_are_never_read_as_types(folder):
+    # Only the label is read, so these need not be valid Windows folder names.
+    assert "main" in mortc.compile_sources_to_c(
+        ["fn main() -> int { return 0; }"], filenames=[f"{folder}/main.mx"])
+
+
+def test_test_names_are_never_read_as_types(tmp_path):
+    source = tmp_path / "main.mx"
+    source.write_text('test "[]" { assert(true); } fn main() -> int { return 0; }',
+                      encoding="utf-8")
+    assert "main" in mortc.compile_files_to_c([str(source)], test_mode=True)
+
+
+def test_long_constant_product_is_reported_quickly():
+    chain = " * ".join(["0x" + "F" * 500] * 390)
+    assert_located_quickly(f"fn main() -> int {{ let x = {chain}; return 0; }}", 5,
+                           "constant expression")
+
+
+def test_constant_folding_is_not_repeated_at_every_level():
+    # 300 literals, each folded once: a rescan per level would be quadratic.
+    chain = " * ".join(["3"] * 300)
+    error, seconds = _compile_bounded(
+        f"fn main() -> int {{ let x = ({chain}) / ({chain}); return x as int; }}", 5)
+    assert error is None and seconds < 5
+
+
+@pytest.mark.parametrize("source", [
+    "fn g<T>(x:T,n:i64)->i64{return g(&x,n);} fn main() -> int { return g(1,2) as int; }",
+    ("fn a<T>(x:T)->i64{return b(&x);} fn b<T>(x:T)->i64{return a(&x);} "
+     "fn main() -> int { return a(1) as int; }"),
+], ids=["self", "mutual"])
+def test_runaway_instantiation_is_a_located_diagnostic(source):
+    assert_located_quickly(source, 10, "instantiation")
+
+
+def test_bounded_generic_recursion_still_compiles():
+    source = ("fn g<T>(x: T) -> i64 { return 1; } "
+              "fn main() -> int { let a: i64 = 1; let p = &a; let q = &p; "
+              "return (g(a) + g(p) + g(q)) as int; }")
+    assert "main" in c_of(source)
+
+
+@pytest.mark.parametrize("source", [
+    "struct W<T> { v: T } fn main() -> int { let x: *" + "W<" * 200 + "i64" + ">" * 200
+    + " = null; return 0; }",
+    "fn main() -> int { let x: " + "fn(" * 390 + "i64" + ")->i64" * 390 + " = null; return 0; }",
+], ids=["generic-struct", "function-type"])
+def test_deep_type_names_do_not_hang(source):
+    error, seconds = _compile_bounded(source, 8)
+    assert error is None or isinstance(error, MortError), repr(error)
+    assert seconds < 8
+
+
+def test_zero_initialised_array_does_not_expand_its_c_text():
+    source = "let frame: [u8; 12000000] = [0; 12000000]; fn main() -> int { return 0; }"
+    code = c_of(source)
+    assert "{0}" in code
+    assert len(code) < 1_000_000
+
+
+def test_two_zeroed_rgba_framebuffers_compile():
+    pixels = 1920 * 1080 * 4
+    source = (f"let a: [u8; {pixels}] = [0; {pixels}]; "
+              f"let b: [u8; {pixels}] = [0; {pixels}]; fn main() -> int {{ return 0; }}")
+    assert len(c_of(source)) < 1_000_000
+
+
+def test_small_array_repeat_output_is_unchanged():
+    assert "= {0, 0, 0, 0};" in c_of("fn main() -> int { let a: [u8; 4] = [0; 4]; return 0; }")
+
+
+def test_nonzero_array_repeat_past_the_budget_is_located():
+    error = assert_located(
+        "fn main() -> int {\n  let x: [i64; 2000000000] = [1; 2000000000];\n  return 0;\n}",
+        "array repeat", "2000000000",
+    )
+    assert (error.line, error.col) == (2, 30)
+
+
+_ARRAY = "[i64; 2]"
+_ARRAY_IN_TYPE_SOURCES = {
+    "array-of-array-field": f"struct S {{ f: [{_ARRAY}; 3] }} fn main() -> int {{ return 0; }}",
+    "slice-of-array-field": f"struct S {{ f: []{_ARRAY} }} fn main() -> int {{ return 0; }}",
+    "fn-array-parameter": f"struct S {{ f: fn({_ARRAY}) -> u8 }} fn main() -> int {{ return 0; }}",
+    "fn-array-result": f"fn main() -> int {{ let f: *fn(u8) -> {_ARRAY} = null; return 0; }}",
+    "cast-pointer-to-array": f"fn main() -> int {{ let x = null as *{_ARRAY}; return 0; }}",
+}
+
+
+@pytest.mark.parametrize(
+    "source", _ARRAY_IN_TYPE_SOURCES.values(), ids=_ARRAY_IN_TYPE_SOURCES.keys())
+def test_array_nested_in_a_type_is_a_diagnostic(source):
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    assert caught.value.line is not None
+
+
+@pytest.mark.parametrize("source", [
+    "struct S { f: [*i64; 2] } fn main() -> int { return 0; }",
+    "struct S { f: [(i64, u8); 2] } fn main() -> int { return 0; }",
+    "fn main() -> int { let x: *[][i64; 2] = null; return 0; }",
+    "fn main() -> int { let x: *(i64, [i64; 2]) = null; return 0; }",
+    "struct W<T> { v: T } fn main() -> int { let x: *W<[i64; 2]> = null; return 0; }",
+], ids=["array-of-pointer", "array-of-tuple", "pointer-to-slice-of-array",
+        "tuple-with-array", "generic-of-array"])
+def test_array_positions_main_compiled_still_compile(source):
+    assert "main" in c_of(source)
+
+
+def test_cast_instantiates_its_generic_target():
+    source = ("struct W<T> { v: T } "
+              "fn main() -> int { let x = null as *W<i64>; return 0; }")
+    assert "mort_W_i64" in c_of(source)
+
+
+def test_generic_argument_with_commas_is_one_argument():
+    source = ("struct W<T> { v: T } "
+              "fn main() -> int { let x: *W<[(u8, u8); 2]> = null; return 0; }")
+    assert "main" in c_of(source)
+
+
+_ARRAY_ADDRESS_SOURCES = {
+    "local": "fn main() -> int {\n  let x: [u8; 1] = [1];\n  let p = &x;\n  return 0;\n}",
+    "parenthesised": "fn main() -> int {\n  let x: [u8; 1] = [1];\n  let p = &(x);\n  return 0;\n}",
+    "field": ("struct S { a: [u8; 1] } fn main() -> int {\n  let s = S { a: [1] };\n"
+              "  let p = &s.a;\n  return 0;\n}"),
+    "global": "let G: [u8; 2] = [1, 2]; fn main() -> int {\n  let p = &G;\n  return 0;\n}",
+    "alias": ("type A = [u8; 1]; fn main() -> int {\n  let x: A = [1];\n"
+              "  let p = &x;\n  return 0;\n}"),
+    "through-pointer": ("struct W { a: [u8; 2] } fn main() -> int {\n"
+                        "  let q: *W = null;\n  let p = &q[0].a;\n  return 0;\n}"),
+    "slice-element": ("fn main() -> int {\n  let q: *[][i64; 2] = null;\n"
+                      "  let p = &(*q)[0];\n  return 0;\n}"),
+    "tuple-element": ("fn main() -> int {\n  let q: *(i64, [u8; 1]) = null;\n"
+                      "  let p = &(*q).1;\n  return 0;\n}"),
+    "generic-body": ("struct W<T> { v: T } fn f<T>(w: *W<T>) -> i64 {\n"
+                     "  let p = &(*w).v;\n  return 1;\n}\n"
+                     "fn main() -> int { let w: *W<[u8; 1]> = null; return f(w) as int; }"),
+}
+
+
+@pytest.mark.parametrize(
+    "source", _ARRAY_ADDRESS_SOURCES.values(), ids=_ARRAY_ADDRESS_SOURCES.keys())
+def test_address_of_an_array_is_a_located_diagnostic(source):
+    error = assert_located(source, "address of an array")
+    assert error.line in (2, 3)
+
+
+def test_address_of_an_array_element_still_compiles():
+    assert "main" in c_of("fn main() -> int { let x: [u8; 1] = [1]; let p = &x[0]; return 0; }")
+
+
+def test_spec_states_pointers_to_arrays_are_rejected():
+    assert "`*T` where `T` is an array type is rejected" in _spec_text()
+
+
+def _spec_text():
+    with open(os.path.join(ROOT, "docs", "language-specification.md"), encoding="utf-8") as spec:
+        return " ".join(spec.read().split())
+
+
+_GENERIC_IN_TEST = ('fn g<T>(x: T) -> i64 { return 1; }\n'
+                    'test "t" { assert(g(1) == 1); }\n')
+_GENERIC_CHAIN_IN_TEST = ('fn g<T>(x: T) -> i64 { return h(&x); }\n'
+                          'fn h<T>(x: T) -> i64 { return 1; }\n'
+                          'test "t" { assert(g(1) == 1); }\n')
+_MAIN = "fn main() -> int { return 0; }\n"
+
+
+@pytest.mark.parametrize("test_mode", [False, True], ids=["normal", "test-mode"])
+@pytest.mark.parametrize("source", [_GENERIC_IN_TEST, _GENERIC_CHAIN_IN_TEST],
+                         ids=["direct", "through-another-generic"])
+def test_generic_called_only_from_a_test_block_compiles(tmp_path, source, test_mode):
+    path = tmp_path / "main.mx"
+    path.write_text(source + _MAIN, encoding="utf-8")
+    assert "mort_g" in mortc.compile_files_to_c([str(path)], test_mode=test_mode)
+
+
+def test_generic_body_reached_only_from_a_test_block_is_checked(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(
+        'fn g<T>(x: T) -> i64 { return nope; }\ntest "t" { g(1); }\n' + _MAIN,
+        encoding="utf-8")
+    with pytest.raises(MortError) as caught:
+        mortc.compile_files_to_c([str(path)], test_mode=True)
+    assert "nope" in caught.value.msg and caught.value.line == 1
+
+
+def test_check_accepts_a_generic_called_only_from_a_test_block(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(_GENERIC_IN_TEST + _MAIN, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "mortc.py"), str(path), "--check"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr[-400:]
+
+
+@needs_cc
+def test_generic_called_from_a_test_block_runs(tmp_path):
+    path = tmp_path / "main.mx"
+    path.write_text(_GENERIC_CHAIN_IN_TEST + _MAIN, encoding="utf-8")
+    output = tmp_path / ("main" + (".exe" if os.name == "nt" else ""))
+    assert mortc._compile_main([str(path), "-o", str(output)], test_mode=True) == 0
+    assert subprocess.run([str(output)], check=False).returncode == 0
+
+
+def _generic_chain(length):
+    links = "".join(
+        f"fn f{index}<T>(x: T) -> i64 {{ return f{index + 1}(x); }}\n"
+        for index in range(length - 1))
+    return (links + f"fn f{length - 1}<T>(x: T) -> i64 {{ return 42; }}\n"
+            "fn main() -> int { return f0(1) as int; }")
+
+
+@pytest.mark.parametrize("length", [258, 2000])
+def test_long_chain_of_distinct_generics_compiles(length):
+    assert "mort_f0" in c_of(_generic_chain(length))
+
+
+@pytest.mark.parametrize("source", [
+    "fn g<T>(x: T) -> i64 { return g((x, x)); } fn main() -> int { return g(1) as int; }",
+    ("fn g<T>(x: T) -> i64 { g(&x); return g((x, 1)); } "
+     "fn main() -> int { return g(1) as int; }"),
+    ("fn g<T>(x: T) -> i64 { let s: []T = slice(&x, 1); return g(s); } "
+     "fn main() -> int { return g(1) as int; }"),
+], ids=["doubling-type", "branching", "slice"])
+def test_runaway_instantiation_of_every_shape_is_located_quickly(source):
+    assert_located_quickly(source, 10, "instantiation")
+
+
+def test_type_nesting_counts_each_constructor_once():
+    nesting = typechecker_module.type_nesting
+    assert nesting("i64") == 0
+    assert nesting("**i64") == 2
+    assert nesting("[][]i64") == 2
+    assert nesting("(*i64,*i64)") == 2
+    assert nesting("W<W<i64>>") == 2
+    assert nesting("fn(i64)->fn(i64)->i64") == 2
+
+
+def test_spec_states_the_generic_limits():
+    spec = _spec_text()
+    assert "16384 generic function instantiations" in spec
+    assert "nested more than 256 type constructors deep" in spec
+    assert "4096 characters" in spec
+
+
+@pytest.mark.parametrize("source,message", [
+    ("fn main() -> int {\n  let x = 0x" + "0" * 5000 + "1;\n  return 0;\n}",
+     "the limit is 4300"),
+    ("fn main() -> int {\n  let x: i64 = ("
+     + " * ".join(["0x" + "F" * 4000] * 20) + ") >> 320000;\n  return 0;\n}",
+     "more than 262144 bits"),
+], ids=["leading-zeros", "wide-intermediate"])
+def test_documented_constant_limits_are_located(source, message):
+    error = assert_located(source, message)
+    assert error.line == 2
+
+
+def test_spec_states_the_constant_limits():
+    spec = _spec_text()
+    assert "4300 digits" in spec and "including leading zeros" in spec
+    assert "262144 bits" in spec
+
+
+_KERNEL_BUFFER = "let tx: [u16; 2048] = [0; 2048];\n"
+
+
+@pytest.mark.parametrize("expression,c_text", [
+    ("*(&g as *u8)", "(&m_g)"),
+    ("*((&g) as *u8)", "(&m_g)"),
+], ids=["cast", "parenthesised"])
+def test_cast_of_an_array_address_keeps_compiling(expression, c_text):
+    source = ("let g: [u8; 2] = [9, 0];\n"
+              f"fn main() -> int {{ return {expression} as int; }}")
+    assert "((uint8_t*)" + c_text + ")" in c_of(source)
+
+
+def test_kernel_shape_array_address_cast_compiles_freestanding():
+    source = (_KERNEL_BUFFER + "struct S { a: [u8; 4] }\n"
+              "fn kmain() -> void {\n"
+              "  let p = &tx as *u16;\n"
+              "  let s = S { a: [1, 2, 3, 4] };\n"
+              "  let q = &s.a as *const u8;\n"
+              "}\n")
+    code = mortc.compile_to_c(source, freestanding=True)
+    assert "((uint16_t*)(&m_tx))" in code
+
+
+def test_array_address_cast_to_a_pointer_to_array_is_still_rejected():
+    source = "let g: [u8; 2] = [9, 0];\nfn main() -> int { let p = &g as *[u8; 2]; return 0; }"
+    with pytest.raises(MortError) as caught:
+        c_of(source)
+    assert caught.value.line == 2
+
+
+def test_spec_states_array_addresses_may_be_cast():
+    assert "unless it is immediately cast" in _spec_text()
+
+
+def _big_generic_body(statements):
+    return "".join(f"  let a{index}: i64 = 1;\n" for index in range(statements))
+
+
+@pytest.mark.parametrize("source", [
+    ("struct W<T> { v: T }\nfn g<T>(x: *W<T>) -> i64 {\n"
+     "  let y: *W<W<T>> = null;\n  let z: *W<*T> = null;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+     "fn main() -> int { let a: *W<i64> = null; return g(a) as int; }"),
+    ("fn g<T>(x: T) -> i64 {\n  " + _big_generic_body(8000)
+     + "  g(&x);\n  g((x, x));\n  return a0;\n}\nfn main() -> int { return g(1) as int; }"),
+    ("enum E<T> { A(T), B }\nfn g<T>(x: *E<T>) -> i64 {\n"
+     "  let y = null as *E<E<T>>;\n  let z = null as *E<*T>;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+     "fn main() -> int { let a: *E<i64> = null; return g(a) as int; }"),
+    ("fn g<T>(x: T) -> i64 {\n  " + _big_generic_body(3000)
+     + "  g(&x);\n  return a0;\n}\nfn main() -> int { return g(1) as int; }"),
+], ids=["growing-structs", "large-body", "growing-enums", "large-body-chain"])
+def test_expensive_runaway_instantiation_is_located_quickly(source):
+    assert_located_quickly(source, 20, "instantiation")
+
+
+def test_chain_of_large_finite_generics_compiles():
+    links = "".join(
+        f"fn f{index}<T>(x: T) -> i64 {{\n{_big_generic_body(20)}"
+        f"  return f{index + 1}(x) + a0;\n}}\n" for index in range(1199))
+    source = links + "fn f1199<T>(x: T) -> i64 { return 42; }\n"
+    assert "mort_f0" in c_of(source + "fn main() -> int { return f0(1) as int; }")
+
+
+def test_spec_states_the_generic_work_limit():
+    assert "1000000 work units" in _spec_text()
+
+
+_HOSTILE_SECONDS = 60
+
+
+def _tuple_of(item, width):
+    return "(" + ", ".join([item] * width) + ")"
+
+
+_WIDE_T = _tuple_of("T", 16)
+
+
+def _hostile_lets(count, annotation, value="null"):
+    return "".join(f"  let a{index}: {annotation} = {value};\n" for index in range(count))
+
+
+def _branching_generic(body, declarations=""):
+    return (declarations + "fn g<T>(x: T) -> i64 {\n" + body
+            + "  g(&x);\n  g((x, x));\n  return 0;\n}\n"
+            "fn main() -> int { return g(1) as int; }\n")
+
+
+_WIDE_ANNOTATIONS = {
+    "pointer-to-tuple": "*" + _WIDE_T,
+    "pointer-to-slice": "*[]" + _WIDE_T,
+    "generic-struct": "*W<" + _WIDE_T + ">",
+    "function-pointer": "fn" + _WIDE_T + " -> " + _WIDE_T,
+}
+
+_HOSTILE_PROGRAMS = {
+    "annotation-multiplication": _branching_generic(_hostile_lets(30, "*" + _WIDE_T)),
+    "growing-structs": (
+        "struct W<T> { v: T }\nfn g<T>(x: *W<T>) -> i64 {\n"
+        "  let y: *W<W<T>> = null;\n  let z: *W<*T> = null;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+        "fn main() -> int { let a: *W<i64> = null; return g(a) as int; }"),
+    "large-body": _branching_generic(_big_generic_body(8000)),
+    "growing-enum-casts": (
+        "enum E<T> { A(T), B }\nfn g<T>(x: *E<T>) -> i64 {\n"
+        "  let y = null as *E<E<T>>;\n  let z = null as *E<*T>;\n  g(y);\n  g(z);\n  return 0;\n}\n"
+        "fn main() -> int { let a: *E<i64> = null; return g(a) as int; }"),
+    "doubling-type": "fn g<T>(x: T) -> i64 { return g((x, x)); } "
+                     "fn main() -> int { return g(1) as int; }",
+    "cast-multiplication": _branching_generic("".join(
+        f"  let a{index} = null as *{_WIDE_T};\n" for index in range(30))),
+    "sizeof-multiplication": _branching_generic("".join(
+        f"  let a{index} = sizeof<{_WIDE_T}>();\n" for index in range(30))),
+    "explicit-type-arguments": ("fn g<T>(x: T) -> i64 { g<*T>(&x); return g<(T, T)>((x, x)); } "
+                                "fn main() -> int { return g(1) as int; }"),
+    "tuple-return": (
+        f"fn g<T>(x: T) -> {_WIDE_T} {{\n  g(&x);\n  g((x, x));\n"
+        f"  return {_tuple_of('x', 16)};\n}}\n"
+        "fn main() -> int { g(1); return 0; }\n"),
+    "self-growing-struct": ("struct W<T> { a: *W<(T, T)> }\n"
+                            "fn main() -> int { let a: *W<i64> = null; return 0; }\n"),
+    "self-growing-enum": ("enum E<T> { A(*E<(T, T)>), B }\n"
+                          "fn main() -> int { let a: *E<i64> = null; return 0; }\n"),
+    "branch-snapshots": _branching_generic(
+        _big_generic_body(2000)
+        + "".join(f"  if true {{ let b{index}: i64 = 1; }}\n" for index in range(2000))),
+    "defers-and-returns": (
+        "fn f() -> void {}\n"
+        + _branching_generic(
+            "".join("  defer f();\n" for _ in range(1000))
+            + "".join("  if true { return 1; }\n" for _ in range(1000)))),
+    "doubling-aliases": (
+        "type A0 = (i64, i64);\n"
+        + "".join(f"type A{index + 1} = (A{index}, A{index});\n" for index in range(40))
+        + "fn main() -> int { return 0; }\n"),
+    "doubling-without-generics": (
+        "fn main() -> int {\n  let a0 = (1, 1);\n"
+        + "".join(f"  let a{index + 1} = (a{index}, a{index});\n" for index in range(40))
+        + "  return 0;\n}\n"),
+    **{
+        f"{name}-{count}x{width}": _branching_generic(
+            _hostile_lets(count, annotation.replace(_WIDE_T, _tuple_of("T", width))),
+            "struct W<T> { v: T }\n")
+        for name, annotation in _WIDE_ANNOTATIONS.items()
+        for count, width in ((1, 64), (120, 4))
+    },
+}
+
+
+@pytest.mark.parametrize("source", list(_HOSTILE_PROGRAMS.values()), ids=list(_HOSTILE_PROGRAMS))
+def test_hostile_generic_program_is_rejected_within_the_time_bound(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None, error.format()
+    assert "instantiation" in error.msg or "longer than" in error.msg, error.msg
+    assert elapsed < _HOSTILE_SECONDS
+
+
+def test_finite_wide_annotations_keep_compiling():
+    source = ("fn g<T>(x: T) -> i64 {\n" + _hostile_lets(30, "*" + _WIDE_T)
+              + "  return 0;\n}\nfn main() -> int { return g(1) as int; }\n")
+    assert "mort_g" in c_of(source)
+
+
+def test_type_primitives_charge_for_the_text_they_process():
+    meter = typechecker_module.WorkMeter()
+    long_tuple = _tuple_of("i64", 200)
+    with typechecker_module.charging(meter):
+        typechecker_module.tuple_parts(long_tuple)
+    scanned = meter.spent
+    assert scanned >= len(long_tuple) // typechecker_module.WORK_CHARS_PER_UNIT
+    with typechecker_module.charging(meter):
+        typechecker_module.substitute_type("*" + long_tuple, {"i64": "(u8,u8)"})
+    assert meter.spent > scanned
+
+
+def test_charges_count_from_the_start_without_any_generic():
+    meter = typechecker_module.WorkMeter()
+    with typechecker_module.charging(meter):
+        typechecker_module.tuple_parts(_tuple_of("i64", 200))
+    assert meter.spent > 0
+
+
+def test_codegen_primitives_charge_the_same_meter():
+    meter = typechecker_module.WorkMeter()
+    with typechecker_module.charging(meter):
+        codegen_module._split_type_list(",".join(["i64"] * 200))
+    assert meter.spent >= 800 // typechecker_module.WORK_CHARS_PER_UNIT
+
+
+def test_exhausted_meter_raises_a_located_instantiation_error():
+    meter = typechecker_module.WorkMeter()
+    node = type("Site", (), {"line": 3, "col": 7})()
+    meter.locate = lambda: node
+    with pytest.raises(MortError) as caught:
+        meter.spend(typechecker_module.MAX_GENERIC_WORK + 1)
+    assert (caught.value.line, caught.value.col) == (3, 7)
+    assert "work units" in caught.value.msg
+
+
+def test_constructed_type_length_limit_is_located():
+    source = ("fn main() -> int {\n  let a0 = (1, 1);\n"
+              + "".join(f"  let a{index + 1} = (a{index}, a{index});\n" for index in range(16))
+              + "  return 0;\n}\n")
+    error = assert_located(source, "longer than 65536")
+    assert error.line is not None
+
+
+def test_spec_states_the_constructed_type_limit():
+    assert "65536 characters" in _spec_text()
+
+
+_ALIAS_TOWER = "type A0 = (i64, i64);\n" + "".join(
+    f"type A{index + 1} = (A{index}, A{index});\n" for index in range(12))
+
+
+@pytest.mark.parametrize("source", [
+    (_ALIAS_TOWER + "fn main() -> int {\n"
+     + "".join(f"  let z{index}: *A12 = null;\n" for index in range(1000))
+     + "  return 0;\n}\n"),
+    (_ALIAS_TOWER + "".join(f"fn f{index}(x: *A12) -> void {{}}\n" for index in range(5000))
+     + "fn main() -> int { return 0; }\n"),
+    (_ALIAS_TOWER + "".join(f"fn f{index}(x: *A12) -> void {{}}\n" for index in range(5000))
+     + "fn g<T>(x: T) -> i64 { return 1; }\n"
+     "fn main() -> int { return g(1) as int; }\n"),
+], ids=["lets", "functions", "functions-and-a-generic"])
+def test_exponential_aliases_stay_under_the_time_bound(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert error is None or isinstance(error, MortError), repr(error)
+    if error is not None:
+        assert error.line is not None, error.format()
+    assert elapsed < _HOSTILE_SECONDS
+
+
+def test_alias_expansion_is_charged_without_generics():
+    source = (_ALIAS_TOWER + "".join(
+        f"fn f{index}(x: A12) -> void {{}}\n" for index in range(5000))
+        + "fn main() -> int { return 0; }\n")
+    error, _ = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert "work units" in error.msg, error.msg
+
+
+_DEFER_REPLAY_SECONDS = 20
+
+
+def _defers_and_returns(defers, returns, deferred="print(1)"):
+    return ("fn f(b: bool) -> int {\n"
+            + f"  defer {deferred};\n" * defers
+            + "  if b { return 0; }\n" * returns
+            + "  return 0;\n}\nfn main() -> int { return f(false); }\n")
+
+
+_FIRST_RETURN_LINE = {"3000x3000": 3002, "5000x5000": 5002, "6000x2000": 6002}
+
+_CAST_CHAIN = "print(1" + " as i64" * 50 + ")"
+
+_DEFER_REPLAY_PROGRAMS = {
+    **{f"{count}x{returns}": _defers_and_returns(count, returns)
+       for count, returns in ((3000, 3000), (5000, 5000), (6000, 2000))},
+    "cast-chain-with-little-text": _defers_and_returns(450, 1500, _CAST_CHAIN),
+    "loop-breaks": ("fn f(b: bool) -> int {\n  while b {\n"
+                    + "    defer print(1);\n" * 3000
+                    + "    if b { break; }\n" * 3000
+                    + "  }\n  return 0;\n}\nfn main() -> int { return f(false); }\n"),
+    "resources": ("resource struct Res { id: i64 }\n"
+                  "fn destroy(r: *Res) -> void {}\n"
+                  "fn make() -> Res { return Res { id: 1 }; }\n"
+                  "fn f(b: bool) -> int {\n"
+                  + "".join(f"  let r{index}: Res = make();\n" for index in range(3000))
+                  + "  if b { return 0; }\n" * 3000
+                  + "  return 0;\n}\nfn main() -> int { return f(false); }\n"),
+    "finite-generic": ("fn g<T>(x: T, b: bool) -> i64 {\n"
+                       + "  defer print(1);\n" * 2000
+                       + "  if b { return 0; }\n" * 2000
+                       + "  return 0;\n}\nfn main() -> int {\n"
+                       "  g(1, false);\n  g(true, false);\n  return 0;\n}\n"),
+}
+
+
+def test_250_defers_replayed_at_250_returns_compile():
+    c = c_of(_defers_and_returns(250, 250))
+    assert c.count("mort_print(1);") == 250 * 251
+
+
+def test_1000_defers_replayed_at_100_returns_compile():
+    c = c_of(_defers_and_returns(1000, 100))
+    assert c.count("mort_print(1);") == 1000 * 101
+
+
+@pytest.mark.parametrize("source", list(_DEFER_REPLAY_PROGRAMS.values()),
+                         ids=list(_DEFER_REPLAY_PROGRAMS))
+def test_defer_replay_blowup_stops_quickly_with_its_own_message(source):
+    error, elapsed = _compile_bounded(source, _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line is not None, error.format()
+    assert "deferred" in error.msg, error.msg
+    assert "type processing" not in error.msg, error.msg
+    assert str(typechecker_module.MAX_DEFER_REPLAY) in error.msg, error.msg
+    assert elapsed < _DEFER_REPLAY_SECONDS
+
+
+@pytest.mark.parametrize("name", list(_FIRST_RETURN_LINE))
+def test_defer_replay_limit_is_reported_at_the_return_that_exceeds_it(name):
+    error, _ = _compile_bounded(_DEFER_REPLAY_PROGRAMS[name], _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert error.line >= _FIRST_RETURN_LINE[name], error.format()
+    assert error.col == len("  if b { return ") + 1, error.format()
+
+
+def test_defer_replay_limit_is_reported_at_the_break_that_exceeds_it():
+    error, _ = _compile_bounded(_DEFER_REPLAY_PROGRAMS["loop-breaks"], _HOSTILE_SECONDS)
+    assert isinstance(error, MortError), repr(error)
+    assert 3003 <= error.line <= 6003, error.format()
+
+
+def test_spec_states_the_defer_replay_limit():
+    assert f"{typechecker_module.MAX_DEFER_REPLAY} units of deferred" in " ".join(
+        _spec_text().split())
+
+
+def test_plain_bindings_do_not_make_branches_quadratic():
+    body = ("".join(f"  let a{index}: i64 = 1;\n" for index in range(6000))
+            + "  if a0 == 1 { a0; }\n" * 6000)
+    source = "fn main() -> int {\n" + body + "  return 0;\n}\n"
+    error, elapsed = _compile_bounded(source, 30)
+    assert error is None, repr(error)
+    assert elapsed < 30
+
+
+def test_a_limit_diagnostic_does_not_invent_a_column():
+    source = "type A0 = (i64, i64);\n" + "".join(
+        f"type A{index + 1} = (A{index}, A{index});\n" for index in range(40))
+    with pytest.raises(MortError) as caught:
+        c_of(source + "fn main() -> int { return 0; }\n")
+    assert "longer than 65536" in caught.value.msg
+    assert caught.value.line is not None and caught.value.col is None
+
+
+def test_branch_snapshots_skip_bindings_that_never_moved(monkeypatch):
+    sizes = []
+    original = typechecker_module.Checker._move_snapshot
+
+    def recording(self):
+        snapshot = original(self)
+        sizes.append(len(snapshot))
+        return snapshot
+
+    monkeypatch.setattr(typechecker_module.Checker, "_move_snapshot", recording)
+    c_of("fn main() -> int {\n"
+         + "".join(f"  let a{index}: i64 = 1;\n" for index in range(50))
+         + "  if a0 == 1 { a0; }\n" * 50 + "  return 0;\n}\n")
+    assert sizes and max(sizes) == 0

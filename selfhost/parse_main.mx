@@ -60,7 +60,11 @@ fn main() -> int {
     }
     let source = lx_decode_source(buf_span(&raw));
     if !source.valid {
-        diag_fatal(in_path, 0, 0, span_z("source is not valid UTF-8"));
+        let message = buf_new(64);
+        buf_push_z(&message, "source is not valid UTF-8 (byte 0x");
+        buf_push_hex2(&message, source.err_byte);
+        buf_push(&message, ')');
+        diag_fatal(in_path, source.err_line, source.err_col, buf_span(&message));
     }
     let lexer = lx_new(source.bytes);
     if !lx_tokenize(&lexer) {

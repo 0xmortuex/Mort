@@ -30,6 +30,8 @@ FIXED_INT_TYPES = {
 }
 FLOAT_TYPES = {"f32", "f64"}
 
+MAX_ARRAY_SIZE = 2 ** 64 - 1
+
 ASSIGNMENT_OPS = {
     T.ASSIGN: "=",
     T.PLUS_ASSIGN: "+=",
@@ -52,6 +54,7 @@ class Parser:
         # True while parsing an if/while condition: suppresses struct literals
         # so `if p {` is a block, not `if (p{...})`. Reset inside parentheses.
         self._no_struct_lit = False
+        self._angle_table = None
 
     # ----- token helpers -----
     def _peek(self, offset=0):
@@ -68,8 +71,15 @@ class Parser:
     def _expect(self, type, what=None):
         if not self._at(type):
             tok = self._peek()
-            raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line)
+            raise MortError(f"expected {what or type.name}, got {tok.value!r}", tok.line, tok.col)
         return self._advance()
+
+    def _array_size(self, what):
+        """Read an array length. Types spell it in decimal, so it must fit u64."""
+        tok = self._expect(T.INT, what)
+        if tok.value > MAX_ARRAY_SIZE:
+            raise MortError("array size does not fit in u64", tok.line, tok.col)
+        return tok.value
 
     def _expect_type_close(self):
         """Consume one generic-type closing angle.
@@ -109,21 +119,24 @@ class Parser:
                 if (module_name is not None or funcs or structs or globals_ or externs
                         or imports or enums or tests or aliases):
                     tok = self._peek()
-                    raise MortError("module declaration must be the first declaration", tok.line)
+                    raise MortError("module declaration must be the first declaration", tok.line, tok.col)
                 module_name = self._module_decl()
             elif self._at(T.IMPORT):
                 imports.append(self._import_decl())
             elif self._at(T.PUB):
-                line = self._advance().line
+                pub = self._advance()
                 if not self._at(T.FN):
-                    raise MortError("pub currently applies to function declarations", line)
+                    raise MortError(
+                        "pub currently applies to function declarations", pub.line, pub.col)
                 function = self._fn_decl()
                 function.public = True
                 funcs.append(function)
             elif self._at(T.RESOURCE):
-                line = self._advance().line
+                resource = self._advance()
                 if not self._at(T.STRUCT):
-                    raise MortError("'resource' must precede a struct declaration", line)
+                    raise MortError(
+                        "'resource' must precede a struct declaration",
+                        resource.line, resource.col)
                 structs.append(self._struct_decl(resource=True))
             elif self._at(T.STRUCT):
                 structs.append(self._struct_decl())
@@ -255,11 +268,11 @@ class Parser:
             result = self._type_name()
             return f"fn({','.join(parameters)})->{result}"
         if self._at(T.LPAREN):
-            line = self._advance().line
+            paren = self._advance()
             elements = [self._type_name()]
             if not self._at(T.COMMA):
                 raise MortError(
-                    "tuple types require at least two elements", line)
+                    "tuple types require at least two elements", paren.line, paren.col)
             while self._at(T.COMMA):
                 self._advance()
                 if self._at(T.RPAREN):
@@ -268,7 +281,7 @@ class Parser:
             self._expect(T.RPAREN, "')'")
             if len(elements) < 2:
                 raise MortError(
-                    "tuple types require at least two elements", line)
+                    "tuple types require at least two elements", paren.line, paren.col)
             return "(" + ",".join(elements) + ")"
         # pointer type: *T
         if self._at(T.STAR):
@@ -288,7 +301,7 @@ class Parser:
                 return "[]" + self._type_name()
             elem = self._type_name()
             self._expect(T.SEMI, "';'")
-            n = self._expect(T.INT, "an array size").value
+            n = self._array_size("an array size")
             self._expect(T.RBRACKET, "']'")
             return f"[{elem};{n}]"
         tok = self._peek()
@@ -317,7 +330,7 @@ class Parser:
                 self._expect_type_close()
                 name += "<" + ",".join(args) + ">"
             return name
-        raise MortError(f"expected a type, got {tok.value!r}", tok.line)
+        raise MortError(f"expected a type, got {tok.value!r}", tok.line, tok.col)
 
     def _fn_decl(self):
         line = self._peek().line
@@ -369,7 +382,7 @@ class Parser:
         """Accept historical function names that became contextual literals."""
         token = self._peek()
         if token.type not in (T.IDENT, T.NULL):
-            raise MortError(f"expected function name, got {token.value!r}", token.line)
+            raise MortError(f"expected function name, got {token.value!r}", token.line, token.col)
         self._advance()
         return token.value
 
@@ -455,7 +468,8 @@ class Parser:
         return A.Asm(text, line)
 
     def _let_stmt(self, mutable=True):
-        line = self._advance().line
+        keyword = self._advance()
+        line = keyword.line
         name = self._expect(T.IDENT, "variable name").value
         decl = None
         if self._at(T.COLON):
@@ -464,7 +478,7 @@ class Parser:
         self._expect(T.ASSIGN, "'='")
         expr = self._expression()
         self._expect(T.SEMI, "';'")
-        return A.Let(name, decl, expr, line, mutable=mutable)
+        return A.Let(name, decl, expr, line, mutable=mutable, col=keyword.col)
 
     def _return_stmt(self):
         line = self._advance().line
@@ -526,12 +540,13 @@ class Parser:
         return A.For(var, decl_type, start, end, body, line, inclusive)
 
     def _expr_or_assign(self):
-        line = self._peek().line
+        start = self._peek()
+        line = start.line
         expr = self._expression()
         if self._peek().type in ASSIGNMENT_OPS:
             op = ASSIGNMENT_OPS[self._advance().type]
             if not self._is_lvalue(expr):
-                raise MortError("invalid assignment target", line)
+                raise MortError("invalid assignment target", line, start.col)
             value = self._expression()
             self._expect(T.SEMI, "';'")
             return A.Assign(expr, value, line, op)
@@ -555,70 +570,70 @@ class Parser:
         left = self._logic_and()
         while self._at(T.OR):
             op = self._advance()
-            left = A.Binary("||", left, self._logic_and(), op.line)
+            left = A.Binary("||", left, self._logic_and(), op.line, op.col)
         return left
 
     def _logic_and(self):
         left = self._bitor()
         while self._at(T.AND):
             op = self._advance()
-            left = A.Binary("&&", left, self._bitor(), op.line)
+            left = A.Binary("&&", left, self._bitor(), op.line, op.col)
         return left
 
     def _bitor(self):
         left = self._bitxor()
         while self._at(T.PIPE):
             op = self._advance()
-            left = A.Binary("|", left, self._bitxor(), op.line)
+            left = A.Binary("|", left, self._bitxor(), op.line, op.col)
         return left
 
     def _bitxor(self):
         left = self._bitand()
         while self._at(T.CARET):
             op = self._advance()
-            left = A.Binary("^", left, self._bitand(), op.line)
+            left = A.Binary("^", left, self._bitand(), op.line, op.col)
         return left
 
     def _bitand(self):
         left = self._equality()
         while self._at(T.AMP):
             op = self._advance()
-            left = A.Binary("&", left, self._equality(), op.line)
+            left = A.Binary("&", left, self._equality(), op.line, op.col)
         return left
 
     def _equality(self):
         left = self._comparison()
         while self._peek().type in (T.EQ, T.NE):
             op = self._advance()
-            left = A.Binary(op.value, left, self._comparison(), op.line)
+            left = A.Binary(op.value, left, self._comparison(), op.line, op.col)
         return left
 
     def _comparison(self):
         left = self._shift()
         while self._peek().type in (T.LT, T.GT, T.LE, T.GE):
             op = self._advance()
-            left = A.Binary(op.value, left, self._shift(), op.line)
+            left = A.Binary(op.value, left, self._shift(), op.line, op.col)
         return left
 
     def _shift(self):
         left = self._term()
         while self._peek().type in (T.SHL, T.SHR):
             op = self._advance()
-            left = A.Binary(op.value, left, self._term(), op.line)
+            left = A.Binary(op.value, left, self._term(), op.line, op.col)
         return left
 
     def _term(self):
         left = self._factor()
         while self._peek().type in (T.PLUS, T.MINUS):
             op = self._advance()
-            left = A.Binary(op.value, left, self._factor(), op.line)
+            left = A.Binary(op.value, left, self._factor(), op.line, op.col)
         return left
 
     def _factor(self):
         left = self._cast()
         while self._peek().type in (T.STAR, T.SLASH, T.PERCENT):
             op = self._advance()
-            left = A.Binary(op.value, left, self._cast(), op.line)
+            left = A.Binary(op.value, left, self._cast(), op.line, op.col)
         return left
 
     def _cast(self):
@@ -633,7 +648,7 @@ class Parser:
         if self._peek().type in (T.BANG, T.MINUS, T.AMP, T.STAR, T.TILDE):
             op = self._advance()
             op_str = "&" if op.type == T.AMP else op.value
-            return A.Unary(op_str, self._unary(), op.line)
+            return A.Unary(op_str, self._unary(), op.line, op.col)
         if self._at(T.TRY):
             line = self._advance().line
             return A.Try(self._unary(), line)
@@ -649,7 +664,9 @@ class Parser:
             if self._at(T.LT) and self._looks_like_call_type_args():
                 name = self._qualified_name(expr)
                 if name is None:
-                    raise MortError("only named functions can have type arguments", self._peek().line)
+                    tok = self._peek()
+                    raise MortError(
+                        "only named functions can have type arguments", tok.line, tok.col)
                 self._advance()
                 type_args = [self._type_name()]
                 while self._at(T.COMMA):
@@ -664,12 +681,13 @@ class Parser:
                         self._advance()
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
-                expr = A.Call(name, args, lp.line, type_args)
+                expr = A.Call(name, args, lp.line, type_args, paren_col=lp.col)
                 expr.name_pos = (start.line, start.col)
             elif self._at(T.LPAREN):
                 name = self._qualified_name(expr)
                 if name is None:
-                    raise MortError("only named functions can be called", self._peek().line)
+                    tok = self._peek()
+                    raise MortError("only named functions can be called", tok.line, tok.col)
                 lp = self._advance()
                 args = []
                 if not self._at(T.RPAREN):
@@ -678,7 +696,7 @@ class Parser:
                         self._advance()
                         args.append(self._expression())
                 self._expect(T.RPAREN, "')'")
-                expr = A.Call(name, args, lp.line)
+                expr = A.Call(name, args, lp.line, paren_col=lp.col)
                 expr.name_pos = (start.line, start.col)
             elif self._at(T.DOT):
                 dot = self._advance()
@@ -695,27 +713,41 @@ class Parser:
             else:
                 return expr
 
+    def _angle_closes(self):
+        """Map each '<' token index to the index of the token that closes it.
+
+        Built once per token stream so lookahead stays linear: rescanning from
+        every '<' made a long comparison chain quadratic. An angle is left out
+        when a ';', a brace or end of input comes first, or when it is the inner
+        angle of a '>>' that overshoots it. Only tokens after a '<' decide its entry,
+        so _expect_type_close splitting tokens behind the parser cannot stale it.
+        """
+        if self._angle_table is not None:
+            return self._angle_table
+        closes = {}
+        open_angles = []
+        for index, token in enumerate(self.toks):
+            if token.type == T.LT:
+                open_angles.append(index)
+            elif token.type == T.GT:
+                if open_angles:
+                    closes[open_angles.pop()] = index
+            elif token.type == T.SHR:
+                if open_angles:
+                    open_angles.pop()
+                if open_angles:
+                    closes[open_angles.pop()] = index
+            elif token.type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
+                open_angles.clear()
+        self._angle_table = closes
+        return closes
+
+    def _angle_closes_before(self, offset, follower):
+        close = self._angle_closes().get(self.i + offset)
+        return close is not None and self.toks[close + 1].type == follower
+
     def _looks_like_call_type_args(self):
-        depth = 0
-        offset = 0
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LPAREN
-            elif token_type == T.SHR:
-                depth -= 2
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LPAREN
-                if depth < 0:
-                    return False
-            elif token_type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(0, T.LPAREN)
 
     @staticmethod
     def _qualified_name(expr):
@@ -730,13 +762,13 @@ class Parser:
         t = self._peek()
         if t.type == T.INT:
             self._advance()
-            return A.IntLit(t.value, t.line)
+            return A.IntLit(t.value, t.line, t.col)
         if t.type == T.FLOAT:
             self._advance()
             return A.FloatLit(t.value, t.line)
         if t.type == T.CHAR:
             self._advance()
-            return A.CharLit(t.value, t.line)
+            return A.CharLit(t.value, t.line, t.col)
         if t.type == T.NULL:
             self._advance()
             # `null` is reserved as a value, but keeping it contextual in call
@@ -780,7 +812,7 @@ class Parser:
                         elements.append(self._expression())
                     if len(elements) < 2:
                         raise MortError(
-                            "tuple literals require at least two elements", line)
+                            "tuple literals require at least two elements", line, t.col)
                     e = A.TupleLit(elements, line)
                 else:
                     e = first
@@ -788,7 +820,7 @@ class Parser:
                 self._no_struct_lit = saved
             self._expect(T.RPAREN, "')'")
             return e
-        raise MortError(f"unexpected token {t.value!r}", t.line)
+        raise MortError(f"unexpected token {t.value!r}", t.line, t.col)
 
     def _struct_lit(self):
         name = self._type_name()
@@ -811,60 +843,24 @@ class Parser:
         offset = 1
         if self._peek(offset).type != T.LT:
             return self._peek(offset).type == T.LBRACE
-        depth = 0
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LBRACE
-            elif token_type == T.SHR:
-                depth -= 2
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.LBRACE
-                if depth < 0:
-                    return False
-            elif token_type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(offset, T.LBRACE)
 
     def _looks_like_generic_qualifier(self):
         if self._peek().type != T.IDENT or self._peek(1).type != T.LT:
             return False
-        depth = 0
-        offset = 1
-        while self.i + offset < len(self.toks):
-            token_type = self._peek(offset).type
-            if token_type == T.LT:
-                depth += 1
-            elif token_type == T.GT:
-                depth -= 1
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.DOT
-            elif token_type == T.SHR:
-                depth -= 2
-                if depth == 0:
-                    return self._peek(offset + 1).type == T.DOT
-                if depth < 0:
-                    return False
-            elif token_type in (T.SEMI, T.EOF, T.LBRACE, T.RBRACE):
-                return False
-            offset += 1
-        return False
+        return self._angle_closes_before(1, T.DOT)
 
     def _array_lit(self):
-        line = self._advance().line  # '['
+        bracket = self._advance()  # '['
+        line = bracket.line
         if self._at(T.RBRACKET):
-            raise MortError("empty array literal is not allowed", line)
+            raise MortError("empty array literal is not allowed", line, bracket.col)
         first = self._expression()
         if self._at(T.SEMI):                 # repeat form: [value; count]
             self._advance()
-            count = self._expect(T.INT, "an array repeat count").value
+            count = self._array_size("an array repeat count")
             self._expect(T.RBRACKET, "']'")
-            return A.ArrayRepeat(first, count, line)
+            return A.ArrayRepeat(first, count, line, bracket.col)
         elements = [first]                   # list form: [a, b, c]
         while self._at(T.COMMA):
             self._advance()

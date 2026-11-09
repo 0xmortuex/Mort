@@ -1600,10 +1600,8 @@ def test_the_specification_states_the_reviewed_rule(pattern):
     assert re.search(pattern, SPEC_TEXT), pattern
 
 
-# The fix/frontend-crashes branch rewrites these lookaheads with a split_shr flag
-# and passes split_shr=False for struct literals. These parse-only cases hold the
-# required behaviour: every lookahead counts '>>' as two closes and stops at a
-# brace, whichever way it is implemented.
+# These parse-only cases hold the required behaviour: every lookahead counts '>>'
+# as two closes and stops at a brace, whichever way it is implemented.
 @pytest.mark.parametrize("source", [
     "fn f() { let a = B<B<i64>> { v: 1 }; }",
     "fn f() { let a = A<B<C<i64>>> { v: 1 }; }",
@@ -1971,16 +1969,16 @@ def prose_digests(spec):
 # implementation. It makes a normative edit a deliberate two-place change.
 PROSE_DIGESTS = {
     "1": "35bf33708e8bff26",
-    "2": "7eeda75f7d16579f",
+    "2": "89b9c0bca995bc3d",
     "3": "08fbd9110264f7e2",
-    "4": "c59829edf427f392",
+    "4": "972ff7caa597d066",
     "5": "0df028a68b1cef08",
     "6": "8409203f8c899018",
     "7": "395fbd276605eae2",
     "8": "20e068bac71b5af5",
     "9": "64bf888b11dfb6c5",
     "10": "a969deb1c430de10",
-    "11": "ced0775a10379023",
+    "11": "ba36daa6139e9ff7",
     "12": "3a67e59abb518ecb",
     "13": "6c9eefbf90deb427",
     "14": "0873ac56ee42692b",
