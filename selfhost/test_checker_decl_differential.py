@@ -456,15 +456,15 @@ BODY_CASES = {
     "body_volatile_bad_width": "let p = 0 as *u32; let v = volatile_read<bool>(p);",
     "body_volatile_undefined_arg": "let v = volatile_read<u32>(missing);",
     "body_volatile_write_undefined_value": "let p = 0 as *u32; volatile_write<u32>(p, missing);",
-    "body_try_nested_in_defer_call": "defer g3(1, 2, t()?);",
-    "body_try_nested_in_defer_binary": "defer 1 + t()?;",
-    "body_try_nested_in_defer_struct": "defer S { a: t()? };",
-    "body_try_nested_in_defer_tuple": "defer (1, t()?);",
-    "body_try_nested_in_defer_index": "let p = 0 as *i64; defer p[t()?];",
-    "body_try_nested_in_defer_cast": "defer t()? as u8;",
-    "body_try_nested_in_defer_field": "defer t()?.a;",
-    "body_try_nested_in_pattern": "let e = 1; match e { g3(1, t()?, 2) => { } _ => { } }",
-    "body_try_nested_in_payload_pattern": "let p = P.A(1); match p { P.A(t()?) => { } P.B => { } }",
+    "body_try_nested_in_defer_call": "defer g3(1, 2, try t());",
+    "body_try_nested_in_defer_binary": "defer 1 + try t();",
+    "body_try_nested_in_defer_struct": "defer S { a: try t() };",
+    "body_try_nested_in_defer_tuple": "defer (1, try t());",
+    "body_try_nested_in_defer_index": "let p = 0 as *i64; defer p[try t()];",
+    "body_try_nested_in_defer_cast": "defer try t() as u8;",
+    "body_try_nested_in_defer_field": "defer try t().a;",
+    "body_try_nested_in_pattern": "let e = 1; match e { g3(1, try t(), 2) => { } _ => { } }",
+    "body_try_nested_in_payload_pattern": "let p = P.A(1); match p { P.A(try t()) => { } P.B => { } }",
     "body_alias_enum_ctor": "let p = PA.A(1);",
     "body_alias_chain_enum_ctor": "let p = PB.A(1);",
     "body_alias_enum_ctor_unknown_variant": "let p = PA.Z(1);",
@@ -477,6 +477,9 @@ BODY_CASES = {
     "body_alias_struct_literal_generic": "let s = GA { x: 1 };",
     "body_alias_type_argument": "let n = sizeof<A0>();",
     "body_alias_generic_call_type_argument": "tm<A0>(1);",
+    "body_defer_try_keyword": "defer try try_it();",
+    "body_try_keyword": "let x = try try_it();",
+    "body_match_try_keyword_pattern": "let e = 1; match e { try t() => { } _ => { } }",
     "body_mixed_order": "let a = g(); let b = a; { let c = b; g3(a, b, c); }",
 }
 
@@ -696,6 +699,17 @@ def test_generic_work_budget_is_enforced(check_exe, tmp_path):
         check_exe, tmp_path,
         f"struct W<T> {{ {template} }}\n{declarations}struct S {{ {uses} }}\n" + OK_MAIN,
         1, "W", "exceeds the limit of 1000000 work units in one program")
+
+
+def test_deep_pointer_types_are_resolved_once(check_exe, tmp_path):
+    """Re-resolving a deep type at each level costs cubic time; the guard's
+    timeout turns that into a failure. Python on main has the same cost, so
+    only the Mort side runs."""
+    field_type = "*" * 900 + "u8"
+    fields = ", ".join(f"f{i}: {field_type}" for i in range(400))
+    path = _written(tmp_path, f"struct S {{ {fields} }}\n" + OK_MAIN)
+    code, stderr = run_mort_bounded(check_exe, f"MODE hosted\nFILE {path}\n", tmp_path)
+    assert code == 0, stderr
 
 
 def test_nesting_at_the_limit_still_agrees_with_python(check_exe, tmp_path):

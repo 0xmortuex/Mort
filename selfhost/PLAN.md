@@ -449,9 +449,25 @@ where the Python checker's behaviour stops being mechanical.
   the named cycle varied with `PYTHONHASHSEED` (`BLOCKERS.md`). The reference
   replaces `set` in the checker's namespace with an insertion-ordered one; the
   Mort checker visits fields in declaration order, which is that order.
+- **Test blocks** are checked in every mode, as `check()` does; only the `main`
+  requirement depends on test mode. `selfhost/corpus/test_blocks.mx` and the
+  `TEST_BLOCK_CASES` run them hosted, in test mode and freestanding.
+- **Tables** also list `program.structs` (with the resource flag and destructor)
+  and `program.enums` in order, so instance order is compared.
+- **Generic limits.** Unbounded struct and enum expansion used over 1.5 GB in
+  seconds. `ck_charge_generic` applies `fix/frontend-crashes`' limits (16384
+  instantiations, 1,000,000 work units, type arguments of at most 4096 characters
+  and 256 levels) and its message, `generic instantiation of 'X' ...`, at the
+  template's line, before validating arguments. Alias resolution is cached, as on
+  that branch. Python on `main` has no such limits and cannot finish these
+  inputs, so these tests run Mort alone, under a 500 MB limit, with the expected
+  text built from the rule.
 - **Depth.** Expressions use an explicit work stack. Type and alias recursion
-  counts `CK_MAX_DEPTH` (2000) and reports Python's `RecursionError` text, without
-  a location; statement recursion is bounded by the parser's `MAX_NESTING`. Long
+  counts `CK_MAX_DEPTH` (993), which is the real `mortc.py --check` boundary for
+  alias chains (991 direct and 495 pointer links accepted, one more rejected,
+  pinned by a test against the real compiler), and reports Python's
+  `RecursionError` text, without a location; statement recursion is bounded by
+  the parser's `MAX_NESTING`. Long
   by-value struct chains and cycles are iterative. The Python reference is
   quadratic on deep chains, so differential cases stop at 4000 operands, and one
   300,000-operand case runs the Mort checker alone.
@@ -472,3 +488,19 @@ column, so check diagnostics will need the columns the parser adds; the
 `_check_nesting` depth rejection replaces part of this file's depth story;
 `_coerce`'s literal path and `_require_representable` are T5's to port, and neither
 changes a T4 message. `T4_MESSAGES` must be re-read against that branch's checker.
+
+When that branch lands, T4 must also:
+
+- Port `_valid_type(t, behind_pointer)`. It newly rejects a pointer to an array,
+  an array of arrays, an array as a function-type parameter or result, and a slice
+  of arrays unless that slice is behind a pointer. `ck_valid` accepts all of these
+  today, and the corpus differential will flag it.
+- Reconcile the generic limits. The branch's committed limits cover function
+  instantiation only; its work-charged budget for primitive sites is in progress.
+  `ck_charge_generic` charges struct and enum instances with the function rule,
+  using a template's node count and the template's line. Adopt the branch's final
+  charge sites, costs and diagnostic location, share one counter with T5's function
+  instantiation, and move these cases from Mort-only to differential.
+- Drop `CK_MAX_DEPTH`'s frame-count derivation if the branch's located overflow
+  diagnostic and alias cache change where Python gives up; the cache already makes
+  Mort accept reversed alias chains that `main` rejects.
