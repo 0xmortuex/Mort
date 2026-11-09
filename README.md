@@ -1,7 +1,7 @@
 # Mort
 
 [![CI](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml/badge.svg)](https://github.com/0xmortuex/Mort/actions/workflows/ci.yml)
-&nbsp;![tests](https://img.shields.io/badge/tests-1070%20passing-brightgreen)
+&nbsp;![tests](https://img.shields.io/badge/tests-1098%20passing-brightgreen)
 &nbsp;![license](https://img.shields.io/badge/license-MIT-blue)
 
 **A small, statically-typed programming language that compiles to C.** Written from scratch in Python — lexer, parser, type checker, and a C code generator, with no parser or compiler libraries. (The one runtime dependency, `cryptography`, verifies package-registry signatures.)
@@ -85,10 +85,16 @@ Next, take the [language tour](docs/tour.md), where every program is compiled an
 run by the test suite. To work on the compiler, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-> **Self-hosting is incomplete.** Mort does not compile itself yet. A lexer,
-> parser, declaration checker and support libraries written in Mort are in
-> [`selfhost/`](selfhost/PLAN.md); expression checking, the code generator and the
-> driver are not merged.
+> **Self-hosting reaches a fixed point, within a limit.** `python selfhost/bootstrap.py`
+> builds stage-1 with the Python compiler and stage-2 with stage-1. The C generated
+> by the Python compiler, stage-1 and stage-2 (C0, C1 and C2) is byte-identical:
+> 1,228,361 bytes at commit `1e080c0`, in CI on Linux and Windows.
+>
+> The limit: the Mort-written compiler enforces a bootstrap subset by default. At
+> that commit it rejected 33 of 38 programs tested (the 37 in `examples/` that have
+> a `main`, plus one generated 2116-line program). With `--no-subset-gate`, its C
+> was byte-identical to the Python compiler's for all 38. `mortc.py` remains the
+> supported compiler; see [`selfhost/PLAN.md`](selfhost/PLAN.md).
 
 ## How it works
 
@@ -445,9 +451,9 @@ uv sync --extra dev
 uv run pytest tests/ -q
 ```
 
-Measured on Windows with the Zig backend at this revision: 1070 tests in `tests/`
-passed, 2108 in `selfhost/` passed and 1 skipped, and 31 of 31 conformance cases
-passed.
+Measured in CI: 1098 tests in `tests/` and 31 of 31 conformance cases passed at
+commit `1e080c0` (run 42714102377). 5571 tests in `selfhost/` passed on the
+`feat/selfhost-t8` pull request (run 42710235479).
 
 Front-end tests (type checking, error messages, codegen) always run. The
 end-to-end tests compile each example to a real binary and check its output;
