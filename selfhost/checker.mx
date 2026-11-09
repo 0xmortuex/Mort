@@ -952,6 +952,13 @@ fn ck_push_visit_list(stack: *PtrVec, frames: *U64Vec, list: *PtrVec, at: u64) {
 
 // `n` in the frame `at`, its children in frames from there, in order when popped.
 fn ck_push_visit_children(stack: *PtrVec, frames: *U64Vec, n: *Node, at: u64) {
+    // A function's parameters come before its body in Python's field order, and
+    // a type in a parameter that runs out is reported at the node reached so far.
+    let params_first = (*n).kind == NodeKind.FN_DECL && (*n).a != (0 as *Node);
+    if params_first {
+        ptrvec_push(stack, (*n).a as *void);
+        u64vec_push(frames, at + 1);
+    }
     if (*n).items != (0 as *PtrVec) {
         ck_push_visit_list(stack, frames, (*n).items, at + 1);
     }
@@ -963,7 +970,7 @@ fn ck_push_visit_children(stack: *PtrVec, frames: *U64Vec, n: *Node, at: u64) {
         ptrvec_push(stack, (*n).b as *void);
         u64vec_push(frames, at + 1);
     }
-    if (*n).a != (0 as *Node) {
+    if (*n).a != (0 as *Node) && !params_first {
         ptrvec_push(stack, (*n).a as *void);
         u64vec_push(frames, at + 1);
     }
