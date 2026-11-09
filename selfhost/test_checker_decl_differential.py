@@ -1016,6 +1016,33 @@ def test_diagnostic_at_the_limit_matches_mortc(check_exe, tmp_path, shape, offse
         assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
 
 
+# Past the first rejected depth a type runs out earlier, in the alias walk, where
+# the node reported depends on the order the walk visits a declaration's parts.
+PAST_THE_LIMIT = [
+    (f"{kind}_in_{place}", depth)
+    for kind, depths in (
+        ("fn_type", (500, 700)), ("tuple_type", (500, 700)),
+        ("generic_struct", (500, 700)), ("pointer_type", (990, 992)))
+    for place in TYPE_PLACES for depth in depths
+] + [
+    ("left_deep", 700), ("left_deep", 1200), ("field_chain", 1200), ("index_chain", 1200),
+    ("unary", 985), ("nested_blocks", 600), ("nested_ifs", 450),
+]
+
+
+@pytest.mark.parametrize("shape,depth", PAST_THE_LIMIT)
+def test_diagnostic_past_the_limit_matches_mortc(check_exe, tmp_path, shape, depth):
+    source = EXACT_SHAPES[shape](depth)
+    python_code, python_error = mortc_check(tmp_path, source)
+    assert python_code != 0, python_error
+    path = tmp_path / "input.mx"
+    code, stderr, _dump = run_mort(check_exe, f"MODE hosted
+FILE {path}
+", tmp_path)
+    assert code == 1, stderr
+    assert python_error.splitlines()[0] == f"mortc: {stderr.decode('utf-8')}"
+
+
 def test_alias_depth_error_uses_the_first_token_column(check_exe, tmp_path):
     """A declaration has no column of its own, so the real compiler reports the
     column of the first token on its line."""
