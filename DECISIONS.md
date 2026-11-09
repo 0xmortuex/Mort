@@ -22,6 +22,7 @@ Commit hashes below are on branch `docs/spec`.
 | 7b | The rule from #3 also rejected reads through a raw pointer or slice held in an owner, such as `o.items[0]` and `v.data[0]` on `Vec<R>` | Bug in #3. Only a chain that stays inside the binding's storage is a copy of it | `20ad8ec` |
 | 7c | `[a; 2]`, `[h.r; 2]` and `[move a; 2]` compiled and destroyed one resource several times | Bug. The value is evaluated once per element, so it may create a fresh resource but not name or move one | `ae4c407` |
 | 7d | The self-hosted parser kept the old lookaheads after #1 and #2 | Bug. Both parsers now share one lookahead rule, and the Python parser stops at braces in all three lookaheads, as section 3.3 states | `4a75dd8` |
+| 7e | `B<(i64,i64)>{…}` and `E<fn(i64,i64)->i64>.N` parsed, then failed as unknown names, because `generic_parts` split type arguments on commas inside parentheses | Bug. Sections 4.2 and 23.5 state any type list, and tuple and function types are ordinary types. `generic_parts` now tracks parentheses as the parser's type-list splitter already did. Both parsers already accepted these forms, so `selfhost/parser.mx` is unchanged | `ec0acef` |
 
 ## Document changed
 
