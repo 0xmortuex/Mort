@@ -213,6 +213,18 @@ pub fn clone<Key, Value>(value: *Map<Key, Value>) -> Map<Key, Value> {
     return move result;
 }
 
+// Inserts every entry of `other` into `value`, in `other`'s insertion order
+// (a key already present in `value` is overwritten, the same as a direct
+// `insert` call — see insert's overwrite-of-an-existing-key caveat), the Map
+// counterpart to Vec.extend. Like `clone`, this is **not** safe for a
+// resource Key or Value: each entry is read out of `other` by copy, not
+// moved, so a resource would end up aliased between the two maps.
+pub fn merge<Key, Value>(value: *Map<Key, Value>, other: *Map<Key, Value>) -> void {
+    for index: u64 in 0..(*other).length {
+        insert(value, (*other).keys[index], (*other).values[index]);
+    }
+}
+
 pub fn destroy<Key, Value>(value: *Map<Key, Value>) -> void {
     free((*value).keys);
     free((*value).values);

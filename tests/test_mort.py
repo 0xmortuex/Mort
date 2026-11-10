@@ -4742,6 +4742,63 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_map_merge_inserts_every_entry_of_other_overwriting_existing_keys():
+    program = r'''import std.map;
+
+fn unwrap(value: Option<i64>) -> i64 {
+    match value {
+        Option<i64>.Some(item) => { return item; },
+        Option<i64>.None => { return -1; },
+    }
+}
+
+fn main() -> i64 {
+    let a: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&a);
+    map.insert(&a, 1, 10);
+    map.insert(&a, 2, 20);
+
+    let b: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&b);
+    map.insert(&b, 2, 200);
+    map.insert(&b, 3, 30);
+
+    map.merge(&a, &b);
+    let ok: i64 = 0;
+
+    if a.length == 3 { ok += 1; }
+    if unwrap(map.get(&a, 1)) == 10 { ok += 1; }
+    if unwrap(map.get(&a, 2)) == 200 { ok += 1; }
+    if unwrap(map.get(&a, 3)) == 30 { ok += 1; }
+    // b is unchanged by merging into a.
+    if b.length == 2 { ok += 1; }
+
+    let empty: Map<i64, i64> = map.new<i64, i64>();
+    defer map.destroy(&empty);
+    map.merge(&a, &empty);
+    if a.length == 3 { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mapmerge.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mapmerge.exe" if os.name == "nt" else "mapmerge")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_vec_remove_moves_value_out_and_shifts_remaining_elements():
     program = r'''import std.vec;
 

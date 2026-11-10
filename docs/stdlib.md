@@ -167,7 +167,12 @@ wants a `Vec`/slice; `clone(map)` returns a new `Map<Key, Value>` holding a
 copy of every entry, in order, built from `with_capacity` plus a direct
 array copy — like `Vec.clone`, it is **not** safe for a resource `Key` or
 `Value` (entries are copied, not moved, so a resource would end up aliased
-between the original and the copy); `reserve` grows capacity ahead of time; `is_empty`
+between the original and the copy); `merge(map, other)` inserts every entry
+of `other` into `map`, in `other`'s insertion order (a key already present in
+`map` is overwritten, the same as a direct `insert` call), the `Map`
+counterpart to `Vec.extend` — like `clone`, it is **not** safe for a resource
+`Key` or `Value` (each entry is read out of `other` by copy, not moved);
+`reserve` grows capacity ahead of time; `is_empty`
 checks whether the length is zero; `clear` resets the length without freeing
 backing storage; `destroy` frees both backing arrays. **`Key = []const u8`
 does not work**: `insert`/`get`/`contains`/`remove` all look up an existing
