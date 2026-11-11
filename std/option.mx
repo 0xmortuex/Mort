@@ -35,6 +35,22 @@ pub fn unwrap_or<T>(value: Option<T>, default: T) -> T {
     }
 }
 
+// Consumes `value`; applies `predicate` to a reference to the `Some`
+// payload (via `&payload`, not by moving it in) and returns its result, or
+// `false` if `value` is `None` (never calling `predicate`). Rust's
+// `Option::is_some_and`: a non-consuming-of-the-payload predicate check,
+// distinct from `is_some`/`is_none` (tag-only) and from `map`/`and_then`
+// (which transform the payload rather than just inspecting it). Built the
+// same by-reference way `filter` already borrows `&payload` so the payload
+// can be dropped automatically afterward instead of being returned. See
+// `is_some`'s resource-drop note for `value`'s consuming semantics.
+pub fn is_some_and<T>(value: Option<T>, predicate: fn(*T) -> bool) -> bool {
+    match move value {
+        Option<T>.Some(payload) => { return predicate(&payload); }
+        Option<T>.None => { return false; }
+    }
+}
+
 // Consumes `value`; returns the `Some` payload, or the result of calling
 // `f()` if `value` is `None`. The lazy counterpart to `unwrap_or`: `f` is
 // only called when `value` is `None`, so use this instead of `unwrap_or`

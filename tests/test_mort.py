@@ -6105,6 +6105,57 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_option_is_some_and_and_std_result_is_ok_and_check_the_payload():
+    # is_some_and/is_ok_and consume `value` via `match move` but, like
+    # `filter`, call `predicate` on a *reference* to the payload
+    # (`&payload`), not by moving it in -- a non-consuming-of-the-payload
+    # predicate check distinct from is_some/is_none/is_ok/is_err (tag-only)
+    # and from map/and_then (which transform the payload). Both the Err
+    # side of is_ok_and and the None side of is_some_and must never call
+    # the predicate.
+    program = r'''import std.option;
+import std.result;
+
+fn is_even(x: *i64) -> bool {
+    return (*x) % 2 == 0;
+}
+
+fn is_positive(x: *i64) -> bool {
+    return (*x) > 0;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if option.is_some_and(Option<i64>.Some(4), is_even) { ok += 1; }
+    if !option.is_some_and(Option<i64>.Some(3), is_even) { ok += 1; }
+    if !option.is_some_and(Option<i64>.None, is_even) { ok += 1; }
+
+    if result.is_ok_and(Result<i64, i64>.Ok(10), is_positive) { ok += 1; }
+    if !result.is_ok_and(Result<i64, i64>.Ok(-1), is_positive) { ok += 1; }
+    if !result.is_ok_and(Result<i64, i64>.Err(99), is_positive) { ok += 1; }
+
+    print(ok);
+    if ok == 6 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "issomeand.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "issomeand.exe" if os.name == "nt" else "issomeand")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "6"
+
+
+@needs_cc
 def test_std_result_is_ok_is_err_and_unwrap_or():
     # Mirrors test_std_option_is_some_is_none_and_unwrap_or: is_ok/is_err/
     # unwrap_or all consume `value` via `match move` (see std/result.mx's

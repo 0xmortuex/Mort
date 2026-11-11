@@ -219,9 +219,14 @@ called exactly once per value.
 ## `std.option`
 
 Defines the `Option<T>` enum (`Some(T)` / `None`) used throughout the
-standard library for values that may be absent, plus eleven value-consuming
+standard library for values that may be absent, plus twelve value-consuming
 helpers and two pointer-based mutators:
 `is_some(value)` / `is_none(value)` (bool predicates on the active variant),
+`is_some_and(value, predicate)` (a non-consuming-of-the-payload predicate
+check — unlike `is_some`/`is_none`, which only look at the tag, this applies
+a plain top-level function `predicate: fn(*T) -> bool` to a *reference* to
+the `Some` payload and returns its result, or `false` if `value` is `None`,
+never calling `predicate`; mirrors Rust's `Option::is_some_and`),
 `unwrap_or(value, default)` (the `Some` payload, or `default` if
 `value` is `None`), `unwrap_or_else(value, f)` (the lazy counterpart to
 `unwrap_or`: the `Some` payload, or the result of calling a plain
@@ -255,11 +260,12 @@ no arguments like `unwrap_or_else`'s does), and `or(value, other)` (the
 eager counterpart to `or_else`: passes `value` through unchanged as `Some`
 if it is `Some` — dropping `other` unused — or returns `other` directly if
 `value` is `None`; useful when the fallback doesn't need to be computed
-lazily, so there's no `f` to write). All eleven take `value` by value
+lazily, so there's no `f` to write). All twelve take `value` by value
 via `match move`, so they consume it; for a non-resource `T` (the common
 case) that costs nothing extra, since a non-resource `move` is just a copy
 and the original binding stays usable. For a resource `T`, the payload not
-returned (a matched `Some` for `is_some`/`is_none`, the unused side of
+returned (a matched `Some` for `is_some`/`is_none`, `is_some_and`'s payload
+once `predicate` has inspected it, the unused side of
 `unwrap_or`, `unwrap_or_else`'s payload once `f`'s call returns it or is
 dropped inside `f`, `map`'s/`and_then`'s payload once `f` has consumed and
 returned from it, `and`'s discarded `Some` payload or its unused `other`
@@ -269,11 +275,12 @@ payload once `f`'s call returns it when `value` is `None`, or `or`'s unused
 `other` when `value` is `Some`) is destroyed
 automatically — safe, but means these are consuming operations, not
 read-only inspection.
-`filter` is the one exception to "consuming": unlike
+`is_some_and` and `filter` are the two exceptions to "consuming": unlike
 `map`/`and_then`'s `f`, which take the payload by value (so it must be
-moved in and can't be used again), `filter`'s `predicate` takes a
-*reference* (`*T`) so the payload can be inspected and then still moved
-back out into the returned `Some`.
+moved in and can't be used again), their `predicate` takes a
+*reference* (`*T`) so the payload can be inspected without being moved in —
+`filter` then still moves it back out into the returned `Some`, while
+`is_some_and` just returns `predicate`'s bool and lets the payload drop.
 
 `take(value: *Option<T>)` and `replace(value: *Option<T>, new_value: T)` are
 different from the eleven above: they read and write through a pointer
@@ -333,8 +340,13 @@ randomness, use `std.crypto` instead.
 ## `std.result`
 
 Defines the `Result<Value, Error>` enum (`Ok(Value)` / `Err(Error)`) used
-for fallible operations, plus twelve helpers mirroring `std.option`'s:
+for fallible operations, plus thirteen helpers mirroring `std.option`'s:
 `is_ok(value)` / `is_err(value)` (bool predicates),
+`is_ok_and(value, predicate)` (a non-consuming-of-the-payload predicate
+check, mirroring `std.option.is_some_and`: applies a plain top-level
+function `predicate: fn(*Value) -> bool` to a *reference* to the `Ok`
+payload and returns its result, or `false` if `value` is `Err`, never
+calling `predicate` — the `Err` payload is dropped automatically),
 `unwrap_or(value, default)` (the `Ok` payload, or `default` if `Err`),
 `unwrap_or_else(value, f)` (the lazy counterpart to `unwrap_or`: the `Ok`
 payload, or the result of calling `f(error)` if `value` is `Err` — unlike
@@ -370,12 +382,15 @@ without calling `f`), and `ok(value)` (converts to `std.option.Option`: an
 `Ok` payload becomes `Some`, an `Err` payload is dropped and the result is
 `None` — the inverse of `std.option.ok_or`), and `err(value)` (the
 error-side counterpart to `ok`: an `Err` payload becomes `Some(error)`, an
-`Ok` payload is dropped and the result is `None`). All twelve consume
+`Ok` payload is dropped and the result is `None`). All thirteen consume
 `value` via `match move`, since Mort enums expose no tag-only inspection
 without a match; for a resource `Value`/`Error`, the payload not returned
 is dropped automatically — except `unwrap_or_else`'s `Err` payload and
 `or_else`'s `Err` payload, which are instead moved into `f` and are `f`'s
-responsibility to consume or drop.
+responsibility to consume or drop. `is_ok_and` is the one exception to
+"consuming the payload itself": like `std.option.is_some_and`, its
+`predicate` takes a *reference* (`*Value`), not the payload by value, so it
+only inspects before the payload drops rather than transforming it.
 
 A thirteenth helper, `replace(value: *Result<Value, Error>, new_value:
 Result<Value, Error>) -> Result<Value, Error>`, reads and writes through a
