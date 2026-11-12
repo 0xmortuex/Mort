@@ -661,7 +661,14 @@ common post-`sort` cleanup, matching Rust's `Vec::dedup`/C++'s
 `==`, the same convention and struct-comparison limitation as
 `index_of`/`contains`, and is **not** safe for a resource element type since
 a collapsed duplicate is overwritten rather than destroyed (the same caveat
-`set` already documents); `is_empty`
+`set` already documents); `retain(vec, predicate)` keeps only the elements
+for which `predicate` holds, using the same write-pointer compaction loop as
+`dedup` but driven by a predicate instead of adjacent-equality, so it can
+drop elements anywhere in the vector, not just consecutive duplicates
+(matching Rust's `Vec::retain`; a no-op for an empty vector, and leaves the
+vector unchanged if `predicate` always holds) — like `dedup`, it is **not**
+safe for a resource element type, since a dropped element is overwritten
+rather than destroyed; `is_empty`
 checks whether the length is zero; `clear` resets the length without
 freeing backing storage; `truncate(vec, length)` shrinks the vector down to
 at most `length` elements (a no-op if it is already at or below `length`;

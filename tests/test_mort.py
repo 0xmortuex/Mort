@@ -7574,6 +7574,106 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_vec_retain_keeps_only_matching_elements():
+    program = r'''import std.vec;
+
+fn is_even(value: i64) -> bool {
+    return value % 2 == 0;
+}
+
+fn always_true(value: i64) -> bool {
+    return true;
+}
+
+fn always_false(value: i64) -> bool {
+    return false;
+}
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    // [1,2,3,4,5,6] -> [2,4,6]; dropped elements are scattered, not just
+    // a trailing run, so the write-pointer must shift surviving elements.
+    let values: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&values);
+    vec.push(&values, 1);
+    vec.push(&values, 2);
+    vec.push(&values, 3);
+    vec.push(&values, 4);
+    vec.push(&values, 5);
+    vec.push(&values, 6);
+    vec.retain(&values, is_even);
+    if values.length == 3 { ok += 1; }
+    match vec.get(&values, 0) {
+        Option<i64>.Some(x) => { if x == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 1) {
+        Option<i64>.Some(x) => { if x == 4 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+    match vec.get(&values, 2) {
+        Option<i64>.Some(x) => { if x == 6 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    // predicate always true: vector left unchanged.
+    let keep_all: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&keep_all);
+    vec.push(&keep_all, 10);
+    vec.push(&keep_all, 20);
+    vec.retain(&keep_all, always_true);
+    if keep_all.length == 2 { ok += 1; }
+
+    // predicate always false: vector becomes empty.
+    let keep_none: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&keep_none);
+    vec.push(&keep_none, 10);
+    vec.push(&keep_none, 20);
+    vec.retain(&keep_none, always_false);
+    if keep_none.length == 0 { ok += 1; }
+
+    // Empty Vec: no-op, does not crash.
+    let empty: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&empty);
+    vec.retain(&empty, is_even);
+    if vec.is_empty(&empty) { ok += 1; }
+
+    // First element dropped, requiring an actual shift on the very first
+    // surviving write (exercises write != read taking the branch early).
+    let leading_drop: Vec<i64> = vec.new<i64>();
+    defer vec.destroy(&leading_drop);
+    vec.push(&leading_drop, 1);
+    vec.push(&leading_drop, 2);
+    vec.push(&leading_drop, 3);
+    vec.retain(&leading_drop, is_even);
+    if leading_drop.length == 1 { ok += 1; }
+    match vec.get(&leading_drop, 0) {
+        Option<i64>.Some(x) => { if x == 2 { ok += 1; } },
+        Option<i64>.None => {},
+    }
+
+    print(ok);
+    if ok == 9 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "vecretain.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "vecretain.exe" if os.name == "nt" else "vecretain")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "9"
+
+
+@needs_cc
 def test_std_vec_extend_appends_every_element_of_a_slice():
     program = r'''import std.vec;
 
