@@ -233,3 +233,26 @@ pub fn dedup<T>(values: []T) -> u64 {
     }
     return write + 1;
 }
+
+// Keeps only the elements of `values` for which `predicate` holds, shifting
+// the rest out via the same write-pointer compaction loop `dedup` uses — the
+// slice-level counterpart to `std.vec.retain` (matching Rust's
+// `slice::retain_mut`-style compaction). Unlike `std.vec.retain`, a slice has
+// no `.length` field to shrink, so this returns the new logical length and
+// the caller re-slices with it if it wants the shrunk view (the same
+// convention `dedup` already uses). A no-op (returns `values.len` unchanged)
+// for an empty slice or a predicate that always holds. Not safe for a
+// resource-typed T: a dropped element is overwritten, not destroyed, the
+// same caveat `dedup`/`std.vec.retain` already document.
+pub fn retain<T>(values: []T, predicate: fn(T) -> bool) -> u64 {
+    let write: u64 = 0;
+    for read: u64 in 0..values.len {
+        if predicate(values[read]) {
+            if write != read {
+                values[write] = values[read];
+            }
+            write = write + 1;
+        }
+    }
+    return write;
+}

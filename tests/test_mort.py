@@ -9809,6 +9809,53 @@ def test_std_algorithm_dedup_collapses_consecutive_equal_elements_in_a_slice():
 
 
 @needs_cc
+def test_std_algorithm_retain_keeps_only_matching_elements_in_a_slice():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_retain.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; "
+                "fn is_even(value: i64) -> bool { return value % 2 == 0; } "
+                "fn always_true(value: i64) -> bool { return true; } "
+                "fn always_false(value: i64) -> bool { return false; } "
+                "fn main() -> int { "
+                # Scattered drops (not just a trailing run): [1,2,3,4,5,6] -> [2,4,6].
+                "let values: [i64; 6] = [1, 2, 3, 4, 5, 6]; "
+                "let view: []i64 = slice(&values[0], 6); "
+                "print(algorithm.retain(view, is_even) as i64); "
+                "print(values[0]); print(values[1]); print(values[2]); "
+                # Predicate always true: slice left unchanged.
+                "let keep_all: [i64; 2] = [10, 20]; "
+                "let keep_all_view: []i64 = slice(&keep_all[0], 2); "
+                "print(algorithm.retain(keep_all_view, always_true) as i64); "
+                "print(keep_all[0]); print(keep_all[1]); "
+                # Predicate always false: new length 0.
+                "let keep_none: [i64; 2] = [10, 20]; "
+                "let keep_none_view: []i64 = slice(&keep_none[0], 2); "
+                "print(algorithm.retain(keep_none_view, always_false) as i64); "
+                # Empty slice: no-op.
+                "let empty_view: []i64 = slice(&values[0], 0); "
+                "print(algorithm.retain(empty_view, is_even) as i64); "
+                # First element dropped: write != read taken on the very first survivor.
+                "let leading_drop: [i64; 3] = [1, 2, 3]; "
+                "let leading_view: []i64 = slice(&leading_drop[0], 3); "
+                "print(algorithm.retain(leading_view, is_even) as i64); "
+                "print(leading_drop[0]); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__algorithm__retain_i64" in c_source
+        cfile = os.path.join(d, "algorithm_retain.c")
+        exe = os.path.join(d, "algorithm_retain.exe" if os.name == "nt" else "algorithm_retain")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "3\n2\n4\n6\n2\n10\n20\n0\n0\n1\n2\n"
+
+
+@needs_cc
 def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_min_max.mx")

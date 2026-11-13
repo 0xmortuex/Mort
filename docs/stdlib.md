@@ -54,7 +54,14 @@ values.len` wraps rather than being rejected) and an empty slice is always
 a no-op. Not resource-safe for the same reason `slice_reverse` isn't: the
 typechecker's resource-overwrite check only exempts assignment through a
 raw pointer, not through a slice, so neither function compiles for a
-resource element type.
+resource element type. `retain<T>(values: []T, predicate: fn(T) -> bool) ->
+u64` keeps only the elements for which `predicate` holds, using the same
+write-pointer compaction loop as `dedup` but driven by a predicate instead
+of adjacent equality (matching Rust's `slice::retain`-style compaction) —
+the slice-level counterpart to `std.vec.retain`. Like `dedup`, it returns
+the new logical length rather than shrinking anything (a slice has no
+`.length` field), and it is not resource-safe: a dropped element is
+overwritten, not destroyed.
 
 ## `std.ascii`
 
