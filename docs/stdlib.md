@@ -572,7 +572,11 @@ backing storage.
 
 Two clock readings: `unix_seconds() -> i64` (wall-clock Unix timestamp) and
 `cpu_milliseconds() -> u64` (a monotonic process/CPU-time counter, not tied
-to wall-clock time — suitable for measuring elapsed durations).
+to wall-clock time — suitable for measuring elapsed durations), plus
+`elapsed_milliseconds(start: u64) -> u64`, a one-line `cpu_milliseconds() -
+start` helper so a caller timing an operation doesn't have to repeat that
+subtraction at every call site — pass it a `cpu_milliseconds()` reading taken
+earlier and it returns the milliseconds since then.
 
 ## `std.vec`
 

@@ -7,3 +7,7 @@ pub fn unix_seconds() -> i64 {
 pub fn cpu_milliseconds() -> u64 {
     return cpu_millis();
 }
+
+pub fn elapsed_milliseconds(start: u64) -> u64 {
+    return cpu_milliseconds() - start;
+}

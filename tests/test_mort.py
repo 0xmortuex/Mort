@@ -9856,6 +9856,43 @@ def test_std_algorithm_retain_keeps_only_matching_elements_in_a_slice():
 
 
 @needs_cc
+def test_std_time_elapsed_milliseconds_measures_a_duration():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "time_elapsed.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.time; "
+                "fn main() -> int { "
+                # A start of 0 is always in the past, so the elapsed time since
+                # it is just the current reading itself (no underflow), and a
+                # trivial test program never burns a full second of CPU time.
+                "let since_zero: u64 = time.elapsed_milliseconds(0); "
+                "assert(since_zero < 1000); "
+                # Back-to-back calls: the gap between taking the start reading
+                # and asking for the elapsed time is well under a second.
+                "let start: u64 = time.cpu_milliseconds(); "
+                "let elapsed: u64 = time.elapsed_milliseconds(start); "
+                "assert(elapsed < 1000); "
+                # A start that is already 500ms "in the future" relative to
+                # the reading taken just before it must report at least 500ms
+                # elapsed once real time (and cpu_milliseconds) catches up.
+                "let past: u64 = time.cpu_milliseconds() - 1; "
+                "assert(time.elapsed_milliseconds(past) >= 1); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__time__elapsed_milliseconds" in c_source
+        cfile = os.path.join(d, "time_elapsed.c")
+        exe = os.path.join(d, "time_elapsed.exe" if os.name == "nt" else "time_elapsed")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+@needs_cc
 def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_min_max.mx")
