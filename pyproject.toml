@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mort-lang"
-version = "0.143.0"
+version = "0.144.0"
 description = "The Mort statically typed systems programming language"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -71,6 +71,7 @@ mort-stdlib = [
     "std/json.mx",
     "std/map.mx",
     "std/math.mx",
+    "std/math_float.mx",
     "std/memory.mx",
     "std/mutex.mx",
     "std/net.mx",

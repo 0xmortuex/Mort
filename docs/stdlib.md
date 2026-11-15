@@ -209,6 +209,27 @@ rather than literal `0`/`2` directly against `T`, matching `sign`'s and
 `is_power_of_two`'s style; `is_odd` is just `!is_even`; correct for a
 negative signed `T` since `%` is a sign-independent remainder here).
 
+Note: every function above is integer-generic only — none works with `T` =
+`f32`/`f64`. In particular `abs<T>`'s `value < 0` compares against the
+integer literal `0`, which does not typecheck against a float `T` (`error:
+operator '<' cannot mix integer and float operands`). For floating-point
+math, see `std.math_float`.
+
+## `std.math_float`
+
+Floating-point math, kept in its own module rather than added to
+`std.math`: Mort does not eliminate unused functions from an imported
+module, so adding libm-backed functions directly to `std.math` would force
+every existing `std.math` importer to start linking against the system math
+library, whether they use floats or not. `std.math_float` wraps a handful of
+`extern fn` bindings to libm, each operating on `f64`: `sqrt_f64`,
+`floor_f64`, `ceil_f64`, `round_f64` (half away from zero, e.g. `2.5 -> 3.0`
+and `-1.5 -> -2.0`, matching C's `round`), and `trunc_f64` (toward zero).
+**Importing this module requires linking against libm explicitly** — pass
+`-l m` (or `--library m`) to `mortc.py` — since, unlike the automatic
+winsock/bcrypt linking for `std.net`/`std.crypto` on Windows, there is no
+`MORT_REQUIRES_*` detection for libm.
+
 ## `std.memory`
 
 Private (non-`pub`) byte-buffer primitives used internally by other modules:

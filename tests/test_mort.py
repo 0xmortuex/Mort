@@ -5834,6 +5834,60 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_float_functions_wrap_libm():
+    # sqrt_f64/floor_f64/ceil_f64/round_f64/trunc_f64 (std.math_float, a
+    # separate module from std.math) are thin wrappers over extern libm
+    # bindings. Kept out of std.math itself: Mort has no dead-code
+    # elimination for unused functions in an imported module, so merely
+    # adding these to std.math would force every existing std.math importer
+    # to start linking against libm too (confirmed by trying it: the
+    # existing std.math tests failed to link with "undefined reference to
+    # `sqrt'"/`round'` even though they never call the new functions).
+    # Linking std.math_float needs `-l m`: unlike the automatic
+    # winsock/bcrypt detection for std.net/std.crypto, libm has no
+    # MORT_REQUIRES_* marker (that lives in codegen.py, compiler-internals
+    # territory), so the caller passes it explicitly via mortc.py's `-l`.
+    program = r'''import std.math_float;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math_float.sqrt_f64(4.0) == 2.0 { ok += 1; }
+    if math_float.sqrt_f64(0.0) == 0.0 { ok += 1; }
+
+    if math_float.floor_f64(1.7) == 1.0 { ok += 1; }
+    if math_float.floor_f64(0.0 - 1.2) == 0.0 - 2.0 { ok += 1; }
+
+    if math_float.ceil_f64(1.2) == 2.0 { ok += 1; }
+    if math_float.ceil_f64(0.0 - 1.7) == 0.0 - 1.0 { ok += 1; }
+
+    if math_float.round_f64(1.5) == 2.0 { ok += 1; }
+    if math_float.round_f64(0.0 - 1.5) == 0.0 - 2.0 { ok += 1; }
+
+    if math_float.trunc_f64(1.9) == 1.0 { ok += 1; }
+    if math_float.trunc_f64(0.0 - 1.9) == 0.0 - 1.0 { ok += 1; }
+
+    print(ok);
+    if ok == 10 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathfloat.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathfloat.exe" if os.name == "nt" else "mathfloat")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe, "-l", "m"],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "10"
+
+
+@needs_cc
 def test_std_option_is_some_is_none_and_unwrap_or():
     # is_some/is_none/unwrap_or all consume `value` via `match move` (see
     # std/option.mx's doc comments); for a plain, non-resource T this needs
