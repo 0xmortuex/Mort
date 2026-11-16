@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+kernel/build/
+kernel/build_kmain.c

@@ -1,0 +1,23 @@
+// A tiny kernel in nanomort. Writes a message to VGA text memory at 0xB8000
+// and halts. Compiled with --freestanding, linked with boot.s + linker.ld,
+// it boots under `qemu-system-i386 -kernel`.
+
+fn kmain() -> int {
+    let msg: *u8 = "nanomort kernel: hello from a language in one file" as *u8;
+    let vga: u32 = 0xB8000;
+    let i: u32 = 0;
+    while msg[i] != 0 {
+        // each VGA cell is [ascii, attribute]; 0x0A = bright green on black
+        *((vga + i * 2) as *u8) = msg[i];
+        *((vga + i * 2 + 1) as *u8) = 0x0A as u8;
+        i = i + 1;
+    }
+    loop_forever();
+    return 0;
+}
+
+fn loop_forever() {
+    while true {
+        asm("hlt");
+    }
+}

@@ -1,0 +1,18 @@
+/* Link the nanomort kernel as a flat 32-bit image loaded at 1 MB.
+ * The multiboot header must land in the first 8 KiB, so .multiboot goes first
+ * (KEEP stops the linker garbage-collecting it — nothing references it). */
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+
+    .multiboot : { KEEP(*(.multiboot)) }
+    .text      : { *(.text*) }
+    .rodata    : { *(.rodata*) }
+    .data      : { *(.data*) }
+    .bss       : { *(.bss*) *(COMMON) }
+
+    /* freestanding kernels don't unwind exceptions — drop the dead metadata */
+    /DISCARD/  : { *(.eh_frame*) *(.note*) *(.comment) }
+}
