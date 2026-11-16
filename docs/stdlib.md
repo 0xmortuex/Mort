@@ -195,7 +195,10 @@ fails to build. Use content comparison (e.g. a linear scan with
 
 Generic numeric helpers usable with any type supporting the relevant
 operators: `min<T>`, `max<T>`, `clamp<T>(value, minimum, maximum)`,
-`abs<T>` (via `0 - value`, so unsigned `T` will wrap rather than error),
+`abs<T>` (via a `zero: T = value - value` local rather than the literal
+`0`, so unsigned `T` will wrap rather than error, and `T` = `f32`/`f64`
+typechecks too — a bare literal `0` does not typecheck against a float
+`T`, "operator '<' cannot mix integer and float operands"),
 `gcd<T>` (iterative Euclidean algorithm), `lcm<T>` (`(left / gcd(left,
 right)) * right`; returns `0` if either argument is `0`, since `0` has no
 nonzero multiple), `sign<T>` (returns `1`/`0`/`-1` for positive/zero/negative;
@@ -209,11 +212,13 @@ rather than literal `0`/`2` directly against `T`, matching `sign`'s and
 `is_power_of_two`'s style; `is_odd` is just `!is_even`; correct for a
 negative signed `T` since `%` is a sign-independent remainder here).
 
-Note: every function above is integer-generic only — none works with `T` =
-`f32`/`f64`. In particular `abs<T>`'s `value < 0` compares against the
-integer literal `0`, which does not typecheck against a float `T` (`error:
-operator '<' cannot mix integer and float operands`). For floating-point
-math, see `std.math_float`.
+Note: `min<T>`/`max<T>`/`clamp<T>`/`abs<T>` work with `T` = `f32`/`f64`
+(none of them compares against a hardcoded integer literal). The rest —
+`gcd`/`lcm`/`pow`/`sign`/`is_power_of_two`/`is_even`/`is_odd` — are still
+integer-generic only: each either uses a literal that doesn't typecheck
+against a float `T` (e.g. `sign`'s `let one: T = 1;`) or requires an
+integer-only operator (`%`, `&`). For floating-point math beyond `abs`,
+see `std.math_float`.
 
 ## `std.math_float`
 

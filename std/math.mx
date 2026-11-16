@@ -25,8 +25,9 @@ pub fn clamp<T>(value: T, minimum: T, maximum: T) -> T {
 }
 
 pub fn abs<T>(value: T) -> T {
-    if value < 0 {
-        return 0 - value;
+    let zero: T = value - value;
+    if value < zero {
+        return zero - value;
     }
     return value;
 }

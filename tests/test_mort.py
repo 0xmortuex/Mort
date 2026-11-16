@@ -5834,6 +5834,46 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_abs_supports_ints_and_floats():
+    # abs<T> computes zero as `value - value` (not a literal `0`, which the
+    # typechecker rejects as a type mismatch when T is instantiated as a
+    # float), so the same generic body now works for i64/u64 and f64/f32.
+    program = r'''import std.math;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math.abs(5) == 5 { ok += 1; }
+    if math.abs(0 - 5) == 5 { ok += 1; }
+    if math.abs(0) == 0 { ok += 1; }
+    let uvalue: u64 = 7;
+    if math.abs(uvalue) == 7 { ok += 1; }
+
+    if math.abs(3.5) == 3.5 { ok += 1; }
+    if math.abs(0.0 - 3.5) == 3.5 { ok += 1; }
+    if math.abs(0.0) == 0.0 { ok += 1; }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathabs.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathabs.exe" if os.name == "nt" else "mathabs")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_math_float_functions_wrap_libm():
     # sqrt_f64/floor_f64/ceil_f64/round_f64/trunc_f64 (std.math_float, a
     # separate module from std.math) are thin wrappers over extern libm
