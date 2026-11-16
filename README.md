@@ -536,6 +536,10 @@ Versioning and source-compatibility guarantees are defined in the
 remain explicit in the
 [production-readiness checklist](docs/production-readiness.md).
 
+## nanomort
+
+[`nanomort/`](nanomort/) is the miniature, one-file version of this compiler. It was imported from [0xmortuex/nanomort](https://github.com/0xmortuex/nanomort) with `git subtree`, history included. It is not part of the `mort-lang` package and CI does not run it.
+
 ## License
 
 MIT
