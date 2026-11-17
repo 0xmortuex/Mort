@@ -229,7 +229,10 @@ every existing `std.math` importer to start linking against the system math
 library, whether they use floats or not. `std.math_float` wraps a handful of
 `extern fn` bindings to libm, each operating on `f64`: `sqrt_f64`,
 `floor_f64`, `ceil_f64`, `round_f64` (half away from zero, e.g. `2.5 -> 3.0`
-and `-1.5 -> -2.0`, matching C's `round`), and `trunc_f64` (toward zero).
+and `-1.5 -> -2.0`, matching C's `round`), `trunc_f64` (toward zero),
+`pow_f64` (base ** exponent, accepting a fractional exponent/base — unlike
+`std.math.pow<T>`'s integer-only binary exponentiation), `fabs_f64`, and
+the trig functions `sin_f64`/`cos_f64`/`tan_f64` (radians).
 **Importing this module requires linking against libm explicitly** — pass
 `-l m` (or `--library m`) to `mortc.py` — since, unlike the automatic
 winsock/bcrypt linking for `std.net`/`std.crypto` on Windows, there is no

@@ -12,6 +12,11 @@ extern fn floor(value: f64) -> f64;
 extern fn ceil(value: f64) -> f64;
 extern fn round(value: f64) -> f64;
 extern fn trunc(value: f64) -> f64;
+extern fn pow(base: f64, exponent: f64) -> f64;
+extern fn fabs(value: f64) -> f64;
+extern fn sin(value: f64) -> f64;
+extern fn cos(value: f64) -> f64;
+extern fn tan(value: f64) -> f64;
 
 pub fn sqrt_f64(value: f64) -> f64 {
     return sqrt(value);
@@ -31,4 +36,27 @@ pub fn round_f64(value: f64) -> f64 {
 
 pub fn trunc_f64(value: f64) -> f64 {
     return trunc(value);
+}
+
+// base ** exponent, distinct from std.math.pow<T>'s integer-only binary
+// exponentiation: this one accepts a fractional exponent (e.g. a square
+// root via 0.5) and fractional/negative bases via libm's `pow`.
+pub fn pow_f64(base: f64, exponent: f64) -> f64 {
+    return pow(base, exponent);
+}
+
+pub fn fabs_f64(value: f64) -> f64 {
+    return fabs(value);
+}
+
+pub fn sin_f64(value: f64) -> f64 {
+    return sin(value);
+}
+
+pub fn cos_f64(value: f64) -> f64 {
+    return cos(value);
+}
+
+pub fn tan_f64(value: f64) -> f64 {
+    return tan(value);
 }

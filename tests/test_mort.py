@@ -5928,6 +5928,48 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_float_pow_fabs_and_trig_wrap_libm():
+    # pow_f64/fabs_f64/sin_f64/cos_f64/tan_f64: the same thin-extern-wrapper
+    # shape as sqrt_f64/floor_f64/etc. above. pow_f64 is distinct from
+    # std.math.pow<T>'s integer-only binary exponentiation (it accepts a
+    # fractional exponent/base via libm's `pow`).
+    program = r'''import std.math_float;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math_float.pow_f64(2.0, 10.0) == 1024.0 { ok += 1; }
+    if math_float.pow_f64(2.0, 0.5) == math_float.sqrt_f64(2.0) { ok += 1; }
+    if math_float.pow_f64(5.0, 0.0) == 1.0 { ok += 1; }
+
+    if math_float.fabs_f64(0.0 - 3.5) == 3.5 { ok += 1; }
+    if math_float.fabs_f64(3.5) == 3.5 { ok += 1; }
+
+    if math_float.sin_f64(0.0) == 0.0 { ok += 1; }
+    if math_float.cos_f64(0.0) == 1.0 { ok += 1; }
+    if math_float.tan_f64(0.0) == 0.0 { ok += 1; }
+
+    print(ok);
+    if ok == 8 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathfloat2.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathfloat2.exe" if os.name == "nt" else "mathfloat2")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe, "-l", "m"],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "8"
+
+
+@needs_cc
 def test_std_option_is_some_is_none_and_unwrap_or():
     # is_some/is_none/unwrap_or all consume `value` via `match move` (see
     # std/option.mx's doc comments); for a plain, non-resource T this needs
