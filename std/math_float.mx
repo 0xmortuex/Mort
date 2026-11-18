@@ -18,6 +18,17 @@ extern fn sin(value: f64) -> f64;
 extern fn cos(value: f64) -> f64;
 extern fn tan(value: f64) -> f64;
 
+extern fn sqrtf(value: f32) -> f32;
+extern fn floorf(value: f32) -> f32;
+extern fn ceilf(value: f32) -> f32;
+extern fn roundf(value: f32) -> f32;
+extern fn truncf(value: f32) -> f32;
+extern fn powf(base: f32, exponent: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+extern fn sinf(value: f32) -> f32;
+extern fn cosf(value: f32) -> f32;
+extern fn tanf(value: f32) -> f32;
+
 pub fn sqrt_f64(value: f64) -> f64 {
     return sqrt(value);
 }
@@ -59,4 +70,44 @@ pub fn cos_f64(value: f64) -> f64 {
 
 pub fn tan_f64(value: f64) -> f64 {
     return tan(value);
+}
+
+pub fn sqrt_f32(value: f32) -> f32 {
+    return sqrtf(value);
+}
+
+pub fn floor_f32(value: f32) -> f32 {
+    return floorf(value);
+}
+
+pub fn ceil_f32(value: f32) -> f32 {
+    return ceilf(value);
+}
+
+pub fn round_f32(value: f32) -> f32 {
+    return roundf(value);
+}
+
+pub fn trunc_f32(value: f32) -> f32 {
+    return truncf(value);
+}
+
+pub fn pow_f32(base: f32, exponent: f32) -> f32 {
+    return powf(base, exponent);
+}
+
+pub fn fabs_f32(value: f32) -> f32 {
+    return fabsf(value);
+}
+
+pub fn sin_f32(value: f32) -> f32 {
+    return sinf(value);
+}
+
+pub fn cos_f32(value: f32) -> f32 {
+    return cosf(value);
+}
+
+pub fn tan_f32(value: f32) -> f32 {
+    return tanf(value);
 }

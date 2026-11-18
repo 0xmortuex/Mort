@@ -5970,6 +5970,77 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_math_float_f32_variants_wrap_single_precision_libm():
+    # sqrt_f32/floor_f32/ceil_f32/round_f32/trunc_f32/pow_f32/fabs_f32/
+    # sin_f32/cos_f32/tan_f32: the f32 (single-precision) counterparts of
+    # the f64 wrappers above, binding libm's `*f`-suffixed entry points
+    # (sqrtf, floorf, ...) instead of round-tripping an f32 value through
+    # f64 and back. Same `-l m` linking requirement as the f64 half.
+    #
+    # A bare negated or two-literal float expression (e.g. `0.0 - 1.5`)
+    # infers as f64 regardless of the surrounding f32 context (a known,
+    # pre-existing quirk — see the "Typechecker quirk" backlog entry on
+    # literal-vs-literal expressions), so negative inputs below are built
+    # from an already-f32-typed local instead of a bare negative literal.
+    program = r'''import std.math_float;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if math_float.sqrt_f32(4.0) == 2.0 { ok += 1; }
+    if math_float.sqrt_f32(0.0) == 0.0 { ok += 1; }
+
+    if math_float.floor_f32(1.7) == 1.0 { ok += 1; }
+    let one_point_two: f32 = 1.2;
+    let two_f32: f32 = 2.0;
+    if math_float.floor_f32(0.0 - one_point_two) == 0.0 - two_f32 { ok += 1; }
+
+    if math_float.ceil_f32(1.2) == 2.0 { ok += 1; }
+    let one_point_seven: f32 = 1.7;
+    let one_f32: f32 = 1.0;
+    if math_float.ceil_f32(0.0 - one_point_seven) == 0.0 - one_f32 { ok += 1; }
+
+    if math_float.round_f32(1.5) == 2.0 { ok += 1; }
+    let one_point_five: f32 = 1.5;
+    if math_float.round_f32(0.0 - one_point_five) == 0.0 - two_f32 { ok += 1; }
+
+    if math_float.trunc_f32(1.9) == 1.0 { ok += 1; }
+    let one_point_nine: f32 = 1.9;
+    if math_float.trunc_f32(0.0 - one_point_nine) == 0.0 - one_f32 { ok += 1; }
+
+    if math_float.pow_f32(2.0, 10.0) == 1024.0 { ok += 1; }
+    if math_float.pow_f32(2.0, 0.5) == math_float.sqrt_f32(2.0) { ok += 1; }
+    if math_float.pow_f32(5.0, 0.0) == 1.0 { ok += 1; }
+
+    let three_point_five: f32 = 3.5;
+    if math_float.fabs_f32(0.0 - three_point_five) == 3.5 { ok += 1; }
+    if math_float.fabs_f32(3.5) == 3.5 { ok += 1; }
+
+    if math_float.sin_f32(0.0) == 0.0 { ok += 1; }
+    if math_float.cos_f32(0.0) == 1.0 { ok += 1; }
+    if math_float.tan_f32(0.0) == 0.0 { ok += 1; }
+
+    print(ok);
+    if ok == 18 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "mathfloat32.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "mathfloat32.exe" if os.name == "nt" else "mathfloat32")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe, "-l", "m"],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "18"
+
+
+@needs_cc
 def test_std_option_is_some_is_none_and_unwrap_or():
     # is_some/is_none/unwrap_or all consume `value` via `match move` (see
     # std/option.mx's doc comments); for a plain, non-resource T this needs

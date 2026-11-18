@@ -232,7 +232,11 @@ library, whether they use floats or not. `std.math_float` wraps a handful of
 and `-1.5 -> -2.0`, matching C's `round`), `trunc_f64` (toward zero),
 `pow_f64` (base ** exponent, accepting a fractional exponent/base — unlike
 `std.math.pow<T>`'s integer-only binary exponentiation), `fabs_f64`, and
-the trig functions `sin_f64`/`cos_f64`/`tan_f64` (radians).
+the trig functions `sin_f64`/`cos_f64`/`tan_f64` (radians). Each has an
+`f32` (single-precision) counterpart binding libm's `*f`-suffixed entry
+points directly — `sqrt_f32`, `floor_f32`, `ceil_f32`, `round_f32`,
+`trunc_f32`, `pow_f32`, `fabs_f32`, `sin_f32`, `cos_f32`, `tan_f32` — so an
+`f32` caller does not need to round-trip through `f64` and back.
 **Importing this module requires linking against libm explicitly** — pass
 `-l m` (or `--library m`) to `mortc.py` — since, unlike the automatic
 winsock/bcrypt linking for `std.net`/`std.crypto` on Windows, there is no
