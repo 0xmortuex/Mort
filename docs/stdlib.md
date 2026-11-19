@@ -611,6 +611,15 @@ start` helper so a caller timing an operation doesn't have to repeat that
 subtraction at every call site — pass it a `cpu_milliseconds()` reading taken
 earlier and it returns the milliseconds since then.
 
+`from_unix_seconds(timestamp: i64) -> CivilDateTime` breaks a Unix timestamp
+down into calendar fields — `year`, `month` (1-12), `day` (1-31), `hour`,
+`minute`, `second` (all 0-based) — using Howard Hinnant's `civil_from_days`
+algorithm, which is exact over the whole proleptic Gregorian calendar
+(correctly handles leap years, including the "divisible by 100 but not 400"
+century exception, e.g. 1900 is not a leap year) and works for a negative
+`timestamp` (a date before 1970) as well as a positive one. Leap seconds are
+not modeled, matching `unix_seconds`'s own leap-second-free POSIX time.
+
 ## `std.vec`
 
 A generic growable array, `Vec<T>` (a `resource struct` backed by a heap

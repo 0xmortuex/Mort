@@ -11,3 +11,72 @@ pub fn cpu_milliseconds() -> u64 {
 pub fn elapsed_milliseconds(start: u64) -> u64 {
     return cpu_milliseconds() - start;
 }
+
+// A proleptic-Gregorian calendar breakdown of a unix timestamp: `year` can
+// be zero or negative for a `timestamp` before 1970 (year 0 is 1 BCE,
+// astronomical year numbering, matching the algorithm below). `month` is
+// 1-12, `day` is 1-31, and `hour`/`minute`/`second` are each in their usual
+// 0-based range.
+struct CivilDateTime {
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+}
+
+// Breaks a unix timestamp (seconds since 1970-01-01T00:00:00Z, may be
+// negative for a date before 1970) down into calendar fields. Uses Howard
+// Hinnant's `civil_from_days` algorithm (see
+// http://howardhinnant.github.io/date_algorithms.html), which is exact for
+// the whole proleptic Gregorian calendar and relies on C's truncate-toward-
+// zero integer division/modulo (what Mort's `/`/`%` already do), not a
+// floored one. Ignores leap seconds, matching `unix_seconds`'s own
+// leap-second-free POSIX time.
+pub fn from_unix_seconds(timestamp: i64) -> CivilDateTime {
+    let seconds_per_day: i64 = 86400;
+    let days = timestamp / seconds_per_day;
+    let seconds_of_day = timestamp % seconds_per_day;
+    if seconds_of_day < 0 {
+        seconds_of_day = seconds_of_day + seconds_per_day;
+        days = days - 1;
+    }
+    let hour = seconds_of_day / 3600;
+    let minute = (seconds_of_day % 3600) / 60;
+    let second = seconds_of_day % 60;
+
+    // civil_from_days, with days since 1970-01-01 shifted to days since
+    // 0000-03-01 (the start of an era) via the +719468 offset.
+    let z = days + 719468;
+    let era: i64 = 0;
+    if z >= 0 {
+        era = z / 146097;
+    } else {
+        era = (z - 146096) / 146097;
+    }
+    let doe = z - era * 146097;                                     // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);               // [0, 365]
+    let mp = (5 * doy + 2) / 153;                                    // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1;                          // [1, 31]
+    let month: i64 = 0;
+    if mp < 10 {
+        month = mp + 3;
+    } else {
+        month = mp - 9;
+    }
+    if month <= 2 {
+        year = year + 1;
+    }
+
+    return CivilDateTime {
+        year: year,
+        month: month,
+        day: day,
+        hour: hour,
+        minute: minute,
+        second: second,
+    };
+}

@@ -10100,6 +10100,54 @@ def test_std_time_elapsed_milliseconds_measures_a_duration():
 
 
 @needs_cc
+def test_std_time_from_unix_seconds_breaks_a_timestamp_into_calendar_fields():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "time_civil.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.time; "
+                "fn main() -> int { "
+                # 2000-01-01T00:00:00Z
+                "let a = time.from_unix_seconds(946684800); "
+                "assert(a.year == 2000 && a.month == 1 && a.day == 1); "
+                "assert(a.hour == 0 && a.minute == 0 && a.second == 0); "
+                # The unix epoch itself.
+                "let b = time.from_unix_seconds(0); "
+                "assert(b.year == 1970 && b.month == 1 && b.day == 1); "
+                "assert(b.hour == 0 && b.minute == 0 && b.second == 0); "
+                # One second before the epoch: must roll back a full day, not
+                # underflow into a negative seconds-of-day.
+                "let c = time.from_unix_seconds(0 - 1); "
+                "assert(c.year == 1969 && c.month == 12 && c.day == 31); "
+                "assert(c.hour == 23 && c.minute == 59 && c.second == 59); "
+                # 2024-02-29T12:34:56Z: a leap day, exercising the Feb-29 path.
+                "let e = time.from_unix_seconds(1709210096); "
+                "assert(e.year == 2024 && e.month == 2 && e.day == 29); "
+                "assert(e.hour == 12 && e.minute == 34 && e.second == 56); "
+                # 1900-01-01: a century year that is *not* a leap year under
+                # the Gregorian rule (divisible by 100 but not 400).
+                "let f = time.from_unix_seconds(0 - 2208988800); "
+                "assert(f.year == 1900 && f.month == 1 && f.day == 1); "
+                # 2038-01-19T03:14:07Z: the signed-32-bit unix-time boundary,
+                # well within i64 and past it without issue.
+                "let g = time.from_unix_seconds(2147483647); "
+                "assert(g.year == 2038 && g.month == 1 && g.day == 19); "
+                "assert(g.hour == 3 && g.minute == 14 && g.second == 7); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__time__from_unix_seconds" in c_source
+        cfile = os.path.join(d, "time_civil.c")
+        exe = os.path.join(d, "time_civil.exe" if os.name == "nt" else "time_civil")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+@needs_cc
 def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_min_max.mx")
