@@ -80,3 +80,43 @@ pub fn from_unix_seconds(timestamp: i64) -> CivilDateTime {
         second: second,
     };
 }
+
+// The inverse of `from_unix_seconds`: builds a unix timestamp back from
+// calendar fields. Uses Howard Hinnant's `days_from_civil` algorithm (see
+// http://howardhinnant.github.io/date_algorithms.html), the mirror of
+// `civil_from_days` above, and the same truncate-toward-zero `/`/`%`
+// Mort already has. `civil.month`/`civil.day` are expected in their usual
+// 1-12/1-31 ranges; out-of-range values are not validated and produce a
+// timestamp as if the date had been normalized the way the underlying
+// arithmetic rolls over (e.g. month 13 behaves like month 1 of the next
+// year), matching `days_from_civil`'s own lack of validation.
+pub fn to_unix_seconds(civil: CivilDateTime) -> i64 {
+    let year = civil.year;
+    let month = civil.month;
+    if month <= 2 {
+        year = year - 1;
+    }
+
+    let era: i64 = 0;
+    if year >= 0 {
+        era = year / 400;
+    } else {
+        era = (year - 399) / 400;
+    }
+    let yoe = year - era * 400;      // [0, 399]
+    let mp: i64 = 0;
+    if month > 2 {
+        mp = month - 3;
+    } else {
+        mp = month + 9;
+    }
+    let doy = (153 * mp + 2) / 5 + civil.day - 1;        // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;     // [0, 146096]
+    let days = era * 146097 + doe - 719468;
+
+    let seconds_per_day: i64 = 86400;
+    return days * seconds_per_day
+        + civil.hour * 3600
+        + civil.minute * 60
+        + civil.second;
+}

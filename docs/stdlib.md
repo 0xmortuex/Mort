@@ -620,6 +620,13 @@ century exception, e.g. 1900 is not a leap year) and works for a negative
 `timestamp` (a date before 1970) as well as a positive one. Leap seconds are
 not modeled, matching `unix_seconds`'s own leap-second-free POSIX time.
 
+`to_unix_seconds(civil: CivilDateTime) -> i64` is the inverse: it builds a
+Unix timestamp back from calendar fields using Howard Hinnant's
+`days_from_civil` algorithm, the mirror of `civil_from_days` above, so
+`to_unix_seconds(from_unix_seconds(ts)) == ts` for any `ts`. `civil.month`/
+`civil.day` are not range-validated; an out-of-range value is simply carried
+through the underlying arithmetic rather than rejected.
+
 ## `std.vec`
 
 A generic growable array, `Vec<T>` (a `resource struct` backed by a heap
