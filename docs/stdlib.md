@@ -627,6 +627,11 @@ Unix timestamp back from calendar fields using Howard Hinnant's
 `civil.day` are not range-validated; an out-of-range value is simply carried
 through the underlying arithmetic rather than rejected.
 
+`day_of_week(timestamp: i64) -> u64` returns the day of the week as
+0=Sunday..6=Saturday, using Howard Hinnant's `weekday_from_days` algorithm
+over the same days-since-1970-01-01 value `from_unix_seconds` computes, and
+handles a negative `timestamp` the same way `from_unix_seconds` does.
+
 ## `std.vec`
 
 A generic growable array, `Vec<T>` (a `resource struct` backed by a heap

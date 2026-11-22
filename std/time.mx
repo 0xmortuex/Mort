@@ -81,6 +81,30 @@ pub fn from_unix_seconds(timestamp: i64) -> CivilDateTime {
     };
 }
 
+// The day of the week for a unix timestamp, as 0=Sunday..6=Saturday. Uses
+// Howard Hinnant's `weekday_from_days` algorithm (see
+// http://howardhinnant.github.io/date_algorithms.html) over the same
+// days-since-1970-01-01 value `from_unix_seconds` computes, including the
+// same negative-timestamp adjustment (a timestamp that truncates toward
+// zero into day `d` with a negative remainder actually falls on day
+// `d - 1`).
+pub fn day_of_week(timestamp: i64) -> u64 {
+    let seconds_per_day: i64 = 86400;
+    let days = timestamp / seconds_per_day;
+    let seconds_of_day = timestamp % seconds_per_day;
+    if seconds_of_day < 0 {
+        days = days - 1;
+    }
+
+    let weekday: i64 = 0;
+    if days >= (0 - 4) {
+        weekday = (days + 4) % 7;
+    } else {
+        weekday = (days + 5) % 7 + 6;
+    }
+    return weekday as u64;
+}
+
 // The inverse of `from_unix_seconds`: builds a unix timestamp back from
 // calendar fields. Uses Howard Hinnant's `days_from_civil` algorithm (see
 // http://howardhinnant.github.io/date_algorithms.html), the mirror of

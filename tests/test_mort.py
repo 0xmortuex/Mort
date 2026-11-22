@@ -10195,6 +10195,43 @@ def test_std_time_to_unix_seconds_builds_a_timestamp_from_calendar_fields():
 
 
 @needs_cc
+def test_std_time_day_of_week_returns_the_weekday_of_a_timestamp():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "time_day_of_week.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.time; "
+                "fn main() -> int { "
+                # The unix epoch, 1970-01-01, is a Thursday.
+                "assert(time.day_of_week(0) == 4); "
+                # One second before the epoch rolls back to 1969-12-31, a
+                # Wednesday, not an underflowed weekday.
+                "assert(time.day_of_week(0 - 1) == 3); "
+                # 2000-01-01T00:00:00Z is a Saturday.
+                "assert(time.day_of_week(946684800) == 6); "
+                # 2024-02-29T12:34:56Z (a leap day) is a Thursday.
+                "assert(time.day_of_week(1709210096) == 4); "
+                # 1969-12-21, 11 days before the epoch, is a Sunday: exercises
+                # the `days < -4` branch of the underlying algorithm.
+                "assert(time.day_of_week((0 - 11) * 86400) == 0); "
+                # 2038-01-19T03:14:07Z, the signed-32-bit unix-time boundary,
+                # is a Tuesday.
+                "assert(time.day_of_week(2147483647) == 2); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "mort_std__time__day_of_week" in c_source
+        cfile = os.path.join(d, "time_day_of_week.c")
+        exe = os.path.join(d, "time_day_of_week.exe" if os.name == "nt" else "time_day_of_week")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+@needs_cc
 def test_std_algorithm_min_and_max_find_the_extremes_of_a_slice():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_min_max.mx")
