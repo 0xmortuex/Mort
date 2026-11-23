@@ -356,6 +356,25 @@ without copying; `destroy` frees the backing buffer. Every `String`
 returned by `from`, `from_slice`, or `concat`, and every `String` passed
 to `append`, must eventually reach `destroy` exactly once.
 
+## `std.path`
+
+Pure string manipulation over POSIX-style (forward-slash) paths as plain
+`[]const u8` text — no filesystem syscalls (see `std.fs` for actual I/O),
+and no Windows backslash handling. `basename(path) -> []const u8` returns
+the view after the last `/`, or all of `path` if it has none (a trailing
+`/` yields an empty basename, matching Python's `os.path.basename`);
+`dirname(path) -> []const u8` returns the view before the last `/`, or
+`"."` if it has none, matching `os.path.dirname`'s no-directory
+convention. `extension(path) -> Option<[]const u8>` returns the view
+after the last `.` in `basename(path)`, or `None` if there is no `.` or
+the `.` is the basename's first byte (so a dotfile like `.bashrc` has no
+extension), matching `os.path.splitext`. `basename`/`dirname`/`extension`
+all borrow views from `path`, no allocation. `join(left, right) ->
+std.owned_string.String` concatenates `left` and `right` with exactly one
+`/` between them, unless one side already supplies it (a trailing `/` on
+`left` or a leading `/` on `right`); the result is a freshly allocated
+owned buffer the caller must pass to `std.owned_string.destroy`.
+
 ## `std.process`
 
 Two `extern`-backed process controls: `run(command: *u8) -> c_int` shells

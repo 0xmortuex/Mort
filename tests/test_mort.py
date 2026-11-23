@@ -12216,3 +12216,64 @@ def test_branch_snapshots_skip_bindings_that_never_moved(monkeypatch):
          + "".join(f"  let a{index}: i64 = 1;\n" for index in range(50))
          + "  if a0 == 1 { a0; }\n" * 50 + "  return 0;\n}\n")
     assert sizes and max(sizes) == 0
+
+
+@needs_cc
+def test_std_path_basename_dirname_extension_and_join():
+    program = r'''import std.path;
+import std.strings;
+import std.owned_string;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if strings.equal(path.basename(slice("/usr/local/bin/mortc" as *const u8, 20)), slice("mortc" as *const u8, 5)) { ok += 1; }
+    if strings.equal(path.basename(slice("nofile" as *const u8, 6)), slice("nofile" as *const u8, 6)) { ok += 1; }
+    if strings.equal(path.basename(slice("a/b/" as *const u8, 4)), slice("" as *const u8, 0)) { ok += 1; }
+
+    if strings.equal(path.dirname(slice("/usr/local/bin/mortc" as *const u8, 20)), slice("/usr/local/bin" as *const u8, 14)) { ok += 1; }
+    if strings.equal(path.dirname(slice("nofile" as *const u8, 6)), slice("." as *const u8, 1)) { ok += 1; }
+
+    match path.extension(slice("archive.tar.gz" as *const u8, 14)) {
+        Option<[]const u8>.Some(ext) => { if strings.equal(ext, slice("gz" as *const u8, 2)) { ok += 1; } },
+        Option<[]const u8>.None => {},
+    }
+    match path.extension(slice(".bashrc" as *const u8, 7)) {
+        Option<[]const u8>.Some(ext) => {},
+        Option<[]const u8>.None => { ok += 1; },
+    }
+    match path.extension(slice("noext" as *const u8, 5)) {
+        Option<[]const u8>.Some(ext) => {},
+        Option<[]const u8>.None => { ok += 1; },
+    }
+
+    let joined1: String = path.join(slice("a" as *const u8, 1), slice("b" as *const u8, 1));
+    if strings.equal(owned_string.view(&joined1), slice("a/b" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&joined1);
+
+    let joined2: String = path.join(slice("a/" as *const u8, 2), slice("b" as *const u8, 1));
+    if strings.equal(owned_string.view(&joined2), slice("a/b" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&joined2);
+
+    let joined3: String = path.join(slice("a" as *const u8, 1), slice("/b" as *const u8, 2));
+    if strings.equal(owned_string.view(&joined3), slice("a/b" as *const u8, 3)) { ok += 1; }
+    owned_string.destroy(&joined3);
+
+    print(ok);
+    if ok == 11 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "pathuse.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "pathuse.exe" if os.name == "nt" else "pathuse")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "11"
