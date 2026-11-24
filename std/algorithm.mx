@@ -211,6 +211,39 @@ pub fn max_by<T>(values: []const T, less_than: fn(T, T) -> bool) -> Option<T> {
     return Option<T>.Some(best);
 }
 
+// Searches an already-sorted-by-`<`/`>` slice for `needle` in O(log n),
+// the fast counterpart to `index_of`'s O(n) linear scan. Returns the
+// needle's index if found, `None` otherwise. The caller is responsible
+// for `values` actually being sorted ascending by `<`; which index is
+// returned is unspecified when `values` contains duplicates of `needle`.
+// Requires `T` to support `<`/`>`, the same constraint `sort`/`min`/`max`
+// already have; see `std.sort` for a comparator-taking sort to pair with
+// a struct-typed `T` that has no built-in order.
+pub fn binary_search<T>(values: []const T, needle: T) -> Option<u64> {
+    if values.len == 0 {
+        return Option<u64>.None;
+    }
+    let low: u64 = 0;
+    let high = values.len - 1;
+    while true {
+        let mid = low + (high - low) / 2;
+        if values[mid] < needle {
+            if mid == high {
+                return Option<u64>.None;
+            }
+            low = mid + 1;
+        } else if needle < values[mid] {
+            if mid == low {
+                return Option<u64>.None;
+            }
+            high = mid - 1;
+        } else {
+            return Option<u64>.Some(mid);
+        }
+    }
+    return Option<u64>.None;
+}
+
 // Collapses *consecutive* equal elements of `values` in place, the
 // slice-level counterpart to `std.vec.dedup`. Keeps the first element of
 // each run and returns the new logical length; unlike a `Vec`, a slice has

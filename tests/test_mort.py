@@ -10301,6 +10301,45 @@ def test_std_algorithm_min_by_and_max_by_find_the_extremes_by_a_comparator():
 
 
 @needs_cc
+def test_std_algorithm_binary_search_finds_a_needle_in_a_sorted_slice():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "algorithm_binary_search.mx")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "import std.algorithm; import std.option; "
+                "fn main() -> int { "
+                "let values: [i64; 7] = [1, 3, 5, 7, 9, 11, 13]; "
+                "let view: []const i64 = slice(&values[0] as *const i64, 7); "
+                "print(option.unwrap_or(algorithm.binary_search(view, 1), 999 as u64)); "
+                "print(option.unwrap_or(algorithm.binary_search(view, 7), 999 as u64)); "
+                "print(option.unwrap_or(algorithm.binary_search(view, 13), 999 as u64)); "
+                "if option.is_none(algorithm.binary_search(view, 0)) { print(1); } else { print(0); } "
+                "if option.is_none(algorithm.binary_search(view, 14)) { print(1); } else { print(0); } "
+                "if option.is_none(algorithm.binary_search(view, 6)) { print(1); } else { print(0); } "
+                "let empty_view: []const i64 = slice(&values[0] as *const i64, 0); "
+                "if option.is_none(algorithm.binary_search(empty_view, 1)) { print(1); } else { print(0); } "
+                "let single: [i64; 1] = [42]; "
+                "let single_view: []const i64 = slice(&single[0] as *const i64, 1); "
+                "print(option.unwrap_or(algorithm.binary_search(single_view, 42), 999 as u64)); "
+                "if option.is_none(algorithm.binary_search(single_view, 43)) { print(1); } else { print(0); } "
+                "let two: [i64; 2] = [10, 20]; "
+                "let two_view: []const i64 = slice(&two[0] as *const i64, 2); "
+                "print(option.unwrap_or(algorithm.binary_search(two_view, 20), 999 as u64)); "
+                "return 0; }"
+            )
+        c_source = mortc.compile_files_to_c([path])
+        assert "binary_search" in c_source
+        cfile = os.path.join(d, "algorithm_binary_search.c")
+        exe = os.path.join(d, "algorithm_binary_search.exe" if os.name == "nt" else "algorithm_binary_search")
+        with open(cfile, "w", encoding="utf-8") as fh:
+            fh.write(c_source)
+        subprocess.run([*_CC, cfile, "-o", exe, "-O2", "-std=c11"], check=True)
+        result = subprocess.run([exe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert result.stdout == "0\n3\n6\n1\n1\n1\n1\n0\n1\n1\n"
+
+
+@needs_cc
 def test_std_algorithm_find_by_searches_a_slice_by_predicate():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "algorithm_find_by.mx")

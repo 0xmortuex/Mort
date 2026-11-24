@@ -61,7 +61,13 @@ of adjacent equality (matching Rust's `slice::retain`-style compaction) —
 the slice-level counterpart to `std.vec.retain`. Like `dedup`, it returns
 the new logical length rather than shrinking anything (a slice has no
 `.length` field), and it is not resource-safe: a dropped element is
-overwritten, not destroyed.
+overwritten, not destroyed. `binary_search<T>(values: []const T, needle: T)
+-> Option<u64>` is the O(log n) counterpart to `index_of`'s O(n) linear
+scan, for a slice already sorted ascending by `<`; it returns the needle's
+index if found or `None` otherwise, using only `<` comparisons (the same
+constraint `sort`/`min`/`max` already have — no `==` needed). The caller is
+responsible for `values` actually being sorted; which index is returned is
+unspecified when `values` contains duplicates of `needle`.
 
 ## `std.ascii`
 
