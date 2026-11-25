@@ -2653,6 +2653,41 @@ fn main() -> i64 {
 
 
 @needs_cc
+def test_std_ascii_is_control_recognizes_c0_bytes_and_del():
+    program = r'''import std.ascii;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if ascii.is_control(0) { ok += 1; }
+    if ascii.is_control(9) { ok += 1; }
+    if ascii.is_control(31) { ok += 1; }
+    if ascii.is_control(127) { ok += 1; }
+    if !ascii.is_control(32) { ok += 1; }
+    if !ascii.is_control(65) { ok += 1; }
+    if !ascii.is_control(126) { ok += 1; }
+
+    print(ok);
+    if ok == 7 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "asciiiscontrol.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "asciiiscontrol.exe" if os.name == "nt" else "asciiiscontrol")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "7"
+
+
+@needs_cc
 def test_std_sort_orders_by_caller_comparator_and_reports_sortedness():
     program = r'''import std.sort;
 

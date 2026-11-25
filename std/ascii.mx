@@ -41,6 +41,11 @@ pub fn is_hex_digit(byte: u8) -> bool {
     return is_digit(byte) || (byte >= 97 && byte <= 102) || (byte >= 65 && byte <= 70);
 }
 
+// The C0 control bytes (0x00-0x1F) plus DEL (0x7F): everything outside `is_print`'s range.
+pub fn is_control(byte: u8) -> bool {
+    return byte < 32 || byte == 127;
+}
+
 pub fn to_upper(byte: u8) -> u8 {
     if byte >= 97 && byte <= 122 {
         return byte - 32;

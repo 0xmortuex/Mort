@@ -76,7 +76,9 @@ Byte-level ASCII classification and case conversion, all operating on `u8`
 `is_alnum` (`is_alpha(byte) || is_digit(byte)`), `is_upper`, `is_lower`,
 `is_print` (the full printable range, `0x20`-`0x7E` inclusive), `is_punct`
 (printable but neither alphanumeric nor a space — punctuation/symbol bytes),
-`is_hex_digit` (`0`-`9`, `a`-`f`, or `A`-`F`), `to_upper`, `to_lower`.
+`is_hex_digit` (`0`-`9`, `a`-`f`, or `A`-`F`), `is_control` (the C0 control
+bytes `0x00`-`0x1F` plus `DEL`, `0x7F` — everything outside `is_print`'s
+range), `to_upper`, `to_lower`.
 `upper_inplace(text: []u8)` and
 `lower_inplace(text: []u8)` apply the corresponding conversion to every byte
 of a mutable slice in place.
