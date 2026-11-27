@@ -12351,3 +12351,34 @@ fn main() -> i64 {
             check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "11"
+
+
+def test_std_path_is_absolute_checks_for_a_leading_slash():
+    program = r'''import std.path;
+
+fn main() -> i64 {
+    let ok: i64 = 0;
+
+    if path.is_absolute(slice("/usr/bin" as *const u8, 8)) { ok += 1; }
+    if !path.is_absolute(slice("usr/bin" as *const u8, 7)) { ok += 1; }
+    if !path.is_absolute(slice("" as *const u8, 0)) { ok += 1; }
+    if path.is_absolute(slice("/" as *const u8, 1)) { ok += 1; }
+
+    print(ok);
+    if ok == 4 { return 0; }
+    return 100 + ok;
+}
+'''
+    with tempfile.TemporaryDirectory() as d:
+        source = os.path.join(d, "pathabs.mx")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(program)
+        exe = os.path.join(d, "pathabs.exe" if os.name == "nt" else "pathabs")
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "mortc.py"), source,
+             "--run", "-o", exe],
+            capture_output=True,
+            text=True,
+            check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4"

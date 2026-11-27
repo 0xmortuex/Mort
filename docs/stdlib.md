@@ -431,7 +431,9 @@ convention. `extension(path) -> Option<[]const u8>` returns the view
 after the last `.` in `basename(path)`, or `None` if there is no `.` or
 the `.` is the basename's first byte (so a dotfile like `.bashrc` has no
 extension), matching `os.path.splitext`. `basename`/`dirname`/`extension`
-all borrow views from `path`, no allocation. `join(left, right) ->
+all borrow views from `path`, no allocation. `is_absolute(path) -> bool`
+returns whether `path` is non-empty and starts with `/`, matching
+`os.path.isabs` for POSIX-style paths. `join(left, right) ->
 std.owned_string.String` concatenates `left` and `right` with exactly one
 `/` between them, unless one side already supplies it (a trailing `/` on
 `left` or a leading `/` on `right`); the result is a freshly allocated

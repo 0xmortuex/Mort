@@ -53,6 +53,12 @@ pub fn extension(path: []const u8) -> Option<[]const u8> {
     }
 }
 
+// True if `path` starts with '/' (and is non-empty), matching Python's
+// `os.path.isabs` for POSIX-style paths. An empty `path` is not absolute.
+pub fn is_absolute(path: []const u8) -> bool {
+    return path.len > 0 && path[0] == 47;
+}
+
 // Joins `left` and `right` with exactly one '/' between them, unless one
 // side already supplies it (a trailing '/' on `left` or a leading '/' on
 // `right`), in which case no extra separator is inserted. An empty `left`
