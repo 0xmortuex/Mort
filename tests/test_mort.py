@@ -12382,3 +12382,35 @@ fn main() -> i64 {
             check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "4"
+
+
+def test_docs_stdlib_module_index_stays_in_sync_with_module_headings():
+    text = Path(ROOT, "docs", "stdlib.md").read_text(encoding="utf-8")
+
+    anchor_heading_pairs = re.findall(
+        r'<a id="(std-[a-zA-Z0-9_-]+)"></a>\n## (.+)', text)
+    assert anchor_heading_pairs, "no anchored module headings found at all"
+
+    # A module heading is exactly "`std.something`"; the shared std.map/
+    # std.vec resource-caveats section has extra text and isn't a module.
+    module_anchors = {
+        anchor for anchor, heading in anchor_heading_pairs
+        if re.fullmatch(r"`std\.[a-zA-Z0-9_]+`", heading)
+    }
+    assert module_anchors, "no module headings matched the `std.x` pattern"
+
+    # The index table lives between the intro and the first anchored heading.
+    table_section = text.split('<a id="', 1)[0]
+    table_anchors = {
+        anchor for anchor in re.findall(
+            r"\[`std\.[a-zA-Z0-9_]+`\]\(#(std-[a-zA-Z0-9_-]+)\)",
+            table_section)
+    }
+
+    missing_from_table = module_anchors - table_anchors
+    extra_in_table = table_anchors - module_anchors
+    assert not missing_from_table, (
+        f"module(s) with no row in the index table: {sorted(missing_from_table)}")
+    assert not extra_in_table, (
+        f"index table links to anchor(s) with no matching module heading: "
+        f"{sorted(extra_in_table)}")
